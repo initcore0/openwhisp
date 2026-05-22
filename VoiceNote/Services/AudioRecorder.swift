@@ -166,11 +166,9 @@ class AudioRecorder: NSObject, AVAudioRecorderDelegate {
         recorder = nil
         recordingURL = nil
         
-        // Clean up chunk files if streaming
+        // Chunk files may still be in use by whisper.cpp when streaming stops.
+        // WhisperEngine removes each WAV after its process exits.
         if isStreaming {
-            for chunk in streamingChunks {
-                try? FileManager.default.removeItem(at: chunk)
-            }
             streamingChunks = []
             chunkCount = 0
             isStreaming = false
@@ -255,31 +253,31 @@ struct AudioDevice {
                 continue
             }
             
-            // Get name
-            var nameAddr = AudioObjectPropertyAddress(
-                mSelector: kAudioDevicePropertyDeviceNameCFString,
-                mScope: kAudioObjectPropertyScopeGlobal,
-                mElement: kAudioObjectPropertyElementMain
-            )
-            var name: CFString = "" as CFString
-            var nameSize: UInt32 = UInt32(MemoryLayout<CFString>.size)
-            
-            // Get UID
-            var uidAddr = AudioObjectPropertyAddress(
-                mSelector: kAudioDevicePropertyDeviceUID,
-                mScope: kAudioObjectPropertyScopeGlobal,
-                mElement: kAudioObjectPropertyElementMain
-            )
-            var uid: CFString = "" as CFString
-            var uidSize: UInt32 = UInt32(MemoryLayout<CFString>.size)
-            
-            if AudioObjectGetPropertyData(devID, &nameAddr, 0, nil, &nameSize, &name) == noErr,
-               AudioObjectGetPropertyData(devID, &uidAddr, 0, nil, &uidSize, &uid) == noErr {
-                devices.append(AudioDevice(name: name as String, uid: uid as String, deviceID: devID))
+            if let name = stringProperty(kAudioDevicePropertyDeviceNameCFString, for: devID),
+               let uid = stringProperty(kAudioDevicePropertyDeviceUID, for: devID) {
+                devices.append(AudioDevice(name: name, uid: uid, deviceID: devID))
             }
         }
         
         return devices
+    }
+    
+    private static func stringProperty(_ selector: AudioObjectPropertySelector, for deviceID: AudioDeviceID) -> String? {
+        var address = AudioObjectPropertyAddress(
+            mSelector: selector,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var value: CFString?
+        var size = UInt32(MemoryLayout<CFString?>.size)
+        let status = withUnsafeMutablePointer(to: &value) { pointer in
+            pointer.withMemoryRebound(to: UInt8.self, capacity: Int(size)) { rawPointer in
+                AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, rawPointer)
+            }
+        }
+        
+        guard status == noErr, let value else { return nil }
+        return value as String
     }
     
     static func byID(_ id: String) -> AudioDevice? {

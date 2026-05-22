@@ -4,25 +4,32 @@ import Foundation
 
 class WhisperEngine {
     
-    var onTranscriptionComplete: ((String) -> Void)?
-    var onTranscriptionError: ((String) -> Void)?
+    var onTranscriptionComplete: ((UUID, String) -> Void)?
+    var onTranscriptionError: ((UUID, String) -> Void)?
     var onProgress: ((Int) -> Void)?
     
     init() {}
     
     /// Transcribe a single WAV file using whisper.cpp (async — doesn't block caller).
-    func transcribe(binaryPath: String, modelPath: String, language: String, wavPath: String) {
+    func transcribe(
+        requestID: UUID,
+        binaryPath: String,
+        modelPath: String,
+        language: String,
+        wavPath: String,
+        deleteWhenDone: Bool = true
+    ) {
         
         guard FileManager.default.fileExists(atPath: binaryPath) else {
             DispatchQueue.main.async {
-                self.onTranscriptionError?("whisper binary not found at: \(binaryPath)")
+                self.onTranscriptionError?(requestID, "whisper binary not found at: \(binaryPath)")
             }
             return
         }
         
         guard FileManager.default.fileExists(atPath: modelPath) else {
             DispatchQueue.main.async {
-                self.onTranscriptionError?("Model not found at: \(modelPath)")
+                self.onTranscriptionError?(requestID, "Model not found at: \(modelPath)")
             }
             return
         }
@@ -53,6 +60,9 @@ class WhisperEngine {
                 let stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
                 let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
                 process.waitUntilExit()
+                if deleteWhenDone {
+                    try? FileManager.default.removeItem(atPath: wavPath)
+                }
                 
                 let exitCode = process.terminationStatus
                 let stderr = String(data: stderrData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -71,21 +81,21 @@ class WhisperEngine {
                     DispatchQueue.main.async {
                         if text.isEmpty {
                             // No speech detected — skip
-                            self.onTranscriptionComplete?("")
+                            self.onTranscriptionComplete?(requestID, "")
                         } else {
-                            self.onTranscriptionComplete?(text)
+                            self.onTranscriptionComplete?(requestID, text)
                         }
                     }
                 } else {
                     print("[WhisperEngine] ERROR: exit=\(exitCode), stderr=\(stderr)")
                     DispatchQueue.main.async {
-                        self.onTranscriptionError?("whisper exited with code \(exitCode): \(stderr)")
+                        self.onTranscriptionError?(requestID, "whisper exited with code \(exitCode): \(stderr)")
                     }
                 }
             } catch {
                 print("[WhisperEngine] FAILED to run: \(error.localizedDescription)")
                 DispatchQueue.main.async {
-                    self.onTranscriptionError?("Failed to run whisper: \(error.localizedDescription)")
+                    self.onTranscriptionError?(requestID, "Failed to run whisper: \(error.localizedDescription)")
                 }
             }
         }

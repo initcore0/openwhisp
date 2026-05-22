@@ -81,9 +81,25 @@ class AppState: ObservableObject {
     private var elapsedTimer: Timer?
     private var recordingStartedAt: Date?
     private var targetApplication: NSRunningApplication?
+    private var overlayIsVisible = false
+    private var activeSessionID = UUID()
+    private var transcriptionRequests: [UUID: TranscriptionRequest] = [:]
+    private var pendingLiveChunks: [URL] = []
+    private var liveChunkInFlight = false
     private var chunkCount = 0
     private var currentSessionText = ""
     private var isStreamingSession = false
+    private var acceptingLiveChunks = false
+    
+    private enum TranscriptionKind {
+        case liveChunk
+        case final
+    }
+    
+    private struct TranscriptionRequest {
+        let sessionID: UUID
+        let kind: TranscriptionKind
+    }
     
     var hotkeyHelpText: String {
         let trigger = triggerMode == "fn" ? "Release Fn" : "Release Control+Space"
@@ -115,11 +131,16 @@ class AppState: ObservableObject {
     
     private static func modelFileName(for modelName: String) -> String {
         switch modelName {
-        case "tiny":     return "ggml-tiny.bin"
-        case "base":     return "ggml-base.bin"
-        case "small":    return "ggml-small.bin"
-        case "medium":   return "ggml-medium.bin"
-        case "large-v3": return "ggml-large-v3.bin"
+        case "tiny":          return "ggml-tiny.bin"
+        case "tiny.en":       return "ggml-tiny.en.bin"
+        case "base":          return "ggml-base.bin"
+        case "base.en":       return "ggml-base.en.bin"
+        case "small":         return "ggml-small.bin"
+        case "small.en":      return "ggml-small.en.bin"
+        case "medium":        return "ggml-medium.bin"
+        case "medium.en":     return "ggml-medium.en.bin"
+        case "large-v3":      return "ggml-large-v3.bin"
+        case "large-v3-turbo": return "ggml-large-v3-turbo.bin"
         default:         return "ggml-base.bin"
         }
     }
@@ -131,15 +152,25 @@ class AppState: ObservableObject {
     private func wireUpServices() {
         whisperEngine = WhisperEngine()
         
-        whisperEngine.onTranscriptionComplete = { [weak self] text in
+        whisperEngine.onTranscriptionComplete = { [weak self] requestID, text in
             Task { @MainActor in
-                self?.handleTranscription(text)
+                self?.handleTranscription(text, requestID: requestID)
             }
         }
         
-        whisperEngine.onTranscriptionError = { [weak self] msg in
+        whisperEngine.onTranscriptionError = { [weak self] requestID, msg in
             Task { @MainActor in
                 guard let self else { return }
+                guard let request = self.consumeRequest(requestID), request.sessionID == self.activeSessionID else { return }
+                if request.kind == .liveChunk {
+                    self.liveChunkInFlight = false
+                    self.processNextLiveChunk()
+                    if self.isTranscribing && self.pendingLiveChunks.isEmpty && !self.liveChunkInFlight {
+                        self.completeFinalText(self.currentSessionText)
+                    }
+                    self.statusMessage = self.isTranscribing ? "Finalizing..." : "Listening..."
+                    return
+                }
                 self.error = msg
                 self.statusMessage = "Error"
                 self.isTranscribing = false
@@ -222,6 +253,11 @@ class AppState: ObservableObject {
     
     func cancelDictation() {
         guard isRecording || isTranscribing else { return }
+        activeSessionID = UUID()
+        transcriptionRequests.removeAll()
+        cleanupPendingLiveChunks()
+        liveChunkInFlight = false
+        acceptingLiveChunks = false
         isStreamingSession = false
         isTranscribing = false
         audioRecorder.stop { url in
@@ -261,6 +297,7 @@ class AppState: ObservableObject {
         isStreamingSession = false
         isTranscribing = true
         statusMessage = "Finalizing..."
+        hideOverlayNow()
         
         audioRecorder.stop { [weak self] wavPath in
             Task { @MainActor in
@@ -271,12 +308,7 @@ class AppState: ObservableObject {
                     return
                 }
                 
-                self.whisperEngine.transcribe(
-                    binaryPath: self.whisperBinaryPath,
-                    modelPath: self.modelPath,
-                    language: self.language,
-                    wavPath: path.path
-                )
+                self.startTranscription(path: path, kind: .final)
             }
         }
     }
@@ -298,17 +330,15 @@ class AppState: ObservableObject {
                 if !micID.isEmpty {
                     recorder.selectDevice(micID)
                 }
-                recorder.startStreaming(chunkDuration: 2.0) { [weak self] chunkPath in
+                recorder.startStreaming(chunkDuration: 3.0) { [weak self] chunkPath in
                     Task { @MainActor in
-                        guard let self, let path = chunkPath, self.isStreamingSession else { return }
-                        self.chunkCount += 1
-                        self.statusMessage = "Transcribing chunk #\(self.chunkCount)..."
-                        self.whisperEngine.transcribe(
-                            binaryPath: self.whisperBinaryPath,
-                            modelPath: self.modelPath,
-                            language: self.language,
-                            wavPath: path.path
-                        )
+                        guard let self, let path = chunkPath, self.acceptingLiveChunks else {
+                            if let chunkPath {
+                                try? FileManager.default.removeItem(at: chunkPath)
+                            }
+                            return
+                        }
+                        self.enqueueLiveChunk(path)
                     }
                 }
             }
@@ -318,19 +348,16 @@ class AppState: ObservableObject {
     func stopStreaming() {
         guard isRecording else { return }
         isStreamingSession = false
+        acceptingLiveChunks = false
         isTranscribing = true
         statusMessage = "Finalizing..."
+        hideOverlayNow()
         
         audioRecorder.stop { [weak self] finalPath in
             Task { @MainActor in
                 guard let self else { return }
                 if let path = finalPath {
-                    self.whisperEngine.transcribe(
-                        binaryPath: self.whisperBinaryPath,
-                        modelPath: self.modelPath,
-                        language: self.language,
-                        wavPath: path.path
-                    )
+                    self.enqueueLiveChunk(path)
                 } else {
                     self.completeFinalText(self.currentSessionText)
                 }
@@ -340,6 +367,11 @@ class AppState: ObservableObject {
     
     private func beginSession(streaming: Bool) {
         error = nil
+        activeSessionID = UUID()
+        transcriptionRequests.removeAll()
+        cleanupPendingLiveChunks()
+        liveChunkInFlight = false
+        acceptingLiveChunks = streaming
         currentSessionText = ""
         streamingText = ""
         chunkCount = 0
@@ -353,14 +385,24 @@ class AppState: ObservableObject {
         startElapsedTimer()
         if showOverlay {
             overlayController?.show()
+            overlayIsVisible = true
         }
     }
     
-    private func handleTranscription(_ rawText: String) {
+    private func handleTranscription(_ rawText: String, requestID: UUID) {
+        guard let request = consumeRequest(requestID), request.sessionID == activeSessionID else { return }
         let text = postProcess(rawText)
         
         guard !text.isEmpty else {
-            if isTranscribing {
+            if request.kind == .liveChunk {
+                liveChunkInFlight = false
+                processNextLiveChunk()
+                if isTranscribing && pendingLiveChunks.isEmpty && !liveChunkInFlight {
+                    completeFinalText(currentSessionText)
+                } else {
+                    statusMessage = isTranscribing ? "Finalizing..." : "Listening..."
+                }
+            } else if isTranscribing {
                 completeFinalText(currentSessionText)
             } else {
                 statusMessage = "Listening..."
@@ -368,12 +410,58 @@ class AppState: ObservableObject {
             return
         }
         
-        if isRecording && outputMode == "liveChunks" {
+        switch request.kind {
+        case .liveChunk:
             appendLiveChunk(text)
-        } else if isTranscribing {
-            let finalText = currentSessionText.isEmpty ? text : "\(currentSessionText) \(text)"
-            completeFinalText(finalText)
+            liveChunkInFlight = false
+            processNextLiveChunk()
+            if isTranscribing && pendingLiveChunks.isEmpty && !liveChunkInFlight {
+                completeFinalText(currentSessionText)
+            }
+        case .final:
+            if isTranscribing {
+                let finalText = currentSessionText.isEmpty ? text : "\(currentSessionText) \(text)"
+                completeFinalText(finalText)
+            }
         }
+    }
+    
+    private func enqueueLiveChunk(_ path: URL) {
+        pendingLiveChunks.append(path)
+        chunkCount += 1
+        statusMessage = isTranscribing ? "Finalizing..." : "Queued chunk #\(chunkCount)..."
+        processNextLiveChunk()
+    }
+    
+    private func processNextLiveChunk() {
+        guard outputMode == "liveChunks", !liveChunkInFlight, let path = pendingLiveChunks.first else { return }
+        pendingLiveChunks.removeFirst()
+        liveChunkInFlight = true
+        statusMessage = isTranscribing ? "Finalizing..." : "Transcribing chunk..."
+        startTranscription(path: path, kind: .liveChunk)
+    }
+    
+    private func startTranscription(path: URL, kind: TranscriptionKind) {
+        let requestID = UUID()
+        transcriptionRequests[requestID] = TranscriptionRequest(sessionID: activeSessionID, kind: kind)
+        whisperEngine.transcribe(
+            requestID: requestID,
+            binaryPath: whisperBinaryPath,
+            modelPath: modelPath,
+            language: language,
+            wavPath: path.path
+        )
+    }
+    
+    private func consumeRequest(_ requestID: UUID) -> TranscriptionRequest? {
+        transcriptionRequests.removeValue(forKey: requestID)
+    }
+    
+    private func cleanupPendingLiveChunks() {
+        for path in pendingLiveChunks {
+            try? FileManager.default.removeItem(at: path)
+        }
+        pendingLiveChunks.removeAll()
     }
     
     private func appendLiveChunk(_ text: String) {
@@ -423,12 +511,72 @@ class AppState: ObservableObject {
     }
     
     private func postProcess(_ text: String) -> String {
-        text
+        var normalized = removeNonSpeechMarkers(from: text)
             .replacingOccurrences(of: "\n", with: " ")
             .components(separatedBy: .whitespacesAndNewlines)
             .filter { !$0.isEmpty }
             .joined(separator: " ")
             .trimmingCharacters(in: .whitespacesAndNewlines)
+        
+        normalized = normalized.trimmingCharacters(in: CharacterSet(charactersIn: "\"'` "))
+        return isIgnorableTranscript(normalized) ? "" : normalized
+    }
+    
+    private func isIgnorableTranscript(_ text: String) -> Bool {
+        let lowercased = text
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        
+        let ignorableTokens: Set<String> = [
+            "[blank_audio]",
+            "[silence]",
+            "(silence)",
+            "[no speech]",
+            "(no speech)",
+            "[music]",
+            "(music)",
+            "[video playback]",
+            "(video playback)",
+            "[background noise]",
+            "(background noise)",
+            "[noise]",
+            "(noise)",
+            "[applause]",
+            "(applause)",
+            "[laughter]",
+            "(laughter)"
+        ]
+        
+        return lowercased.isEmpty || ignorableTokens.contains(lowercased)
+    }
+    
+    private func removeNonSpeechMarkers(from text: String) -> String {
+        let markerTerms = [
+            "blank_audio",
+            "silence",
+            "no speech",
+            "music",
+            "video playback",
+            "background noise",
+            "noise",
+            "static",
+            "applause",
+            "laughter",
+            "laughing",
+            "cough",
+            "coughing",
+            "sigh",
+            "breath",
+            "breathing",
+            "inaudible",
+            "unintelligible"
+        ]
+        var cleaned = text
+        for term in markerTerms {
+            cleaned = cleaned.replacingOccurrences(of: "[\(term)]", with: "", options: [.caseInsensitive])
+            cleaned = cleaned.replacingOccurrences(of: "(\(term))", with: "", options: [.caseInsensitive])
+        }
+        return cleaned
     }
     
     private func startElapsedTimer() {
@@ -449,16 +597,23 @@ class AppState: ObservableObject {
         audioLevel = 0
         
         guard showOverlay else { return }
+        guard overlayIsVisible else { return }
         if delay > 0 {
             Task { @MainActor in
                 try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
                 if !self.isRecording && !self.isTranscribing {
-                    self.overlayController?.hide()
+                    self.hideOverlayNow()
                 }
             }
         } else {
-            overlayController?.hide()
+            hideOverlayNow()
         }
+    }
+    
+    private func hideOverlayNow() {
+        guard overlayIsVisible else { return }
+        overlayController?.hide()
+        overlayIsVisible = false
     }
     
     // MARK: - Permissions
@@ -515,24 +670,27 @@ class AppState: ObservableObject {
     private func currentTextTargetApplication() -> NSRunningApplication? {
         let ownBundleID = Bundle.main.bundleIdentifier
         let frontmost = NSWorkspace.shared.frontmostApplication
-        if frontmost?.bundleIdentifier != ownBundleID {
+        if frontmost?.bundleIdentifier != ownBundleID, frontmost?.activationPolicy == .regular {
             return frontmost
         }
         
-        return NSWorkspace.shared.runningApplications.first { app in
-            app.activationPolicy == .regular && app.bundleIdentifier != ownBundleID && !app.isTerminated
-        }
+        return nil
     }
     
     // MARK: - Model
     
-    func availableModelsList() -> [(name: String, size: String)] {
+    func availableModelsList() -> [(name: String, label: String, size: String)] {
         [
-            ("tiny",     "39 MB"),
-            ("base",     "72 MB"),
-            ("small",    "464 MB"),
-            ("medium",   "1.5 GB"),
-            ("large-v3", "2.9 GB")
+            ("tiny",           "Tiny - fastest, lowest quality", "39 MB"),
+            ("tiny.en",        "Tiny English - fastest English", "39 MB"),
+            ("base",           "Base - fast default", "72 MB"),
+            ("base.en",        "Base English - better English default", "72 MB"),
+            ("small",          "Small - better quality", "464 MB"),
+            ("small.en",       "Small English - recommended quality", "464 MB"),
+            ("medium",         "Medium - high quality", "1.5 GB"),
+            ("medium.en",      "Medium English - high quality English", "1.5 GB"),
+            ("large-v3-turbo", "Large v3 Turbo - best speed/quality", "1.5 GB"),
+            ("large-v3",       "Large v3 - best quality, slowest", "2.9 GB")
         ]
     }
     

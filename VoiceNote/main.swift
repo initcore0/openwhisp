@@ -47,6 +47,10 @@ class VoiceNoteApp: NSObject, NSApplicationDelegate {
         appState.ensureModelExists()
         print("[VoiceNote] Ready")
     }
+    
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        false
+    }
 
     private func requestNotifications() {
         // UNUserNotificationCenter.current() crashes with NSInternalInconsistencyException
@@ -136,16 +140,24 @@ class VoiceNoteApp: NSObject, NSApplicationDelegate {
 
     @objc private func openSettings() {
         guard let appState else { return }
+        
+        if let settingsWindow {
+            settingsWindow.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
 
         let view = SettingsView(appState: appState)
         let host = NSHostingController(rootView: view)
 
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 520, height: 500),
-            styleMask: [.titled, .closable, .miniaturizable],
+            contentRect: NSRect(x: 0, y: 0, width: 700, height: 680),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered, defer: false
         )
         window.title = "VoiceNote Settings"
+        window.isReleasedWhenClosed = false
+        window.minSize = NSSize(width: 620, height: 460)
         window.contentViewController = host
         window.center()
         window.makeKeyAndOrderFront(nil)
