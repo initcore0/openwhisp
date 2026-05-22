@@ -78,15 +78,10 @@ struct SettingsView: View {
             
             // Hotkey Section
             Section("Hotkey") {
-                HStack {
-                    Text("Trigger Key:")
-                    Spacer()
-                    Text(appState.hotkeyModifier.description + " (hold to record)")
-                        .foregroundColor(.secondary)
-                        .frame(width: 200, alignment: .trailing)
-                }
+                Text("Hold **Fn** to start recording, release to stop.")
+                    .font(.body)
                 
-                Text("Hold the key to start recording, release to stop.")
+                Text("VoiceNote listens for the Fn key globally.")
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
@@ -183,15 +178,4 @@ struct SettingsView: View {
     }
 }
 
-// MARK: - Modifier Description Extension
 
-extension NSEvent.ModifierFlags {
-    var description: String {
-        var parts: [String] = []
-        if contains(.command) { parts.append("⌘ Command") }
-        if contains(.option) { parts.append("⌥ Option") }
-        if contains(.control) { parts.append("⌃ Control") }
-        if contains(.shift) { parts.append("⇧ Shift") }
-        return parts.joined(separator: " + ")
-    }
-}

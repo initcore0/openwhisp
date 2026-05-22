@@ -35,14 +35,6 @@ class AppState: ObservableObject {
         didSet { UserDefaults.standard.set(language, forKey: "language") }
     }
     
-    @Published var hotkeyCode: UInt16 {
-        didSet { UserDefaults.standard.set(hotkeyCode, forKey: "hotkeyCode") }
-    }
-    
-    @Published var hotkeyModifier: NSEvent.ModifierFlags {
-        didSet { UserDefaults.standard.set(hotkeyModifier.rawValue, forKey: "hotkeyModifier") }
-    }
-    
     // MARK: - Runtime State
     
     @Published var isRecording = false
@@ -84,13 +76,6 @@ class AppState: ObservableObject {
         modelPath = "\(NSHomeDirectory())/whisper.cpp/models/\(fileName)"
         microphoneID = UserDefaults.standard.string(forKey: "microphoneID") ?? ""
         language = UserDefaults.standard.string(forKey: "language") ?? "en"
-        
-        var keyCode: UInt16 = UInt16(UserDefaults.standard.integer(forKey: "hotkeyCode"))
-        if keyCode == 0 { keyCode = 0x3A }
-        hotkeyCode = keyCode
-        
-        let modifierRaw = UserDefaults.standard.integer(forKey: "hotkeyModifier")
-        hotkeyModifier = NSEvent.ModifierFlags(rawValue: UInt(modifierRaw))
         
         // Now wire up services
         wireUpServices()
