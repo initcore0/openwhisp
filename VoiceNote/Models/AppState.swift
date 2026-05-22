@@ -476,6 +476,10 @@ class AppState: ObservableObject {
         AXIsProcessTrusted() ? "Granted" : "Needs permission"
     }
     
+    var runningBundlePath: String {
+        Bundle.main.bundlePath
+    }
+    
     func retryHotkeyMonitor() {
         hotkeyMonitor.stop()
         hotkeyMonitor.start()
@@ -490,6 +494,22 @@ class AppState: ObservableObject {
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy") {
             NSWorkspace.shared.open(url)
         }
+    }
+    
+    func openAccessibilitySettings() {
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
+            NSWorkspace.shared.open(url)
+        }
+    }
+    
+    func openInputMonitoringSettings() {
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent") {
+            NSWorkspace.shared.open(url)
+        }
+    }
+    
+    func revealRunningApp() {
+        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: runningBundlePath)])
     }
     
     private func currentTextTargetApplication() -> NSRunningApplication? {

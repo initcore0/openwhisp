@@ -26,14 +26,9 @@ class KeyboardSynthesizer {
         pb.clearContents()
         pb.setString(text, forType: .string)
         
-        if let targetApplication, !targetApplication.isTerminated {
-            targetApplication.activate(options: [.activateIgnoringOtherApps])
-        }
-        
         // Small delay to ensure clipboard is flushed
-        Thread.sleep(forTimeInterval: 0.15)
+        Thread.sleep(forTimeInterval: 0.05)
         
-        // Approach 1: CGEvent at session level
         pasteViaCGEvent()
         
         // Brief pause after paste
@@ -54,7 +49,7 @@ class KeyboardSynthesizer {
     private static func pasteViaCGEvent() {
         let source = CGEventSource(stateID: .combinedSessionState)!
         
-        let tap: CGEventTapLocation = .cgSessionEventTap
+        let tap: CGEventTapLocation = .cghidEventTap
         
         // V key down (0x09) with Cmd
         if let vDown = CGEvent(keyboardEventSource: source, virtualKey: 0x09, keyDown: true) {

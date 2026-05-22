@@ -132,13 +132,26 @@ struct SettingsView: View {
                         appState.requestAccessibilityPermission()
                     }
                     
-                    Button("Open Privacy Settings") {
-                        appState.openPrivacySettings()
+                    Button("Open Accessibility") {
+                        appState.openAccessibilitySettings()
+                    }
+                    
+                    Button("Open Input Monitoring") {
+                        appState.openInputMonitoringSettings()
                     }
                     
                     Button("Retry Hotkey") {
                         appState.retryHotkeyMonitor()
                     }
+                }
+                
+                Text("Running app: \(appState.runningBundlePath)")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .textSelection(.enabled)
+                
+                Button("Reveal Running App") {
+                    appState.revealRunningApp()
                 }
             }
             
