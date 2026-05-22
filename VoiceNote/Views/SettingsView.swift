@@ -1,0 +1,197 @@
+import SwiftUI
+import Cocoa
+
+// MARK: - Settings View
+
+struct SettingsView: View {
+    
+    @ObservedObject var appState: AppState
+    
+    @State private var availableMics: [AudioDevice] = []
+    @State private var selectedMicIndex: Int = 0
+    @State private var selectedModel: String = "base"
+    
+    var body: some View {
+        Form {
+            // Model Section
+            Section("Model") {
+                Picker("Model Size", selection: $selectedModel) {
+                    ForEach(appState.availableModelsList(), id: \.name) { model in
+                        Text("\(model.name) (\(model.size))").tag(model.name)
+                    }
+                }
+                .onChange(of: selectedModel) {
+                    appState.modelName = selectedModel
+                    appState.ensureModelExists()
+                }
+                
+                TextField("Model Path", text: $appState.modelPath)
+                    .textFieldStyle(.roundedBorder)
+                
+                Button("Browse...") {
+                    let panel = NSOpenPanel()
+                    panel.allowsMultipleSelection = false
+                    panel.allowedContentTypes = [.item]
+                    panel.canChooseFiles = true
+                    panel.canChooseDirectories = false
+                    if panel.runModal() == .OK, let url = panel.url {
+                        appState.modelPath = url.path
+                    }
+                }
+            }
+            
+            // Microphone Section
+            Section("Microphone") {
+                Picker("Input Device", selection: $selectedMicIndex) {
+                    ForEach(availableMics.indices, id: \.self) { index in
+                        Text(availableMics[index].name).tag(index)
+                    }
+                }
+                .onChange(of: selectedMicIndex) {
+                    if selectedMicIndex < availableMics.count {
+                        appState.microphoneID = availableMics[selectedMicIndex].uid
+                    }
+                }
+                
+                Button("Refresh Devices") {
+                    refreshDevices()
+                }
+            }
+            
+            // Language Section
+            Section("Language") {
+                Picker("Transcription Language", selection: $appState.language) {
+                    Text("Auto Detect").tag("auto")
+                    Text("English").tag("en")
+                    Text("Russian").tag("ru")
+                    Text("Spanish").tag("es")
+                    Text("French").tag("fr")
+                    Text("German").tag("de")
+                    Text("Italian").tag("it")
+                    Text("Portuguese").tag("pt")
+                    Text("Japanese").tag("ja")
+                    Text("Chinese").tag("zh")
+                    Text("Korean").tag("ko")
+                    Text("Arabic").tag("ar")
+                }
+            }
+            
+            // Hotkey Section
+            Section("Hotkey") {
+                HStack {
+                    Text("Trigger Key:")
+                    Spacer()
+                    Text(appState.hotkeyModifier.description + " (hold to record)")
+                        .foregroundColor(.secondary)
+                        .frame(width: 200, alignment: .trailing)
+                }
+                
+                Text("Hold the key to start recording, release to stop.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+            
+            // whisper.cpp Section
+            Section("whisper.cpp") {
+                TextField("Binary Path", text: $appState.whisperBinaryPath)
+                    .textFieldStyle(.roundedBorder)
+                
+                HStack {
+                    Button("Browse...") {
+                        let panel = NSOpenPanel()
+                        panel.allowsMultipleSelection = false
+                        panel.allowedContentTypes = [.executable]
+                        panel.canChooseFiles = true
+                        panel.canChooseDirectories = false
+                        if panel.runModal() == .OK, let url = panel.url {
+                            appState.whisperBinaryPath = url.path
+                        }
+                    }
+                    
+                    Button("Verify") {
+                        verifySetup()
+                    }
+                }
+            }
+            
+            // Status Section
+            Section("Status") {
+                HStack {
+                    Text("Status:")
+                    Spacer()
+                    Text(appState.statusMessage)
+                        .foregroundColor(statusColor)
+                        .frame(width: 150, alignment: .trailing)
+                }
+                
+                if let error = appState.error, !error.isEmpty {
+                    Text(error)
+                        .foregroundColor(.red)
+                        .font(.caption)
+                }
+                
+                if let last = appState.lastTranscription, !last.isEmpty {
+                    Text("Last: \"\(last.prefix(80))\(last.count > 80 ? "..." : "")\"")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+            }
+        }
+        .padding()
+        .onAppear {
+            selectedModel = appState.modelName
+            refreshDevices()
+        }
+        .frame(minWidth: 500, minHeight: 450)
+    }
+    
+    private var statusColor: Color {
+        switch appState.statusMessage {
+        case "Ready", "Done": return .green
+        case "Recording...": return .red
+        default:
+            if appState.statusMessage.hasPrefix("Transcribing") { return .orange }
+            if appState.error != nil { return .red }
+            return .gray
+        }
+    }
+    
+    private func refreshDevices() {
+        availableMics = AudioDevice.availableInputs()
+        if !availableMics.isEmpty {
+            if !appState.microphoneID.isEmpty {
+                if let index = availableMics.firstIndex(where: { $0.uid == appState.microphoneID }) {
+                    selectedMicIndex = index
+                }
+            }
+        }
+    }
+    
+    private func verifySetup() {
+        let binaryExists = FileManager.default.fileExists(atPath: appState.whisperBinaryPath)
+        let modelExists = FileManager.default.fileExists(atPath: appState.modelPath)
+        
+        if binaryExists && modelExists {
+            appState.statusMessage = "Setup verified ✓"
+            appState.error = nil
+        } else {
+            var msg = "Setup incomplete.\n"
+            if !binaryExists { msg += "✗ whisper.cpp binary not found\n" }
+            if !modelExists { msg += "✗ Model file not found\n" }
+            appState.error = msg
+        }
+    }
+}
+
+// MARK: - Modifier Description Extension
+
+extension NSEvent.ModifierFlags {
+    var description: String {
+        var parts: [String] = []
+        if contains(.command) { parts.append("⌘ Command") }
+        if contains(.option) { parts.append("⌥ Option") }
+        if contains(.control) { parts.append("⌃ Control") }
+        if contains(.shift) { parts.append("⇧ Shift") }
+        return parts.joined(separator: " + ")
+    }
+}
