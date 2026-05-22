@@ -78,12 +78,68 @@ struct SettingsView: View {
             
             // Hotkey Section
             Section("Hotkey") {
-                Text("Hold **Fn** to start recording, release to stop.")
-                    .font(.body)
+                Picker("Push-to-talk", selection: $appState.triggerMode) {
+                    Text("Control + Space").tag("controlSpace")
+                    Text("Fn / Globe (experimental)").tag("fn")
+                }
                 
-                Text("VoiceNote listens for the Fn key globally.")
+                Text(appState.hotkeyHelpText)
                     .font(.caption)
                     .foregroundColor(.secondary)
+            }
+            
+            // Output Section
+            Section("Text Output") {
+                Picker("Insertion Mode", selection: $appState.outputMode) {
+                    Text("Final paste only").tag("finalOnly")
+                    Text("Live chunks (experimental)").tag("liveChunks")
+                }
+                
+                Toggle("Show overlay while recording", isOn: $appState.showOverlay)
+                Toggle("Add trailing space after paste", isOn: $appState.addTrailingSpace)
+                Toggle("Restore clipboard after paste", isOn: $appState.restoreClipboard)
+                
+                Text("Clipboard restore reads your clipboard and may trigger macOS privacy prompts.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+            
+            // Permissions Section
+            Section("Permissions") {
+                HStack {
+                    Text("Microphone")
+                    Spacer()
+                    Text(appState.microphonePermissionLabel)
+                        .foregroundColor(appState.microphonePermissionLabel == "Granted" ? .green : .orange)
+                }
+                
+                HStack {
+                    Text("Accessibility")
+                    Spacer()
+                    Text(appState.accessibilityPermissionLabel)
+                        .foregroundColor(appState.accessibilityPermissionLabel == "Granted" ? .green : .orange)
+                }
+                
+                HStack {
+                    Text("Input Monitoring")
+                    Spacer()
+                    Text(appState.inputMonitoringPermissionLabel)
+                        .foregroundColor(appState.inputMonitoringPermissionLabel == "Granted" ? .green : .orange)
+                }
+                
+                HStack {
+                    Button("Request Accessibility") {
+                        appState.requestAccessibilityPermission()
+                    }
+                    
+                    Button("Open Privacy Settings") {
+                        appState.openPrivacySettings()
+                    }
+                    
+                    Button("Retry Hotkey") {
+                        appState.retryHotkeyMonitor()
+                    }
+                }
             }
             
             // whisper.cpp Section
@@ -145,7 +201,7 @@ struct SettingsView: View {
         case "Ready", "Done": return .green
         case "Recording...": return .red
         default:
-            if appState.statusMessage.hasPrefix("Transcribing") { return .orange }
+            if appState.statusMessage.hasPrefix("Transcribing") || appState.statusMessage == "Finalizing..." { return .orange }
             if appState.error != nil { return .red }
             return .gray
         }
@@ -177,5 +233,3 @@ struct SettingsView: View {
         }
     }
 }
-
-

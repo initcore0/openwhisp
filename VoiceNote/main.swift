@@ -91,13 +91,13 @@ class VoiceNoteApp: NSObject, NSApplicationDelegate {
 
         // Recording actions
         if appState.isRecording {
-            let stop = NSMenuItem(title: "⏹ Stop Streaming", action: #selector(stopStreaming), keyEquivalent: "")
+            let stop = NSMenuItem(title: "Stop Dictation", action: #selector(stopDictation), keyEquivalent: "")
             menu.addItem(stop)
+            let cancel = NSMenuItem(title: "Cancel Dictation", action: #selector(cancelDictation), keyEquivalent: "")
+            menu.addItem(cancel)
         } else {
-            let start = NSMenuItem(title: "🎙 Start Streaming", action: #selector(startStreaming), keyEquivalent: "")
+            let start = NSMenuItem(title: "Start Dictation", action: #selector(startDictation), keyEquivalent: "")
             menu.addItem(start)
-            let oldStart = NSMenuItem(title: "🎙 Record (legacy)", action: #selector(startRecording), keyEquivalent: "")
-            menu.addItem(oldStart)
         }
 
         menu.addItem(.separator())
@@ -125,6 +125,9 @@ class VoiceNoteApp: NSObject, NSApplicationDelegate {
         pb.setString(text, forType: .string)
     }
 
+    @objc private func startDictation() { appState.startDictation() }
+    @objc private func stopDictation()  { appState.stopDictation() }
+    @objc private func cancelDictation() { appState.cancelDictation() }
     @objc private func startStreaming() { appState.startStreaming() }
     @objc private func stopStreaming()  { appState.stopStreaming() }
     @objc private func startRecording() { appState.startRecording() }

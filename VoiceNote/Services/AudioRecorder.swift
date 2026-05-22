@@ -14,9 +14,11 @@ class AudioRecorder: NSObject, AVAudioRecorderDelegate {
     
     weak var appState: AppState?
     var onStateChanged: ((RecorderState) -> Void)?
+    var onLevelChanged: ((Float) -> Void)?
     
     private var recorder: AVAudioRecorder?
     private var recordingURL: URL?
+    private var meterTimer: Timer?
     
     // Streaming state
     private var chunkTimer: Timer?
@@ -72,6 +74,7 @@ class AudioRecorder: NSObject, AVAudioRecorderDelegate {
             recorder?.isMeteringEnabled = true
             recorder?.prepareToRecord()
             recorder?.record()
+            startMetering()
             onStateChanged?(.recording)
         } catch {
             onStateChanged?(.error("Recording failed: \(error.localizedDescription)"))
@@ -105,6 +108,7 @@ class AudioRecorder: NSObject, AVAudioRecorderDelegate {
             recorder?.isMeteringEnabled = true
             recorder?.prepareToRecord()
             recorder?.record()
+            startMetering()
             onStateChanged?(.recording)
             
             // Schedule chunk rotation
@@ -139,6 +143,7 @@ class AudioRecorder: NSObject, AVAudioRecorderDelegate {
         do {
             self.recorder = try AVAudioRecorder(url: recordingURL!, settings: makeSettings())
             self.recorder?.delegate = self
+            self.recorder?.isMeteringEnabled = true
             self.recorder?.prepareToRecord()
             self.recorder?.record()
         } catch {
@@ -152,6 +157,8 @@ class AudioRecorder: NSObject, AVAudioRecorderDelegate {
         // Cancel streaming timer if active
         chunkTimer?.invalidate()
         chunkTimer = nil
+        meterTimer?.invalidate()
+        meterTimer = nil
         
         // Stop recording
         recorder?.stop()
@@ -186,6 +193,17 @@ class AudioRecorder: NSObject, AVAudioRecorderDelegate {
             AVLinearPCMIsBigEndianKey: false,
             AVLinearPCMIsNonInterleaved: false
         ]
+    }
+    
+    private func startMetering() {
+        meterTimer?.invalidate()
+        meterTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
+            guard let self, let recorder = self.recorder else { return }
+            recorder.updateMeters()
+            let power = recorder.averagePower(forChannel: 0)
+            let normalized = max(0.0, min(1.0, (power + 60.0) / 60.0))
+            self.onLevelChanged?(normalized)
+        }
     }
     
     func audioRecorderDidFinishRecording(_ recorder: AVAudioRecorder, successfully flag: Bool) {

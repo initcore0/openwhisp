@@ -3,6 +3,7 @@ import Combine
 import AVFoundation
 import UserNotifications
 import Cocoa
+import ApplicationServices
 
 // MARK: - App State
 
@@ -35,14 +36,40 @@ class AppState: ObservableObject {
         didSet { UserDefaults.standard.set(language, forKey: "language") }
     }
     
+    @Published var triggerMode: String {
+        didSet {
+            UserDefaults.standard.set(triggerMode, forKey: "triggerMode")
+            hotkeyMonitor?.triggerMode = triggerMode
+        }
+    }
+    
+    @Published var outputMode: String {
+        didSet { UserDefaults.standard.set(outputMode, forKey: "outputMode") }
+    }
+    
+    @Published var showOverlay: Bool {
+        didSet { UserDefaults.standard.set(showOverlay, forKey: "showOverlay") }
+    }
+    
+    @Published var restoreClipboard: Bool {
+        didSet { UserDefaults.standard.set(restoreClipboard, forKey: "restoreClipboard") }
+    }
+    
+    @Published var addTrailingSpace: Bool {
+        didSet { UserDefaults.standard.set(addTrailingSpace, forKey: "addTrailingSpace") }
+    }
+    
     // MARK: - Runtime State
     
     @Published var isRecording = false
     @Published var isTranscribing = false
     @Published var lastTranscription: String?
-    @Published var streamingText: String = ""  // Accumulated real-time text
+    @Published var streamingText: String = ""
     @Published var statusMessage: String = "Ready"
     @Published var error: String?
+    @Published var audioLevel: Float = 0
+    @Published var recordingElapsed: TimeInterval = 0
+    @Published var inputMonitoringPermissionLabel: String = "Unknown"
     
     // MARK: - Services
     
@@ -50,82 +77,63 @@ class AppState: ObservableObject {
     var whisperEngine: WhisperEngine!
     var hotkeyMonitor: HotkeyMonitor!
     
-    // Streaming state
+    private var overlayController: OverlayWindowController?
+    private var elapsedTimer: Timer?
+    private var recordingStartedAt: Date?
+    private var targetApplication: NSRunningApplication?
     private var chunkCount = 0
-    private var currentSessionText: String = ""
-    private var transcriptionQueue: String = ""  // Buffer for pending typed text
+    private var currentSessionText = ""
     private var isStreamingSession = false
     
+    var hotkeyHelpText: String {
+        let trigger = triggerMode == "fn" ? "Release Fn" : "Release Control+Space"
+        return "\(trigger) to insert - Esc to cancel"
+    }
+    
     private init() {
-        // Swift 6: must assign all stored properties before any self.method call
         whisperBinaryPath = UserDefaults.standard.string(forKey: "whisperBinaryPath")
             ?? "\(NSHomeDirectory())/whisper.cpp/build/bin/whisper-cli"
         
         let savedModel = UserDefaults.standard.string(forKey: "modelName") ?? "base"
-        let fileName: String
-        switch savedModel {
-        case "tiny":     fileName = "ggml-tiny.bin"
-        case "base":     fileName = "ggml-base.bin"
-        case "small":    fileName = "ggml-small.bin"
-        case "medium":   fileName = "ggml-medium.bin"
-        case "large-v3": fileName = "ggml-large-v3.bin"
-        default:         fileName = "ggml-base.bin"
-        }
-        
+        let fileName = Self.modelFileName(for: savedModel)
         modelName = savedModel
-        modelPath = "\(NSHomeDirectory())/whisper.cpp/models/\(fileName)"
+        modelPath = UserDefaults.standard.string(forKey: "modelPath")
+            ?? "\(NSHomeDirectory())/whisper.cpp/models/\(fileName)"
         microphoneID = UserDefaults.standard.string(forKey: "microphoneID") ?? ""
         language = UserDefaults.standard.string(forKey: "language") ?? "en"
+        triggerMode = UserDefaults.standard.string(forKey: "triggerMode") ?? "controlSpace"
+        outputMode = UserDefaults.standard.string(forKey: "outputMode") ?? "finalOnly"
+        showOverlay = UserDefaults.standard.object(forKey: "showOverlay") as? Bool ?? true
+        restoreClipboard = UserDefaults.standard.object(forKey: "restoreClipboard") as? Bool ?? false
+        addTrailingSpace = UserDefaults.standard.object(forKey: "addTrailingSpace") as? Bool ?? false
         
-        // Now wire up services
         wireUpServices()
+        overlayController = OverlayWindowController(appState: self)
         hotkeyMonitor.start()
         ensureModelExists()
     }
     
-    private func resolvedModelPath() -> String {
-        let fileName: String
+    private static func modelFileName(for modelName: String) -> String {
         switch modelName {
-        case "tiny":     fileName = "ggml-tiny.bin"
-        case "base":     fileName = "ggml-base.bin"
-        case "small":    fileName = "ggml-small.bin"
-        case "medium":   fileName = "ggml-medium.bin"
-        case "large-v3": fileName = "ggml-large-v3.bin"
-        default:         fileName = "ggml-base.bin"
+        case "tiny":     return "ggml-tiny.bin"
+        case "base":     return "ggml-base.bin"
+        case "small":    return "ggml-small.bin"
+        case "medium":   return "ggml-medium.bin"
+        case "large-v3": return "ggml-large-v3.bin"
+        default:         return "ggml-base.bin"
         }
-        return "\(NSHomeDirectory())/whisper.cpp/models/\(fileName)"
+    }
+    
+    private func resolvedModelPath() -> String {
+        "\(NSHomeDirectory())/whisper.cpp/models/\(Self.modelFileName(for: modelName))"
     }
     
     private func wireUpServices() {
         whisperEngine = WhisperEngine()
         
-        // Streaming transcription callback — types text into active window
         whisperEngine.onTranscriptionComplete = { [weak self] text in
             Task { @MainActor in
-                guard let self else { return }
-                
-                if text.isEmpty {
-                    // Silence chunk — nothing to do
-                    self.statusMessage = "Listening..."
-                    return
-                }
-                
-                // Append to accumulated text
-                let trimmed = text.trimmingCharacters(in: .whitespaces)
-                if !trimmed.isEmpty {
-                    if !self.currentSessionText.isEmpty {
-                        self.currentSessionText += " "
-                    }
-                    self.currentSessionText += trimmed
-                    self.streamingText = self.currentSessionText
-                    
-                    // Type this chunk into the active window
-                    KeyboardSynthesizer.typeViaPaste(" \(text)")
-                    
-                    self.statusMessage = "Typing: \(trimmed.prefix(40))..."
-                } else {
-                    self.statusMessage = "Listening..."
-                }
+                self?.handleTranscription(text)
             }
         }
         
@@ -134,6 +142,8 @@ class AppState: ObservableObject {
                 guard let self else { return }
                 self.error = msg
                 self.statusMessage = "Error"
+                self.isTranscribing = false
+                self.finishSessionUI()
             }
         }
         
@@ -151,131 +161,116 @@ class AppState: ObservableObject {
                 switch state {
                 case .recording:
                     self.isRecording = true
-                    self.statusMessage = "Recording..."
+                    self.statusMessage = self.outputMode == "liveChunks" ? "Listening..." : "Recording..."
                 case .stopped, .idle:
                     self.isRecording = false
                 case .error(let msg):
                     self.error = msg
                     self.statusMessage = "Error"
                     self.isRecording = false
+                    self.finishSessionUI()
                 }
+            }
+        }
+        audioRecorder.onLevelChanged = { [weak self] level in
+            Task { @MainActor in
+                self?.audioLevel = level
             }
         }
         
         hotkeyMonitor = HotkeyMonitor(appState: self)
+        hotkeyMonitor.triggerMode = triggerMode
+        hotkeyMonitor.onPermissionStateChanged = { [weak self] isGranted in
+            Task { @MainActor in
+                self?.inputMonitoringPermissionLabel = isGranted ? "Granted" : "Needs permission"
+                if !isGranted {
+                    self?.error = "Input Monitoring is not available for this app build. Remove and re-add VoiceNote in System Settings, then quit and reopen the app."
+                }
+            }
+        }
         hotkeyMonitor.onHotkeyDown = { [weak self] in
             Task { @MainActor in
-                guard let self, !self.isRecording else { return }
-                self.startStreaming()
+                self?.startDictation()
             }
         }
         hotkeyMonitor.onHotkeyUp = { [weak self] in
             Task { @MainActor in
-                guard let self, self.isRecording else { return }
-                self.stopStreaming()
+                self?.stopDictation()
             }
         }
     }
     
     // MARK: - Actions
     
-    func startRecording() {
-        guard !isRecording else { return }
-        error = nil
+    func startDictation() {
+        guard !isRecording, !isTranscribing else { return }
+        if outputMode == "liveChunks" {
+            startStreaming()
+        } else {
+            startRecording()
+        }
+    }
+    
+    func stopDictation() {
+        guard isRecording else { return }
+        if isStreamingSession {
+            stopStreaming()
+        } else {
+            stopRecording()
+        }
+    }
+    
+    func cancelDictation() {
+        guard isRecording || isTranscribing else { return }
+        isStreamingSession = false
+        isTranscribing = false
+        audioRecorder.stop { url in
+            if let url {
+                try? FileManager.default.removeItem(at: url)
+            }
+        }
         currentSessionText = ""
         streamingText = ""
-        chunkCount = 0
-        isStreamingSession = true
+        statusMessage = "Cancelled"
+        finishSessionUI()
+    }
+    
+    func startRecording() {
+        guard !isRecording, !isTranscribing else { return }
+        beginSession(streaming: false)
         
         let micID = microphoneID
         let recorder = self.audioRecorder!
-        
-        AVCaptureDevice.requestAccess(for: .audio) { [weak self] granted in
-            guard let _ = self, granted else {
-                Task { @MainActor in
-                    AppState.shared.error = "Microphone access denied. Check System Settings."
+        AVCaptureDevice.requestAccess(for: .audio) { granted in
+            Task { @MainActor in
+                guard granted else {
+                    self.error = "Microphone access denied. Check System Settings."
+                    self.finishSessionUI()
+                    return
                 }
-                return
+                if !micID.isEmpty {
+                    recorder.selectDevice(micID)
+                }
+                recorder.start()
             }
-            if !micID.isEmpty {
-                recorder.selectDevice(micID)
-            }
-            recorder.start()
         }
     }
     
     func stopRecording() {
         guard isRecording else { return }
         isStreamingSession = false
+        isTranscribing = true
+        statusMessage = "Finalizing..."
         
         audioRecorder.stop { [weak self] wavPath in
-            guard let self, let path = wavPath else {
-                self?.isRecording = false
-                self?.statusMessage = "Ready"
-                return
-            }
-            
-            // Final transcription of the full recording
-            self.isTranscribing = true
-            self.statusMessage = "Finalizing..."
-            self.whisperEngine.transcribe(
-                binaryPath: self.whisperBinaryPath,
-                modelPath: self.modelPath,
-                language: self.language,
-                wavPath: path.path
-            )
-        }
-    }
-    
-    /// Start streaming mode: record 1s chunks, transcribe each, type into active window
-    func startStreaming() {
-        guard !isRecording else { return }
-        error = nil
-        currentSessionText = ""
-        streamingText = ""
-        chunkCount = 0
-        isStreamingSession = true
-        
-        let micID = microphoneID
-        let recorder = self.audioRecorder!
-        
-        AVCaptureDevice.requestAccess(for: .audio) { [weak self] granted in
-            guard let _ = self, granted else {
-                Task { @MainActor in
-                    AppState.shared.error = "Microphone access denied."
+            Task { @MainActor in
+                guard let self, let path = wavPath else {
+                    self?.isTranscribing = false
+                    self?.statusMessage = "Ready"
+                    self?.finishSessionUI()
+                    return
                 }
-                return
-            }
-            if !micID.isEmpty {
-                recorder.selectDevice(micID)
-            }
-            recorder.startStreaming(chunkDuration: 3.0) { [weak self] chunkPath in
-                Task { @MainActor in
-                    guard let self, let path = chunkPath else { return }
-                    self.chunkCount += 1
-                    self.statusMessage = "Chunk #\(self.chunkCount)..."
-                    
-                    self.whisperEngine.transcribe(
-                        binaryPath: self.whisperBinaryPath,
-                        modelPath: self.modelPath,
-                        language: self.language,
-                        wavPath: path.path
-                    )
-                }
-            }
-        }
-    }
-    
-    /// Stop streaming and type the final accumulated text
-    func stopStreaming() {
-        guard isRecording else { return }
-        isStreamingSession = false
-        
-        audioRecorder.stop { [weak self] finalPath in
-            guard let self else { return }
-            
-            // Transcribe final chunk too
-            if let path = finalPath {
+                
                 self.whisperEngine.transcribe(
                     binaryPath: self.whisperBinaryPath,
                     modelPath: self.modelPath,
@@ -283,23 +278,229 @@ class AppState: ObservableObject {
                     wavPath: path.path
                 )
             }
-            
-            // Type the accumulated text into active window
-            if !self.currentSessionText.isEmpty {
-                let finalText = self.currentSessionText
-                self.lastTranscription = finalText
-                self.statusMessage = "Done: \(finalText.prefix(50))..."
-                
-                // Also put in clipboard
-                let pb = NSPasteboard.general
-                pb.clearContents()
-                pb.setString(finalText, forType: .string)
-            } else {
-                self.statusMessage = "Ready"
+        }
+    }
+    
+    /// Optional live mode: record chunks, transcribe each, paste stable-ish chunks.
+    func startStreaming() {
+        guard !isRecording, !isTranscribing else { return }
+        beginSession(streaming: true)
+        
+        let micID = microphoneID
+        let recorder = self.audioRecorder!
+        AVCaptureDevice.requestAccess(for: .audio) { granted in
+            Task { @MainActor in
+                guard granted else {
+                    self.error = "Microphone access denied."
+                    self.finishSessionUI()
+                    return
+                }
+                if !micID.isEmpty {
+                    recorder.selectDevice(micID)
+                }
+                recorder.startStreaming(chunkDuration: 2.0) { [weak self] chunkPath in
+                    Task { @MainActor in
+                        guard let self, let path = chunkPath, self.isStreamingSession else { return }
+                        self.chunkCount += 1
+                        self.statusMessage = "Transcribing chunk #\(self.chunkCount)..."
+                        self.whisperEngine.transcribe(
+                            binaryPath: self.whisperBinaryPath,
+                            modelPath: self.modelPath,
+                            language: self.language,
+                            wavPath: path.path
+                        )
+                    }
+                }
             }
-            
-            self.isRecording = false
-            self.isTranscribing = false
+        }
+    }
+    
+    func stopStreaming() {
+        guard isRecording else { return }
+        isStreamingSession = false
+        isTranscribing = true
+        statusMessage = "Finalizing..."
+        
+        audioRecorder.stop { [weak self] finalPath in
+            Task { @MainActor in
+                guard let self else { return }
+                if let path = finalPath {
+                    self.whisperEngine.transcribe(
+                        binaryPath: self.whisperBinaryPath,
+                        modelPath: self.modelPath,
+                        language: self.language,
+                        wavPath: path.path
+                    )
+                } else {
+                    self.completeFinalText(self.currentSessionText)
+                }
+            }
+        }
+    }
+    
+    private func beginSession(streaming: Bool) {
+        error = nil
+        currentSessionText = ""
+        streamingText = ""
+        chunkCount = 0
+        audioLevel = 0
+        recordingElapsed = 0
+        recordingStartedAt = Date()
+        targetApplication = currentTextTargetApplication()
+        isStreamingSession = streaming
+        isTranscribing = false
+        statusMessage = streaming ? "Listening..." : "Recording..."
+        startElapsedTimer()
+        if showOverlay {
+            overlayController?.show()
+        }
+    }
+    
+    private func handleTranscription(_ rawText: String) {
+        let text = postProcess(rawText)
+        
+        guard !text.isEmpty else {
+            if isTranscribing {
+                completeFinalText(currentSessionText)
+            } else {
+                statusMessage = "Listening..."
+            }
+            return
+        }
+        
+        if isRecording && outputMode == "liveChunks" {
+            appendLiveChunk(text)
+        } else if isTranscribing {
+            let finalText = currentSessionText.isEmpty ? text : "\(currentSessionText) \(text)"
+            completeFinalText(finalText)
+        }
+    }
+    
+    private func appendLiveChunk(_ text: String) {
+        if !currentSessionText.isEmpty {
+            currentSessionText += " "
+        }
+        currentSessionText += text
+        streamingText = currentSessionText
+        
+        let insertion = "\(text) "
+        KeyboardSynthesizer.typeViaPaste(
+            insertion,
+            restoreClipboard: restoreClipboard,
+            targetApplication: targetApplication
+        )
+        statusMessage = "Inserted: \(text.prefix(40))..."
+    }
+    
+    private func completeFinalText(_ text: String) {
+        let finalText = postProcess(text)
+        isTranscribing = false
+        
+        guard !finalText.isEmpty else {
+            statusMessage = "No speech detected"
+            finishSessionUI()
+            return
+        }
+        
+        lastTranscription = finalText
+        streamingText = finalText
+        
+        if outputMode == "finalOnly" {
+            let insertion = addTrailingSpace ? "\(finalText) " : finalText
+            KeyboardSynthesizer.typeViaPaste(
+                insertion,
+                restoreClipboard: restoreClipboard,
+                targetApplication: targetApplication
+            )
+        } else {
+            let pb = NSPasteboard.general
+            pb.clearContents()
+            pb.setString(finalText, forType: .string)
+        }
+        
+        statusMessage = "Done: \(finalText.prefix(50))..."
+        finishSessionUI(delay: 0.8)
+    }
+    
+    private func postProcess(_ text: String) -> String {
+        text
+            .replacingOccurrences(of: "\n", with: " ")
+            .components(separatedBy: .whitespacesAndNewlines)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+    
+    private func startElapsedTimer() {
+        elapsedTimer?.invalidate()
+        elapsedTimer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                guard let self, let startedAt = self.recordingStartedAt else { return }
+                self.recordingElapsed = Date().timeIntervalSince(startedAt)
+            }
+        }
+    }
+    
+    private func finishSessionUI(delay: TimeInterval = 0) {
+        elapsedTimer?.invalidate()
+        elapsedTimer = nil
+        recordingStartedAt = nil
+        targetApplication = nil
+        audioLevel = 0
+        
+        guard showOverlay else { return }
+        if delay > 0 {
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                if !self.isRecording && !self.isTranscribing {
+                    self.overlayController?.hide()
+                }
+            }
+        } else {
+            overlayController?.hide()
+        }
+    }
+    
+    // MARK: - Permissions
+    
+    var microphonePermissionLabel: String {
+        switch AVCaptureDevice.authorizationStatus(for: .audio) {
+        case .authorized: return "Granted"
+        case .denied, .restricted: return "Denied"
+        case .notDetermined: return "Not requested"
+        @unknown default: return "Unknown"
+        }
+    }
+    
+    var accessibilityPermissionLabel: String {
+        AXIsProcessTrusted() ? "Granted" : "Needs permission"
+    }
+    
+    func retryHotkeyMonitor() {
+        hotkeyMonitor.stop()
+        hotkeyMonitor.start()
+    }
+    
+    func requestAccessibilityPermission() {
+        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
+        _ = AXIsProcessTrustedWithOptions(options)
+    }
+    
+    func openPrivacySettings() {
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy") {
+            NSWorkspace.shared.open(url)
+        }
+    }
+    
+    private func currentTextTargetApplication() -> NSRunningApplication? {
+        let ownBundleID = Bundle.main.bundleIdentifier
+        let frontmost = NSWorkspace.shared.frontmostApplication
+        if frontmost?.bundleIdentifier != ownBundleID {
+            return frontmost
+        }
+        
+        return NSWorkspace.shared.runningApplications.first { app in
+            app.activationPolicy == .regular && app.bundleIdentifier != ownBundleID && !app.isTerminated
         }
     }
     
