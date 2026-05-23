@@ -35,17 +35,9 @@ if [ -d "$PROJECT_DIR/VoiceNote/Resources" ]; then
     cp -R "$PROJECT_DIR/VoiceNote/Resources/"* "$APP_DIR/Contents/Resources/"
 fi
 
-# Bundle whisper.cpp runtime binaries when available.
+# Bundle whisper.cpp runtime binaries and dylibs when available.
 WHISPER_BIN_DIR="${WHISPER_BIN_DIR:-$HOME/whisper.cpp/build/bin}"
-for bin in whisper-cli whisper-server; do
-    if [ -x "$WHISPER_BIN_DIR/$bin" ]; then
-        cp "$WHISPER_BIN_DIR/$bin" "$APP_DIR/Contents/Resources/whisper/$bin"
-        chmod +x "$APP_DIR/Contents/Resources/whisper/$bin"
-    else
-        echo "WARNING: $bin not found at $WHISPER_BIN_DIR/$bin"
-        echo "         Set WHISPER_BIN_DIR=/path/to/whisper.cpp/build/bin to bundle it."
-    fi
-done
+"$PROJECT_DIR/scripts/bundle-whisper-runtime.sh" "$APP_DIR" "$WHISPER_BIN_DIR"
 
 # Copy entitlements
 if [ -f "$PROJECT_DIR/VoiceNote/VoiceNote.entitlements" ]; then

@@ -77,18 +77,7 @@ fi
 
 echo ""
 echo "Step 3: Bundling whisper.cpp runtime..."
-for bin in whisper-cli whisper-server; do
-    source_path="$WHISPER_BIN_DIR/$bin"
-    dest_path="$APP_DIR/Contents/Resources/whisper/$bin"
-    if [ ! -x "$source_path" ]; then
-        echo "ERROR: $bin not found or not executable at $source_path"
-        echo "Set WHISPER_BIN_DIR=/path/to/whisper.cpp/build/bin and rerun."
-        exit 1
-    fi
-    cp "$source_path" "$dest_path"
-    chmod +x "$dest_path"
-    echo "Bundled: $bin"
-done
+"$PROJECT_DIR/scripts/bundle-whisper-runtime.sh" "$APP_DIR" "$WHISPER_BIN_DIR"
 
 echo ""
 echo "Step 4: Signing app bundle..."
