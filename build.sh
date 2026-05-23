@@ -35,6 +35,7 @@ xcrun swiftc \
     -emit-executable \
     -framework Cocoa \
     -framework AVFoundation \
+    -framework Speech \
     -framework Foundation \
     -framework SwiftUI \
     -framework UserNotifications \

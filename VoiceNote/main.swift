@@ -105,6 +105,21 @@ class VoiceNoteApp: NSObject, NSApplicationDelegate {
         }
 
         menu.addItem(.separator())
+        
+        let engineMenu = NSMenu()
+        let whisper = NSMenuItem(title: "Whisper Local", action: #selector(useWhisperEngine), keyEquivalent: "")
+        whisper.state = appState.transcriptionEngine == "whisper" ? .on : .off
+        engineMenu.addItem(whisper)
+        
+        let apple = NSMenuItem(title: "Apple Speech Streaming", action: #selector(useAppleSpeechEngine), keyEquivalent: "")
+        apple.state = appState.transcriptionEngine == "appleSpeech" ? .on : .off
+        engineMenu.addItem(apple)
+        
+        let engineItem = NSMenuItem(title: "Engine", action: nil, keyEquivalent: "")
+        engineItem.submenu = engineMenu
+        menu.addItem(engineItem)
+        
+        menu.addItem(.separator())
 
         // Settings
         let settings = NSMenuItem(title: "⚙ Settings", action: #selector(openSettings), keyEquivalent: ",")
@@ -136,6 +151,8 @@ class VoiceNoteApp: NSObject, NSApplicationDelegate {
     @objc private func stopStreaming()  { appState.stopStreaming() }
     @objc private func startRecording() { appState.startRecording() }
     @objc private func stopRecording()  { appState.stopRecording() }
+    @objc private func useWhisperEngine() { appState.transcriptionEngine = "whisper" }
+    @objc private func useAppleSpeechEngine() { appState.transcriptionEngine = "appleSpeech" }
     @objc private func terminate()      { NSApp.terminate(nil) }
 
     @objc private func openSettings() {

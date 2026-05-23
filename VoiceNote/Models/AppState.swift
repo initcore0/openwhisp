@@ -4,6 +4,7 @@ import AVFoundation
 import UserNotifications
 import Cocoa
 import ApplicationServices
+import Speech
 
 // MARK: - App State
 
@@ -63,6 +64,10 @@ class AppState: ObservableObject {
         didSet { UserDefaults.standard.set(liveChunkDuration, forKey: "liveChunkDuration") }
     }
     
+    @Published var transcriptionEngine: String {
+        didSet { UserDefaults.standard.set(transcriptionEngine, forKey: "transcriptionEngine") }
+    }
+    
     // MARK: - Runtime State
     
     @Published var isRecording = false
@@ -79,6 +84,7 @@ class AppState: ObservableObject {
     
     var audioRecorder: AudioRecorder!
     var whisperEngine: WhisperEngine!
+    var appleSpeechEngine: AppleSpeechEngine!
     var hotkeyMonitor: HotkeyMonitor!
     
     private var overlayController: OverlayWindowController?
@@ -98,6 +104,9 @@ class AppState: ObservableObject {
     private var currentSessionText = ""
     private var isStreamingSession = false
     private var acceptingLiveChunks = false
+    private var isAppleSpeechSession = false
+    private var appleLiveInsertedText = ""
+    private var appleDidCompleteFinal = false
     
     private enum TranscriptionKind {
         case liveChunk
@@ -132,6 +141,7 @@ class AppState: ObservableObject {
         restoreClipboard = UserDefaults.standard.object(forKey: "restoreClipboard") as? Bool ?? false
         addTrailingSpace = UserDefaults.standard.object(forKey: "addTrailingSpace") as? Bool ?? false
         liveChunkDuration = UserDefaults.standard.object(forKey: "liveChunkDuration") as? Double ?? 2.0
+        transcriptionEngine = UserDefaults.standard.string(forKey: "transcriptionEngine") ?? "whisper"
         
         wireUpServices()
         overlayController = OverlayWindowController(appState: self)
@@ -161,6 +171,7 @@ class AppState: ObservableObject {
     
     private func wireUpServices() {
         whisperEngine = WhisperEngine()
+        appleSpeechEngine = AppleSpeechEngine()
         
         whisperEngine.onTranscriptionComplete = { [weak self] requestID, text in
             Task { @MainActor in
@@ -223,6 +234,33 @@ class AppState: ObservableObject {
             }
         }
         
+        appleSpeechEngine.onPartial = { [weak self] text in
+            Task { @MainActor in
+                self?.handleAppleSpeechPartial(text)
+            }
+        }
+        appleSpeechEngine.onFinal = { [weak self] text in
+            Task { @MainActor in
+                self?.handleAppleSpeechFinal(text)
+            }
+        }
+        appleSpeechEngine.onError = { [weak self] message in
+            Task { @MainActor in
+                guard let self, self.isAppleSpeechSession else { return }
+                self.error = message
+                self.statusMessage = "Apple Speech Error"
+                self.isRecording = false
+                self.isTranscribing = false
+                self.isAppleSpeechSession = false
+                self.finishSessionUI()
+            }
+        }
+        appleSpeechEngine.onLevelChanged = { [weak self] level in
+            Task { @MainActor in
+                self?.audioLevel = level
+            }
+        }
+        
         hotkeyMonitor = HotkeyMonitor(appState: self)
         hotkeyMonitor.triggerMode = triggerMode
         hotkeyMonitor.onPermissionStateChanged = { [weak self] isGranted in
@@ -249,6 +287,10 @@ class AppState: ObservableObject {
     
     func startDictation() {
         guard !isRecording, !isTranscribing else { return }
+        if transcriptionEngine == "appleSpeech" {
+            startAppleSpeech()
+            return
+        }
         if outputMode == "liveChunks" {
             startStreaming()
         } else {
@@ -258,6 +300,10 @@ class AppState: ObservableObject {
     
     func stopDictation() {
         guard isRecording else { return }
+        if isAppleSpeechSession {
+            stopAppleSpeech()
+            return
+        }
         if isStreamingSession {
             stopStreaming()
         } else {
@@ -272,6 +318,8 @@ class AppState: ObservableObject {
         cleanupPendingLiveChunks()
         resetLivePipeline()
         acceptingLiveChunks = false
+        isAppleSpeechSession = false
+        appleSpeechEngine.stop(cancel: true)
         isStreamingSession = false
         isTranscribing = false
         audioRecorder.stop { url in
@@ -283,6 +331,100 @@ class AppState: ObservableObject {
         streamingText = ""
         statusMessage = "Cancelled"
         finishSessionUI()
+    }
+    
+    func startAppleSpeech() {
+        guard !isRecording, !isTranscribing else { return }
+        beginSession(streaming: false)
+        isAppleSpeechSession = true
+        appleLiveInsertedText = ""
+        appleDidCompleteFinal = false
+        statusMessage = "Listening..."
+        
+        AVCaptureDevice.requestAccess(for: .audio) { granted in
+            Task { @MainActor in
+                guard granted else {
+                    self.error = "Microphone access denied. Check System Settings."
+                    self.isAppleSpeechSession = false
+                    self.finishSessionUI()
+                    return
+                }
+                
+                AppleSpeechEngine.requestAuthorization { status in
+                    Task { @MainActor in
+                        guard status == .authorized else {
+                            self.error = "Speech recognition access denied. Check System Settings."
+                            self.isAppleSpeechSession = false
+                            self.finishSessionUI()
+                            return
+                        }
+                        
+                        do {
+                            try self.appleSpeechEngine.start(language: self.language)
+                            self.isRecording = true
+                            self.statusMessage = "Listening..."
+                        } catch {
+                            self.error = error.localizedDescription
+                            self.statusMessage = "Apple Speech Error"
+                            self.isAppleSpeechSession = false
+                            self.finishSessionUI()
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    func stopAppleSpeech() {
+        guard isAppleSpeechSession else { return }
+        isRecording = false
+        isTranscribing = true
+        statusMessage = "Finalizing..."
+        hideOverlayNow()
+        appleSpeechEngine.stop(cancel: false)
+        
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 900_000_000)
+            if self.isAppleSpeechSession && self.isTranscribing && !self.appleDidCompleteFinal {
+                self.handleAppleSpeechFinal(self.streamingText)
+            }
+        }
+    }
+    
+    private func handleAppleSpeechPartial(_ rawText: String) {
+        guard isAppleSpeechSession else { return }
+        let text = postProcess(rawText)
+        streamingText = text
+        statusMessage = text.isEmpty ? "Listening..." : "Listening..."
+        
+        guard outputMode == "liveChunks", !text.isEmpty else { return }
+        let delta = liveDelta(previous: appleLiveInsertedText, current: text)
+        guard !delta.isEmpty else { return }
+        
+        appleLiveInsertedText = text
+        currentSessionText = text
+        KeyboardSynthesizer.typeViaPaste(
+            delta.hasSuffix(" ") ? delta : "\(delta) ",
+            restoreClipboard: restoreClipboard,
+            targetApplication: targetApplication
+        )
+    }
+    
+    private func handleAppleSpeechFinal(_ rawText: String) {
+        guard isAppleSpeechSession, !appleDidCompleteFinal else { return }
+        appleDidCompleteFinal = true
+        let finalText = postProcess(rawText.isEmpty ? streamingText : rawText)
+        currentSessionText = finalText
+        isAppleSpeechSession = false
+        completeFinalText(finalText)
+    }
+    
+    private func liveDelta(previous: String, current: String) -> String {
+        guard current.count > previous.count else { return "" }
+        let prefix = current.prefix(previous.count)
+        guard prefix == previous else { return "" }
+        return String(current.dropFirst(previous.count))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
     
     func startRecording() {
@@ -665,6 +807,15 @@ class AppState: ObservableObject {
     
     var microphonePermissionLabel: String {
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
+        case .authorized: return "Granted"
+        case .denied, .restricted: return "Denied"
+        case .notDetermined: return "Not requested"
+        @unknown default: return "Unknown"
+        }
+    }
+    
+    var speechPermissionLabel: String {
+        switch AppleSpeechEngine.authorizationStatus {
         case .authorized: return "Granted"
         case .denied, .restricted: return "Denied"
         case .notDetermined: return "Not requested"

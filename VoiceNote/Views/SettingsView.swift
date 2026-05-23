@@ -14,6 +14,7 @@ struct SettingsView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
+                engineSection
                 modelSection
                 microphoneSection
                 languageSection
@@ -31,6 +32,19 @@ struct SettingsView: View {
             refreshDevices()
         }
         .frame(minWidth: 660, minHeight: 620)
+    }
+    
+    private var engineSection: some View {
+        settingsSection("Engine") {
+            Picker("Transcription Engine", selection: $appState.transcriptionEngine) {
+                Text("Whisper Local").tag("whisper")
+                Text("Apple Speech Streaming").tag("appleSpeech")
+            }
+            
+            Text("Apple Speech gives native streaming partials. Whisper remains available for local file-based transcription and higher-quality model control.")
+                .font(.caption)
+                .foregroundColor(.secondary)
+        }
     }
     
     private var modelSection: some View {
@@ -141,6 +155,7 @@ struct SettingsView: View {
     private var permissionsSection: some View {
         settingsSection("Permissions") {
             permissionRow("Microphone", value: appState.microphonePermissionLabel)
+            permissionRow("Speech Recognition", value: appState.speechPermissionLabel)
             permissionRow("Accessibility", value: appState.accessibilityPermissionLabel)
             permissionRow("Input Monitoring", value: appState.inputMonitoringPermissionLabel)
             
