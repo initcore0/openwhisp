@@ -325,6 +325,13 @@ class WhisperEngine {
     }
     
     private func serverBinaryPath(for cliPath: String) -> String? {
+        if let bundled = Bundle.main.resourceURL?
+            .appendingPathComponent("whisper/whisper-server")
+            .path,
+           FileManager.default.isExecutableFile(atPath: bundled) {
+            return bundled
+        }
+        
         let cliURL = URL(fileURLWithPath: cliPath)
         let sibling = cliURL.deletingLastPathComponent().appendingPathComponent("whisper-server").path
         if FileManager.default.isExecutableFile(atPath: sibling) {

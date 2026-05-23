@@ -153,14 +153,14 @@ class AppState: ObservableObject {
     }
     
     private init() {
-        whisperBinaryPath = UserDefaults.standard.string(forKey: "whisperBinaryPath")
-            ?? "\(NSHomeDirectory())/whisper.cpp/build/bin/whisper-cli"
+        let savedWhisperBinaryPath = UserDefaults.standard.string(forKey: "whisperBinaryPath") ?? ""
+        whisperBinaryPath = Self.preferredWhisperCLIPath(savedPath: savedWhisperBinaryPath)
         
         let savedModel = UserDefaults.standard.string(forKey: "modelName") ?? "base"
         let fileName = Self.modelFileName(for: savedModel)
         modelName = savedModel
-        modelPath = UserDefaults.standard.string(forKey: "modelPath")
-            ?? "\(NSHomeDirectory())/whisper.cpp/models/\(fileName)"
+        let savedModelPath = UserDefaults.standard.string(forKey: "modelPath") ?? ""
+        modelPath = Self.preferredModelPath(savedPath: savedModelPath, fileName: fileName)
         microphoneID = UserDefaults.standard.string(forKey: "microphoneID") ?? ""
         language = UserDefaults.standard.string(forKey: "language") ?? "en"
         triggerMode = UserDefaults.standard.string(forKey: "triggerMode") ?? "controlSpace"
@@ -206,7 +206,49 @@ class AppState: ObservableObject {
     }
     
     private func resolvedModelPath() -> String {
-        "\(NSHomeDirectory())/whisper.cpp/models/\(Self.modelFileName(for: modelName))"
+        Self.applicationSupportModelsDirectory()
+            .appendingPathComponent(Self.modelFileName(for: modelName))
+            .path
+    }
+    
+    private static func preferredWhisperCLIPath(savedPath: String) -> String {
+        if !savedPath.isEmpty, FileManager.default.fileExists(atPath: savedPath) {
+            return savedPath
+        }
+        
+        if let bundled = bundledResourcePath("whisper/whisper-cli"),
+           FileManager.default.isExecutableFile(atPath: bundled) {
+            return bundled
+        }
+        
+        return "\(NSHomeDirectory())/whisper.cpp/build/bin/whisper-cli"
+    }
+    
+    private static func preferredModelPath(savedPath: String, fileName: String) -> String {
+        if !savedPath.isEmpty, FileManager.default.fileExists(atPath: savedPath) {
+            return savedPath
+        }
+        
+        let oldWhisperCppPath = "\(NSHomeDirectory())/whisper.cpp/models/\(fileName)"
+        if FileManager.default.fileExists(atPath: oldWhisperCppPath) {
+            return oldWhisperCppPath
+        }
+        
+        return applicationSupportModelsDirectory()
+            .appendingPathComponent(fileName)
+            .path
+    }
+    
+    private static func bundledResourcePath(_ relativePath: String) -> String? {
+        Bundle.main.resourceURL?
+            .appendingPathComponent(relativePath)
+            .path
+    }
+    
+    private static func applicationSupportModelsDirectory() -> URL {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support")
+        return base.appendingPathComponent("VoiceNote/models", isDirectory: true)
     }
     
     private func wireUpServices() {
@@ -1003,11 +1045,15 @@ class AppState: ObservableObject {
     // MARK: - Model
     
     func availableModelsList() -> [(name: String, label: String, size: String)] {
-        [
+        if let models = bundledModelManifest(), !models.isEmpty {
+            return models.map { ($0.id, $0.label, $0.size) }
+        }
+        
+        return [
             ("tiny",           "Tiny - fastest, lowest quality", "39 MB"),
             ("tiny.en",        "Tiny English - fastest English", "39 MB"),
-            ("base",           "Base - fast default", "72 MB"),
-            ("base.en",        "Base English - better English default", "72 MB"),
+            ("base",           "Base - fast default", "147 MB"),
+            ("base.en",        "Base English - better English default", "147 MB"),
             ("small",          "Small - better quality", "464 MB"),
             ("small.en",       "Small English - recommended quality", "464 MB"),
             ("medium",         "Medium - high quality", "1.5 GB"),
@@ -1022,16 +1068,37 @@ class AppState: ObservableObject {
         let fileName = URL(fileURLWithPath: modelPath).lastPathComponent
         Task {
             do {
-                let url = URL(string: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/\(fileName)")!
+                let url = Self.modelDownloadURL(modelID: modelName, fileName: fileName)
                 let dest = URL(fileURLWithPath: modelPath)
                 try dest.deletingLastPathComponent().createDirectories()
                 try await URLSession.shared.downloadModel(from: url, to: dest)
             } catch {
                 Task { @MainActor in
-                    self.error = "Model not found. Download from whisper.cpp repo.\nPath: \(modelPath)"
+                    self.error = "Model download failed. Check your connection or choose another model.\nPath: \(modelPath)"
                 }
             }
         }
+    }
+    
+    private static func modelDownloadURL(modelID: String, fileName: String) -> URL {
+        if let entry = bundledModelManifest()?.first(where: { $0.id == modelID }),
+           let url = URL(string: entry.url) {
+            return url
+        }
+        
+        return URL(string: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/\(fileName)")!
+    }
+    
+    private func bundledModelManifest() -> [ModelManifestEntry]? {
+        Self.bundledModelManifest()
+    }
+    
+    private static func bundledModelManifest() -> [ModelManifestEntry]? {
+        guard let url = Bundle.main.resourceURL?.appendingPathComponent("models/manifest.json"),
+              let data = try? Data(contentsOf: url) else {
+            return nil
+        }
+        return try? JSONDecoder().decode([ModelManifestEntry].self, from: data)
     }
     
     // MARK: - Notification
@@ -1045,6 +1112,14 @@ class AppState: ObservableObject {
         let req = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
         center.add(req)
     }
+}
+
+struct ModelManifestEntry: Decodable {
+    let id: String
+    let file: String
+    let label: String
+    let size: String
+    let url: String
 }
 
 // MARK: - Helpers
