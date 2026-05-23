@@ -39,6 +39,7 @@ xcrun swiftc \
     -framework Foundation \
     -framework SwiftUI \
     -framework UserNotifications \
+    -framework Security \
     -framework CoreAudio \
     -framework CoreGraphics \
     $SWIFT_FILES \

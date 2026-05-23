@@ -18,6 +18,7 @@ struct SettingsView: View {
                 modelSection
                 microphoneSection
                 languageSection
+                translationSection
                 hotkeySection
                 outputSection
                 permissionsSection
@@ -108,6 +109,44 @@ struct SettingsView: View {
                 Text("Korean").tag("ko")
                 Text("Arabic").tag("ar")
             }
+        }
+    }
+    
+    private var translationSection: some View {
+        settingsSection("Translation") {
+            Toggle("Enable translation", isOn: $appState.translationEnabled)
+            
+            Picker("Target Language", selection: $appState.translationTargetLanguage) {
+                Text("English").tag("en")
+                Text("Russian").tag("ru")
+            }
+            
+            Picker("OpenAI Model", selection: $appState.openAIModel) {
+                Text("GPT-4o mini").tag("gpt-4o-mini")
+                Text("GPT-4.1 mini").tag("gpt-4.1-mini")
+                Text("GPT-4.1 nano").tag("gpt-4.1-nano")
+            }
+            
+            TextField("Custom OpenAI model", text: $appState.openAIModel)
+                .textFieldStyle(.roundedBorder)
+            
+            SecureField("OpenAI API Key", text: $appState.openAIAPIKey)
+                .textFieldStyle(.roundedBorder)
+            
+            HStack {
+                Button("Validate OpenAI Key") {
+                    appState.validateOpenAIKey()
+                }
+                
+                Spacer()
+                
+                Text(appState.translationStatus)
+                    .foregroundColor(appState.translationStatus == "OpenAI key valid" || appState.translationStatus == "Translated" ? .green : .secondary)
+            }
+            
+            Text("Translation runs only after the final transcript is ready. Live chunks are not sent to OpenAI.")
+                .font(.caption)
+                .foregroundColor(.secondary)
         }
     }
     

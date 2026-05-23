@@ -77,6 +77,22 @@ class AppState: ObservableObject {
         }
     }
     
+    @Published var translationEnabled: Bool {
+        didSet { UserDefaults.standard.set(translationEnabled, forKey: "translationEnabled") }
+    }
+    
+    @Published var translationTargetLanguage: String {
+        didSet { UserDefaults.standard.set(translationTargetLanguage, forKey: "translationTargetLanguage") }
+    }
+    
+    @Published var openAIAPIKey: String {
+        didSet { KeychainStore.save(openAIAPIKey, key: "openAIAPIKey") }
+    }
+    
+    @Published var openAIModel: String {
+        didSet { UserDefaults.standard.set(openAIModel, forKey: "openAIModel") }
+    }
+    
     // MARK: - Runtime State
     
     @Published var isRecording = false
@@ -86,6 +102,7 @@ class AppState: ObservableObject {
     @Published var statusMessage: String = "Ready"
     @Published var error: String?
     @Published var whisperWorkerStatus: String = "Not started"
+    @Published var translationStatus: String = "Not configured"
     @Published var audioLevel: Float = 0
     @Published var recordingElapsed: TimeInterval = 0
     @Published var inputMonitoringPermissionLabel: String = "Unknown"
@@ -95,6 +112,7 @@ class AppState: ObservableObject {
     var audioRecorder: AudioRecorder!
     var whisperEngine: WhisperEngine!
     var appleSpeechEngine: AppleSpeechEngine!
+    var translationService: OpenAITranslationService!
     var hotkeyMonitor: HotkeyMonitor!
     
     private var overlayController: OverlayWindowController?
@@ -158,6 +176,12 @@ class AppState: ObservableObject {
             let legacyWorkerEnabled = UserDefaults.standard.object(forKey: "useWhisperWorker") as? Bool ?? false
             whisperBackend = legacyWorkerEnabled ? "serverAPI" : "cli"
         }
+        translationEnabled = UserDefaults.standard.object(forKey: "translationEnabled") as? Bool ?? false
+        translationTargetLanguage = UserDefaults.standard.string(forKey: "translationTargetLanguage") ?? "en"
+        openAIAPIKey = KeychainStore.read(key: "openAIAPIKey")
+            ?? UserDefaults.standard.string(forKey: "openAIAPIKey")
+            ?? ""
+        openAIModel = UserDefaults.standard.string(forKey: "openAIModel") ?? "gpt-4o-mini"
         
         wireUpServices()
         overlayController = OverlayWindowController(appState: self)
@@ -188,6 +212,7 @@ class AppState: ObservableObject {
     private func wireUpServices() {
         whisperEngine = WhisperEngine()
         appleSpeechEngine = AppleSpeechEngine()
+        translationService = OpenAITranslationService()
         
         whisperEngine.onTranscriptionComplete = { [weak self] requestID, text in
             Task { @MainActor in
@@ -362,6 +387,23 @@ class AppState: ObservableObject {
     
     func stopWhisperServer() {
         whisperEngine.stopServer()
+    }
+    
+    func validateOpenAIKey() {
+        translationStatus = "Validating..."
+        error = nil
+        translationService.validate(apiKey: openAIAPIKey, model: openAIModel) { [weak self] result in
+            Task { @MainActor in
+                guard let self else { return }
+                switch result {
+                case .success:
+                    self.translationStatus = "OpenAI key valid"
+                case .failure(let error):
+                    self.translationStatus = "Validation failed"
+                    self.error = "OpenAI validation failed: \(error.localizedDescription)"
+                }
+            }
+        }
     }
     
     func startAppleSpeech() {
@@ -690,6 +732,11 @@ class AppState: ObservableObject {
         currentSessionText += text
         streamingText = currentSessionText
         
+        guard !translationEnabled else {
+            statusMessage = "Captured: \(text.prefix(40))..."
+            return
+        }
+        
         let insertion = "\(text) "
         KeyboardSynthesizer.typeViaPaste(
             insertion,
@@ -701,9 +748,9 @@ class AppState: ObservableObject {
     
     private func completeFinalText(_ text: String) {
         let finalText = postProcess(text)
-        isTranscribing = false
         
         guard !finalText.isEmpty else {
+            isTranscribing = false
             statusMessage = "No speech detected"
             finishSessionUI()
             return
@@ -712,8 +759,50 @@ class AppState: ObservableObject {
         lastTranscription = finalText
         streamingText = finalText
         
-        if outputMode == "finalOnly" {
-            let insertion = addTrailingSpace ? "\(finalText) " : finalText
+        guard translationEnabled else {
+            isTranscribing = false
+            insertCompletedText(finalText, originalText: finalText)
+            return
+        }
+        
+        statusMessage = "Translating..."
+        translationStatus = "Translating..."
+        translationService.translate(
+            text: finalText,
+            targetLanguage: translationTargetLanguage,
+            apiKey: openAIAPIKey,
+            model: openAIModel
+        ) { [weak self] result in
+            Task { @MainActor in
+                guard let self else { return }
+                self.isTranscribing = false
+                switch result {
+                case .success(let translatedText):
+                    let cleaned = self.postProcess(translatedText)
+                    guard !cleaned.isEmpty else {
+                        self.error = "Translation returned empty text."
+                        self.translationStatus = "Translation failed"
+                        self.statusMessage = "Translation Error"
+                        self.finishSessionUI()
+                        return
+                    }
+                    self.translationStatus = "Translated"
+                    self.insertCompletedText(cleaned, originalText: finalText)
+                case .failure(let error):
+                    self.error = "Translation failed: \(error.localizedDescription)"
+                    self.translationStatus = "Translation failed"
+                    self.statusMessage = "Translation Error"
+                    self.finishSessionUI()
+                }
+            }
+        }
+    }
+    
+    private func insertCompletedText(_ text: String, originalText: String) {
+        streamingText = text
+        
+        if outputMode == "finalOnly" || translationEnabled {
+            let insertion = addTrailingSpace ? "\(text) " : text
             KeyboardSynthesizer.typeViaPaste(
                 insertion,
                 restoreClipboard: restoreClipboard,
@@ -722,10 +811,12 @@ class AppState: ObservableObject {
         } else {
             let pb = NSPasteboard.general
             pb.clearContents()
-            pb.setString(finalText, forType: .string)
+            pb.setString(text, forType: .string)
         }
         
-        statusMessage = "Done: \(finalText.prefix(50))..."
+        statusMessage = translationEnabled
+            ? "Translated: \(text.prefix(50))..."
+            : "Done: \(originalText.prefix(50))..."
         finishSessionUI(delay: 0.8)
     }
     
