@@ -64,6 +64,10 @@ class AppState: ObservableObject {
         didSet { UserDefaults.standard.set(liveChunkDuration, forKey: "liveChunkDuration") }
     }
 
+    @Published var pauseBasedLiveChunksEnabled: Bool {
+        didSet { UserDefaults.standard.set(pauseBasedLiveChunksEnabled, forKey: "pauseBasedLiveChunksEnabled") }
+    }
+
     @Published var transcriptionEngine: String {
         didSet { UserDefaults.standard.set(transcriptionEngine, forKey: "transcriptionEngine") }
     }
@@ -136,6 +140,8 @@ class AppState: ObservableObject {
     private var nextLiveChunkSequence = 0
     private var nextLiveOutputSequence = 0
     private var liveChunkResults: [Int: String] = [:]
+    private var liveInsertionQueue: [String] = []
+    private var liveInsertionInFlight = false
     private var chunkCount = 0
     private var currentSessionText = ""
     private var isStreamingSession = false
@@ -159,6 +165,10 @@ class AppState: ObservableObject {
 
     private var shouldEnhanceCurrentSession: Bool {
         openAIEnhancementEnabledForSession && openAIEnhancementEnabled
+    }
+
+    private var shouldEnhanceLiveChunks: Bool {
+        shouldEnhanceCurrentSession && outputMode == "liveChunks" && openAIEnhancementMode == "rephrase"
     }
 
     var hotkeyHelpText: String {
@@ -187,6 +197,7 @@ class AppState: ObservableObject {
         restoreClipboard = UserDefaults.standard.object(forKey: "restoreClipboard") as? Bool ?? false
         addTrailingSpace = UserDefaults.standard.object(forKey: "addTrailingSpace") as? Bool ?? false
         liveChunkDuration = UserDefaults.standard.object(forKey: "liveChunkDuration") as? Double ?? 2.0
+        pauseBasedLiveChunksEnabled = UserDefaults.standard.object(forKey: "pauseBasedLiveChunksEnabled") as? Bool ?? false
         transcriptionEngine = UserDefaults.standard.string(forKey: "transcriptionEngine") ?? "whisper"
         if let savedBackend = UserDefaults.standard.string(forKey: "whisperBackend") {
             whisperBackend = savedBackend
@@ -647,7 +658,7 @@ class AppState: ObservableObject {
                 if !micID.isEmpty {
                     recorder.selectDevice(micID)
                 }
-                recorder.startStreaming(chunkDuration: self.liveChunkDuration) { [weak self] chunkPath in
+                let onChunk: (URL?) -> Void = { [weak self] chunkPath in
                     Task { @MainActor in
                         guard let self, let path = chunkPath, self.acceptingLiveChunks else {
                             if let chunkPath {
@@ -657,6 +668,11 @@ class AppState: ObservableObject {
                         }
                         self.enqueueLiveChunk(path)
                     }
+                }
+                if self.pauseBasedLiveChunksEnabled {
+                    recorder.startStreamingOnSilence(onChunk: onChunk)
+                } else {
+                    recorder.startStreaming(chunkDuration: self.liveChunkDuration, onChunk: onChunk)
                 }
             }
         }
@@ -794,7 +810,11 @@ class AppState: ObservableObject {
     }
 
     private var livePipelineIsDrained: Bool {
-        pendingLiveChunks.isEmpty && liveInFlightCount == 0 && liveChunkResults.isEmpty
+        pendingLiveChunks.isEmpty
+            && liveInFlightCount == 0
+            && liveChunkResults.isEmpty
+            && liveInsertionQueue.isEmpty
+            && !liveInsertionInFlight
     }
 
     private func resetLivePipeline() {
@@ -803,28 +823,73 @@ class AppState: ObservableObject {
         nextLiveChunkSequence = 0
         nextLiveOutputSequence = 0
         liveChunkResults.removeAll()
+        liveInsertionQueue.removeAll()
+        liveInsertionInFlight = false
     }
 
     private func flushOrderedLiveResults() {
         while let text = liveChunkResults.removeValue(forKey: nextLiveOutputSequence) {
             if !text.isEmpty {
-                appendLiveChunk(text)
+                queueLiveInsertion(text)
             }
             nextLiveOutputSequence += 1
         }
     }
 
-    private func appendLiveChunk(_ text: String) {
+    private func queueLiveInsertion(_ text: String) {
+        liveInsertionQueue.append(text)
+        processNextLiveInsertion()
+    }
+
+    private func processNextLiveInsertion() {
+        guard !liveInsertionInFlight, !liveInsertionQueue.isEmpty else { return }
+        let item = liveInsertionQueue.removeFirst()
+
+        guard shouldEnhanceLiveChunks else {
+            insertLiveChunk(item)
+            processNextLiveInsertion()
+            return
+        }
+
+        liveInsertionInFlight = true
+        statusMessage = "Rephrasing chunk..."
+        translationService.processFinalText(
+            text: item,
+            mode: "rephrase",
+            targetLanguage: translationTargetLanguage,
+            apiKey: openAIAPIKey,
+            model: openAIModel
+        ) { [weak self] result in
+            Task { @MainActor in
+                guard let self else { return }
+                let textToInsert: String
+                switch result {
+                case .success(let processedText):
+                    let cleaned = self.postProcess(processedText)
+                    textToInsert = cleaned.isEmpty ? item : cleaned
+                    self.translationStatus = cleaned.isEmpty ? "OpenAI returned empty chunk" : "Rephrased"
+                case .failure(let error):
+                    textToInsert = item
+                    self.translationStatus = "OpenAI failed"
+                    self.error = "OpenAI chunk rephrase failed: \(error.localizedDescription)"
+                }
+
+                self.insertLiveChunk(textToInsert)
+                self.liveInsertionInFlight = false
+                self.processNextLiveInsertion()
+                if self.isTranscribing && self.livePipelineIsDrained {
+                    self.completeFinalText(self.currentSessionText)
+                }
+            }
+        }
+    }
+
+    private func insertLiveChunk(_ text: String) {
         if !currentSessionText.isEmpty {
             currentSessionText += " "
         }
         currentSessionText += text
         streamingText = currentSessionText
-
-        guard !shouldEnhanceCurrentSession else {
-            statusMessage = "Captured: \(text.prefix(40))..."
-            return
-        }
 
         let insertion = "\(text) "
         KeyboardSynthesizer.typeViaPaste(
@@ -848,7 +913,7 @@ class AppState: ObservableObject {
         lastTranscription = finalText
         streamingText = finalText
 
-        guard shouldEnhanceCurrentSession else {
+        guard shouldEnhanceCurrentSession && outputMode == "finalOnly" else {
             isTranscribing = false
             insertCompletedText(finalText, originalText: finalText)
             return
@@ -893,7 +958,7 @@ class AppState: ObservableObject {
     private func insertCompletedText(_ text: String, originalText: String) {
         streamingText = text
 
-        if outputMode == "finalOnly" || shouldEnhanceCurrentSession {
+        if outputMode == "finalOnly" {
             let insertion = addTrailingSpace ? "\(text) " : text
             KeyboardSynthesizer.typeViaPaste(
                 insertion,
@@ -906,7 +971,8 @@ class AppState: ObservableObject {
             pb.setString(text, forType: .string)
         }
 
-        statusMessage = shouldEnhanceCurrentSession
+        let finalWasEnhanced = shouldEnhanceCurrentSession && outputMode == "finalOnly"
+        statusMessage = finalWasEnhanced
             ? "Enhanced: \(text.prefix(50))..."
             : "Done: \(originalText.prefix(50))..."
         finishSessionUI(delay: 0.8)

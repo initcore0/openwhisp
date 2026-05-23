@@ -208,12 +208,20 @@ struct SettingsView: View {
                 Text("2.0 sec - balanced").tag(2.0)
                 Text("3.0 sec - accurate").tag(3.0)
             }
+            .disabled(appState.pauseBasedLiveChunksEnabled)
+
+            Toggle("Pause-based live chunks", isOn: $appState.pauseBasedLiveChunksEnabled)
+                .onChange(of: appState.pauseBasedLiveChunksEnabled) {
+                    if appState.pauseBasedLiveChunksEnabled {
+                        appState.outputMode = "liveChunks"
+                    }
+                }
             
             Toggle("Show overlay while recording", isOn: $appState.showOverlay)
             Toggle("Add trailing space after paste", isOn: $appState.addTrailingSpace)
             Toggle("Restore clipboard after paste", isOn: $appState.restoreClipboard)
             
-            Text("Shorter chunks feel faster but can reduce Whisper accuracy. Live chunks transcribe up to two chunks in parallel and paste them in order.")
+            Text("Pause-based chunks finalize when speech stops. Timer chunks use the selected duration. Chunks transcribe up to two at a time and paste in order.")
                 .font(.caption)
                 .foregroundColor(.secondary)
             

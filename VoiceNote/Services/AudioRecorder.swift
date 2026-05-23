@@ -32,6 +32,14 @@ class AudioRecorder: NSObject, AVAudioRecorderDelegate {
     private var onChunkComplete: ((URL?) -> Void)?
     private var chunkCount = 0
     private var isStreaming = false
+    private var isPauseBasedStreaming = false
+    private var silenceDuration: TimeInterval = 0.75
+    private var minimumSpeechDuration: TimeInterval = 0.35
+    private var maximumSpeechDuration: TimeInterval = 12.0
+    private var speechThreshold: Float = 0.018
+    private var lastSpeechAt: TimeInterval?
+    private var activeChunkDuration: TimeInterval = 0
+    private var activeChunkHasSpeech = false
     
     init(appState: AppState) {
         self.appState = appState
@@ -95,6 +103,7 @@ class AudioRecorder: NSObject, AVAudioRecorderDelegate {
     func startStreaming(chunkDuration: Double, onChunk: @escaping (URL?) -> Void) {
         stop { _ in }
         isStreaming = true
+        isPauseBasedStreaming = false
         onChunkComplete = onChunk
         streamingChunks = []
         chunkCount = 0
@@ -136,6 +145,55 @@ class AudioRecorder: NSObject, AVAudioRecorderDelegate {
             onStateChanged?(.error("Streaming failed: \(error.localizedDescription)"))
         }
     }
+
+    /// Start streaming mode that rotates files when the speaker pauses.
+    /// This is local VAD based on input audio level; whisper.cpp still transcribes completed files.
+    func startStreamingOnSilence(
+        silenceDuration: TimeInterval = 0.75,
+        minimumSpeechDuration: TimeInterval = 0.35,
+        maximumSpeechDuration: TimeInterval = 12.0,
+        speechThreshold: Float = 0.018,
+        onChunk: @escaping (URL?) -> Void
+    ) {
+        stop { _ in }
+        isStreaming = true
+        isPauseBasedStreaming = true
+        self.silenceDuration = silenceDuration
+        self.minimumSpeechDuration = minimumSpeechDuration
+        self.maximumSpeechDuration = maximumSpeechDuration
+        self.speechThreshold = speechThreshold
+        onChunkComplete = onChunk
+        streamingChunks = []
+        chunkCount = 0
+        streamFileIndex = 0
+        resetPauseStreamingState()
+
+        let engine = AVAudioEngine()
+        let input = engine.inputNode
+        let format = input.outputFormat(forBus: 0)
+        streamingEngine = engine
+        streamingFormat = format
+
+        do {
+            input.installTap(onBus: 0, bufferSize: 2048, format: format) { [weak self] buffer, _ in
+                guard let self else { return }
+                self.publishLevel(from: buffer)
+                self.streamQueue.async {
+                    self.handlePauseBasedBuffer(buffer, format: format)
+                }
+            }
+
+            try engine.start()
+            onStateChanged?(.recording)
+        } catch {
+            input.removeTap(onBus: 0)
+            streamingEngine?.stop()
+            streamingEngine = nil
+            isStreaming = false
+            isPauseBasedStreaming = false
+            onStateChanged?(.error("Pause-based streaming failed: \(error.localizedDescription)"))
+        }
+    }
     
     private func scheduleChunkTimer(chunkDuration: Double) {
         chunkTimer?.invalidate()
@@ -169,6 +227,66 @@ class AudioRecorder: NSObject, AVAudioRecorderDelegate {
             }
         }
     }
+
+    private func handlePauseBasedBuffer(_ buffer: AVAudioPCMBuffer, format: AVAudioFormat) {
+        guard isStreaming, isPauseBasedStreaming else { return }
+
+        let now = ProcessInfo.processInfo.systemUptime
+        let rms = Self.rmsLevel(from: buffer)
+        let hasSpeech = rms >= speechThreshold
+
+        do {
+            if hasSpeech, streamingFile == nil {
+                try openNextStreamingFile(format: format)
+                activeChunkDuration = 0
+                activeChunkHasSpeech = true
+            }
+
+            guard streamingFile != nil else { return }
+
+            try streamingFile?.write(from: buffer)
+            let bufferDuration = Double(buffer.frameLength) / max(1.0, buffer.format.sampleRate)
+            activeChunkDuration += bufferDuration
+
+            if hasSpeech {
+                activeChunkHasSpeech = true
+                lastSpeechAt = now
+            }
+
+            let silenceElapsed = now - (lastSpeechAt ?? now)
+            let shouldFinalizeForSilence = activeChunkHasSpeech
+                && activeChunkDuration >= minimumSpeechDuration
+                && silenceElapsed >= silenceDuration
+            let shouldFinalizeForLength = activeChunkDuration >= maximumSpeechDuration
+
+            if shouldFinalizeForSilence || shouldFinalizeForLength {
+                finishPauseBasedChunk()
+            }
+        } catch {
+            DispatchQueue.main.async {
+                self.onStateChanged?(.error("Pause-based streaming failed: \(error.localizedDescription)"))
+            }
+        }
+    }
+
+    private func finishPauseBasedChunk() {
+        let completedURL = streamingURL
+        let shouldEmit = activeChunkHasSpeech && activeChunkDuration >= minimumSpeechDuration
+        streamingFile = nil
+        streamingURL = nil
+        resetPauseStreamingState()
+
+        DispatchQueue.main.async {
+            guard let completedURL else { return }
+            if shouldEmit {
+                self.onChunkComplete?(completedURL)
+                self.streamingChunks.append(completedURL)
+                self.chunkCount += 1
+            } else {
+                try? FileManager.default.removeItem(at: completedURL)
+            }
+        }
+    }
     
     // MARK: - Stop
     
@@ -185,13 +303,19 @@ class AudioRecorder: NSObject, AVAudioRecorderDelegate {
             engine.inputNode.removeTap(onBus: 0)
             engine.stop()
             streamingEngine = nil
-            
+
             path = streamQueue.sync {
-                let currentURL = streamingURL
+                let shouldKeepCurrentChunk = !isPauseBasedStreaming
+                    || (activeChunkHasSpeech && activeChunkDuration >= minimumSpeechDuration)
+                let currentURL = shouldKeepCurrentChunk ? streamingURL : nil
+                if !shouldKeepCurrentChunk, let streamingURL {
+                    try? FileManager.default.removeItem(at: streamingURL)
+                }
                 streamingFile = nil
                 streamingURL = nil
                 streamingFormat = nil
                 streamFileIndex = 0
+                resetPauseStreamingState()
                 return currentURL
             }
         } else {
@@ -207,6 +331,7 @@ class AudioRecorder: NSObject, AVAudioRecorderDelegate {
             streamingChunks = []
             chunkCount = 0
             isStreaming = false
+            isPauseBasedStreaming = false
             onChunkComplete = nil
         }
         
@@ -252,11 +377,25 @@ class AudioRecorder: NSObject, AVAudioRecorderDelegate {
     }
     
     private func publishLevel(from buffer: AVAudioPCMBuffer) {
-        guard let channelData = buffer.floatChannelData, buffer.frameLength > 0 else { return }
+        let rms = Self.rmsLevel(from: buffer)
+        let normalized = max(0, min(1, rms * 8))
+        DispatchQueue.main.async {
+            self.onLevelChanged?(normalized)
+        }
+    }
+
+    private func resetPauseStreamingState() {
+        lastSpeechAt = nil
+        activeChunkDuration = 0
+        activeChunkHasSpeech = false
+    }
+
+    private static func rmsLevel(from buffer: AVAudioPCMBuffer) -> Float {
+        guard let channelData = buffer.floatChannelData, buffer.frameLength > 0 else { return 0 }
         let channelCount = Int(buffer.format.channelCount)
         let frameCount = Int(buffer.frameLength)
         var sum: Float = 0
-        
+
         for channel in 0..<channelCount {
             let samples = channelData[channel]
             for frame in 0..<frameCount {
@@ -264,13 +403,9 @@ class AudioRecorder: NSObject, AVAudioRecorderDelegate {
                 sum += sample * sample
             }
         }
-        
+
         let divisor = Float(max(1, channelCount * frameCount))
-        let rms = sqrt(sum / divisor)
-        let normalized = max(0, min(1, rms * 8))
-        DispatchQueue.main.async {
-            self.onLevelChanged?(normalized)
-        }
+        return sqrt(sum / divisor)
     }
     
     func audioRecorderDidFinishRecording(_ recorder: AVAudioRecorder, successfully flag: Bool) {

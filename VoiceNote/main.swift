@@ -154,6 +154,22 @@ class VoiceNoteApp: NSObject, NSApplicationDelegate {
         languageItem.submenu = languageMenu
         menu.addItem(languageItem)
 
+        let pauseChunks = NSMenuItem(
+            title: "Pause-based Live Chunks",
+            action: #selector(togglePauseBasedLiveChunks),
+            keyEquivalent: ""
+        )
+        pauseChunks.state = appState.pauseBasedLiveChunksEnabled ? .on : .off
+        menu.addItem(pauseChunks)
+
+        let rephraseChunks = NSMenuItem(
+            title: "OpenAI Rephrase Chunks",
+            action: #selector(toggleOpenAIRephraseChunks),
+            keyEquivalent: ""
+        )
+        rephraseChunks.state = (appState.openAIEnhancementEnabled && appState.openAIEnhancementMode == "rephrase") ? .on : .off
+        menu.addItem(rephraseChunks)
+
         menu.addItem(.separator())
 
         // Settings
@@ -191,6 +207,21 @@ class VoiceNoteApp: NSObject, NSApplicationDelegate {
     @objc private func selectLanguage(_ sender: NSMenuItem) {
         guard let code = sender.representedObject as? String else { return }
         appState.language = code
+    }
+    @objc private func togglePauseBasedLiveChunks() {
+        appState.pauseBasedLiveChunksEnabled.toggle()
+        if appState.pauseBasedLiveChunksEnabled {
+            appState.outputMode = "liveChunks"
+        }
+    }
+    @objc private func toggleOpenAIRephraseChunks() {
+        let shouldEnable = !(appState.openAIEnhancementEnabled && appState.openAIEnhancementMode == "rephrase")
+        appState.openAIEnhancementMode = "rephrase"
+        appState.openAIEnhancementEnabled = shouldEnable
+        if shouldEnable {
+            appState.pauseBasedLiveChunksEnabled = true
+            appState.outputMode = "liveChunks"
+        }
     }
     @objc private func terminate()      { NSApp.terminate(nil) }
 
