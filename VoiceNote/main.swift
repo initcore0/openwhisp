@@ -47,11 +47,11 @@ class VoiceNoteApp: NSObject, NSApplicationDelegate {
         appState.ensureModelExists()
         print("[VoiceNote] Ready")
     }
-    
+
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         false
     }
-    
+
     func applicationWillTerminate(_ notification: Notification) {
         appState?.shutdown()
     }
@@ -87,13 +87,17 @@ class VoiceNoteApp: NSObject, NSApplicationDelegate {
         let statusItem = NSMenuItem(title: "● \(appState.statusMessage)", action: nil, keyEquivalent: "")
         statusItem.isEnabled = false
         menu.addItem(statusItem)
-        
+
         let modelStatusTitle = appState.isModelDownloading
             ? "Model: \(appState.modelDownloadStatus)"
             : "Model: \(appState.modelDownloadStatus)"
         let modelStatus = NSMenuItem(title: modelStatusTitle, action: nil, keyEquivalent: "")
         modelStatus.isEnabled = false
         menu.addItem(modelStatus)
+
+        let whisperStatus = NSMenuItem(title: "Whisper Server: \(appState.whisperWorkerStatus)", action: nil, keyEquivalent: "")
+        whisperStatus.isEnabled = false
+        menu.addItem(whisperStatus)
         menu.addItem(.separator())
 
         // Last transcription
@@ -116,20 +120,20 @@ class VoiceNoteApp: NSObject, NSApplicationDelegate {
         }
 
         menu.addItem(.separator())
-        
+
         let engineMenu = NSMenu()
         let whisper = NSMenuItem(title: "Whisper Local", action: #selector(useWhisperEngine), keyEquivalent: "")
         whisper.state = appState.transcriptionEngine == "whisper" ? .on : .off
         engineMenu.addItem(whisper)
-        
+
         let apple = NSMenuItem(title: "Apple Speech Streaming", action: #selector(useAppleSpeechEngine), keyEquivalent: "")
         apple.state = appState.transcriptionEngine == "appleSpeech" ? .on : .off
         engineMenu.addItem(apple)
-        
+
         let engineItem = NSMenuItem(title: "Engine", action: nil, keyEquivalent: "")
         engineItem.submenu = engineMenu
         menu.addItem(engineItem)
-        
+
         let translation = NSMenuItem(
             title: "Translation",
             action: #selector(toggleTranslation),
@@ -137,7 +141,7 @@ class VoiceNoteApp: NSObject, NSApplicationDelegate {
         )
         translation.state = appState.translationEnabled ? .on : .off
         menu.addItem(translation)
-        
+
         menu.addItem(.separator())
 
         // Settings
@@ -177,7 +181,7 @@ class VoiceNoteApp: NSObject, NSApplicationDelegate {
 
     @objc private func openSettings() {
         guard let appState else { return }
-        
+
         if let settingsWindow {
             settingsWindow.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)

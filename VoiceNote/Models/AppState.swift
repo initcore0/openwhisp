@@ -11,90 +11,92 @@ import Speech
 @MainActor
 class AppState: ObservableObject {
     static let shared = AppState()
-    
+
     // MARK: - Settings (persisted)
-    
+
     @Published var whisperBinaryPath: String {
         didSet { UserDefaults.standard.set(whisperBinaryPath, forKey: "whisperBinaryPath") }
     }
-    
+
     @Published var modelPath: String {
         didSet { UserDefaults.standard.set(modelPath, forKey: "modelPath") }
     }
-    
+
     @Published var modelName: String {
         didSet {
             UserDefaults.standard.set(modelName, forKey: "modelName")
             modelPath = resolvedModelPath()
         }
     }
-    
+
     @Published var microphoneID: String {
         didSet { UserDefaults.standard.set(microphoneID, forKey: "microphoneID") }
     }
-    
+
     @Published var language: String {
         didSet { UserDefaults.standard.set(language, forKey: "language") }
     }
-    
+
     @Published var triggerMode: String {
         didSet {
             UserDefaults.standard.set(triggerMode, forKey: "triggerMode")
             hotkeyMonitor?.triggerMode = triggerMode
         }
     }
-    
+
     @Published var outputMode: String {
         didSet { UserDefaults.standard.set(outputMode, forKey: "outputMode") }
     }
-    
+
     @Published var showOverlay: Bool {
         didSet { UserDefaults.standard.set(showOverlay, forKey: "showOverlay") }
     }
-    
+
     @Published var restoreClipboard: Bool {
         didSet { UserDefaults.standard.set(restoreClipboard, forKey: "restoreClipboard") }
     }
-    
+
     @Published var addTrailingSpace: Bool {
         didSet { UserDefaults.standard.set(addTrailingSpace, forKey: "addTrailingSpace") }
     }
-    
+
     @Published var liveChunkDuration: Double {
         didSet { UserDefaults.standard.set(liveChunkDuration, forKey: "liveChunkDuration") }
     }
-    
+
     @Published var transcriptionEngine: String {
         didSet { UserDefaults.standard.set(transcriptionEngine, forKey: "transcriptionEngine") }
     }
-    
+
     @Published var whisperBackend: String {
         didSet {
             UserDefaults.standard.set(whisperBackend, forKey: "whisperBackend")
             if whisperBackend != "serverAPI" {
                 whisperEngine?.stopServer()
+            } else {
+                warmWhisperServerIfPossible()
             }
         }
     }
-    
+
     @Published var translationEnabled: Bool {
         didSet { UserDefaults.standard.set(translationEnabled, forKey: "translationEnabled") }
     }
-    
+
     @Published var translationTargetLanguage: String {
         didSet { UserDefaults.standard.set(translationTargetLanguage, forKey: "translationTargetLanguage") }
     }
-    
+
     @Published var openAIAPIKey: String {
         didSet { KeychainStore.save(openAIAPIKey, key: "openAIAPIKey") }
     }
-    
+
     @Published var openAIModel: String {
         didSet { UserDefaults.standard.set(openAIModel, forKey: "openAIModel") }
     }
-    
+
     // MARK: - Runtime State
-    
+
     @Published var isRecording = false
     @Published var isTranscribing = false
     @Published var lastTranscription: String?
@@ -108,15 +110,15 @@ class AppState: ObservableObject {
     @Published var audioLevel: Float = 0
     @Published var recordingElapsed: TimeInterval = 0
     @Published var inputMonitoringPermissionLabel: String = "Unknown"
-    
+
     // MARK: - Services
-    
+
     var audioRecorder: AudioRecorder!
     var whisperEngine: WhisperEngine!
     var appleSpeechEngine: AppleSpeechEngine!
     var translationService: OpenAITranslationService!
     var hotkeyMonitor: HotkeyMonitor!
-    
+
     private var overlayController: OverlayWindowController?
     private var elapsedTimer: Timer?
     private var recordingStartedAt: Date?
@@ -138,27 +140,27 @@ class AppState: ObservableObject {
     private var appleLiveInsertedText = ""
     private var appleDidCompleteFinal = false
     private var downloadingModelPath: String?
-    
+
     private enum TranscriptionKind {
         case liveChunk
         case final
     }
-    
+
     private struct TranscriptionRequest {
         let sessionID: UUID
         let kind: TranscriptionKind
         let sequence: Int?
     }
-    
+
     var hotkeyHelpText: String {
         let trigger = triggerMode == "fn" ? "Release Fn" : "Release Control+Space"
         return "\(trigger) to insert - Esc to cancel"
     }
-    
+
     private init() {
         let savedWhisperBinaryPath = UserDefaults.standard.string(forKey: "whisperBinaryPath") ?? ""
         whisperBinaryPath = Self.preferredWhisperCLIPath(savedPath: savedWhisperBinaryPath)
-        
+
         let savedModel = UserDefaults.standard.string(forKey: "modelName") ?? "base"
         let fileName = Self.modelFileName(for: savedModel)
         modelName = savedModel
@@ -166,7 +168,7 @@ class AppState: ObservableObject {
         modelPath = Self.preferredModelPath(savedPath: savedModelPath, fileName: fileName)
         microphoneID = UserDefaults.standard.string(forKey: "microphoneID") ?? ""
         language = UserDefaults.standard.string(forKey: "language") ?? "en"
-        triggerMode = UserDefaults.standard.string(forKey: "triggerMode") ?? "controlSpace"
+        triggerMode = UserDefaults.standard.string(forKey: "triggerMode") ?? "fn"
         outputMode = UserDefaults.standard.string(forKey: "outputMode") ?? "finalOnly"
         showOverlay = UserDefaults.standard.object(forKey: "showOverlay") as? Bool ?? true
         restoreClipboard = UserDefaults.standard.object(forKey: "restoreClipboard") as? Bool ?? false
@@ -176,8 +178,7 @@ class AppState: ObservableObject {
         if let savedBackend = UserDefaults.standard.string(forKey: "whisperBackend") {
             whisperBackend = savedBackend
         } else {
-            let legacyWorkerEnabled = UserDefaults.standard.object(forKey: "useWhisperWorker") as? Bool ?? false
-            whisperBackend = legacyWorkerEnabled ? "serverAPI" : "cli"
+            whisperBackend = "serverAPI"
         }
         translationEnabled = UserDefaults.standard.object(forKey: "translationEnabled") as? Bool ?? false
         translationTargetLanguage = UserDefaults.standard.string(forKey: "translationTargetLanguage") ?? "en"
@@ -185,13 +186,14 @@ class AppState: ObservableObject {
             ?? UserDefaults.standard.string(forKey: "openAIAPIKey")
             ?? ""
         openAIModel = UserDefaults.standard.string(forKey: "openAIModel") ?? "gpt-4o-mini"
-        
+
         wireUpServices()
         overlayController = OverlayWindowController(appState: self)
         hotkeyMonitor.start()
         ensureModelExists()
+        warmWhisperServerIfPossible()
     }
-    
+
     private static func modelFileName(for modelName: String) -> String {
         switch modelName {
         case "tiny":          return "ggml-tiny.bin"
@@ -207,64 +209,64 @@ class AppState: ObservableObject {
         default:         return "ggml-base.bin"
         }
     }
-    
+
     private func resolvedModelPath() -> String {
         Self.applicationSupportModelsDirectory()
             .appendingPathComponent(Self.modelFileName(for: modelName))
             .path
     }
-    
+
     private static func preferredWhisperCLIPath(savedPath: String) -> String {
         if !savedPath.isEmpty, FileManager.default.fileExists(atPath: savedPath) {
             return savedPath
         }
-        
+
         if let bundled = bundledResourcePath("whisper/whisper-cli"),
            FileManager.default.isExecutableFile(atPath: bundled) {
             return bundled
         }
-        
+
         return "\(NSHomeDirectory())/whisper.cpp/build/bin/whisper-cli"
     }
-    
+
     private static func preferredModelPath(savedPath: String, fileName: String) -> String {
         if !savedPath.isEmpty, FileManager.default.fileExists(atPath: savedPath) {
             return savedPath
         }
-        
+
         let oldWhisperCppPath = "\(NSHomeDirectory())/whisper.cpp/models/\(fileName)"
         if FileManager.default.fileExists(atPath: oldWhisperCppPath) {
             return oldWhisperCppPath
         }
-        
+
         return applicationSupportModelsDirectory()
             .appendingPathComponent(fileName)
             .path
     }
-    
+
     private static func bundledResourcePath(_ relativePath: String) -> String? {
         Bundle.main.resourceURL?
             .appendingPathComponent(relativePath)
             .path
     }
-    
+
     private static func applicationSupportModelsDirectory() -> URL {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support")
         return base.appendingPathComponent("VoiceNote/models", isDirectory: true)
     }
-    
+
     private func wireUpServices() {
         whisperEngine = WhisperEngine()
         appleSpeechEngine = AppleSpeechEngine()
         translationService = OpenAITranslationService()
-        
+
         whisperEngine.onTranscriptionComplete = { [weak self] requestID, text in
             Task { @MainActor in
                 self?.handleTranscription(text, requestID: requestID)
             }
         }
-        
+
         whisperEngine.onTranscriptionError = { [weak self] requestID, msg in
             Task { @MainActor in
                 guard let self else { return }
@@ -288,7 +290,7 @@ class AppState: ObservableObject {
                 self.finishSessionUI()
             }
         }
-        
+
         whisperEngine.onProgress = { [weak self] pct in
             Task { @MainActor in
                 guard let self else { return }
@@ -300,7 +302,7 @@ class AppState: ObservableObject {
                 self?.whisperWorkerStatus = status
             }
         }
-        
+
         audioRecorder = AudioRecorder(appState: self)
         audioRecorder.onStateChanged = { [weak self] state in
             Task { @MainActor in
@@ -324,7 +326,7 @@ class AppState: ObservableObject {
                 self?.audioLevel = level
             }
         }
-        
+
         appleSpeechEngine.onPartial = { [weak self] text in
             Task { @MainActor in
                 self?.handleAppleSpeechPartial(text)
@@ -351,7 +353,7 @@ class AppState: ObservableObject {
                 self?.audioLevel = level
             }
         }
-        
+
         hotkeyMonitor = HotkeyMonitor(appState: self)
         hotkeyMonitor.triggerMode = triggerMode
         hotkeyMonitor.onPermissionStateChanged = { [weak self] isGranted in
@@ -373,9 +375,9 @@ class AppState: ObservableObject {
             }
         }
     }
-    
+
     // MARK: - Actions
-    
+
     func startDictation() {
         guard !isRecording, !isTranscribing else { return }
         if transcriptionEngine == "appleSpeech" {
@@ -388,7 +390,7 @@ class AppState: ObservableObject {
             startRecording()
         }
     }
-    
+
     func stopDictation() {
         guard isRecording else { return }
         if isAppleSpeechSession {
@@ -401,7 +403,7 @@ class AppState: ObservableObject {
             stopRecording()
         }
     }
-    
+
     func cancelDictation() {
         guard isRecording || isTranscribing else { return }
         activeSessionID = UUID()
@@ -423,17 +425,26 @@ class AppState: ObservableObject {
         statusMessage = "Cancelled"
         finishSessionUI()
     }
-    
+
     func shutdown() {
         cancelDictation()
         whisperEngine.stopServer()
         hotkeyMonitor.stop()
     }
-    
+
     func stopWhisperServer() {
         whisperEngine.stopServer()
     }
-    
+
+    func warmWhisperServerIfPossible() {
+        guard whisperBackend == "serverAPI" else { return }
+        guard !isModelDownloading else {
+            whisperWorkerStatus = "Waiting for model"
+            return
+        }
+        whisperEngine?.warmServer(binaryPath: whisperBinaryPath, modelPath: modelPath)
+    }
+
     func validateOpenAIKey() {
         translationStatus = "Validating..."
         error = nil
@@ -450,7 +461,7 @@ class AppState: ObservableObject {
             }
         }
     }
-    
+
     func startAppleSpeech() {
         guard !isRecording, !isTranscribing else { return }
         beginSession(streaming: false)
@@ -458,7 +469,7 @@ class AppState: ObservableObject {
         appleLiveInsertedText = ""
         appleDidCompleteFinal = false
         statusMessage = "Listening..."
-        
+
         AVCaptureDevice.requestAccess(for: .audio) { granted in
             Task { @MainActor in
                 guard granted else {
@@ -467,7 +478,7 @@ class AppState: ObservableObject {
                     self.finishSessionUI()
                     return
                 }
-                
+
                 AppleSpeechEngine.requestAuthorization { status in
                     Task { @MainActor in
                         guard status == .authorized else {
@@ -476,7 +487,7 @@ class AppState: ObservableObject {
                             self.finishSessionUI()
                             return
                         }
-                        
+
                         do {
                             try self.appleSpeechEngine.start(language: self.language)
                             self.isRecording = true
@@ -492,7 +503,7 @@ class AppState: ObservableObject {
             }
         }
     }
-    
+
     func stopAppleSpeech() {
         guard isAppleSpeechSession else { return }
         isRecording = false
@@ -500,7 +511,7 @@ class AppState: ObservableObject {
         statusMessage = "Finalizing..."
         hideOverlayNow()
         appleSpeechEngine.stop(cancel: false)
-        
+
         Task { @MainActor in
             try? await Task.sleep(nanoseconds: 900_000_000)
             if self.isAppleSpeechSession && self.isTranscribing && !self.appleDidCompleteFinal {
@@ -508,17 +519,17 @@ class AppState: ObservableObject {
             }
         }
     }
-    
+
     private func handleAppleSpeechPartial(_ rawText: String) {
         guard isAppleSpeechSession else { return }
         let text = postProcess(rawText)
         streamingText = text
         statusMessage = text.isEmpty ? "Listening..." : "Listening..."
-        
+
         guard outputMode == "liveChunks", !text.isEmpty else { return }
         let delta = liveDelta(previous: appleLiveInsertedText, current: text)
         guard !delta.isEmpty else { return }
-        
+
         appleLiveInsertedText = text
         currentSessionText = text
         KeyboardSynthesizer.typeViaPaste(
@@ -527,7 +538,7 @@ class AppState: ObservableObject {
             targetApplication: targetApplication
         )
     }
-    
+
     private func handleAppleSpeechFinal(_ rawText: String) {
         guard isAppleSpeechSession, !appleDidCompleteFinal else { return }
         appleDidCompleteFinal = true
@@ -536,7 +547,7 @@ class AppState: ObservableObject {
         isAppleSpeechSession = false
         completeFinalText(finalText)
     }
-    
+
     private func liveDelta(previous: String, current: String) -> String {
         guard current.count > previous.count else { return "" }
         let prefix = current.prefix(previous.count)
@@ -544,11 +555,11 @@ class AppState: ObservableObject {
         return String(current.dropFirst(previous.count))
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
-    
+
     func startRecording() {
         guard !isRecording, !isTranscribing else { return }
         beginSession(streaming: false)
-        
+
         let micID = microphoneID
         let recorder = self.audioRecorder!
         AVCaptureDevice.requestAccess(for: .audio) { granted in
@@ -565,14 +576,14 @@ class AppState: ObservableObject {
             }
         }
     }
-    
+
     func stopRecording() {
         guard isRecording else { return }
         isStreamingSession = false
         isTranscribing = true
         statusMessage = "Finalizing..."
         hideOverlayNow()
-        
+
         audioRecorder.stop { [weak self] wavPath in
             Task { @MainActor in
                 guard let self, let path = wavPath else {
@@ -581,17 +592,17 @@ class AppState: ObservableObject {
                     self?.finishSessionUI()
                     return
                 }
-                
+
                 self.startTranscription(path: path, kind: .final)
             }
         }
     }
-    
+
     /// Optional live mode: record chunks, transcribe each, paste stable-ish chunks.
     func startStreaming() {
         guard !isRecording, !isTranscribing else { return }
         beginSession(streaming: true)
-        
+
         let micID = microphoneID
         let recorder = self.audioRecorder!
         AVCaptureDevice.requestAccess(for: .audio) { granted in
@@ -618,7 +629,7 @@ class AppState: ObservableObject {
             }
         }
     }
-    
+
     func stopStreaming() {
         guard isRecording else { return }
         isStreamingSession = false
@@ -626,7 +637,7 @@ class AppState: ObservableObject {
         isTranscribing = true
         statusMessage = "Finalizing..."
         hideOverlayNow()
-        
+
         audioRecorder.stop { [weak self] finalPath in
             Task { @MainActor in
                 guard let self else { return }
@@ -638,7 +649,7 @@ class AppState: ObservableObject {
             }
         }
     }
-    
+
     private func beginSession(streaming: Bool) {
         error = nil
         activeSessionID = UUID()
@@ -662,11 +673,11 @@ class AppState: ObservableObject {
             overlayIsVisible = true
         }
     }
-    
+
     private func handleTranscription(_ rawText: String, requestID: UUID) {
         guard let request = consumeRequest(requestID), request.sessionID == activeSessionID else { return }
         let text = postProcess(rawText)
-        
+
         guard !text.isEmpty else {
             if request.kind == .liveChunk {
                 if let sequence = request.sequence {
@@ -687,7 +698,7 @@ class AppState: ObservableObject {
             }
             return
         }
-        
+
         switch request.kind {
         case .liveChunk:
             if let sequence = request.sequence {
@@ -706,7 +717,7 @@ class AppState: ObservableObject {
             }
         }
     }
-    
+
     private func enqueueLiveChunk(_ path: URL) {
         let sequence = nextLiveChunkSequence
         nextLiveChunkSequence += 1
@@ -715,7 +726,7 @@ class AppState: ObservableObject {
         statusMessage = isTranscribing ? "Finalizing..." : "Queued chunk #\(chunkCount)..."
         processNextLiveChunk()
     }
-    
+
     private func processNextLiveChunk() {
         guard outputMode == "liveChunks", liveInFlightCount < liveMaxConcurrentTranscriptions, let next = pendingLiveChunks.first else { return }
         pendingLiveChunks.removeFirst()
@@ -724,7 +735,7 @@ class AppState: ObservableObject {
         startTranscription(path: next.url, kind: .liveChunk, sequence: next.sequence)
         processNextLiveChunk()
     }
-    
+
     private func startTranscription(path: URL, kind: TranscriptionKind, sequence: Int? = nil) {
         let requestID = UUID()
         transcriptionRequests[requestID] = TranscriptionRequest(sessionID: activeSessionID, kind: kind, sequence: sequence)
@@ -737,22 +748,22 @@ class AppState: ObservableObject {
             backend: whisperBackend == "serverAPI" ? .serverAPI : .cli
         )
     }
-    
+
     private func consumeRequest(_ requestID: UUID) -> TranscriptionRequest? {
         transcriptionRequests.removeValue(forKey: requestID)
     }
-    
+
     private func cleanupPendingLiveChunks() {
         for chunk in pendingLiveChunks {
             try? FileManager.default.removeItem(at: chunk.url)
         }
         pendingLiveChunks.removeAll()
     }
-    
+
     private var livePipelineIsDrained: Bool {
         pendingLiveChunks.isEmpty && liveInFlightCount == 0 && liveChunkResults.isEmpty
     }
-    
+
     private func resetLivePipeline() {
         cleanupPendingLiveChunks()
         liveInFlightCount = 0
@@ -760,7 +771,7 @@ class AppState: ObservableObject {
         nextLiveOutputSequence = 0
         liveChunkResults.removeAll()
     }
-    
+
     private func flushOrderedLiveResults() {
         while let text = liveChunkResults.removeValue(forKey: nextLiveOutputSequence) {
             if !text.isEmpty {
@@ -769,19 +780,19 @@ class AppState: ObservableObject {
             nextLiveOutputSequence += 1
         }
     }
-    
+
     private func appendLiveChunk(_ text: String) {
         if !currentSessionText.isEmpty {
             currentSessionText += " "
         }
         currentSessionText += text
         streamingText = currentSessionText
-        
+
         guard !translationEnabled else {
             statusMessage = "Captured: \(text.prefix(40))..."
             return
         }
-        
+
         let insertion = "\(text) "
         KeyboardSynthesizer.typeViaPaste(
             insertion,
@@ -790,26 +801,26 @@ class AppState: ObservableObject {
         )
         statusMessage = "Inserted: \(text.prefix(40))..."
     }
-    
+
     private func completeFinalText(_ text: String) {
         let finalText = postProcess(text)
-        
+
         guard !finalText.isEmpty else {
             isTranscribing = false
             statusMessage = "No speech detected"
             finishSessionUI()
             return
         }
-        
+
         lastTranscription = finalText
         streamingText = finalText
-        
+
         guard translationEnabled else {
             isTranscribing = false
             insertCompletedText(finalText, originalText: finalText)
             return
         }
-        
+
         statusMessage = "Translating..."
         translationStatus = "Translating..."
         translationService.translate(
@@ -842,10 +853,10 @@ class AppState: ObservableObject {
             }
         }
     }
-    
+
     private func insertCompletedText(_ text: String, originalText: String) {
         streamingText = text
-        
+
         if outputMode == "finalOnly" || translationEnabled {
             let insertion = addTrailingSpace ? "\(text) " : text
             KeyboardSynthesizer.typeViaPaste(
@@ -858,13 +869,13 @@ class AppState: ObservableObject {
             pb.clearContents()
             pb.setString(text, forType: .string)
         }
-        
+
         statusMessage = translationEnabled
             ? "Translated: \(text.prefix(50))..."
             : "Done: \(originalText.prefix(50))..."
         finishSessionUI(delay: 0.8)
     }
-    
+
     private func postProcess(_ text: String) -> String {
         var normalized = removeNonSpeechMarkers(from: text)
             .replacingOccurrences(of: "\n", with: " ")
@@ -872,16 +883,16 @@ class AppState: ObservableObject {
             .filter { !$0.isEmpty }
             .joined(separator: " ")
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        
+
         normalized = normalized.trimmingCharacters(in: CharacterSet(charactersIn: "\"'` "))
         return isIgnorableTranscript(normalized) ? "" : normalized
     }
-    
+
     private func isIgnorableTranscript(_ text: String) -> Bool {
         let lowercased = text
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
-        
+
         let ignorableTokens: Set<String> = [
             "[blank_audio]",
             "[silence]",
@@ -901,10 +912,10 @@ class AppState: ObservableObject {
             "[laughter]",
             "(laughter)"
         ]
-        
+
         return lowercased.isEmpty || ignorableTokens.contains(lowercased)
     }
-    
+
     private func removeNonSpeechMarkers(from text: String) -> String {
         let markerTerms = [
             "blank_audio",
@@ -933,7 +944,7 @@ class AppState: ObservableObject {
         }
         return cleaned
     }
-    
+
     private func startElapsedTimer() {
         elapsedTimer?.invalidate()
         elapsedTimer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in
@@ -943,14 +954,14 @@ class AppState: ObservableObject {
             }
         }
     }
-    
+
     private func finishSessionUI(delay: TimeInterval = 0) {
         elapsedTimer?.invalidate()
         elapsedTimer = nil
         recordingStartedAt = nil
         targetApplication = nil
         audioLevel = 0
-        
+
         guard showOverlay else { return }
         guard overlayIsVisible else { return }
         if delay > 0 {
@@ -964,15 +975,15 @@ class AppState: ObservableObject {
             hideOverlayNow()
         }
     }
-    
+
     private func hideOverlayNow() {
         guard overlayIsVisible else { return }
         overlayController?.hide()
         overlayIsVisible = false
     }
-    
+
     // MARK: - Permissions
-    
+
     var microphonePermissionLabel: String {
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
         case .authorized: return "Granted"
@@ -981,7 +992,7 @@ class AppState: ObservableObject {
         @unknown default: return "Unknown"
         }
     }
-    
+
     var speechPermissionLabel: String {
         switch AppleSpeechEngine.authorizationStatus {
         case .authorized: return "Granted"
@@ -990,68 +1001,68 @@ class AppState: ObservableObject {
         @unknown default: return "Unknown"
         }
     }
-    
+
     var accessibilityPermissionLabel: String {
         AXIsProcessTrusted() ? "Granted" : "Needs permission"
     }
-    
+
     var runningBundlePath: String {
         Bundle.main.bundlePath
     }
-    
+
     var whisperLogPath: String {
         WhisperEngine.logFileURL().path
     }
-    
+
     func retryHotkeyMonitor() {
         hotkeyMonitor.stop()
         hotkeyMonitor.start()
     }
-    
+
     func requestAccessibilityPermission() {
         let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
         _ = AXIsProcessTrustedWithOptions(options)
     }
-    
+
     func openPrivacySettings() {
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy") {
             NSWorkspace.shared.open(url)
         }
     }
-    
+
     func openAccessibilitySettings() {
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
             NSWorkspace.shared.open(url)
         }
     }
-    
+
     func openInputMonitoringSettings() {
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent") {
             NSWorkspace.shared.open(url)
         }
     }
-    
+
     func revealRunningApp() {
         NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: runningBundlePath)])
     }
-    
+
     private func currentTextTargetApplication() -> NSRunningApplication? {
         let ownBundleID = Bundle.main.bundleIdentifier
         let frontmost = NSWorkspace.shared.frontmostApplication
         if frontmost?.bundleIdentifier != ownBundleID, frontmost?.activationPolicy == .regular {
             return frontmost
         }
-        
+
         return nil
     }
-    
+
     // MARK: - Model
-    
+
     func availableModelsList() -> [(name: String, label: String, size: String)] {
         if let models = bundledModelManifest(), !models.isEmpty {
             return models.map { ($0.id, $0.label, $0.size) }
         }
-        
+
         return [
             ("tiny",           "Tiny - fastest, lowest quality", "39 MB"),
             ("tiny.en",        "Tiny English - fastest English", "39 MB"),
@@ -1065,14 +1076,15 @@ class AppState: ObservableObject {
             ("large-v3",       "Large v3 - best quality, slowest", "2.9 GB")
         ]
     }
-    
+
     func ensureModelExists() {
         guard !FileManager.default.fileExists(atPath: modelPath) else {
             modelDownloadStatus = "Installed: \(URL(fileURLWithPath: modelPath).lastPathComponent)"
             isModelDownloading = false
+            warmWhisperServerIfPossible()
             return
         }
-        
+
         guard downloadingModelPath != modelPath else { return }
         let fileName = URL(fileURLWithPath: modelPath).lastPathComponent
         let currentModelPath = modelPath
@@ -1080,7 +1092,7 @@ class AppState: ObservableObject {
         isModelDownloading = true
         modelDownloadStatus = "Downloading \(fileName)..."
         statusMessage = "Downloading model..."
-        
+
         Task {
             do {
                 let url = Self.modelDownloadURL(modelID: modelName, fileName: fileName)
@@ -1094,6 +1106,7 @@ class AppState: ObservableObject {
                     if self.statusMessage == "Downloading model..." {
                         self.statusMessage = "Ready"
                     }
+                    self.warmWhisperServerIfPossible()
                 }
             } catch {
                 await MainActor.run {
@@ -1108,13 +1121,13 @@ class AppState: ObservableObject {
             }
         }
     }
-    
+
     func revealModelsFolder() {
         let directory = URL(fileURLWithPath: modelPath).deletingLastPathComponent()
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         NSWorkspace.shared.activateFileViewerSelecting([directory])
     }
-    
+
     private func downloadModelWithProgress(from url: URL, to destination: URL, fileName: String) async throws {
         let tempURL = destination
             .deletingLastPathComponent()
@@ -1125,20 +1138,20 @@ class AppState: ObservableObject {
         try FileManager.default.moveItem(at: downloadedURL, to: tempURL)
         try FileManager.default.moveItem(at: tempURL, to: destination)
     }
-    
+
     private static func modelDownloadURL(modelID: String, fileName: String) -> URL {
         if let entry = bundledModelManifest()?.first(where: { $0.id == modelID }),
            let url = URL(string: entry.url) {
             return url
         }
-        
+
         return URL(string: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/\(fileName)")!
     }
-    
+
     private func bundledModelManifest() -> [ModelManifestEntry]? {
         Self.bundledModelManifest()
     }
-    
+
     private static func bundledModelManifest() -> [ModelManifestEntry]? {
         guard let url = Bundle.main.resourceURL?.appendingPathComponent("models/manifest.json"),
               let data = try? Data(contentsOf: url) else {
@@ -1146,16 +1159,16 @@ class AppState: ObservableObject {
         }
         return try? JSONDecoder().decode([ModelManifestEntry].self, from: data)
     }
-    
+
     private static func formatBytes(_ bytes: Int64) -> String {
         let formatter = ByteCountFormatter()
         formatter.allowedUnits = [.useKB, .useMB, .useGB]
         formatter.countStyle = .file
         return formatter.string(fromByteCount: bytes)
     }
-    
+
     // MARK: - Notification
-    
+
     private func showNotification(title: String, body: String) {
         let center = UNUserNotificationCenter.current()
         let content = UNMutableNotificationContent()
@@ -1177,12 +1190,12 @@ struct ModelManifestEntry: Decodable {
 
 final class ModelDownloader: NSObject, URLSessionDownloadDelegate {
     private var continuation: CheckedContinuation<URL, Error>?
-    
+
     static func download(from url: URL) async throws -> URL {
         let downloader = ModelDownloader()
         return try await downloader.download(from: url)
     }
-    
+
     private func download(from url: URL) async throws -> URL {
         try await withCheckedThrowingContinuation { continuation in
             self.continuation = continuation
@@ -1194,7 +1207,7 @@ final class ModelDownloader: NSObject, URLSessionDownloadDelegate {
             session.downloadTask(with: url).resume()
         }
     }
-    
+
     func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
         do {
             let tempURL = FileManager.default.temporaryDirectory
@@ -1208,7 +1221,7 @@ final class ModelDownloader: NSObject, URLSessionDownloadDelegate {
         continuation = nil
         session.invalidateAndCancel()
     }
-    
+
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
         if let error, continuation != nil {
             continuation?.resume(throwing: error)

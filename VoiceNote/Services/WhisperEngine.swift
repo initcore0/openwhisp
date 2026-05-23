@@ -8,12 +8,12 @@ class WhisperEngine {
         case cli
         case serverAPI
     }
-    
+
     var onTranscriptionComplete: ((UUID, String) -> Void)?
     var onTranscriptionError: ((UUID, String) -> Void)?
     var onProgress: ((Int) -> Void)?
     var onWorkerStatus: ((String) -> Void)?
-    
+
     private let serverPort: Int
     private let serverLock = NSLock()
     private var serverProcess: Process?
@@ -22,7 +22,7 @@ class WhisperEngine {
     private var serverStderrPipe: Pipe?
     private let pidFileURL: URL
     private let logFileURL: URL
-    
+
     init() {
         serverPort = Self.availableLoopbackPort() ?? 8178
         pidFileURL = Self.workerPIDFileURL()
@@ -30,13 +30,13 @@ class WhisperEngine {
         Self.stopStaleServerIfNeeded(pidFileURL: pidFileURL)
         log("WhisperEngine initialized with server port \(serverPort)")
     }
-    
+
     deinit {
         serverLock.lock()
         stopServerLocked()
         serverLock.unlock()
     }
-    
+
     /// Transcribe a single WAV file using whisper.cpp (async — doesn't block caller).
     func transcribe(
         requestID: UUID,
@@ -47,7 +47,7 @@ class WhisperEngine {
         deleteWhenDone: Bool = true,
         backend: Backend = .cli
     ) {
-        
+
         guard FileManager.default.fileExists(atPath: binaryPath) else {
             log("Missing whisper binary: \(binaryPath)")
             DispatchQueue.main.async {
@@ -55,7 +55,7 @@ class WhisperEngine {
             }
             return
         }
-        
+
         guard FileManager.default.fileExists(atPath: modelPath) else {
             log("Missing model: \(modelPath)")
             DispatchQueue.main.async {
@@ -63,7 +63,7 @@ class WhisperEngine {
             }
             return
         }
-        
+
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self = self else { return }
             switch backend {
@@ -91,7 +91,7 @@ class WhisperEngine {
             }
         }
     }
-    
+
     func stopServer() {
         serverLock.lock()
         stopServerLocked()
@@ -100,7 +100,32 @@ class WhisperEngine {
             self.onWorkerStatus?("Stopped")
         }
     }
-    
+
+    func warmServer(binaryPath: String, modelPath: String) {
+        guard FileManager.default.fileExists(atPath: modelPath) else {
+            DispatchQueue.main.async {
+                self.onWorkerStatus?("Waiting for model")
+            }
+            return
+        }
+
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard let self else { return }
+
+            guard FileManager.default.fileExists(atPath: binaryPath) else {
+                self.log("Cannot warm server, whisper binary missing: \(binaryPath)")
+                DispatchQueue.main.async {
+                    self.onWorkerStatus?("Server unavailable")
+                }
+                return
+            }
+
+            if self.ensureServer(binaryPath: binaryPath, modelPath: modelPath) {
+                self.log("Whisper server warmed for model: \(modelPath)")
+            }
+        }
+    }
+
     private func transcribeWithServerAPI(
         requestID: UUID,
         binaryPath: String,
@@ -134,7 +159,7 @@ class WhisperEngine {
             }
         }
     }
-    
+
     private func transcribeWithCLI(
         requestID: UUID,
         binaryPath: String,
@@ -143,7 +168,7 @@ class WhisperEngine {
         wavPath: String,
         deleteWhenDone: Bool
     ) {
-            
+
             let process = Process()
             process.executableURL = URL(fileURLWithPath: binaryPath)
             process.arguments = [
@@ -154,38 +179,38 @@ class WhisperEngine {
                 "-otxt",
                 "-nt"
             ]
-            
+
             let stdoutPipe = Pipe()
             let stderrPipe = Pipe()
             process.standardOutput = stdoutPipe
             process.standardError = stderrPipe
-            
+
             do {
                 try process.run()
-                
+
                 let stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
                 let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
                 process.waitUntilExit()
                 if deleteWhenDone {
                     try? FileManager.default.removeItem(atPath: wavPath)
                 }
-                
+
                 let exitCode = process.terminationStatus
                 let stderr = String(data: stderrData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                
+
                 if !stderr.isEmpty {
                     self.log("CLI stderr: \(stderr.prefix(2000))")
                     print("[WhisperEngine] stderr: \(stderr)")
                 }
-                
+
                 if exitCode == 0 {
                     let text = (String(data: stdoutData, encoding: .utf8) ?? "")
                         .trimmingCharacters(in: .whitespacesAndNewlines)
                         .replacingOccurrences(of: "\n", with: " ")
-                    
+
                     print("[WhisperEngine] result (exit=\(exitCode)): \"\(text)\" (len=\(text.count))")
                     self.log("CLI result exit=\(exitCode), textLen=\(text.count)")
-                    
+
                     DispatchQueue.main.async {
                         if text.isEmpty {
                             // No speech detected — skip
@@ -209,7 +234,7 @@ class WhisperEngine {
                 }
             }
     }
-    
+
     private func transcribeWithWorker(
         requestID: UUID,
         binaryPath: String,
@@ -221,7 +246,7 @@ class WhisperEngine {
         guard ensureServer(binaryPath: binaryPath, modelPath: modelPath) else {
             throw WhisperWorkerError.unavailable
         }
-        
+
         let text = try postInference(wavPath: wavPath, language: language)
         guard !text.isEmpty else {
             throw WhisperWorkerError.emptyTranscript
@@ -231,17 +256,17 @@ class WhisperEngine {
         }
         return text
     }
-    
+
     private func ensureServer(binaryPath: String, modelPath: String) -> Bool {
         serverLock.lock()
         defer { serverLock.unlock() }
-        
+
         if serverModelPath == modelPath, serverProcess?.isRunning == true, healthCheck() {
             return true
         }
-        
+
         stopServerLocked()
-        
+
         guard let serverPath = serverBinaryPath(for: binaryPath) else {
             log("whisper-server unavailable next to \(binaryPath)")
             DispatchQueue.main.async {
@@ -249,7 +274,7 @@ class WhisperEngine {
             }
             return false
         }
-        
+
         let process = Process()
         process.executableURL = URL(fileURLWithPath: serverPath)
         process.arguments = [
@@ -259,7 +284,7 @@ class WhisperEngine {
             "--no-timestamps"
         ]
         log("Starting whisper-server: \(serverPath) \(process.arguments?.joined(separator: " ") ?? "")")
-        
+
         let stdoutPipe = Pipe()
         let stderrPipe = Pipe()
         stdoutPipe.fileHandleForReading.readabilityHandler = { handle in
@@ -274,7 +299,7 @@ class WhisperEngine {
         }
         process.standardOutput = stdoutPipe
         process.standardError = stderrPipe
-        
+
         do {
             DispatchQueue.main.async {
                 self.onWorkerStatus?("Loading on port \(self.serverPort)...")
@@ -285,7 +310,7 @@ class WhisperEngine {
             serverStdoutPipe = stdoutPipe
             serverStderrPipe = stderrPipe
             writeWorkerPID(process.processIdentifier)
-            
+
             if waitForHealth(timeout: 45), process.isRunning {
                 DispatchQueue.main.async {
                     self.onWorkerStatus?("Loaded on port \(self.serverPort)")
@@ -296,14 +321,14 @@ class WhisperEngine {
             log("Failed to start worker: \(error.localizedDescription)")
             print("[WhisperEngine] failed to start worker: \(error.localizedDescription)")
         }
-        
+
         stopServerLocked()
         DispatchQueue.main.async {
             self.onWorkerStatus?("Worker unavailable")
         }
         return false
     }
-    
+
     private func stopServerLocked() {
         serverStdoutPipe?.fileHandleForReading.readabilityHandler = nil
         serverStderrPipe?.fileHandleForReading.readabilityHandler = nil
@@ -323,7 +348,7 @@ class WhisperEngine {
         serverStderrPipe = nil
         try? FileManager.default.removeItem(at: pidFileURL)
     }
-    
+
     private func serverBinaryPath(for cliPath: String) -> String? {
         if let bundled = Bundle.main.resourceURL?
             .appendingPathComponent("whisper/whisper-server")
@@ -331,21 +356,21 @@ class WhisperEngine {
            FileManager.default.isExecutableFile(atPath: bundled) {
             return bundled
         }
-        
+
         let cliURL = URL(fileURLWithPath: cliPath)
         let sibling = cliURL.deletingLastPathComponent().appendingPathComponent("whisper-server").path
         if FileManager.default.isExecutableFile(atPath: sibling) {
             return sibling
         }
-        
+
         let defaultPath = "\(NSHomeDirectory())/whisper.cpp/build/bin/whisper-server"
         if FileManager.default.isExecutableFile(atPath: defaultPath) {
             return defaultPath
         }
-        
+
         return nil
     }
-    
+
     private func waitForHealth(timeout: TimeInterval) -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
@@ -356,12 +381,12 @@ class WhisperEngine {
         }
         return false
     }
-    
+
     private func healthCheck() -> Bool {
         guard let url = URL(string: "http://127.0.0.1:\(serverPort)/health") else { return false }
         var request = URLRequest(url: url)
         request.timeoutInterval = 1
-        
+
         let semaphore = DispatchSemaphore(value: 0)
         var ok = false
         URLSession.shared.dataTask(with: request) { _, response, _ in
@@ -373,12 +398,12 @@ class WhisperEngine {
         _ = semaphore.wait(timeout: .now() + 1.2)
         return ok
     }
-    
+
     private func postInference(wavPath: String, language: String) throws -> String {
         guard let url = URL(string: "http://127.0.0.1:\(serverPort)/inference") else {
             throw WhisperWorkerError.invalidURL
         }
-        
+
         let boundary = "VoiceNoteBoundary-\(UUID().uuidString)"
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -391,39 +416,39 @@ class WhisperEngine {
         )
         let fileSize = (try? FileManager.default.attributesOfItem(atPath: wavPath)[.size] as? NSNumber)?.int64Value ?? -1
         log("Server API POST /inference port=\(serverPort), wav=\(URL(fileURLWithPath: wavPath).lastPathComponent), bytes=\(fileSize), language=\(language)")
-        
+
         let semaphore = DispatchSemaphore(value: 0)
         var resultData: Data?
         var resultResponse: URLResponse?
         var resultError: Error?
-        
+
         URLSession.shared.dataTask(with: request) { data, response, error in
             resultData = data
             resultResponse = response
             resultError = error
             semaphore.signal()
         }.resume()
-        
+
         _ = semaphore.wait(timeout: .now() + 130)
-        
+
         if let resultError {
             throw resultError
         }
-        
+
         guard let http = resultResponse as? HTTPURLResponse, let resultData else {
             throw WhisperWorkerError.emptyResponse
         }
-        
+
         guard http.statusCode == 200 else {
             let message = String(data: resultData, encoding: .utf8) ?? "HTTP \(http.statusCode)"
             log("Server API HTTP \(http.statusCode): \(message.prefix(2000))")
             throw WhisperWorkerError.serverError(message)
         }
-        
+
         struct InferenceResponse: Decodable {
             let text: String?
         }
-        
+
         let decoded = try JSONDecoder().decode(InferenceResponse.self, from: resultData)
         let text = decoded.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let rawBody = String(data: resultData, encoding: .utf8) ?? ""
@@ -431,16 +456,16 @@ class WhisperEngine {
         print("[WhisperEngine] worker result: \"\(text)\" (len=\(text.count))")
         return text
     }
-    
+
     private func multipartBody(boundary: String, wavPath: String, language: String) throws -> Data {
         var data = Data()
-        
+
         func appendField(_ name: String, _ value: String) {
             data.append("--\(boundary)\r\n".data(using: .utf8)!)
             data.append("Content-Disposition: form-data; name=\"\(name)\"\r\n\r\n".data(using: .utf8)!)
             data.append("\(value)\r\n".data(using: .utf8)!)
         }
-        
+
         appendField("response_format", "json")
         appendField("temperature", "0.0")
         appendField("temperature_inc", "0.2")
@@ -448,7 +473,7 @@ class WhisperEngine {
         appendField("no_timestamps", "true")
         appendField("language", language == "auto" ? "auto" : language)
         appendField("suppress_non_speech", "true")
-        
+
         let fileURL = URL(fileURLWithPath: wavPath)
         let fileData = try Data(contentsOf: fileURL)
         data.append("--\(boundary)\r\n".data(using: .utf8)!)
@@ -459,25 +484,25 @@ class WhisperEngine {
         data.append("--\(boundary)--\r\n".data(using: .utf8)!)
         return data
     }
-    
+
     private static func availableLoopbackPort() -> Int? {
         let socketFD = socket(AF_INET, SOCK_STREAM, 0)
         guard socketFD >= 0 else { return nil }
         defer { close(socketFD) }
-        
+
         var addr = sockaddr_in()
         addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
         addr.sin_family = sa_family_t(AF_INET)
         addr.sin_port = in_port_t(0).bigEndian
         addr.sin_addr = in_addr(s_addr: inet_addr("127.0.0.1"))
-        
+
         let bindResult = withUnsafePointer(to: &addr) {
             $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
                 bind(socketFD, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
             }
         }
         guard bindResult == 0 else { return nil }
-        
+
         var boundAddr = sockaddr_in()
         var length = socklen_t(MemoryLayout<sockaddr_in>.size)
         let nameResult = withUnsafeMutablePointer(to: &boundAddr) {
@@ -486,10 +511,10 @@ class WhisperEngine {
             }
         }
         guard nameResult == 0 else { return nil }
-        
+
         return Int(UInt16(bigEndian: boundAddr.sin_port))
     }
-    
+
     private func writeWorkerPID(_ pid: Int32) {
         do {
             try FileManager.default.createDirectory(
@@ -501,17 +526,17 @@ class WhisperEngine {
             print("[WhisperEngine] failed to write worker PID: \(error.localizedDescription)")
         }
     }
-    
+
     private static func workerPIDFileURL() -> URL {
         URL(fileURLWithPath: NSHomeDirectory())
             .appendingPathComponent("Library/Caches/com.encryptedcat.voicenote/whisper-server.pid")
     }
-    
+
     static func logFileURL() -> URL {
         URL(fileURLWithPath: NSHomeDirectory())
             .appendingPathComponent("Library/Caches/com.encryptedcat.voicenote/whisper-engine.log")
     }
-    
+
     private func log(_ message: String) {
         do {
             try FileManager.default.createDirectory(
@@ -531,7 +556,7 @@ class WhisperEngine {
             print("[WhisperEngine] log write failed: \(error.localizedDescription)")
         }
     }
-    
+
     private static func stopStaleServerIfNeeded(pidFileURL: URL) {
         guard
             let rawPID = try? String(contentsOf: pidFileURL, encoding: .utf8)
@@ -539,7 +564,7 @@ class WhisperEngine {
             let pid = Int32(rawPID),
             pid > 0
         else { return }
-        
+
         if kill(pid, 0) == 0 {
             print("[WhisperEngine] stopping stale whisper-server pid \(pid)")
             kill(pid, SIGTERM)
@@ -548,7 +573,7 @@ class WhisperEngine {
                 kill(pid, SIGKILL)
             }
         }
-        
+
         try? FileManager.default.removeItem(at: pidFileURL)
     }
 }
@@ -559,7 +584,7 @@ enum WhisperWorkerError: LocalizedError {
     case serverError(String)
     case unavailable
     case emptyTranscript
-    
+
     var errorDescription: String? {
         switch self {
         case .invalidURL:
