@@ -117,9 +117,20 @@ struct SettingsView: View {
                 Text("Live chunks (experimental)").tag("liveChunks")
             }
             
+            Picker("Live Chunk Duration", selection: $appState.liveChunkDuration) {
+                Text("1.0 sec - fastest").tag(1.0)
+                Text("1.5 sec").tag(1.5)
+                Text("2.0 sec - balanced").tag(2.0)
+                Text("3.0 sec - accurate").tag(3.0)
+            }
+            
             Toggle("Show overlay while recording", isOn: $appState.showOverlay)
             Toggle("Add trailing space after paste", isOn: $appState.addTrailingSpace)
             Toggle("Restore clipboard after paste", isOn: $appState.restoreClipboard)
+            
+            Text("Shorter chunks feel faster but can reduce Whisper accuracy. Live chunks transcribe up to two chunks in parallel and paste them in order.")
+                .font(.caption)
+                .foregroundColor(.secondary)
             
             Text("Clipboard restore reads your clipboard and may trigger macOS privacy prompts.")
                 .font(.caption)

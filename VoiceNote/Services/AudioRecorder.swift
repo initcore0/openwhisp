@@ -19,8 +19,14 @@ class AudioRecorder: NSObject, AVAudioRecorderDelegate {
     private var recorder: AVAudioRecorder?
     private var recordingURL: URL?
     private var meterTimer: Timer?
+    private let streamQueue = DispatchQueue(label: "com.encryptedcat.voicenote.audio-stream")
     
     // Streaming state
+    private var streamingEngine: AVAudioEngine?
+    private var streamingFile: AVAudioFile?
+    private var streamingURL: URL?
+    private var streamingFormat: AVAudioFormat?
+    private var streamFileIndex = 0
     private var chunkTimer: Timer?
     private var streamingChunks: [URL] = []
     private var onChunkComplete: ((URL?) -> Void)?
@@ -92,28 +98,41 @@ class AudioRecorder: NSObject, AVAudioRecorderDelegate {
         onChunkComplete = onChunk
         streamingChunks = []
         chunkCount = 0
+        streamFileIndex = 0
         
-        let cacheDir = URL(fileURLWithPath: NSHomeDirectory())
-            .appendingPathComponent("Library/Caches/com.encryptedcat.voicenote")
-        try? FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
-        
-        let fileName = "chunk_0_\(Int(Date().timeIntervalSince1970 * 1000)).wav"
-        recordingURL = cacheDir.appendingPathComponent(fileName)
-        
-        let settings = makeSettings()
+        let engine = AVAudioEngine()
+        let input = engine.inputNode
+        let format = input.outputFormat(forBus: 0)
+        streamingEngine = engine
+        streamingFormat = format
         
         do {
-            recorder = try AVAudioRecorder(url: recordingURL!, settings: settings)
-            recorder?.delegate = self
-            recorder?.isMeteringEnabled = true
-            recorder?.prepareToRecord()
-            recorder?.record()
-            startMetering()
-            onStateChanged?(.recording)
+            try streamQueue.sync {
+                try self.openNextStreamingFile(format: format)
+            }
             
-            // Schedule chunk rotation
+            input.installTap(onBus: 0, bufferSize: 2048, format: format) { [weak self] buffer, _ in
+                guard let self else { return }
+                self.publishLevel(from: buffer)
+                self.streamQueue.async {
+                    do {
+                        try self.streamingFile?.write(from: buffer)
+                    } catch {
+                        DispatchQueue.main.async {
+                            self.onStateChanged?(.error("Streaming write failed: \(error.localizedDescription)"))
+                        }
+                    }
+                }
+            }
+            
+            try engine.start()
+            onStateChanged?(.recording)
             scheduleChunkTimer(chunkDuration: chunkDuration)
         } catch {
+            input.removeTap(onBus: 0)
+            streamingEngine?.stop()
+            streamingEngine = nil
+            isStreaming = false
             onStateChanged?(.error("Streaming failed: \(error.localizedDescription)"))
         }
     }
@@ -126,28 +145,28 @@ class AudioRecorder: NSObject, AVAudioRecorderDelegate {
     }
     
     private func rotateChunk() {
-        guard let url = recordingURL else { return }
-        recorder?.stop()
-        
-        // Callback with the completed chunk
-        onChunkComplete?(url)
-        streamingChunks.append(url)
-        chunkCount += 1
-        
-        // Start a new chunk
-        let cacheDir = URL(fileURLWithPath: NSHomeDirectory())
-            .appendingPathComponent("Library/Caches/com.encryptedcat.voicenote")
-        let fileName = "chunk_\(chunkCount)_\(Int(Date().timeIntervalSince1970 * 1000)).wav"
-        recordingURL = cacheDir.appendingPathComponent(fileName)
-        
-        do {
-            self.recorder = try AVAudioRecorder(url: recordingURL!, settings: makeSettings())
-            self.recorder?.delegate = self
-            self.recorder?.isMeteringEnabled = true
-            self.recorder?.prepareToRecord()
-            self.recorder?.record()
-        } catch {
-            onStateChanged?(.error("Chunk rotation failed: \(error.localizedDescription)"))
+        guard isStreaming, let format = streamingFormat else { return }
+        streamQueue.async {
+            let completedURL = self.streamingURL
+            self.streamingFile = nil
+            self.streamingURL = nil
+            
+            do {
+                try self.openNextStreamingFile(format: format)
+            } catch {
+                DispatchQueue.main.async {
+                    self.onStateChanged?(.error("Chunk rotation failed: \(error.localizedDescription)"))
+                }
+                return
+            }
+            
+            DispatchQueue.main.async {
+                if let completedURL {
+                    self.onChunkComplete?(completedURL)
+                    self.streamingChunks.append(completedURL)
+                    self.chunkCount += 1
+                }
+            }
         }
     }
     
@@ -161,10 +180,26 @@ class AudioRecorder: NSObject, AVAudioRecorderDelegate {
         meterTimer = nil
         
         // Stop recording
-        recorder?.stop()
-        let path = recordingURL
-        recorder = nil
-        recordingURL = nil
+        let path: URL?
+        if isStreaming, let engine = streamingEngine {
+            engine.inputNode.removeTap(onBus: 0)
+            engine.stop()
+            streamingEngine = nil
+            
+            path = streamQueue.sync {
+                let currentURL = streamingURL
+                streamingFile = nil
+                streamingURL = nil
+                streamingFormat = nil
+                streamFileIndex = 0
+                return currentURL
+            }
+        } else {
+            recorder?.stop()
+            path = recordingURL
+            recorder = nil
+            recordingURL = nil
+        }
         
         // Chunk files may still be in use by whisper.cpp when streaming stops.
         // WhisperEngine removes each WAV after its process exits.
@@ -200,6 +235,40 @@ class AudioRecorder: NSObject, AVAudioRecorderDelegate {
             recorder.updateMeters()
             let power = recorder.averagePower(forChannel: 0)
             let normalized = max(0.0, min(1.0, (power + 60.0) / 60.0))
+            self.onLevelChanged?(normalized)
+        }
+    }
+    
+    private func openNextStreamingFile(format: AVAudioFormat) throws {
+        let cacheDir = URL(fileURLWithPath: NSHomeDirectory())
+            .appendingPathComponent("Library/Caches/com.encryptedcat.voicenote")
+        try FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
+        
+        let fileName = "chunk_\(streamFileIndex)_\(Int(Date().timeIntervalSince1970 * 1000)).wav"
+        streamFileIndex += 1
+        let url = cacheDir.appendingPathComponent(fileName)
+        streamingFile = try AVAudioFile(forWriting: url, settings: format.settings)
+        streamingURL = url
+    }
+    
+    private func publishLevel(from buffer: AVAudioPCMBuffer) {
+        guard let channelData = buffer.floatChannelData, buffer.frameLength > 0 else { return }
+        let channelCount = Int(buffer.format.channelCount)
+        let frameCount = Int(buffer.frameLength)
+        var sum: Float = 0
+        
+        for channel in 0..<channelCount {
+            let samples = channelData[channel]
+            for frame in 0..<frameCount {
+                let sample = samples[frame]
+                sum += sample * sample
+            }
+        }
+        
+        let divisor = Float(max(1, channelCount * frameCount))
+        let rms = sqrt(sum / divisor)
+        let normalized = max(0, min(1, rms * 8))
+        DispatchQueue.main.async {
             self.onLevelChanged?(normalized)
         }
     }

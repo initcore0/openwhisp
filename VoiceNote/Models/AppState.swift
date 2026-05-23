@@ -59,6 +59,10 @@ class AppState: ObservableObject {
         didSet { UserDefaults.standard.set(addTrailingSpace, forKey: "addTrailingSpace") }
     }
     
+    @Published var liveChunkDuration: Double {
+        didSet { UserDefaults.standard.set(liveChunkDuration, forKey: "liveChunkDuration") }
+    }
+    
     // MARK: - Runtime State
     
     @Published var isRecording = false
@@ -84,8 +88,12 @@ class AppState: ObservableObject {
     private var overlayIsVisible = false
     private var activeSessionID = UUID()
     private var transcriptionRequests: [UUID: TranscriptionRequest] = [:]
-    private var pendingLiveChunks: [URL] = []
-    private var liveChunkInFlight = false
+    private var pendingLiveChunks: [(sequence: Int, url: URL)] = []
+    private var liveInFlightCount = 0
+    private let liveMaxConcurrentTranscriptions = 2
+    private var nextLiveChunkSequence = 0
+    private var nextLiveOutputSequence = 0
+    private var liveChunkResults: [Int: String] = [:]
     private var chunkCount = 0
     private var currentSessionText = ""
     private var isStreamingSession = false
@@ -99,6 +107,7 @@ class AppState: ObservableObject {
     private struct TranscriptionRequest {
         let sessionID: UUID
         let kind: TranscriptionKind
+        let sequence: Int?
     }
     
     var hotkeyHelpText: String {
@@ -122,6 +131,7 @@ class AppState: ObservableObject {
         showOverlay = UserDefaults.standard.object(forKey: "showOverlay") as? Bool ?? true
         restoreClipboard = UserDefaults.standard.object(forKey: "restoreClipboard") as? Bool ?? false
         addTrailingSpace = UserDefaults.standard.object(forKey: "addTrailingSpace") as? Bool ?? false
+        liveChunkDuration = UserDefaults.standard.object(forKey: "liveChunkDuration") as? Double ?? 2.0
         
         wireUpServices()
         overlayController = OverlayWindowController(appState: self)
@@ -163,9 +173,13 @@ class AppState: ObservableObject {
                 guard let self else { return }
                 guard let request = self.consumeRequest(requestID), request.sessionID == self.activeSessionID else { return }
                 if request.kind == .liveChunk {
-                    self.liveChunkInFlight = false
+                    if let sequence = request.sequence {
+                        self.liveChunkResults[sequence] = ""
+                    }
+                    self.liveInFlightCount = max(0, self.liveInFlightCount - 1)
                     self.processNextLiveChunk()
-                    if self.isTranscribing && self.pendingLiveChunks.isEmpty && !self.liveChunkInFlight {
+                    self.flushOrderedLiveResults()
+                    if self.isTranscribing && self.livePipelineIsDrained {
                         self.completeFinalText(self.currentSessionText)
                     }
                     self.statusMessage = self.isTranscribing ? "Finalizing..." : "Listening..."
@@ -256,7 +270,7 @@ class AppState: ObservableObject {
         activeSessionID = UUID()
         transcriptionRequests.removeAll()
         cleanupPendingLiveChunks()
-        liveChunkInFlight = false
+        resetLivePipeline()
         acceptingLiveChunks = false
         isStreamingSession = false
         isTranscribing = false
@@ -330,7 +344,7 @@ class AppState: ObservableObject {
                 if !micID.isEmpty {
                     recorder.selectDevice(micID)
                 }
-                recorder.startStreaming(chunkDuration: 3.0) { [weak self] chunkPath in
+                recorder.startStreaming(chunkDuration: self.liveChunkDuration) { [weak self] chunkPath in
                     Task { @MainActor in
                         guard let self, let path = chunkPath, self.acceptingLiveChunks else {
                             if let chunkPath {
@@ -370,7 +384,7 @@ class AppState: ObservableObject {
         activeSessionID = UUID()
         transcriptionRequests.removeAll()
         cleanupPendingLiveChunks()
-        liveChunkInFlight = false
+        resetLivePipeline()
         acceptingLiveChunks = streaming
         currentSessionText = ""
         streamingText = ""
@@ -395,9 +409,13 @@ class AppState: ObservableObject {
         
         guard !text.isEmpty else {
             if request.kind == .liveChunk {
-                liveChunkInFlight = false
+                if let sequence = request.sequence {
+                    liveChunkResults[sequence] = ""
+                }
+                liveInFlightCount = max(0, liveInFlightCount - 1)
                 processNextLiveChunk()
-                if isTranscribing && pendingLiveChunks.isEmpty && !liveChunkInFlight {
+                flushOrderedLiveResults()
+                if isTranscribing && livePipelineIsDrained {
                     completeFinalText(currentSessionText)
                 } else {
                     statusMessage = isTranscribing ? "Finalizing..." : "Listening..."
@@ -412,10 +430,13 @@ class AppState: ObservableObject {
         
         switch request.kind {
         case .liveChunk:
-            appendLiveChunk(text)
-            liveChunkInFlight = false
+            if let sequence = request.sequence {
+                liveChunkResults[sequence] = text
+            }
+            liveInFlightCount = max(0, liveInFlightCount - 1)
             processNextLiveChunk()
-            if isTranscribing && pendingLiveChunks.isEmpty && !liveChunkInFlight {
+            flushOrderedLiveResults()
+            if isTranscribing && livePipelineIsDrained {
                 completeFinalText(currentSessionText)
             }
         case .final:
@@ -427,23 +448,26 @@ class AppState: ObservableObject {
     }
     
     private func enqueueLiveChunk(_ path: URL) {
-        pendingLiveChunks.append(path)
+        let sequence = nextLiveChunkSequence
+        nextLiveChunkSequence += 1
+        pendingLiveChunks.append((sequence, path))
         chunkCount += 1
         statusMessage = isTranscribing ? "Finalizing..." : "Queued chunk #\(chunkCount)..."
         processNextLiveChunk()
     }
     
     private func processNextLiveChunk() {
-        guard outputMode == "liveChunks", !liveChunkInFlight, let path = pendingLiveChunks.first else { return }
+        guard outputMode == "liveChunks", liveInFlightCount < liveMaxConcurrentTranscriptions, let next = pendingLiveChunks.first else { return }
         pendingLiveChunks.removeFirst()
-        liveChunkInFlight = true
-        statusMessage = isTranscribing ? "Finalizing..." : "Transcribing chunk..."
-        startTranscription(path: path, kind: .liveChunk)
+        liveInFlightCount += 1
+        statusMessage = isTranscribing ? "Finalizing..." : "Transcribing chunks..."
+        startTranscription(path: next.url, kind: .liveChunk, sequence: next.sequence)
+        processNextLiveChunk()
     }
     
-    private func startTranscription(path: URL, kind: TranscriptionKind) {
+    private func startTranscription(path: URL, kind: TranscriptionKind, sequence: Int? = nil) {
         let requestID = UUID()
-        transcriptionRequests[requestID] = TranscriptionRequest(sessionID: activeSessionID, kind: kind)
+        transcriptionRequests[requestID] = TranscriptionRequest(sessionID: activeSessionID, kind: kind, sequence: sequence)
         whisperEngine.transcribe(
             requestID: requestID,
             binaryPath: whisperBinaryPath,
@@ -458,10 +482,31 @@ class AppState: ObservableObject {
     }
     
     private func cleanupPendingLiveChunks() {
-        for path in pendingLiveChunks {
-            try? FileManager.default.removeItem(at: path)
+        for chunk in pendingLiveChunks {
+            try? FileManager.default.removeItem(at: chunk.url)
         }
         pendingLiveChunks.removeAll()
+    }
+    
+    private var livePipelineIsDrained: Bool {
+        pendingLiveChunks.isEmpty && liveInFlightCount == 0 && liveChunkResults.isEmpty
+    }
+    
+    private func resetLivePipeline() {
+        cleanupPendingLiveChunks()
+        liveInFlightCount = 0
+        nextLiveChunkSequence = 0
+        nextLiveOutputSequence = 0
+        liveChunkResults.removeAll()
+    }
+    
+    private func flushOrderedLiveResults() {
+        while let text = liveChunkResults.removeValue(forKey: nextLiveOutputSequence) {
+            if !text.isEmpty {
+                appendLiveChunk(text)
+            }
+            nextLiveOutputSequence += 1
+        }
     }
     
     private func appendLiveChunk(_ text: String) {
