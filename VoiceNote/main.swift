@@ -87,6 +87,13 @@ class VoiceNoteApp: NSObject, NSApplicationDelegate {
         let statusItem = NSMenuItem(title: "● \(appState.statusMessage)", action: nil, keyEquivalent: "")
         statusItem.isEnabled = false
         menu.addItem(statusItem)
+        
+        let modelStatusTitle = appState.isModelDownloading
+            ? "Model: \(appState.modelDownloadStatus)"
+            : "Model: \(appState.modelDownloadStatus)"
+        let modelStatus = NSMenuItem(title: modelStatusTitle, action: nil, keyEquivalent: "")
+        modelStatus.isEnabled = false
+        menu.addItem(modelStatus)
         menu.addItem(.separator())
 
         // Last transcription

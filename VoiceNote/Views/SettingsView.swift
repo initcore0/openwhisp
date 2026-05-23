@@ -65,11 +65,34 @@ struct SettingsView: View {
                 .font(.caption)
                 .foregroundColor(.secondary)
             
+            HStack(spacing: 10) {
+                if appState.isModelDownloading {
+                    ProgressView()
+                        .controlSize(.small)
+                    ProgressView(value: appState.modelDownloadProgress)
+                        .frame(maxWidth: 240)
+                }
+                
+                Text(appState.modelDownloadStatus)
+                    .font(.caption)
+                    .foregroundColor(appState.isModelDownloading ? .orange : .secondary)
+            }
+            
             TextField("Model Path", text: $appState.modelPath)
                 .textFieldStyle(.roundedBorder)
             
-            Button("Browse...") {
-                browseModelPath()
+            HStack {
+                Button("Download / Check Model") {
+                    appState.ensureModelExists()
+                }
+                
+                Button("Reveal Models Folder") {
+                    appState.revealModelsFolder()
+                }
+                
+                Button("Browse...") {
+                    browseModelPath()
+                }
             }
         }
     }

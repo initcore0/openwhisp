@@ -103,6 +103,9 @@ class AppState: ObservableObject {
     @Published var error: String?
     @Published var whisperWorkerStatus: String = "Not started"
     @Published var translationStatus: String = "Not configured"
+    @Published var modelDownloadStatus: String = "Not checked"
+    @Published var modelDownloadProgress: Double = 0
+    @Published var isModelDownloading = false
     @Published var audioLevel: Float = 0
     @Published var recordingElapsed: TimeInterval = 0
     @Published var inputMonitoringPermissionLabel: String = "Unknown"
@@ -135,6 +138,7 @@ class AppState: ObservableObject {
     private var isAppleSpeechSession = false
     private var appleLiveInsertedText = ""
     private var appleDidCompleteFinal = false
+    private var downloadingModelPath: String?
     
     private enum TranscriptionKind {
         case liveChunk
@@ -1064,18 +1068,101 @@ class AppState: ObservableObject {
     }
     
     func ensureModelExists() {
-        guard !FileManager.default.fileExists(atPath: modelPath) else { return }
+        guard !FileManager.default.fileExists(atPath: modelPath) else {
+            modelDownloadStatus = "Installed: \(URL(fileURLWithPath: modelPath).lastPathComponent)"
+            modelDownloadProgress = 1
+            isModelDownloading = false
+            return
+        }
+        
+        guard downloadingModelPath != modelPath else { return }
         let fileName = URL(fileURLWithPath: modelPath).lastPathComponent
+        let currentModelPath = modelPath
+        downloadingModelPath = currentModelPath
+        isModelDownloading = true
+        modelDownloadProgress = 0
+        modelDownloadStatus = "Downloading \(fileName)..."
+        statusMessage = "Downloading model..."
+        
         Task {
             do {
                 let url = Self.modelDownloadURL(modelID: modelName, fileName: fileName)
-                let dest = URL(fileURLWithPath: modelPath)
+                let dest = URL(fileURLWithPath: currentModelPath)
                 try dest.deletingLastPathComponent().createDirectories()
-                try await URLSession.shared.downloadModel(from: url, to: dest)
-            } catch {
-                Task { @MainActor in
-                    self.error = "Model download failed. Check your connection or choose another model.\nPath: \(modelPath)"
+                try await downloadModelWithProgress(from: url, to: dest, fileName: fileName)
+                await MainActor.run {
+                    self.isModelDownloading = false
+                    self.downloadingModelPath = nil
+                    self.modelDownloadProgress = 1
+                    self.modelDownloadStatus = "Installed: \(fileName)"
+                    if self.statusMessage == "Downloading model..." {
+                        self.statusMessage = "Ready"
+                    }
                 }
+            } catch {
+                await MainActor.run {
+                    self.isModelDownloading = false
+                    self.downloadingModelPath = nil
+                    self.modelDownloadStatus = "Download failed: \(fileName)"
+                    self.error = "Model download failed: \(error.localizedDescription)\nPath: \(currentModelPath)"
+                    if self.statusMessage == "Downloading model..." {
+                        self.statusMessage = "Error"
+                    }
+                }
+            }
+        }
+    }
+    
+    func revealModelsFolder() {
+        let directory = URL(fileURLWithPath: modelPath).deletingLastPathComponent()
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        NSWorkspace.shared.activateFileViewerSelecting([directory])
+    }
+    
+    private func downloadModelWithProgress(from url: URL, to destination: URL, fileName: String) async throws {
+        let (bytes, response) = try await URLSession.shared.bytes(from: url)
+        let expectedBytes = response.expectedContentLength
+        let tempURL = destination
+            .deletingLastPathComponent()
+            .appendingPathComponent(".\(destination.lastPathComponent).download")
+        try? FileManager.default.removeItem(at: tempURL)
+        FileManager.default.createFile(atPath: tempURL.path, contents: nil)
+        
+        let handle = try FileHandle(forWritingTo: tempURL)
+        defer { try? handle.close() }
+        
+        var downloadedBytes: Int64 = 0
+        var buffer = Data()
+        buffer.reserveCapacity(256 * 1024)
+        
+        for try await byte in bytes {
+            buffer.append(byte)
+            if buffer.count >= 256 * 1024 {
+                handle.write(buffer)
+                downloadedBytes += Int64(buffer.count)
+                buffer.removeAll(keepingCapacity: true)
+                await updateModelDownloadProgress(downloadedBytes: downloadedBytes, expectedBytes: expectedBytes, fileName: fileName)
+            }
+        }
+        
+        if !buffer.isEmpty {
+            handle.write(buffer)
+            downloadedBytes += Int64(buffer.count)
+            await updateModelDownloadProgress(downloadedBytes: downloadedBytes, expectedBytes: expectedBytes, fileName: fileName)
+        }
+        
+        try? FileManager.default.removeItem(at: destination)
+        try FileManager.default.moveItem(at: tempURL, to: destination)
+    }
+    
+    private func updateModelDownloadProgress(downloadedBytes: Int64, expectedBytes: Int64, fileName: String) async {
+        await MainActor.run {
+            if expectedBytes > 0 {
+                let progress = min(1, max(0, Double(downloadedBytes) / Double(expectedBytes)))
+                modelDownloadProgress = progress
+                modelDownloadStatus = "Downloading \(fileName): \(Int(progress * 100))%"
+            } else {
+                modelDownloadStatus = "Downloading \(fileName): \(Self.formatBytes(downloadedBytes))"
             }
         }
     }
@@ -1099,6 +1186,13 @@ class AppState: ObservableObject {
             return nil
         }
         return try? JSONDecoder().decode([ModelManifestEntry].self, from: data)
+    }
+    
+    private static func formatBytes(_ bytes: Int64) -> String {
+        let formatter = ByteCountFormatter()
+        formatter.allowedUnits = [.useKB, .useMB, .useGB]
+        formatter.countStyle = .file
+        return formatter.string(fromByteCount: bytes)
     }
     
     // MARK: - Notification
