@@ -1,6 +1,6 @@
 import Foundation
 
-// MARK: - OpenAI Translation Service
+// MARK: - OpenAI Text Service
 
 final class OpenAITranslationService {
     enum TranslationError: LocalizedError {
@@ -21,7 +21,7 @@ final class OpenAITranslationService {
             case .apiError(let message):
                 return message
             case .noTranslation:
-                return "OpenAI did not return a translation."
+                return "OpenAI did not return text."
             }
         }
     }
@@ -63,8 +63,9 @@ final class OpenAITranslationService {
         }.resume()
     }
     
-    func translate(
+    func processFinalText(
         text: String,
+        mode: String,
         targetLanguage: String,
         apiKey: String,
         model: String,
@@ -79,16 +80,16 @@ final class OpenAITranslationService {
             completion(.failure(TranslationError.invalidURL))
             return
         }
-        
+
         let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        let target = targetLanguageName(targetLanguage)
+        let instruction = instructionForMode(mode, targetLanguage: targetLanguage)
         let body = ChatCompletionRequest(
             model: model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "gpt-4o-mini" : model,
             temperature: 0.0,
             messages: [
                 Message(
                     role: "system",
-                    content: "Translate the user's text into \(target). Return only the translation. Preserve meaning, tone, punctuation, names, URLs, code, and formatting. Do not add explanations."
+                    content: instruction
                 ),
                 Message(role: "user", content: trimmedText)
             ]
@@ -119,23 +120,50 @@ final class OpenAITranslationService {
             }
             
             guard (200..<300).contains(http.statusCode) else {
-                completion(.failure(TranslationError.apiError(Self.errorMessage(from: data, fallback: "OpenAI translation failed with HTTP \(http.statusCode)."))))
+                completion(.failure(TranslationError.apiError(Self.errorMessage(from: data, fallback: "OpenAI post-processing failed with HTTP \(http.statusCode)."))))
                 return
             }
-            
+
             do {
                 let decoded = try JSONDecoder().decode(ChatCompletionResponse.self, from: data)
-                let translation = decoded.choices.first?.message.content
+                let processedText = decoded.choices.first?.message.content
                     .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                guard !translation.isEmpty else {
+                guard !processedText.isEmpty else {
                     completion(.failure(TranslationError.noTranslation))
                     return
                 }
-                completion(.success(translation))
+                completion(.success(processedText))
             } catch {
                 completion(.failure(error))
             }
         }.resume()
+    }
+
+    func translate(
+        text: String,
+        targetLanguage: String,
+        apiKey: String,
+        model: String,
+        completion: @escaping (Result<String, Error>) -> Void
+    ) {
+        processFinalText(
+            text: text,
+            mode: "improveTranslation",
+            targetLanguage: targetLanguage,
+            apiKey: apiKey,
+            model: model,
+            completion: completion
+        )
+    }
+
+    private func instructionForMode(_ mode: String, targetLanguage: String) -> String {
+        switch mode {
+        case "rephrase":
+            return "Rephrase the user's text to sound natural, clear, and concise. Keep the original language, meaning, names, URLs, code, and formatting. Return only the rewritten text."
+        default:
+            let target = targetLanguageName(targetLanguage)
+            return "Polish the user's locally translated text in \(target). Make it natural and fluent while preserving meaning, tone, punctuation, names, URLs, code, and formatting. Return only the improved text."
+        }
     }
     
     private func targetLanguageName(_ code: String) -> String {

@@ -79,8 +79,12 @@ class AppState: ObservableObject {
         }
     }
 
-    @Published var translationEnabled: Bool {
-        didSet { UserDefaults.standard.set(translationEnabled, forKey: "translationEnabled") }
+    @Published var openAIEnhancementEnabled: Bool {
+        didSet { UserDefaults.standard.set(openAIEnhancementEnabled, forKey: "openAIEnhancementEnabled") }
+    }
+
+    @Published var openAIEnhancementMode: String {
+        didSet { UserDefaults.standard.set(openAIEnhancementMode, forKey: "openAIEnhancementMode") }
     }
 
     @Published var translationTargetLanguage: String {
@@ -136,6 +140,7 @@ class AppState: ObservableObject {
     private var currentSessionText = ""
     private var isStreamingSession = false
     private var acceptingLiveChunks = false
+    private var openAIEnhancementEnabledForSession = false
     private var isAppleSpeechSession = false
     private var appleLiveInsertedText = ""
     private var appleDidCompleteFinal = false
@@ -152,9 +157,17 @@ class AppState: ObservableObject {
         let sequence: Int?
     }
 
+    private var shouldEnhanceCurrentSession: Bool {
+        openAIEnhancementEnabledForSession && openAIEnhancementEnabled
+    }
+
     var hotkeyHelpText: String {
         let trigger = triggerMode == "fn" ? "Release Fn" : "Release Control+Space"
         return "\(trigger) to insert - Esc to cancel"
+    }
+
+    var languageDisplayName: String {
+        Self.languageDisplayName(for: language)
     }
 
     private init() {
@@ -167,7 +180,7 @@ class AppState: ObservableObject {
         let savedModelPath = UserDefaults.standard.string(forKey: "modelPath") ?? ""
         modelPath = Self.preferredModelPath(savedPath: savedModelPath, fileName: fileName)
         microphoneID = UserDefaults.standard.string(forKey: "microphoneID") ?? ""
-        language = UserDefaults.standard.string(forKey: "language") ?? "en"
+        language = UserDefaults.standard.string(forKey: "language") ?? "auto"
         triggerMode = UserDefaults.standard.string(forKey: "triggerMode") ?? "fn"
         outputMode = UserDefaults.standard.string(forKey: "outputMode") ?? "finalOnly"
         showOverlay = UserDefaults.standard.object(forKey: "showOverlay") as? Bool ?? true
@@ -180,7 +193,8 @@ class AppState: ObservableObject {
         } else {
             whisperBackend = "serverAPI"
         }
-        translationEnabled = UserDefaults.standard.object(forKey: "translationEnabled") as? Bool ?? false
+        openAIEnhancementEnabled = UserDefaults.standard.object(forKey: "openAIEnhancementEnabled") as? Bool ?? false
+        openAIEnhancementMode = UserDefaults.standard.string(forKey: "openAIEnhancementMode") ?? "rephrase"
         translationTargetLanguage = UserDefaults.standard.string(forKey: "translationTargetLanguage") ?? "en"
         openAIAPIKey = KeychainStore.read(key: "openAIAPIKey")
             ?? UserDefaults.standard.string(forKey: "openAIAPIKey")
@@ -207,6 +221,24 @@ class AppState: ObservableObject {
         case "large-v3":      return "ggml-large-v3.bin"
         case "large-v3-turbo": return "ggml-large-v3-turbo.bin"
         default:         return "ggml-base.bin"
+        }
+    }
+
+    static func languageDisplayName(for code: String) -> String {
+        switch code {
+        case "auto": return "Auto Detect"
+        case "en": return "English"
+        case "ru": return "Russian"
+        case "es": return "Spanish"
+        case "fr": return "French"
+        case "de": return "German"
+        case "it": return "Italian"
+        case "pt": return "Portuguese"
+        case "ja": return "Japanese"
+        case "zh": return "Chinese"
+        case "ko": return "Korean"
+        case "ar": return "Arabic"
+        default: return code.uppercased()
         }
     }
 
@@ -659,6 +691,7 @@ class AppState: ObservableObject {
         acceptingLiveChunks = streaming
         currentSessionText = ""
         streamingText = ""
+        openAIEnhancementEnabledForSession = openAIEnhancementEnabled
         chunkCount = 0
         audioLevel = 0
         recordingElapsed = 0
@@ -788,7 +821,7 @@ class AppState: ObservableObject {
         currentSessionText += text
         streamingText = currentSessionText
 
-        guard !translationEnabled else {
+        guard !shouldEnhanceCurrentSession else {
             statusMessage = "Captured: \(text.prefix(40))..."
             return
         }
@@ -815,16 +848,17 @@ class AppState: ObservableObject {
         lastTranscription = finalText
         streamingText = finalText
 
-        guard translationEnabled else {
+        guard shouldEnhanceCurrentSession else {
             isTranscribing = false
             insertCompletedText(finalText, originalText: finalText)
             return
         }
 
-        statusMessage = "Translating..."
-        translationStatus = "Translating..."
-        translationService.translate(
+        statusMessage = openAIEnhancementMode == "rephrase" ? "Rephrasing..." : "Improving..."
+        translationStatus = statusMessage
+        translationService.processFinalText(
             text: finalText,
+            mode: openAIEnhancementMode,
             targetLanguage: translationTargetLanguage,
             apiKey: openAIAPIKey,
             model: openAIModel
@@ -833,22 +867,24 @@ class AppState: ObservableObject {
                 guard let self else { return }
                 self.isTranscribing = false
                 switch result {
-                case .success(let translatedText):
-                    let cleaned = self.postProcess(translatedText)
+                case .success(let processedText):
+                    let cleaned = self.postProcess(processedText)
                     guard !cleaned.isEmpty else {
-                        self.error = "Translation returned empty text."
-                        self.translationStatus = "Translation failed"
-                        self.statusMessage = "Translation Error"
-                        self.finishSessionUI()
+                        self.error = "OpenAI returned empty text."
+                        self.translationStatus = "OpenAI failed"
+                        self.openAIEnhancementEnabledForSession = false
+                        self.insertCompletedText(finalText, originalText: finalText)
+                        self.statusMessage = "OpenAI failed; inserted local text"
                         return
                     }
-                    self.translationStatus = "Translated"
+                    self.translationStatus = self.openAIEnhancementMode == "rephrase" ? "Rephrased" : "Improved"
                     self.insertCompletedText(cleaned, originalText: finalText)
                 case .failure(let error):
-                    self.error = "Translation failed: \(error.localizedDescription)"
-                    self.translationStatus = "Translation failed"
-                    self.statusMessage = "Translation Error"
-                    self.finishSessionUI()
+                    self.error = "OpenAI post-processing failed: \(error.localizedDescription)"
+                    self.translationStatus = "OpenAI failed"
+                    self.openAIEnhancementEnabledForSession = false
+                    self.insertCompletedText(finalText, originalText: finalText)
+                    self.statusMessage = "OpenAI failed; inserted local text"
                 }
             }
         }
@@ -857,7 +893,7 @@ class AppState: ObservableObject {
     private func insertCompletedText(_ text: String, originalText: String) {
         streamingText = text
 
-        if outputMode == "finalOnly" || translationEnabled {
+        if outputMode == "finalOnly" || shouldEnhanceCurrentSession {
             let insertion = addTrailingSpace ? "\(text) " : text
             KeyboardSynthesizer.typeViaPaste(
                 insertion,
@@ -870,8 +906,8 @@ class AppState: ObservableObject {
             pb.setString(text, forType: .string)
         }
 
-        statusMessage = translationEnabled
-            ? "Translated: \(text.prefix(50))..."
+        statusMessage = shouldEnhanceCurrentSession
+            ? "Enhanced: \(text.prefix(50))..."
             : "Done: \(originalText.prefix(50))..."
         finishSessionUI(delay: 0.8)
     }

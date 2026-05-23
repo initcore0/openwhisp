@@ -61,7 +61,7 @@ struct SettingsView: View {
                 appState.ensureModelExists()
             }
             
-            Text("For better recognition, try Small English or Medium English. Larger models are slower and need more memory.")
+            Text("Use multilingual Whisper models for Russian or Whisper translation. English-only models are fastest for English dictation.")
                 .font(.caption)
                 .foregroundColor(.secondary)
             
@@ -118,7 +118,7 @@ struct SettingsView: View {
         settingsSection("Language") {
             Picker("Transcription Language", selection: $appState.language) {
                 Text("Auto Detect").tag("auto")
-                Text("English").tag("en")
+                Text("English - Whisper translate to English").tag("en")
                 Text("Russian").tag("ru")
                 Text("Spanish").tag("es")
                 Text("French").tag("fr")
@@ -130,42 +130,53 @@ struct SettingsView: View {
                 Text("Korean").tag("ko")
                 Text("Arabic").tag("ar")
             }
+
+            Text("Whisper can translate non-English speech into English when English is selected. Auto Detect transcribes in the spoken language.")
+                .font(.caption)
+                .foregroundColor(.secondary)
         }
     }
-    
+
     private var translationSection: some View {
-        settingsSection("Translation") {
-            Toggle("Enable translation", isOn: $appState.translationEnabled)
-            
-            Picker("Target Language", selection: $appState.translationTargetLanguage) {
-                Text("English").tag("en")
-                Text("Russian").tag("ru")
+        settingsSection("OpenAI Post-processing") {
+            Toggle("Use OpenAI after transcription", isOn: $appState.openAIEnhancementEnabled)
+
+            Picker("Mode", selection: $appState.openAIEnhancementMode) {
+                Text("Rephrase in same language").tag("rephrase")
+                Text("Improve Whisper translation").tag("improveTranslation")
             }
-            
+
+            if appState.openAIEnhancementMode == "improveTranslation" {
+                Picker("Translation Language", selection: $appState.translationTargetLanguage) {
+                    Text("English").tag("en")
+                    Text("Russian").tag("ru")
+                }
+            }
+
             Picker("OpenAI Model", selection: $appState.openAIModel) {
                 Text("GPT-4o mini").tag("gpt-4o-mini")
                 Text("GPT-4.1 mini").tag("gpt-4.1-mini")
                 Text("GPT-4.1 nano").tag("gpt-4.1-nano")
             }
-            
+
             TextField("Custom OpenAI model", text: $appState.openAIModel)
                 .textFieldStyle(.roundedBorder)
-            
+
             SecureField("OpenAI API Key", text: $appState.openAIAPIKey)
                 .textFieldStyle(.roundedBorder)
-            
+
             HStack {
                 Button("Validate OpenAI Key") {
                     appState.validateOpenAIKey()
                 }
-                
+
                 Spacer()
-                
+
                 Text(appState.translationStatus)
-                    .foregroundColor(appState.translationStatus == "OpenAI key valid" || appState.translationStatus == "Translated" ? .green : .secondary)
+                    .foregroundColor(appState.translationStatus == "OpenAI key valid" || appState.translationStatus == "Rephrased" || appState.translationStatus == "Improved" ? .green : .secondary)
             }
-            
-            Text("Translation runs only after the final transcript is ready. Live chunks are not sent to OpenAI.")
+
+            Text("Whisper handles default translation locally through the language picker. OpenAI is optional and only edits final text, never live chunks.")
                 .font(.caption)
                 .foregroundColor(.secondary)
         }

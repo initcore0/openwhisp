@@ -134,13 +134,25 @@ class VoiceNoteApp: NSObject, NSApplicationDelegate {
         engineItem.submenu = engineMenu
         menu.addItem(engineItem)
 
-        let translation = NSMenuItem(
-            title: "Translation",
-            action: #selector(toggleTranslation),
-            keyEquivalent: ""
-        )
-        translation.state = appState.translationEnabled ? .on : .off
-        menu.addItem(translation)
+        let languageMenu = NSMenu()
+        for option in languageOptions {
+            let item = NSMenuItem(
+                title: option.title,
+                action: #selector(selectLanguage),
+                keyEquivalent: ""
+            )
+            item.representedObject = option.code
+            item.state = appState.language == option.code ? .on : .off
+            languageMenu.addItem(item)
+        }
+        languageMenu.addItem(.separator())
+        let hint = NSMenuItem(title: "Choose English to translate to English with Whisper", action: nil, keyEquivalent: "")
+        hint.isEnabled = false
+        languageMenu.addItem(hint)
+
+        let languageItem = NSMenuItem(title: "Language: \(appState.languageDisplayName)", action: nil, keyEquivalent: "")
+        languageItem.submenu = languageMenu
+        menu.addItem(languageItem)
 
         menu.addItem(.separator())
 
@@ -176,8 +188,22 @@ class VoiceNoteApp: NSObject, NSApplicationDelegate {
     @objc private func stopRecording()  { appState.stopRecording() }
     @objc private func useWhisperEngine() { appState.transcriptionEngine = "whisper" }
     @objc private func useAppleSpeechEngine() { appState.transcriptionEngine = "appleSpeech" }
-    @objc private func toggleTranslation() { appState.translationEnabled.toggle() }
+    @objc private func selectLanguage(_ sender: NSMenuItem) {
+        guard let code = sender.representedObject as? String else { return }
+        appState.language = code
+    }
     @objc private func terminate()      { NSApp.terminate(nil) }
+
+    private var languageOptions: [(code: String, title: String)] {
+        [
+            ("auto", "Auto Detect"),
+            ("en", "English - Whisper translate to English"),
+            ("ru", "Russian"),
+            ("es", "Spanish"),
+            ("fr", "French"),
+            ("de", "German")
+        ]
+    }
 
     @objc private func openSettings() {
         guard let appState else { return }
