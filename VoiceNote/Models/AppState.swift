@@ -104,7 +104,6 @@ class AppState: ObservableObject {
     @Published var whisperWorkerStatus: String = "Not started"
     @Published var translationStatus: String = "Not configured"
     @Published var modelDownloadStatus: String = "Not checked"
-    @Published var modelDownloadProgress: Double = 0
     @Published var isModelDownloading = false
     @Published var audioLevel: Float = 0
     @Published var recordingElapsed: TimeInterval = 0
@@ -1070,7 +1069,6 @@ class AppState: ObservableObject {
     func ensureModelExists() {
         guard !FileManager.default.fileExists(atPath: modelPath) else {
             modelDownloadStatus = "Installed: \(URL(fileURLWithPath: modelPath).lastPathComponent)"
-            modelDownloadProgress = 1
             isModelDownloading = false
             return
         }
@@ -1080,7 +1078,6 @@ class AppState: ObservableObject {
         let currentModelPath = modelPath
         downloadingModelPath = currentModelPath
         isModelDownloading = true
-        modelDownloadProgress = 0
         modelDownloadStatus = "Downloading \(fileName)..."
         statusMessage = "Downloading model..."
         
@@ -1093,7 +1090,6 @@ class AppState: ObservableObject {
                 await MainActor.run {
                     self.isModelDownloading = false
                     self.downloadingModelPath = nil
-                    self.modelDownloadProgress = 1
                     self.modelDownloadStatus = "Installed: \(fileName)"
                     if self.statusMessage == "Downloading model..." {
                         self.statusMessage = "Ready"
@@ -1120,51 +1116,14 @@ class AppState: ObservableObject {
     }
     
     private func downloadModelWithProgress(from url: URL, to destination: URL, fileName: String) async throws {
-        let (bytes, response) = try await URLSession.shared.bytes(from: url)
-        let expectedBytes = response.expectedContentLength
         let tempURL = destination
             .deletingLastPathComponent()
             .appendingPathComponent(".\(destination.lastPathComponent).download")
         try? FileManager.default.removeItem(at: tempURL)
-        FileManager.default.createFile(atPath: tempURL.path, contents: nil)
-        
-        let handle = try FileHandle(forWritingTo: tempURL)
-        defer { try? handle.close() }
-        
-        var downloadedBytes: Int64 = 0
-        var buffer = Data()
-        buffer.reserveCapacity(256 * 1024)
-        
-        for try await byte in bytes {
-            buffer.append(byte)
-            if buffer.count >= 256 * 1024 {
-                handle.write(buffer)
-                downloadedBytes += Int64(buffer.count)
-                buffer.removeAll(keepingCapacity: true)
-                await updateModelDownloadProgress(downloadedBytes: downloadedBytes, expectedBytes: expectedBytes, fileName: fileName)
-            }
-        }
-        
-        if !buffer.isEmpty {
-            handle.write(buffer)
-            downloadedBytes += Int64(buffer.count)
-            await updateModelDownloadProgress(downloadedBytes: downloadedBytes, expectedBytes: expectedBytes, fileName: fileName)
-        }
-        
+        let downloadedURL = try await ModelDownloader.download(from: url)
         try? FileManager.default.removeItem(at: destination)
+        try FileManager.default.moveItem(at: downloadedURL, to: tempURL)
         try FileManager.default.moveItem(at: tempURL, to: destination)
-    }
-    
-    private func updateModelDownloadProgress(downloadedBytes: Int64, expectedBytes: Int64, fileName: String) async {
-        await MainActor.run {
-            if expectedBytes > 0 {
-                let progress = min(1, max(0, Double(downloadedBytes) / Double(expectedBytes)))
-                modelDownloadProgress = progress
-                modelDownloadStatus = "Downloading \(fileName): \(Int(progress * 100))%"
-            } else {
-                modelDownloadStatus = "Downloading \(fileName): \(Self.formatBytes(downloadedBytes))"
-            }
-        }
     }
     
     private static func modelDownloadURL(modelID: String, fileName: String) -> URL {
@@ -1214,6 +1173,49 @@ struct ModelManifestEntry: Decodable {
     let label: String
     let size: String
     let url: String
+}
+
+final class ModelDownloader: NSObject, URLSessionDownloadDelegate {
+    private var continuation: CheckedContinuation<URL, Error>?
+    
+    static func download(from url: URL) async throws -> URL {
+        let downloader = ModelDownloader()
+        return try await downloader.download(from: url)
+    }
+    
+    private func download(from url: URL) async throws -> URL {
+        try await withCheckedThrowingContinuation { continuation in
+            self.continuation = continuation
+            let configuration = URLSessionConfiguration.default
+            configuration.timeoutIntervalForRequest = 60
+            configuration.timeoutIntervalForResource = 60 * 60
+            configuration.waitsForConnectivity = true
+            let session = URLSession(configuration: configuration, delegate: self, delegateQueue: nil)
+            session.downloadTask(with: url).resume()
+        }
+    }
+    
+    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
+        do {
+            let tempURL = FileManager.default.temporaryDirectory
+                .appendingPathComponent("voicenote-model-\(UUID().uuidString).download")
+            try? FileManager.default.removeItem(at: tempURL)
+            try FileManager.default.moveItem(at: location, to: tempURL)
+            continuation?.resume(returning: tempURL)
+        } catch {
+            continuation?.resume(throwing: error)
+        }
+        continuation = nil
+        session.invalidateAndCancel()
+    }
+    
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        if let error, continuation != nil {
+            continuation?.resume(throwing: error)
+            continuation = nil
+            session.invalidateAndCancel()
+        }
+    }
 }
 
 // MARK: - Helpers

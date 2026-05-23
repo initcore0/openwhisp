@@ -69,8 +69,6 @@ struct SettingsView: View {
                 if appState.isModelDownloading {
                     ProgressView()
                         .controlSize(.small)
-                    ProgressView(value: appState.modelDownloadProgress)
-                        .frame(maxWidth: 240)
                 }
                 
                 Text(appState.modelDownloadStatus)
