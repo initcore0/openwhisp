@@ -68,6 +68,15 @@ class AppState: ObservableObject {
         didSet { UserDefaults.standard.set(transcriptionEngine, forKey: "transcriptionEngine") }
     }
     
+    @Published var whisperBackend: String {
+        didSet {
+            UserDefaults.standard.set(whisperBackend, forKey: "whisperBackend")
+            if whisperBackend != "serverAPI" {
+                whisperEngine?.stopServer()
+            }
+        }
+    }
+    
     // MARK: - Runtime State
     
     @Published var isRecording = false
@@ -76,6 +85,7 @@ class AppState: ObservableObject {
     @Published var streamingText: String = ""
     @Published var statusMessage: String = "Ready"
     @Published var error: String?
+    @Published var whisperWorkerStatus: String = "Not started"
     @Published var audioLevel: Float = 0
     @Published var recordingElapsed: TimeInterval = 0
     @Published var inputMonitoringPermissionLabel: String = "Unknown"
@@ -142,6 +152,12 @@ class AppState: ObservableObject {
         addTrailingSpace = UserDefaults.standard.object(forKey: "addTrailingSpace") as? Bool ?? false
         liveChunkDuration = UserDefaults.standard.object(forKey: "liveChunkDuration") as? Double ?? 2.0
         transcriptionEngine = UserDefaults.standard.string(forKey: "transcriptionEngine") ?? "whisper"
+        if let savedBackend = UserDefaults.standard.string(forKey: "whisperBackend") {
+            whisperBackend = savedBackend
+        } else {
+            let legacyWorkerEnabled = UserDefaults.standard.object(forKey: "useWhisperWorker") as? Bool ?? false
+            whisperBackend = legacyWorkerEnabled ? "serverAPI" : "cli"
+        }
         
         wireUpServices()
         overlayController = OverlayWindowController(appState: self)
@@ -207,6 +223,11 @@ class AppState: ObservableObject {
             Task { @MainActor in
                 guard let self else { return }
                 self.statusMessage = "Transcribing... \(pct)%"
+            }
+        }
+        whisperEngine.onWorkerStatus = { [weak self] status in
+            Task { @MainActor in
+                self?.whisperWorkerStatus = status
             }
         }
         
@@ -331,6 +352,16 @@ class AppState: ObservableObject {
         streamingText = ""
         statusMessage = "Cancelled"
         finishSessionUI()
+    }
+    
+    func shutdown() {
+        cancelDictation()
+        whisperEngine.stopServer()
+        hotkeyMonitor.stop()
+    }
+    
+    func stopWhisperServer() {
+        whisperEngine.stopServer()
     }
     
     func startAppleSpeech() {
@@ -615,7 +646,8 @@ class AppState: ObservableObject {
             binaryPath: whisperBinaryPath,
             modelPath: modelPath,
             language: language,
-            wavPath: path.path
+            wavPath: path.path,
+            backend: whisperBackend == "serverAPI" ? .serverAPI : .cli
         )
     }
     
@@ -829,6 +861,10 @@ class AppState: ObservableObject {
     
     var runningBundlePath: String {
         Bundle.main.bundlePath
+    }
+    
+    var whisperLogPath: String {
+        WhisperEngine.logFileURL().path
     }
     
     func retryHotkeyMonitor() {

@@ -179,6 +179,27 @@ struct SettingsView: View {
     
     private var whisperSection: some View {
         settingsSection("whisper.cpp") {
+            Picker("Whisper Backend", selection: $appState.whisperBackend) {
+                Text("CLI - reliable").tag("cli")
+                Text("Server API - warm model").tag("serverAPI")
+            }
+            
+            HStack {
+                Text("Server API")
+                Spacer()
+                Text(appState.whisperWorkerStatus)
+                    .foregroundColor(appState.whisperWorkerStatus.hasPrefix("Loaded") ? .green : .secondary)
+            }
+            
+            Text("CLI runs whisper-cli per recording. Server API starts whisper-server and sends audio over HTTP; failures are shown explicitly and do not silently switch back to CLI.")
+                .font(.caption)
+                .foregroundColor(.secondary)
+            
+            Text("Log: \(appState.whisperLogPath)")
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .textSelection(.enabled)
+            
             TextField("Binary Path", text: $appState.whisperBinaryPath)
                 .textFieldStyle(.roundedBorder)
             
@@ -189,6 +210,14 @@ struct SettingsView: View {
                 
                 Button("Verify") {
                     verifySetup()
+                }
+                
+                Button("Stop Server API") {
+                    appState.stopWhisperServer()
+                }
+                
+                Button("Reveal Log") {
+                    NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: appState.whisperLogPath)])
                 }
             }
         }

@@ -51,6 +51,10 @@ class VoiceNoteApp: NSObject, NSApplicationDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         false
     }
+    
+    func applicationWillTerminate(_ notification: Notification) {
+        appState?.shutdown()
+    }
 
     private func requestNotifications() {
         // UNUserNotificationCenter.current() crashes with NSInternalInconsistencyException
