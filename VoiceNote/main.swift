@@ -123,6 +123,14 @@ class VoiceNoteApp: NSObject, NSApplicationDelegate {
         engineItem.submenu = engineMenu
         menu.addItem(engineItem)
         
+        let translation = NSMenuItem(
+            title: "Translation",
+            action: #selector(toggleTranslation),
+            keyEquivalent: ""
+        )
+        translation.state = appState.translationEnabled ? .on : .off
+        menu.addItem(translation)
+        
         menu.addItem(.separator())
 
         // Settings
@@ -157,6 +165,7 @@ class VoiceNoteApp: NSObject, NSApplicationDelegate {
     @objc private func stopRecording()  { appState.stopRecording() }
     @objc private func useWhisperEngine() { appState.transcriptionEngine = "whisper" }
     @objc private func useAppleSpeechEngine() { appState.transcriptionEngine = "appleSpeech" }
+    @objc private func toggleTranslation() { appState.translationEnabled.toggle() }
     @objc private func terminate()      { NSApp.terminate(nil) }
 
     @objc private func openSettings() {
