@@ -46,8 +46,13 @@ final class OverlayWindowController {
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.12
             panel.animator().alphaValue = 0
-        } completionHandler: {
-            panel.orderOut(nil)
+        } completionHandler: { [weak self, weak panel] in
+            Task { @MainActor in
+                guard let self, let panel else { return }
+                panel.orderOut(nil)
+                panel.contentViewController = nil
+                self.panel = nil
+            }
         }
     }
     
