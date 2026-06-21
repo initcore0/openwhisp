@@ -1,0 +1,79 @@
+name: Release
+
+# Every merge to main (PR merges land here) builds a DMG and publishes a
+# GitHub Release with an auto-incrementing build number.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:   # allow manual runs too
+
+permissions:
+  contents: write       # needed to create releases + push tags
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: macos-14
+    steps:
+      - name: Checkout (with whisper.cpp submodule)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Show toolchain
+        run: swift --version
+
+      - name: Run unit tests
+        run: swift test
+
+      - name: Compute version
+        id: version
+        run: |
+          BASE=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" OpenWhisp/Info.plist)
+          TAG="v${BASE}+${GITHUB_RUN_NUMBER}"
+          echo "base=$BASE" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Release tag: $TAG (commit ${GITHUB_SHA:0:7})"
+
+      - name: Stamp build number into Info.plist
+        run: |
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${GITHUB_RUN_NUMBER}" OpenWhisp/Info.plist
+
+      - name: Build whisper.cpp (submodule)
+        run: ./scripts/build-whisper.sh
+
+      - name: Build app + DMG (release, ad-hoc signed)
+        run: ./build-dmg.sh release
+
+      - name: Verify DMG exists
+        run: |
+          test -f dist/OpenWhisp.dmg
+          ls -lh dist/OpenWhisp.dmg
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          NOTES_FILE="$(mktemp)"
+          cat > "$NOTES_FILE" <<EOF
+          Automated build from commit ${GITHUB_SHA:0:7} on \`main\`.
+
+          **Install:** download \`OpenWhisp.dmg\`, open it, drag **OpenWhisp** to Applications.
+
+          > This build is **ad-hoc signed**, so on first launch macOS Gatekeeper will warn.
+          > Right‑click **OpenWhisp.app → Open**, then confirm. (A notarized Developer ID
+          > build would remove this warning.)
+
+          See the [README](https://github.com/${GITHUB_REPOSITORY}#readme) for setup and permissions.
+          EOF
+
+          gh release create "$TAG" \
+            dist/OpenWhisp.dmg \
+            --title "OpenWhisp $TAG" \
+            --notes-file "$NOTES_FILE" \
+            --target "$GITHUB_SHA"
