@@ -89,6 +89,16 @@ class AppState: ObservableObject {
         didSet { UserDefaults.standard.set(addTrailingSpace, forKey: "addTrailingSpace") }
     }
 
+    /// Auto-gain: boost a quiet microphone toward a healthy level before sending
+    /// audio to whisper, improving recognition for soft talkers / low-output mics.
+    /// Default-on; runs locally with a no-clip safety cap.
+    @Published var autoGainEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(autoGainEnabled, forKey: "autoGainEnabled")
+            audioRecorder?.autoGainEnabled = autoGainEnabled
+        }
+    }
+
     /// Local, on-device cleanup of dictated text (punctuation, capitalization,
     /// filler removal). Default-on — this is the baseline quality pass and runs
     /// entirely locally, no network.
@@ -373,6 +383,7 @@ class AppState: ObservableObject {
         restoreClipboard = UserDefaults.standard.object(forKey: "restoreClipboard") as? Bool ?? false
         insertionMode = UserDefaults.standard.string(forKey: "insertionMode") ?? "auto"
         addTrailingSpace = UserDefaults.standard.object(forKey: "addTrailingSpace") as? Bool ?? false
+        autoGainEnabled = UserDefaults.standard.object(forKey: "autoGainEnabled") as? Bool ?? true
         smartFormattingEnabled = UserDefaults.standard.object(forKey: "smartFormattingEnabled") as? Bool ?? true
         spokenPunctuationEnabled = UserDefaults.standard.object(forKey: "spokenPunctuationEnabled") as? Bool ?? true
         fillerRemovalEnabled = UserDefaults.standard.object(forKey: "fillerRemovalEnabled") as? Bool ?? true
@@ -549,6 +560,7 @@ class AppState: ObservableObject {
         }
 
         audioRecorder = AudioRecorder(appState: self)
+        audioRecorder.autoGainEnabled = autoGainEnabled
         audioRecorder.onStateChanged = { [weak self] state in
             Task { @MainActor in
                 guard let self else { return }

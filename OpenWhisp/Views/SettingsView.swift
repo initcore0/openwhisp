@@ -244,9 +244,14 @@ struct SettingsView: View {
             Button("Refresh Devices") {
                 refreshDevices()
             }
+
+            Toggle("Auto‑boost quiet microphone", isOn: $appState.autoGainEnabled)
+            Text("Automatically raises the volume of soft or low‑output mics before transcription, so quiet speech is recognized better. Runs locally and won't distort loud audio. Turn off if your mic is already loud or you hear it picking up background noise.")
+                .font(.caption)
+                .foregroundColor(.secondary)
         }
     }
-    
+
     private var languageSection: some View {
         settingsSection("Language") {
             Picker("Transcription Language", selection: $appState.language) {
