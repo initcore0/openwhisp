@@ -141,6 +141,18 @@ class AppState: ObservableObject {
         didSet { UserDefaults.standard.set(openAIModel, forKey: "openAIModel") }
     }
 
+    /// Bias whisper recognition toward custom terms. Default-on; harmless when
+    /// the vocabulary is empty (no prompt is sent).
+    @Published var customVocabularyEnabled: Bool {
+        didSet { UserDefaults.standard.set(customVocabularyEnabled, forKey: "customVocabularyEnabled") }
+    }
+
+    /// User's custom vocabulary (bias terms + heard→correct substitutions).
+    /// Persisted to a JSON file in Application Support via VocabularyStore.
+    @Published var vocabulary: Vocabulary {
+        didSet { VocabularyStore.save(vocabulary) }
+    }
+
     // MARK: - Runtime State
 
     @Published var isRecording = false
@@ -273,6 +285,8 @@ class AppState: ObservableObject {
             openAIAPIKey = ""
         }
         openAIModel = UserDefaults.standard.string(forKey: "openAIModel") ?? "gpt-4o-mini"
+        customVocabularyEnabled = UserDefaults.standard.object(forKey: "customVocabularyEnabled") as? Bool ?? true
+        vocabulary = VocabularyStore.load()
 
         wireUpServices()
         overlayController = OverlayWindowController(appState: self)
@@ -947,7 +961,8 @@ class AppState: ObservableObject {
             modelPath: modelPath,
             language: language,
             wavPath: path.path,
-            backend: whisperBackend == "serverAPI" ? .serverAPI : .cli
+            backend: whisperBackend == "serverAPI" ? .serverAPI : .cli,
+            prompt: customVocabularyEnabled ? vocabulary.whisperPrompt : ""
         )
     }
 
@@ -1159,6 +1174,13 @@ class AppState: ObservableObject {
         // Drop ignorable transcripts BEFORE smart formatting so we never
         // capitalize/punctuate a marker we're about to discard.
         guard !isIgnorableTranscript(normalized) else { return "" }
+
+        // Apply vocabulary substitutions before formatting, so a corrected term
+        // (e.g. "claude code" -> "Claude Code") is then handled consistently by
+        // capitalization/spacing rules.
+        if customVocabularyEnabled, !vocabulary.substitutions.isEmpty {
+            normalized = VocabularySubstitutor(substitutions: vocabulary.substitutions).apply(to: normalized)
+        }
 
         if smartFormattingEnabled {
             normalized = smartFormatter.format(normalized, language: language)

@@ -51,7 +51,8 @@ class WhisperEngine {
         language: String,
         wavPath: String,
         deleteWhenDone: Bool = true,
-        backend: Backend = .cli
+        backend: Backend = .cli,
+        prompt: String = ""
     ) {
 
         guard FileManager.default.fileExists(atPath: binaryPath) else {
@@ -83,7 +84,8 @@ class WhisperEngine {
                     modelPath: modelPath,
                     language: language,
                     wavPath: wavPath,
-                    deleteWhenDone: deleteWhenDone
+                    deleteWhenDone: deleteWhenDone,
+                    prompt: prompt
                 )
             case .serverAPI:
                 self.transcribeWithServerAPI(
@@ -92,7 +94,8 @@ class WhisperEngine {
                     modelPath: modelPath,
                     language: language,
                     wavPath: wavPath,
-                    deleteWhenDone: deleteWhenDone
+                    deleteWhenDone: deleteWhenDone,
+                    prompt: prompt
                 )
             }
         }
@@ -138,7 +141,8 @@ class WhisperEngine {
         modelPath: String,
         language: String,
         wavPath: String,
-        deleteWhenDone: Bool
+        deleteWhenDone: Bool,
+        prompt: String = ""
     ) {
         do {
             let text = try transcribeWithWorker(
@@ -147,7 +151,8 @@ class WhisperEngine {
                 modelPath: modelPath,
                 language: language,
                 wavPath: wavPath,
-                deleteWhenDone: deleteWhenDone
+                deleteWhenDone: deleteWhenDone,
+                prompt: prompt
             )
             DispatchQueue.main.async {
                 self.onTranscriptionComplete?(requestID, text)
@@ -172,12 +177,13 @@ class WhisperEngine {
         modelPath: String,
         language: String,
         wavPath: String,
-        deleteWhenDone: Bool
+        deleteWhenDone: Bool,
+        prompt: String = ""
     ) {
 
             let process = Process()
             process.executableURL = URL(fileURLWithPath: binaryPath)
-            process.arguments = [
+            var arguments = [
                 "-m", modelPath,
                 "-f", wavPath,
                 "-l", language == "auto" ? "auto" : language,
@@ -185,6 +191,11 @@ class WhisperEngine {
                 "-otxt",
                 "-nt"
             ]
+            let trimmedPrompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmedPrompt.isEmpty {
+                arguments.append(contentsOf: ["--prompt", trimmedPrompt])
+            }
+            process.arguments = arguments
 
             let stdoutPipe = Pipe()
             let stderrPipe = Pipe()
@@ -261,13 +272,14 @@ class WhisperEngine {
         modelPath: String,
         language: String,
         wavPath: String,
-        deleteWhenDone: Bool
+        deleteWhenDone: Bool,
+        prompt: String = ""
     ) throws -> String {
         guard ensureServer(binaryPath: binaryPath, modelPath: modelPath) else {
             throw WhisperWorkerError.unavailable
         }
 
-        let text = try postInference(wavPath: wavPath, language: language)
+        let text = try postInference(wavPath: wavPath, language: language, prompt: prompt)
         guard !text.isEmpty else {
             throw WhisperWorkerError.emptyTranscript
         }
@@ -471,7 +483,7 @@ class WhisperEngine {
         return ok
     }
 
-    private func postInference(wavPath: String, language: String) throws -> String {
+    private func postInference(wavPath: String, language: String, prompt: String = "") throws -> String {
         guard let url = URL(string: "http://127.0.0.1:\(serverPort)/inference") else {
             throw WhisperWorkerError.invalidURL
         }
@@ -484,7 +496,8 @@ class WhisperEngine {
         request.httpBody = try multipartBody(
             boundary: boundary,
             wavPath: wavPath,
-            language: language
+            language: language,
+            prompt: prompt
         )
         let fileSize = (try? FileManager.default.attributesOfItem(atPath: wavPath)[.size] as? NSNumber)?.int64Value ?? -1
         log("Server API POST /inference port=\(serverPort), wav=\(URL(fileURLWithPath: wavPath).lastPathComponent), bytes=\(fileSize), language=\(language)")
@@ -536,7 +549,7 @@ class WhisperEngine {
         return text
     }
 
-    private func multipartBody(boundary: String, wavPath: String, language: String) throws -> Data {
+    private func multipartBody(boundary: String, wavPath: String, language: String, prompt: String = "") throws -> Data {
         var data = Data()
 
         func appendField(_ name: String, _ value: String) {
@@ -552,6 +565,11 @@ class WhisperEngine {
         appendField("no_timestamps", "true")
         appendField("language", language == "auto" ? "auto" : language)
         appendField("suppress_non_speech", "true")
+        let trimmedPrompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedPrompt.isEmpty {
+            // whisper-server accepts an initial "prompt" to bias recognition.
+            appendField("prompt", trimmedPrompt)
+        }
 
         let fileURL = URL(fileURLWithPath: wavPath)
         let fileData = try Data(contentsOf: fileURL)

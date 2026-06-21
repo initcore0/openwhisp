@@ -19,6 +19,10 @@ struct SettingsView: View {
     // stays revealed even while the field is empty (which would otherwise look like a preset).
     @State private var openAIModelIsCustom: Bool = false
 
+    // New-substitution draft fields for the vocabulary editor.
+    @State private var newSubFrom: String = ""
+    @State private var newSubTo: String = ""
+
     private var isCustomOpenAIModel: Bool {
         openAIModelIsCustom || !SettingsView.presetOpenAIModels.contains(appState.openAIModel)
     }
@@ -49,6 +53,7 @@ struct SettingsView: View {
                 microphoneSection
                 languageSection
                 formattingSection
+                vocabularySection
                 translationSection
                 hotkeySection
                 outputSection
@@ -196,6 +201,74 @@ struct SettingsView: View {
             Text("Runs entirely on your Mac — no internet required. Capitalizes sentences, tidies spacing and punctuation, and optionally applies spoken punctuation and removes fillers.")
                 .font(.caption)
                 .foregroundColor(.secondary)
+        }
+    }
+
+    // Comma-separated editing of the bias-terms list.
+    private var vocabularyTermsText: Binding<String> {
+        Binding(
+            get: { appState.vocabulary.terms.joined(separator: ", ") },
+            set: { newValue in
+                let terms = newValue
+                    .components(separatedBy: ",")
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty }
+                appState.vocabulary.terms = terms
+            }
+        )
+    }
+
+    private var vocabularySection: some View {
+        settingsSection("Custom Vocabulary") {
+            Toggle("Use custom vocabulary", isOn: $appState.customVocabularyEnabled)
+
+            Text("Bias terms (names, jargon, acronyms) help Whisper recognize words it usually gets wrong. Comma-separated.")
+                .font(.caption)
+                .foregroundColor(.secondary)
+
+            TextField("e.g. Claude, Anthropic, kubectl, VoiceNote", text: vocabularyTermsText, axis: .vertical)
+                .textFieldStyle(.roundedBorder)
+                .lineLimit(2...4)
+                .disabled(!appState.customVocabularyEnabled)
+
+            Divider()
+
+            Text("Replacements fix recurring mishearings (\"heard\" → \"correct\"). Applied locally after transcription.")
+                .font(.caption)
+                .foregroundColor(.secondary)
+
+            ForEach(appState.vocabulary.substitutions) { sub in
+                HStack {
+                    Text(sub.from).frame(maxWidth: .infinity, alignment: .leading)
+                    Image(systemName: "arrow.right").foregroundColor(.secondary)
+                    Text(sub.to).frame(maxWidth: .infinity, alignment: .leading)
+                    Button(role: .destructive) {
+                        appState.vocabulary.substitutions.removeAll { $0.id == sub.id }
+                    } label: {
+                        Image(systemName: "trash")
+                    }
+                    .buttonStyle(.borderless)
+                }
+            }
+
+            HStack {
+                TextField("heard", text: $newSubFrom)
+                    .textFieldStyle(.roundedBorder)
+                Image(systemName: "arrow.right").foregroundColor(.secondary)
+                TextField("correct", text: $newSubTo)
+                    .textFieldStyle(.roundedBorder)
+                Button("Add") {
+                    let from = newSubFrom.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let to = newSubTo.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !from.isEmpty, !to.isEmpty else { return }
+                    appState.vocabulary.substitutions.append(.init(from: from, to: to))
+                    newSubFrom = ""
+                    newSubTo = ""
+                }
+                .disabled(newSubFrom.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                          || newSubTo.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+            .disabled(!appState.customVocabularyEnabled)
         }
     }
 
