@@ -191,8 +191,11 @@ class OpenWhispApp: NSObject, NSApplicationDelegate {
         languageItem.submenu = languageMenu
         menu.addItem(languageItem)
 
+        // Reflect the active backend so the label is accurate whether the user
+        // is on a local LLM or OpenAI.
+        let aiProvider = appState.llmProvider == "local" ? "Local" : "OpenAI"
         let aiCleanup = NSMenuItem(
-            title: "Clean up with AI (OpenAI)",
+            title: "Clean up with AI (\(aiProvider))",
             action: #selector(toggleAICleanup),
             keyEquivalent: ""
         )
