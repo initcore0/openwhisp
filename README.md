@@ -107,8 +107,10 @@ You can re‑open it any time from the menu bar → **Setup Guide…**.
 |-----------|-----|-------|
 | **Microphone** | record audio | System Settings → Privacy & Security → Microphone |
 | **Accessibility** | type into apps + global hotkey | System Settings → Privacy & Security → Accessibility |
-| **Input Monitoring** | hotkey capture (some setups) | System Settings → Privacy & Security → Input Monitoring |
+| **Input Monitoring** | detect the push‑to‑talk hotkey | System Settings → Privacy & Security → Input Monitoring |
 | **Notifications** | optional status notifications | granted on prompt |
+
+> **About the "OpenWhisp would like to receive keystrokes" prompt** — that's the Input Monitoring permission. OpenWhisp watches keyboard events only to detect your push‑to‑talk hotkey; **keystrokes are never logged, stored, or sent anywhere** (it's a local, listen‑only check against your chosen key). It's required because macOS gates any global hotkey behind this consent. If you deny it, the hotkey won't work — re‑enable OpenWhisp under Input Monitoring and use **Retry Hotkey** in Settings.
 
 `reset-permissions.sh` resets OpenWhisp's TCC records if a rebuilt app identity gets stuck.
 
