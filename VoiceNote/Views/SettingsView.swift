@@ -385,6 +385,18 @@ struct SettingsView: View {
                     .foregroundColor(translationStatusIsGood ? .green : .secondary)
             }
 
+            Divider()
+
+            Toggle("Voice commands (say an instruction at the end)", isOn: $appState.voiceCommandsEnabled)
+
+            if appState.voiceCommandsEnabled {
+                TextField("Wake word (optional, e.g. \"voice note\")", text: $appState.voiceCommandWakeWord)
+                    .textFieldStyle(.roundedBorder)
+                Text("End a dictation with an instruction and it's applied to the rest: \"…ship it tomorrow. Make this formal.\" Recognized commands (make this/it…, rewrite/translate/summarize this…) are stripped and the text is transformed by the AI. Works in Final paste and Preview modes; needs an AI provider above.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+
             Text(appState.llmProvider == "local"
                  ? "Local server keeps everything on your machine / LAN — no data leaves to the cloud. Any OpenAI-compatible server works (llama.cpp llama-server, Ollama). Only edits final text, never live chunks."
                  : "Whisper handles default translation locally through the language picker. OpenAI is optional and only edits final text, never live chunks.")
