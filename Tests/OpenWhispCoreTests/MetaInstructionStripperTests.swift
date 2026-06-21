@@ -1,5 +1,5 @@
 import XCTest
-@testable import VoiceNoteCore
+@testable import OpenWhispCore
 
 final class MetaInstructionStripperTests: XCTestCase {
 

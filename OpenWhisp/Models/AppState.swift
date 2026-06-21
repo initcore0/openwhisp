@@ -64,7 +64,7 @@ class AppState: ObservableObject {
             let actual = LaunchAtLogin.isEnabled
             if applied == false || actual != launchAtLogin {
                 if LaunchAtLogin.requiresApproval {
-                    error = "VoiceNote was added to Login Items but needs your approval in System Settings > General > Login Items."
+                    error = "OpenWhisp was added to Login Items but needs your approval in System Settings > General > Login Items."
                 }
                 if actual != launchAtLogin {
                     launchAtLogin = actual
@@ -498,7 +498,7 @@ class AppState: ObservableObject {
     private static func applicationSupportModelsDirectory() -> URL {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support")
-        return base.appendingPathComponent("VoiceNote/models", isDirectory: true)
+        return base.appendingPathComponent("OpenWhisp/models", isDirectory: true)
     }
 
     private func wireUpServices() {
@@ -605,7 +605,7 @@ class AppState: ObservableObject {
             Task { @MainActor in
                 self?.inputMonitoringPermissionLabel = isGranted ? "Granted" : "Needs permission"
                 if !isGranted {
-                    self?.error = "Input Monitoring is not available for this app build. Remove and re-add VoiceNote in System Settings, then quit and reopen the app."
+                    self?.error = "Input Monitoring is not available for this app build. Remove and re-add OpenWhisp in System Settings, then quit and reopen the app."
                 }
             }
         }
@@ -1854,7 +1854,7 @@ final class ModelDownloader: NSObject, URLSessionDownloadDelegate {
     func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
         do {
             let tempURL = FileManager.default.temporaryDirectory
-                .appendingPathComponent("voicenote-model-\(UUID().uuidString).download")
+                .appendingPathComponent("openwhisp-model-\(UUID().uuidString).download")
             try? FileManager.default.removeItem(at: tempURL)
             try FileManager.default.moveItem(at: location, to: tempURL)
             continuation?.resume(returning: tempURL)

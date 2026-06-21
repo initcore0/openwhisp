@@ -41,7 +41,7 @@ enum AppProfileStore {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support")
         return base
-            .appendingPathComponent("VoiceNote", isDirectory: true)
+            .appendingPathComponent("OpenWhisp", isDirectory: true)
             .appendingPathComponent("profiles.json")
     }
 

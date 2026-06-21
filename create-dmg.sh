@@ -1,5 +1,5 @@
 #!/bin/bash
-# Create a distributable VoiceNote DMG.
+# Create a distributable OpenWhisp DMG.
 # Usage: ./create-dmg.sh
 
 set -euo pipefail
@@ -7,12 +7,12 @@ set -euo pipefail
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BUILD_DIR="$PROJECT_DIR/build"
 DIST_DIR="$PROJECT_DIR/dist"
-APP_PATH="$BUILD_DIR/VoiceNote.app"
+APP_PATH="$BUILD_DIR/OpenWhisp.app"
 STAGE_DIR="$BUILD_DIR/dmg-stage"
-DMG_PATH="$DIST_DIR/VoiceNote.dmg"
-VOL_NAME="VoiceNote"
+DMG_PATH="$DIST_DIR/OpenWhisp.dmg"
+VOL_NAME="OpenWhisp"
 
-echo "=== VoiceNote DMG Builder ==="
+echo "=== OpenWhisp DMG Builder ==="
 
 echo ""
 echo "Step 1: Building app bundle..."
@@ -49,4 +49,4 @@ hdiutil verify "$DMG_PATH"
 echo ""
 echo "✓ DMG created: $DMG_PATH"
 echo ""
-echo "Transfer this file to another Mac, open it, then drag VoiceNote.app to Applications."
+echo "Transfer this file to another Mac, open it, then drag OpenWhisp.app to Applications."

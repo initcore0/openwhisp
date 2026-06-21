@@ -25,7 +25,7 @@ enum TextInserter {
 
     /// Serial queue shared with clipboard writes so insertions and clipboard
     /// sets stay strictly FIFO-ordered (prevents the paste/clobber races).
-    private static let queue = DispatchQueue(label: "com.encryptedcat.voicenote.insert")
+    private static let queue = DispatchQueue(label: "com.openwhisp.app.insert")
 
     /// Insert `text` into the focused app. Fire-and-forget; runs off the main thread.
     static func insert(

@@ -7,7 +7,7 @@ import Foundation
 // MARK: - Application Delegate
 
 @MainActor
-class VoiceNoteApp: NSObject, NSApplicationDelegate {
+class OpenWhispApp: NSObject, NSApplicationDelegate {
 
     var statusItem: NSStatusItem!
     var settingsWindow: NSWindow?
@@ -15,27 +15,27 @@ class VoiceNoteApp: NSObject, NSApplicationDelegate {
     var appState: AppState!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        print("[VoiceNote] Application launching...")
+        print("[OpenWhisp] Application launching...")
 
         // Hide from dock — agent app
         NSApp.setActivationPolicy(.accessory)
-        print("[VoiceNote] ActivationPolicy set to .accessory")
+        print("[OpenWhisp] ActivationPolicy set to .accessory")
 
         // Initialize state
         appState = AppState.shared
-        print("[VoiceNote] AppState initialized")
+        print("[OpenWhisp] AppState initialized")
 
         // Build status item
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        print("[VoiceNote] StatusItem created: \(statusItem != nil ? "YES" : "NO")")
+        print("[OpenWhisp] StatusItem created: \(statusItem != nil ? "YES" : "NO")")
         if let button = statusItem.button {
-            button.image = NSImage(systemSymbolName: "waveform", accessibilityDescription: "VoiceNote")
-            button.toolTip = "VoiceNote"
+            button.image = NSImage(systemSymbolName: "waveform", accessibilityDescription: "OpenWhisp")
+            button.toolTip = "OpenWhisp"
             button.target = self
             button.action = #selector(showMenu)
-            print("[VoiceNote] Button configured, image: \(button.image != nil ? "YES" : "NO")")
+            print("[OpenWhisp] Button configured, image: \(button.image != nil ? "YES" : "NO")")
         } else {
-            print("[VoiceNote] WARNING: statusItem.button is nil!")
+            print("[OpenWhisp] WARNING: statusItem.button is nil!")
         }
 
         // Request microphone permission
@@ -49,7 +49,7 @@ class VoiceNoteApp: NSObject, NSApplicationDelegate {
 
         // First-run onboarding
         showOnboardingIfNeeded()
-        print("[VoiceNote] Ready")
+        print("[OpenWhisp] Ready")
     }
 
     private func showOnboardingIfNeeded() {
@@ -78,7 +78,7 @@ class VoiceNoteApp: NSObject, NSApplicationDelegate {
             styleMask: [.titled, .closable],
             backing: .buffered, defer: false
         )
-        window.title = "Welcome to VoiceNote"
+        window.title = "Welcome to OpenWhisp"
         window.isReleasedWhenClosed = false
         window.contentViewController = host
         window.center()
@@ -99,18 +99,18 @@ class VoiceNoteApp: NSObject, NSApplicationDelegate {
         // UNUserNotificationCenter.current() crashes with NSInternalInconsistencyException
         // when the app is not run from a proper .app bundle.
         let path = Bundle.main.bundlePath
-        print("[VoiceNote] bundlePath: \(path)")
+        print("[OpenWhisp] bundlePath: \(path)")
         guard path.contains(".app") else {
-            print("[VoiceNote] Warning: not running from .app bundle, skipping notification setup")
+            print("[OpenWhisp] Warning: not running from .app bundle, skipping notification setup")
             return
         }
 
         let center = UNUserNotificationCenter.current()
         center.requestAuthorization(options: [.alert, .sound, .badge]) { granted, error in
             if let error {
-                print("[VoiceNote] Notification error: \(error.localizedDescription)")
+                print("[OpenWhisp] Notification error: \(error.localizedDescription)")
             } else {
-                print("[VoiceNote] Notifications: \(granted ? "granted" : "denied")")
+                print("[OpenWhisp] Notifications: \(granted ? "granted" : "denied")")
             }
         }
     }
@@ -262,7 +262,7 @@ class VoiceNoteApp: NSObject, NSApplicationDelegate {
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered, defer: false
         )
-        window.title = "VoiceNote Settings"
+        window.title = "OpenWhisp Settings"
         window.isReleasedWhenClosed = false
         window.minSize = NSSize(width: 620, height: 460)
         window.contentViewController = host
@@ -279,7 +279,7 @@ class VoiceNoteApp: NSObject, NSApplicationDelegate {
 class AppDelegateBootstrap {
     static func main() {
         let app = NSApplication.shared
-        let delegate = VoiceNoteApp()
+        let delegate = OpenWhispApp()
         app.delegate = delegate
         _ = NSApplicationMain(CommandLine.argc, CommandLine.unsafeArgv)
     }

@@ -53,7 +53,7 @@ struct OnboardingView: View {
     private var welcomeStep: some View {
         stepLayout(
             icon: "waveform",
-            title: "Welcome to VoiceNote",
+            title: "Welcome to OpenWhisp",
             subtitle: "Hold a key, speak, and your words appear wherever you're typing — transcribed locally on your Mac. Let's set it up; it takes about a minute."
         ) { EmptyView() }
     }
@@ -62,8 +62,8 @@ struct OnboardingView: View {
         stepLayout(
             icon: micGranted ? "checkmark.circle.fill" : "mic.fill",
             iconColor: micGranted ? .green : .accentColor,
-            title: "Let VoiceNote hear you",
-            subtitle: "VoiceNote needs your microphone to transcribe speech. Nothing is recorded or uploaded — transcription runs entirely on your Mac."
+            title: "Let OpenWhisp hear you",
+            subtitle: "OpenWhisp needs your microphone to transcribe speech. Nothing is recorded or uploaded — transcription runs entirely on your Mac."
         ) {
             if micGranted {
                 Label("Microphone access granted", systemImage: "checkmark.circle.fill")
@@ -88,8 +88,8 @@ struct OnboardingView: View {
         stepLayout(
             icon: accessibilityGranted ? "checkmark.circle.fill" : "keyboard.fill",
             iconColor: accessibilityGranted ? .green : .accentColor,
-            title: "Let VoiceNote type for you",
-            subtitle: "To insert text into other apps and detect your dictation hotkey, macOS needs you to enable VoiceNote under Accessibility."
+            title: "Let OpenWhisp type for you",
+            subtitle: "To insert text into other apps and detect your dictation hotkey, macOS needs you to enable OpenWhisp under Accessibility."
         ) {
             if accessibilityGranted {
                 Label("Accessibility access granted", systemImage: "checkmark.circle.fill")
@@ -101,7 +101,7 @@ struct OnboardingView: View {
                         appState.openAccessibilitySettings()
                     }
                     .controlSize(.large)
-                    Text("After enabling VoiceNote in the list, return here — this updates automatically.")
+                    Text("After enabling OpenWhisp in the list, return here — this updates automatically.")
                         .font(.caption)
                         .foregroundColor(.secondary)
                         .multilineTextAlignment(.center)
@@ -117,7 +117,7 @@ struct OnboardingView: View {
             title: appState.isModelDownloading ? "Preparing your speech model" : "Your speech model is ready",
             subtitle: appState.isModelDownloading
                 ? "Downloading the speech model. This is a one-time download and runs entirely on your Mac afterward."
-                : "VoiceNote is ready to transcribe locally — no internet required from here on."
+                : "OpenWhisp is ready to transcribe locally — no internet required from here on."
         ) {
             if appState.isModelDownloading {
                 VStack(spacing: 8) {
@@ -160,7 +160,7 @@ struct OnboardingView: View {
             icon: "checkmark.seal.fill",
             iconColor: .green,
             title: "Give it a try",
-            subtitle: "Hold \(triggerName) and say: “Hello, VoiceNote is working.” Release when you're done."
+            subtitle: "Hold \(triggerName) and say: “Hello, OpenWhisp is working.” Release when you're done."
         ) {
             VStack(spacing: 10) {
                 if !appState.streamingText.isEmpty || appState.lastTranscription?.isEmpty == false {

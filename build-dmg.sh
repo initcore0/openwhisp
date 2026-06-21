@@ -1,5 +1,5 @@
 #!/bin/bash
-# Build VoiceNote, package VoiceNote.app, and create a distributable DMG.
+# Build OpenWhisp, package OpenWhisp.app, and create a distributable DMG.
 # Usage:
 #   ./build-dmg.sh [debug|release]
 #
@@ -12,14 +12,14 @@ CONFIG="${1:-debug}"
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BUILD_DIR="$PROJECT_DIR/build"
 DIST_DIR="$PROJECT_DIR/dist"
-APP_NAME="VoiceNote.app"
+APP_NAME="OpenWhisp.app"
 APP_DIR="$BUILD_DIR/$APP_NAME"
 STAGE_DIR="$BUILD_DIR/dmg-stage"
-DMG_PATH="$DIST_DIR/VoiceNote.dmg"
-VOL_NAME="VoiceNote"
+DMG_PATH="$DIST_DIR/OpenWhisp.dmg"
+VOL_NAME="OpenWhisp"
 WHISPER_BIN_DIR="${WHISPER_BIN_DIR:-$HOME/whisper.cpp/build/bin}"
 
-echo "=== VoiceNote Full DMG Build ==="
+echo "=== OpenWhisp Full DMG Build ==="
 echo "Config: $CONFIG"
 echo "Project: $PROJECT_DIR"
 
@@ -38,7 +38,7 @@ mkdir -p "$BUILD_DIR" "$DIST_DIR"
 
 echo ""
 echo "Step 1: Compiling Swift app..."
-SWIFT_FILES=$(find "$PROJECT_DIR/VoiceNote" -name "*.swift" | tr '\n' ' ')
+SWIFT_FILES=$(find "$PROJECT_DIR/OpenWhisp" -name "*.swift" | tr '\n' ' ')
 
 xcrun swiftc \
     -target arm64-apple-macosx14.0 \
@@ -55,7 +55,7 @@ xcrun swiftc \
     -framework CoreAudio \
     -framework CoreGraphics \
     $SWIFT_FILES \
-    -o "$BUILD_DIR/VoiceNote"
+    -o "$BUILD_DIR/OpenWhisp"
 
 echo ""
 echo "Step 2: Creating app bundle..."
@@ -64,15 +64,15 @@ mkdir -p "$APP_DIR/Contents/MacOS"
 mkdir -p "$APP_DIR/Contents/Resources/whisper"
 mkdir -p "$APP_DIR/Contents/Resources/models"
 
-cp "$BUILD_DIR/VoiceNote" "$APP_DIR/Contents/MacOS/"
-cp "$PROJECT_DIR/VoiceNote/Info.plist" "$APP_DIR/Contents/"
+cp "$BUILD_DIR/OpenWhisp" "$APP_DIR/Contents/MacOS/"
+cp "$PROJECT_DIR/OpenWhisp/Info.plist" "$APP_DIR/Contents/"
 
-if [ -f "$PROJECT_DIR/VoiceNote/VoiceNote.entitlements" ]; then
-    cp "$PROJECT_DIR/VoiceNote/VoiceNote.entitlements" "$APP_DIR/Contents/"
+if [ -f "$PROJECT_DIR/OpenWhisp/OpenWhisp.entitlements" ]; then
+    cp "$PROJECT_DIR/OpenWhisp/OpenWhisp.entitlements" "$APP_DIR/Contents/"
 fi
 
-if [ -d "$PROJECT_DIR/VoiceNote/Resources" ]; then
-    cp -R "$PROJECT_DIR/VoiceNote/Resources/"* "$APP_DIR/Contents/Resources/"
+if [ -d "$PROJECT_DIR/OpenWhisp/Resources" ]; then
+    cp -R "$PROJECT_DIR/OpenWhisp/Resources/"* "$APP_DIR/Contents/Resources/"
 fi
 
 echo ""
@@ -81,8 +81,8 @@ echo "Step 3: Bundling whisper.cpp runtime..."
 
 echo ""
 echo "Step 4: Signing app bundle..."
-if [ -f "$PROJECT_DIR/VoiceNote/VoiceNote.entitlements" ]; then
-    codesign --force --deep --sign - --entitlements "$PROJECT_DIR/VoiceNote/VoiceNote.entitlements" "$APP_DIR"
+if [ -f "$PROJECT_DIR/OpenWhisp/OpenWhisp.entitlements" ]; then
+    codesign --force --deep --sign - --entitlements "$PROJECT_DIR/OpenWhisp/OpenWhisp.entitlements" "$APP_DIR"
 else
     codesign --force --deep --sign - "$APP_DIR"
 fi

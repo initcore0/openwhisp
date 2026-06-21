@@ -1,10 +1,10 @@
-# VoiceNote — Local Speech-to-Text for macOS
+# OpenWhisp — Local Speech-to-Text for macOS
 
 A minimal menu-bar application for macOS that transcribes speech to text **100% locally** and **types it directly into the active application**. No cloud APIs, no internet connection required. Uses [whisper.cpp](https://github.com/ggerganov/whisper.cpp) for fast on-device transcription powered by OpenAI's Whisper models compiled to C/C++.
 
 ## What It Does
 
-**VoiceNote streams your voice → text → your keyboard in real-time.**
+**OpenWhisp streams your voice → text → your keyboard in real-time.**
 
 1. You press a hotkey (or menu item) to start recording
 2. While recording, audio is split into ~1-second chunks
@@ -29,7 +29,7 @@ This is like having a dictation assistant that works with any application, in an
 ## Architecture
 
 ```
-VoiceNote/
+OpenWhisp/
 ├── main.swift                    # @main entry point, NSApplicationDelegate
 │                                 # Menu bar item, menu builder, settings window
 ├── Models/
@@ -51,7 +51,7 @@ VoiceNote/
 │                                 # Model picker, microphone selector, language
 │                                 # whisper.cpp binary path, verify button
 ├── Info.plist                    # App metadata, microphone permission
-└── VoiceNote.entitlements        # Code signing entitlements
+└── OpenWhisp.entitlements        # Code signing entitlements
 ```
 
 ### Component Responsibilities
@@ -147,10 +147,10 @@ Available models:
 - Direct command-line interface — no complex API integration needed
 - Actively maintained, battle-tested
 
-### 3. Build VoiceNote
+### 3. Build OpenWhisp
 
 ```bash
-cd ~/projects/voice-note
+cd ~/projects/openwhisp
 
 # Compile
 ./build.sh
@@ -159,10 +159,10 @@ cd ~/projects/voice-note
 ./package.sh
 
 # Run
-open build/VoiceNote.app
+open build/OpenWhisp.app
 ```
 
-> **Important:** Always run the app via `open build/VoiceNote.app`, not the bare binary.
+> **Important:** Always run the app via `open build/OpenWhisp.app`, not the bare binary.
 > macOS requires a proper `.app` bundle for `UserNotifications` and microphone permissions to work correctly.
 > Running the raw binary will cause a silent crash.
 
@@ -194,7 +194,7 @@ Then click the menu bar icon → **⚙ Settings**:
 
 ## How Keyboard Synthesis Works
 
-VoiceNote uses the **Cmd+V (paste)** approach to type text:
+OpenWhisp uses the **Cmd+V (paste)** approach to type text:
 
 ```swift
 // KeyboardSynthesizer.typeViaPaste(text):
@@ -224,7 +224,7 @@ This approach has several advantages:
 
 ## Build System
 
-VoiceNote uses a **script-based build** (`swiftc`) instead of Xcode project files. This ensures deterministic builds without `.pbxproj` fragility.
+OpenWhisp uses a **script-based build** (`swiftc`) instead of Xcode project files. This ensures deterministic builds without `.pbxproj` fragility.
 
 ### Scripts
 
@@ -260,7 +260,7 @@ The `build.sh` script uses:
 
 - Uses `AVAudioRecorder` for WAV capture
 - Format: 16kHz, mono, 16-bit PCM (Whisper's expected input format)
-- Files saved to `~/Library/Caches/com.encryptedcat.voicenote/`
+- Files saved to `~/Library/Caches/com.openwhisp.app/`
 - Device selection via CoreAudio `AudioObjectGetPropertyData` API
 - **Streaming mode**: Timer-based chunk rotation (~1.5s default). Each chunk is a complete WAV file.
 
@@ -308,7 +308,7 @@ Uses `NSEvent.addGlobalMonitorForEvents(matching:)` for:
 - `.keyUp` — triggers `stopStreaming()`
 
 The global monitor requires **Accessibility permissions**. Grant in:
-System Settings → Privacy & Security → Accessibility → VoiceNote
+System Settings → Privacy & Security → Accessibility → OpenWhisp
 
 ### Swift 6 Concurrency
 
@@ -321,11 +321,11 @@ The app is built with Swift 6 strict concurrency checking:
 ## Project Structure
 
 ```
-voice-note/
+openwhisp/
 ├── README.md           ← This file
 ├── build.sh            ← Build script (swiftc)
 ├── package.sh          ← Bundle packaging script
-├── VoiceNote/          ← Source files
+├── OpenWhisp/          ← Source files
 │   ├── main.swift      ← Entry point, menu bar, window mgmt
 │   ├── Models/
 │   │   └── AppState.swift  ← State, settings, streaming pipeline
@@ -337,10 +337,10 @@ voice-note/
 │   ├── Views/
 │   │   └── SettingsView.swift   ← SwiftUI settings panel
 │   ├── Info.plist                 ← App metadata
-│   └── VoiceNote.entitlements    ← Code signing
+│   └── OpenWhisp.entitlements    ← Code signing
 └── build/              ← Build output (gitignored)
-    ├── VoiceNote       ← Raw executable
-    └── VoiceNote.app   ← Application bundle
+    ├── OpenWhisp       ← Raw executable
+    └── OpenWhisp.app   ← Application bundle
 ```
 
 ## Troubleshooting
@@ -352,10 +352,10 @@ voice-note/
 → Download a model manually or select a model in Settings. The app will attempt auto-download.
 
 **"Microphone access denied"**
-→ System Settings → Privacy & Security → Microphone → Enable VoiceNote
+→ System Settings → Privacy & Security → Microphone → Enable OpenWhisp
 
 **Hotkey doesn't work**
-→ System Settings → Privacy & Security → Accessibility → Enable VoiceNote
+→ System Settings → Privacy & Security → Accessibility → Enable OpenWhisp
 → Check that no other app is using the same hotkey
 
 **"Transcription returned empty result"**
@@ -365,14 +365,14 @@ voice-note/
 
 **Text is not being typed**
 → Make sure the target app has an active text field
-→ VoiceNote uses Cmd+V (paste) — the app must support pasting
+→ OpenWhisp uses Cmd+V (paste) — the app must support pasting
 → Some security software may block CGEvent keyboard synthesis
 
 **App doesn't appear in menu bar**
-→ VoiceNote is an agent app (`LSUIElement = true`). It has no dock icon.
+→ OpenWhisp is an agent app (`LSUIElement = true`). It has no dock icon.
 → Look for the waveform icon (📶) in the top-right menu bar.
-→ **Make sure you're running via `open build/VoiceNote.app`**, not the raw binary.
-→ Check Console.app for crash logs: filter by process name "VoiceNote"
+→ **Make sure you're running via `open build/OpenWhisp.app`**, not the raw binary.
+→ Check Console.app for crash logs: filter by process name "OpenWhisp"
 
 ## Development
 

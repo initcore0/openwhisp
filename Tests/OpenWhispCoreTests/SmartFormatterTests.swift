@@ -1,5 +1,5 @@
 import XCTest
-@testable import VoiceNoteCore
+@testable import OpenWhispCore
 
 final class SmartFormatterTests: XCTestCase {
     private let f = SmartFormatter(options: .default)

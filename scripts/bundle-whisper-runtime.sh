@@ -1,7 +1,7 @@
 #!/bin/bash
 # Bundle whisper.cpp executables and their runtime dylibs into an app bundle.
 # Usage:
-#   scripts/bundle-whisper-runtime.sh /path/to/VoiceNote.app [/path/to/whisper.cpp/build/bin]
+#   scripts/bundle-whisper-runtime.sh /path/to/OpenWhisp.app [/path/to/whisper.cpp/build/bin]
 
 set -euo pipefail
 

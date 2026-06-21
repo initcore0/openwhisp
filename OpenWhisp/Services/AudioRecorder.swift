@@ -19,7 +19,7 @@ class AudioRecorder: NSObject, AVAudioRecorderDelegate {
     private var recorder: AVAudioRecorder?
     private var recordingURL: URL?
     private var meterTimer: Timer?
-    private let streamQueue = DispatchQueue(label: "com.encryptedcat.voicenote.audio-stream")
+    private let streamQueue = DispatchQueue(label: "com.openwhisp.app.audio-stream")
 
     // Desired input device (applied per-engine for streaming, per-recorder for legacy)
     private var selectedDeviceID: String?
@@ -121,7 +121,7 @@ class AudioRecorder: NSObject, AVAudioRecorderDelegate {
         stop { _ in }
         
         let cacheDir = URL(fileURLWithPath: NSHomeDirectory())
-            .appendingPathComponent("Library/Caches/com.encryptedcat.voicenote")
+            .appendingPathComponent("Library/Caches/com.openwhisp.app")
         try? FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
         
         let fileName = "recording_\(Int(Date().timeIntervalSince1970 * 1000)).wav"
@@ -535,7 +535,7 @@ class AudioRecorder: NSObject, AVAudioRecorderDelegate {
     /// to `makeSettings()` if the target format is unavailable.
     private func openNextStreamingFile() throws {
         let cacheDir = URL(fileURLWithPath: NSHomeDirectory())
-            .appendingPathComponent("Library/Caches/com.encryptedcat.voicenote")
+            .appendingPathComponent("Library/Caches/com.openwhisp.app")
         try FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
 
         let fileName = "chunk_\(streamFileIndex)_\(Int(Date().timeIntervalSince1970 * 1000)).wav"

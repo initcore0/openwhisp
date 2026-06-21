@@ -6,7 +6,7 @@ import Foundation
 /// Two distinct mechanisms:
 ///   - **terms**: names/jargon/acronyms fed to whisper as an initial prompt so
 ///     the model is biased toward producing them (e.g. "Claude, Anthropic,
-///     VoiceNote, kubectl"). Improves recognition; no guarantee.
+///     OpenWhisp, kubectl"). Improves recognition; no guarantee.
 ///   - **substitutions**: deterministic "from → to" fixups applied after
 ///     transcription (e.g. "clod code" → "Claude Code"). Whole-word, case-
 ///     insensitive match; preserves following text.
@@ -46,7 +46,7 @@ enum VocabularyStore {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support")
         return base
-            .appendingPathComponent("VoiceNote", isDirectory: true)
+            .appendingPathComponent("OpenWhisp", isDirectory: true)
             .appendingPathComponent("vocabulary.json")
     }
 
