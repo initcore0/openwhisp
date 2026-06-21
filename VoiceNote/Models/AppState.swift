@@ -146,6 +146,11 @@ class AppState: ObservableObject {
     private var currentSessionText = ""
     private var isStreamingSession = false
     private var acceptingLiveChunks = false
+    /// True from beginSession() until the session terminates. Tracks dictation intent
+    /// independently of isRecording, which only flips true inside async grant callbacks.
+    private var sessionActive = false
+    /// Set when a stop arrives before the grant callback has started recording.
+    private var pendingStop = false
     private var openAIEnhancementEnabledForSession = false
     private var isAppleSpeechSession = false
     private var appleLiveInsertedText = ""
@@ -207,9 +212,19 @@ class AppState: ObservableObject {
         openAIEnhancementEnabled = UserDefaults.standard.object(forKey: "openAIEnhancementEnabled") as? Bool ?? false
         openAIEnhancementMode = UserDefaults.standard.string(forKey: "openAIEnhancementMode") ?? "rephrase"
         translationTargetLanguage = UserDefaults.standard.string(forKey: "translationTargetLanguage") ?? "en"
-        openAIAPIKey = KeychainStore.read(key: "openAIAPIKey")
-            ?? UserDefaults.standard.string(forKey: "openAIAPIKey")
-            ?? ""
+        // One-time migration: move any legacy plaintext key out of UserDefaults into the
+        // Keychain. didSet does not fire during init, so the keychain write must be explicit.
+        let keychainKey = KeychainStore.read(key: "openAIAPIKey")
+        if let keychainKey, !keychainKey.isEmpty {
+            openAIAPIKey = keychainKey
+        } else if let legacyKey = UserDefaults.standard.string(forKey: "openAIAPIKey"),
+                  !legacyKey.isEmpty {
+            KeychainStore.save(legacyKey, key: "openAIAPIKey")
+            UserDefaults.standard.removeObject(forKey: "openAIAPIKey")
+            openAIAPIKey = legacyKey
+        } else {
+            openAIAPIKey = ""
+        }
         openAIModel = UserDefaults.standard.string(forKey: "openAIModel") ?? "gpt-4o-mini"
 
         wireUpServices()
@@ -435,7 +450,12 @@ class AppState: ObservableObject {
     }
 
     func stopDictation() {
-        guard isRecording else { return }
+        // The hotkey-up may arrive before the async permission-grant callback has flipped
+        // isRecording true. In that case record the intent and let the grant callback abort.
+        guard isRecording else {
+            if sessionActive { pendingStop = true }
+            return
+        }
         if isAppleSpeechSession {
             stopAppleSpeech()
             return
@@ -448,8 +468,10 @@ class AppState: ObservableObject {
     }
 
     func cancelDictation() {
-        guard isRecording || isTranscribing else { return }
+        guard isRecording || isTranscribing || sessionActive else { return }
         activeSessionID = UUID()
+        sessionActive = false
+        pendingStop = false
         transcriptionRequests.removeAll()
         cleanupPendingLiveChunks()
         resetLivePipeline()
@@ -512,6 +534,7 @@ class AppState: ObservableObject {
         appleLiveInsertedText = ""
         appleDidCompleteFinal = false
         statusMessage = "Listening..."
+        let sessionID = activeSessionID
 
         AVCaptureDevice.requestAccess(for: .audio) { granted in
             Task { @MainActor in
@@ -528,6 +551,13 @@ class AppState: ObservableObject {
                             self.error = "Speech recognition access denied. Check System Settings."
                             self.isAppleSpeechSession = false
                             self.finishSessionUI()
+                            return
+                        }
+
+                        // Abort if the hotkey was released or the session cancelled before grant.
+                        guard sessionID == self.activeSessionID, !self.pendingStop else {
+                            self.isAppleSpeechSession = false
+                            self.abortSessionBeforeStart()
                             return
                         }
 
@@ -573,10 +603,13 @@ class AppState: ObservableObject {
         let delta = liveDelta(previous: appleLiveInsertedText, current: text)
         guard !delta.isEmpty else { return }
 
+        // Use a leading separator (matching insertLiveChunk) so the trailing space stays
+        // conditional and is typed once at finalization based on addTrailingSpace.
+        let insertion = appleLiveInsertedText.isEmpty ? delta : " \(delta)"
         appleLiveInsertedText = text
         currentSessionText = text
         KeyboardSynthesizer.typeViaPaste(
-            delta.hasSuffix(" ") ? delta : "\(delta) ",
+            insertion,
             restoreClipboard: restoreClipboard,
             targetApplication: targetApplication
         )
@@ -586,6 +619,23 @@ class AppState: ObservableObject {
         guard isAppleSpeechSession, !appleDidCompleteFinal else { return }
         appleDidCompleteFinal = true
         let finalText = postProcess(rawText.isEmpty ? streamingText : rawText)
+
+        // liveChunks: completeFinalText only sets the clipboard for non-finalOnly, so words
+        // in the final transcript that were not in the last pasted partial would be dropped.
+        // Paste the trailing delta here (mirroring handleAppleSpeechPartial) before routing.
+        if outputMode == "liveChunks" {
+            let delta = liveDelta(previous: appleLiveInsertedText, current: finalText)
+            if !delta.isEmpty {
+                let insertion = appleLiveInsertedText.isEmpty ? delta : " \(delta)"
+                appleLiveInsertedText = finalText
+                KeyboardSynthesizer.typeViaPaste(
+                    insertion,
+                    restoreClipboard: restoreClipboard,
+                    targetApplication: targetApplication
+                )
+            }
+        }
+
         currentSessionText = finalText
         isAppleSpeechSession = false
         completeFinalText(finalText)
@@ -605,11 +655,18 @@ class AppState: ObservableObject {
 
         let micID = microphoneID
         let recorder = self.audioRecorder!
+        let sessionID = activeSessionID
         AVCaptureDevice.requestAccess(for: .audio) { granted in
             Task { @MainActor in
                 guard granted else {
                     self.error = "Microphone access denied. Check System Settings."
                     self.finishSessionUI()
+                    return
+                }
+                // The hotkey may have been released (or the session cancelled) before this
+                // callback ran. Abort cleanly so recording never starts unattended.
+                guard sessionID == self.activeSessionID, !self.pendingStop else {
+                    self.abortSessionBeforeStart()
                     return
                 }
                 if !micID.isEmpty {
@@ -627,12 +684,21 @@ class AppState: ObservableObject {
         statusMessage = "Finalizing..."
         hideOverlayNow()
 
+        let sessionID = activeSessionID
         audioRecorder.stop { [weak self] wavPath in
             Task { @MainActor in
-                guard let self, let path = wavPath else {
-                    self?.isTranscribing = false
-                    self?.statusMessage = "Ready"
-                    self?.finishSessionUI()
+                guard let self else { return }
+                // Release-then-Esc race: drop the trailing audio if the session was rotated.
+                guard sessionID == self.activeSessionID else {
+                    if let path = wavPath {
+                        try? FileManager.default.removeItem(at: path)
+                    }
+                    return
+                }
+                guard let path = wavPath else {
+                    self.isTranscribing = false
+                    self.statusMessage = "Ready"
+                    self.finishSessionUI()
                     return
                 }
 
@@ -648,11 +714,17 @@ class AppState: ObservableObject {
 
         let micID = microphoneID
         let recorder = self.audioRecorder!
+        let sessionID = activeSessionID
         AVCaptureDevice.requestAccess(for: .audio) { granted in
             Task { @MainActor in
                 guard granted else {
                     self.error = "Microphone access denied."
                     self.finishSessionUI()
+                    return
+                }
+                // Abort if the hotkey was released or the session cancelled before grant.
+                guard sessionID == self.activeSessionID, !self.pendingStop else {
+                    self.abortSessionBeforeStart()
                     return
                 }
                 if !micID.isEmpty {
@@ -686,20 +758,53 @@ class AppState: ObservableObject {
         statusMessage = "Finalizing..."
         hideOverlayNow()
 
+        let sessionID = activeSessionID
         audioRecorder.stop { [weak self] finalPath in
             Task { @MainActor in
                 guard let self else { return }
+                // Release-then-Esc race: if the session was cancelled (or rotated) between
+                // the hotkey-up and this completion, drop the trailing audio entirely.
+                guard sessionID == self.activeSessionID else {
+                    if let path = finalPath {
+                        try? FileManager.default.removeItem(at: path)
+                    }
+                    return
+                }
                 if let path = finalPath {
                     self.enqueueLiveChunk(path)
-                } else {
+                } else if self.livePipelineIsDrained {
+                    // Fully silent session with nothing pending: finalize now so it doesn't hang.
                     self.completeFinalText(self.currentSessionText)
                 }
+                // Otherwise leave isTranscribing = true ("Finalizing...") and let the
+                // drain-gated paths (handleTranscription / processNextLiveInsertion /
+                // the live-chunk error handler) call completeFinalText once chunks finish.
             }
         }
     }
 
+    /// Called from a grant callback when the user already released the hotkey (or cancelled)
+    /// before recording could start. Tears the half-started session down without recording.
+    private func abortSessionBeforeStart() {
+        activeSessionID = UUID()
+        transcriptionRequests.removeAll()
+        cleanupPendingLiveChunks()
+        resetLivePipeline()
+        acceptingLiveChunks = false
+        isStreamingSession = false
+        isAppleSpeechSession = false
+        isRecording = false
+        isTranscribing = false
+        currentSessionText = ""
+        streamingText = ""
+        statusMessage = "Ready"
+        finishSessionUI()
+    }
+
     private func beginSession(streaming: Bool) {
         error = nil
+        sessionActive = true
+        pendingStop = false
         activeSessionID = UUID()
         transcriptionRequests.removeAll()
         cleanupPendingLiveChunks()
@@ -885,13 +990,17 @@ class AppState: ObservableObject {
     }
 
     private func insertLiveChunk(_ text: String) {
-        if !currentSessionText.isEmpty {
+        // Use a leading separator so chunks are space-separated, but never append a trailing
+        // space here. The conditional trailing space (addTrailingSpace) is typed once at
+        // finalization, so addTrailingSpace = false leaves no trailing space in the output.
+        let needsSeparator = !currentSessionText.isEmpty
+        if needsSeparator {
             currentSessionText += " "
         }
         currentSessionText += text
         streamingText = currentSessionText
 
-        let insertion = "\(text) "
+        let insertion = needsSeparator ? " \(text)" : text
         KeyboardSynthesizer.typeViaPaste(
             insertion,
             restoreClipboard: restoreClipboard,
@@ -966,6 +1075,15 @@ class AppState: ObservableObject {
                 targetApplication: targetApplication
             )
         } else {
+            // liveChunks: the text was already pasted incrementally (no trailing space).
+            // Type the single conditional trailing space now, honoring addTrailingSpace.
+            if addTrailingSpace, !text.isEmpty {
+                KeyboardSynthesizer.typeViaPaste(
+                    " ",
+                    restoreClipboard: restoreClipboard,
+                    targetApplication: targetApplication
+                )
+            }
             let pb = NSPasteboard.general
             pb.clearContents()
             pb.setString(text, forType: .string)
@@ -1058,6 +1176,8 @@ class AppState: ObservableObject {
     }
 
     private func finishSessionUI(delay: TimeInterval = 0) {
+        sessionActive = false
+        pendingStop = false
         elapsedTimer?.invalidate()
         elapsedTimer = nil
         recordingStartedAt = nil
