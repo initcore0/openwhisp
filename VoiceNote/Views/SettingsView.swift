@@ -43,6 +43,7 @@ struct SettingsView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
+                generalSection
                 engineSection
                 modelSection
                 microphoneSection
@@ -64,6 +65,22 @@ struct SettingsView: View {
         .frame(minWidth: 660, minHeight: 620)
     }
     
+    private var generalSection: some View {
+        settingsSection("General") {
+            Toggle("Launch VoiceNote at login", isOn: $appState.launchAtLogin)
+
+            Text("Automatically start VoiceNote after you log in or reboot. If macOS asks you to approve it, enable VoiceNote under System Settings > General > Login Items.")
+                .font(.caption)
+                .foregroundColor(.secondary)
+
+            if LaunchAtLogin.requiresApproval {
+                Button("Open Login Items Settings") {
+                    LaunchAtLogin.openLoginItemsSettings()
+                }
+            }
+        }
+    }
+
     private var engineSection: some View {
         settingsSection("Engine") {
             Picker("Transcription Engine", selection: $appState.transcriptionEngine) {
