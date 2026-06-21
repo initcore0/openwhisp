@@ -36,6 +36,12 @@ class AudioRecorder: NSObject, AVAudioRecorderDelegate {
     /// buffers within a session to retain resampling state; recreated per session.
     private var streamingConverter: AVAudioConverter?
     private var streamFileIndex = 0
+
+    /// Auto-gain: boost quiet mics toward a healthy level so whisper gets a strong
+    /// signal. Off => audio is passed through unchanged.
+    var autoGainEnabled: Bool = true
+    /// Smoothed gain applied across buffers (avoids pumping between chunks).
+    private var smoothedGain: Float = 1.0
     private var chunkTimer: Timer?
     private var streamingChunks: [URL] = []
     private var onChunkComplete: ((URL?) -> Void)?
@@ -182,6 +188,7 @@ class AudioRecorder: NSObject, AVAudioRecorderDelegate {
         }
         targetFormat = target
         streamingConverter = converter
+        smoothedGain = 1.0
 
         do {
             try streamQueue.sync {
@@ -265,6 +272,7 @@ class AudioRecorder: NSObject, AVAudioRecorderDelegate {
         }
         targetFormat = target
         streamingConverter = converter
+        smoothedGain = 1.0
 
         do {
             input.installTap(onBus: 0, bufferSize: 2048, format: format) { [weak self] buffer, _ in
@@ -516,9 +524,55 @@ class AudioRecorder: NSObject, AVAudioRecorderDelegate {
             return nil
         }
         guard output.frameLength > 0 else { return nil }
+        if autoGainEnabled {
+            applyAutoGain(to: output)
+        }
         return output
     }
-    
+
+    /// Peak-normalize a converted (float32 mono) buffer toward a healthy target
+    /// level so quiet microphones still produce a strong signal for whisper.
+    ///
+    /// Conservative by design: gain is capped, never amplifies near-silence (so
+    /// background hiss isn't blown up into "speech"), is smoothed across buffers
+    /// to avoid pumping, and hard-clamps samples to [-1, 1] so it can never clip.
+    private func applyAutoGain(to buffer: AVAudioPCMBuffer) {
+        guard let data = buffer.floatChannelData else { return }
+        let frames = Int(buffer.frameLength)
+        guard frames > 0 else { return }
+        let samples = data[0]
+
+        // Measure peak amplitude of this buffer.
+        var peak: Float = 0
+        for i in 0..<frames {
+            let a = abs(samples[i])
+            if a > peak { peak = a }
+        }
+
+        // Don't touch near-silence — avoids amplifying noise between words.
+        let silenceFloor: Float = 0.005
+        let targetPeak: Float = 0.7      // aim for a healthy but un-clipped level
+        let maxGain: Float = 12.0        // cap so we never blow up faint noise
+
+        let desiredGain: Float
+        if peak < silenceFloor {
+            desiredGain = 1.0            // leave silence as-is
+        } else {
+            desiredGain = min(maxGain, max(1.0, targetPeak / peak))
+        }
+
+        // Smooth toward the desired gain so loudness doesn't pump chunk-to-chunk.
+        // Attack faster than release for responsiveness without artifacts.
+        let rate: Float = desiredGain > smoothedGain ? 0.5 : 0.2
+        smoothedGain += (desiredGain - smoothedGain) * rate
+
+        guard smoothedGain > 1.0001 else { return }   // nothing meaningful to apply
+        for i in 0..<frames {
+            let v = samples[i] * smoothedGain
+            samples[i] = v > 1.0 ? 1.0 : (v < -1.0 ? -1.0 : v)   // hard clamp, no clip
+        }
+    }
+
     private func startMetering() {
         meterTimer?.invalidate()
         meterTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
