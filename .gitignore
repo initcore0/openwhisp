@@ -1,0 +1,20 @@
+# Build output
+build/
+*.ipa
+
+# macOS
+.DS_Store
+*.swp
+*~
+
+# Xcode (if ever needed)
+*.xcworkspace
+*.xcodeproj/
+
+# SwiftPM
+.build/
+Package.resolved
+
+# Build artifacts / releases
+dist/
+build/

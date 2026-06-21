@@ -1,0 +1,66 @@
+#!/bin/bash
+# Package OpenWhisp as .app bundle
+# Usage: ./package.sh
+
+set -e
+
+PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
+BUILD_DIR="$PROJECT_DIR/build"
+APP_NAME="OpenWhisp.app"
+APP_DIR="$BUILD_DIR/$APP_NAME"
+
+# Build first if binary doesn't exist
+if [ ! -f "$BUILD_DIR/OpenWhisp" ]; then
+    echo "Binary not found. Building first..."
+    ./build.sh
+fi
+
+# Clean old bundle
+rm -rf "$APP_DIR"
+
+# Create app structure
+mkdir -p "$APP_DIR/Contents/MacOS"
+mkdir -p "$APP_DIR/Contents/Resources"
+mkdir -p "$APP_DIR/Contents/Resources/whisper"
+mkdir -p "$APP_DIR/Contents/Resources/models"
+
+# Copy binary
+cp "$BUILD_DIR/OpenWhisp" "$APP_DIR/Contents/MacOS/"
+
+# Copy Info.plist
+cp "$PROJECT_DIR/OpenWhisp/Info.plist" "$APP_DIR/Contents/"
+
+# Copy packaged resources
+if [ -d "$PROJECT_DIR/OpenWhisp/Resources" ]; then
+    cp -R "$PROJECT_DIR/OpenWhisp/Resources/"* "$APP_DIR/Contents/Resources/"
+fi
+
+# Bundle whisper.cpp runtime binaries and dylibs when available.
+WHISPER_BIN_DIR="${WHISPER_BIN_DIR:-$PROJECT_DIR/third_party/whisper.cpp/build/bin}"
+"$PROJECT_DIR/scripts/bundle-whisper-runtime.sh" "$APP_DIR" "$WHISPER_BIN_DIR"
+
+# Copy entitlements
+if [ -f "$PROJECT_DIR/OpenWhisp/OpenWhisp.entitlements" ]; then
+    cp "$PROJECT_DIR/OpenWhisp/OpenWhisp.entitlements" "$APP_DIR/Contents/"
+fi
+
+# Code sign (ad-hoc)
+echo "Signing with ad-hoc certificate..."
+if [ -f "$PROJECT_DIR/OpenWhisp/OpenWhisp.entitlements" ]; then
+    codesign --force --deep --sign - --entitlements "$PROJECT_DIR/OpenWhisp/OpenWhisp.entitlements" "$APP_DIR"
+else
+    codesign --force --deep --sign - "$APP_DIR"
+fi
+
+echo ""
+echo "✓ App bundle created: $APP_DIR"
+echo ""
+echo "Run with:"
+echo "  open $APP_DIR"
+echo ""
+echo "Packaged whisper runtime:"
+ls -1 "$APP_DIR/Contents/Resources/whisper" 2>/dev/null || true
+echo ""
+echo "Before first use:"
+echo "  1. Grant microphone/accessibility/input monitoring permissions"
+echo "  2. Let OpenWhisp download the selected model into Application Support"

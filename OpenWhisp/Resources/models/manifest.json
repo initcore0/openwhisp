@@ -1,0 +1,72 @@
+[
+  {
+    "id": "tiny",
+    "file": "ggml-tiny.bin",
+    "label": "Tiny - fastest, lowest quality",
+    "size": "39 MB",
+    "url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin"
+  },
+  {
+    "id": "tiny.en",
+    "file": "ggml-tiny.en.bin",
+    "label": "Tiny English - fastest English",
+    "size": "39 MB",
+    "url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en.bin"
+  },
+  {
+    "id": "base",
+    "file": "ggml-base.bin",
+    "label": "Base - fast default",
+    "size": "147 MB",
+    "url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin"
+  },
+  {
+    "id": "base.en",
+    "file": "ggml-base.en.bin",
+    "label": "Base English - better English default",
+    "size": "147 MB",
+    "url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin"
+  },
+  {
+    "id": "small",
+    "file": "ggml-small.bin",
+    "label": "Small - better quality",
+    "size": "464 MB",
+    "url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin"
+  },
+  {
+    "id": "small.en",
+    "file": "ggml-small.en.bin",
+    "label": "Small English - recommended quality",
+    "size": "464 MB",
+    "url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en.bin"
+  },
+  {
+    "id": "medium",
+    "file": "ggml-medium.bin",
+    "label": "Medium - high quality",
+    "size": "1.5 GB",
+    "url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium.bin"
+  },
+  {
+    "id": "medium.en",
+    "file": "ggml-medium.en.bin",
+    "label": "Medium English - high quality English",
+    "size": "1.5 GB",
+    "url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium.en.bin"
+  },
+  {
+    "id": "large-v3-turbo",
+    "file": "ggml-large-v3-turbo.bin",
+    "label": "Large v3 Turbo - best speed/quality",
+    "size": "1.5 GB",
+    "url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin"
+  },
+  {
+    "id": "large-v3",
+    "file": "ggml-large-v3.bin",
+    "label": "Large v3 - best quality, slowest",
+    "size": "2.9 GB",
+    "url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3.bin"
+  }
+]
