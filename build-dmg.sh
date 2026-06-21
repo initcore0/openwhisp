@@ -81,11 +81,19 @@ echo "Step 3: Bundling whisper.cpp runtime..."
 
 echo ""
 echo "Step 4: Signing app bundle..."
-if [ -f "$PROJECT_DIR/OpenWhisp/OpenWhisp.entitlements" ]; then
-    codesign --force --deep --sign - --entitlements "$PROJECT_DIR/OpenWhisp/OpenWhisp.entitlements" "$APP_DIR"
-else
-    codesign --force --deep --sign - "$APP_DIR"
+# Prefer a stable identity (SIGN_IDENTITY env, else the self-signed OpenWhisp cert)
+# so TCC permissions survive rebuilds; fall back to ad-hoc.
+SIGN_IDENTITY="${SIGN_IDENTITY:-}"
+if [ -z "$SIGN_IDENTITY" ] && security find-identity -v -p codesigning 2>/dev/null | grep -q "OpenWhisp Self-Signed"; then
+    SIGN_IDENTITY="OpenWhisp Self-Signed"
 fi
+[ -z "$SIGN_IDENTITY" ] && SIGN_IDENTITY="-"
+echo "  Using identity: $SIGN_IDENTITY"
+ENTITLEMENTS_ARGS=()
+if [ -f "$PROJECT_DIR/OpenWhisp/OpenWhisp.entitlements" ]; then
+    ENTITLEMENTS_ARGS=(--entitlements "$PROJECT_DIR/OpenWhisp/OpenWhisp.entitlements")
+fi
+codesign --force --deep --sign "$SIGN_IDENTITY" "${ENTITLEMENTS_ARGS[@]}" "$APP_DIR"
 codesign --verify --deep --strict --verbose=2 "$APP_DIR"
 
 echo ""

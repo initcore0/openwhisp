@@ -81,6 +81,25 @@ To point at a whisper.cpp build elsewhere instead of the submodule:
 WHISPER_BIN_DIR=/path/to/whisper.cpp/build/bin ./package.sh
 ```
 
+### Stop re‑granting permissions on every build
+
+By default `package.sh` signs **ad‑hoc** (`codesign --sign -`), which gives each
+build a *different* signing identity. macOS ties permissions (Microphone,
+Accessibility, Input Monitoring) to that identity, so every rebuild looks like a
+new app and re‑asks for permission.
+
+Fix it once by creating a **stable self‑signed identity**:
+
+```bash
+./scripts/create-signing-cert.sh   # one time; prompts for your password to trust the cert
+./build.sh && ./package.sh         # now signed with a stable identity
+```
+
+After this, permissions persist across rebuilds. (This is self‑signed: it stops
+the re‑prompts on *your* machine but doesn't make the app trusted for other
+users — that needs an Apple Developer ID cert + notarization. If you have one,
+set `SIGN_IDENTITY="Developer ID Application: …"` and `package.sh` will use it.)
+
 ### Optional: build a DMG
 
 ```bash
