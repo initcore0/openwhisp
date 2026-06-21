@@ -569,8 +569,10 @@ class WhisperEngine {
         guard socketFD >= 0 else { return nil }
         defer { close(socketFD) }
 
-        // Allow the kernel to re-bind this port immediately after we close the
-        // probe socket, narrowing the TOCTOU window before whisper-server binds.
+        // Set SO_REUSEADDR so that if whisper-server is launched with the same
+        // option, it can re-bind this port without a stale-binding rejection.
+        // (This does not eliminate the bind-then-close race; it only avoids
+        // SO_REUSEADDR-related rebind failures on the discovered port.)
         var reuse: Int32 = 1
         setsockopt(socketFD, SOL_SOCKET, SO_REUSEADDR, &reuse, socklen_t(MemoryLayout<Int32>.size))
 
@@ -669,7 +671,11 @@ class WhisperEngine {
     /// if its last path component is `whisper-server`. Returns false if the path
     /// cannot be resolved (so callers won't signal an unknown process).
     private static func isWhisperServerProcess(pid: Int32) -> Bool {
-        var buffer = [CChar](repeating: 0, count: Int(MAXPATHLEN))
+        // proc_pidpath wants PROC_PIDPATHINFO_MAXSIZE (== 4*MAXPATHLEN) of space;
+        // that C macro isn't importable into Swift, so use its expansion directly.
+        // A smaller buffer (e.g. MAXPATHLEN) can truncate long paths, causing a
+        // real stale whisper-server to fail the name check and not be cleaned up.
+        var buffer = [CChar](repeating: 0, count: 4 * Int(MAXPATHLEN))
         let length = proc_pidpath(pid, &buffer, UInt32(buffer.count))
         guard length > 0 else { return false }
         let path = String(cString: buffer)
