@@ -433,7 +433,7 @@ struct SettingsView: View {
     }
 
     @ViewBuilder private var localLLMFields: some View {
-        TextField("Server URL (e.g. http://192.168.68.52:8080/v1)", text: $appState.localLLMBaseURL)
+        TextField("Server URL (e.g. http://localhost:8080/v1)", text: $appState.localLLMBaseURL)
             .textFieldStyle(.roundedBorder)
         TextField("Model (leave blank to use the server default)", text: $appState.localLLMModel)
             .textFieldStyle(.roundedBorder)

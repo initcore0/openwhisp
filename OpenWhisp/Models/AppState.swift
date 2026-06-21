@@ -402,7 +402,7 @@ class AppState: ObservableObject {
         }
         openAIModel = UserDefaults.standard.string(forKey: "openAIModel") ?? "gpt-4o-mini"
         llmProvider = UserDefaults.standard.string(forKey: "llmProvider") ?? "openai"
-        localLLMBaseURL = UserDefaults.standard.string(forKey: "localLLMBaseURL") ?? "http://192.168.68.52:8080/v1"
+        localLLMBaseURL = UserDefaults.standard.string(forKey: "localLLMBaseURL") ?? "http://localhost:8080/v1"
         localLLMModel = UserDefaults.standard.string(forKey: "localLLMModel") ?? ""
         voiceCommandsEnabled = UserDefaults.standard.object(forKey: "voiceCommandsEnabled") as? Bool ?? false
         voiceCommandWakeWord = UserDefaults.standard.string(forKey: "voiceCommandWakeWord") ?? ""

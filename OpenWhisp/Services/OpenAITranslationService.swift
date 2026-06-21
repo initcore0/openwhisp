@@ -8,7 +8,7 @@ import Foundation
 /// and whether a bearer key is sent.
 struct LLMEndpoint {
     /// Base URL up to and including `/v1` (no trailing slash), e.g.
-    /// "https://api.openai.com/v1" or "http://192.168.68.52:8080/v1".
+    /// "https://api.openai.com/v1" or "http://localhost:8080/v1".
     var baseURL: String
     /// Bearer key. Empty/absent for most local servers.
     var apiKey: String

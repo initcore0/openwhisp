@@ -1,414 +1,260 @@
-# OpenWhisp — Local Speech-to-Text for macOS
+# OpenWhisp — Local‑First Dictation for macOS
 
-A minimal menu-bar application for macOS that transcribes speech to text **100% locally** and **types it directly into the active application**. No cloud APIs, no internet connection required. Uses [whisper.cpp](https://github.com/ggerganov/whisper.cpp) for fast on-device transcription powered by OpenAI's Whisper models compiled to C/C++.
+OpenWhisp is a menu‑bar dictation app for macOS. Hold a key, speak, release — your words are transcribed **on‑device** and typed into whatever app is focused. No cloud account, no subscription, no audio leaving your machine (unless you explicitly opt into a cloud LLM for cleanup).
 
-## What It Does
+Transcription runs locally with [whisper.cpp](https://github.com/ggerganov/whisper.cpp); optional text cleanup can run **fully locally** against your own LLM server, or via OpenAI if you choose.
 
-**OpenWhisp streams your voice → text → your keyboard in real-time.**
+> **Status:** early but functional. Open‑source (MIT). Apple Silicon, macOS 14+.
 
-1. You press a hotkey (or menu item) to start recording
-2. While recording, audio is split into ~1-second chunks
-3. Each chunk is transcribed by whisper.cpp running locally on your Mac
-4. Transcribed text is **automatically typed into whatever app has focus** (TextEdit, Slack, Terminal, etc.)
-5. Release the hotkey (or click Stop) to end the session
+---
 
-This is like having a dictation assistant that works with any application, in any language, entirely offline.
+## Highlights
 
-## Features
+- **100% local transcription** — whisper.cpp on‑device; works offline.
+- **Type into any app** — text is inserted into the focused app via Accessibility (clipboard‑preserving) or Cmd+V paste.
+- **Hold‑to‑talk** — hold a hotkey (Fn or Control+Space), release to insert, Esc to cancel.
+- **Smart formatting (local, default‑on)** — capitalization, punctuation cleanup, filler‑word removal ("um/uh"), and spoken punctuation ("new line", "comma", "period").
+- **Custom vocabulary** — bias whisper toward your names/jargon, plus "heard → correct" substitutions (e.g. "clod code" → "Claude Code").
+- **AI post‑processing (optional)** — rephrase or improve translation with an LLM. Point it at a **local OpenAI‑compatible server** (llama.cpp `llama-server`, Ollama) to stay private, or at OpenAI.
+- **Voice commands** — end a dictation with an instruction ("…make this formal") and it's applied to the rest via the LLM.
+- **Per‑app modes** — auto‑apply language / output / AI‑cleanup overrides based on the app you're typing into.
+- **Transcription history** — local, searchable list of past dictations with copy/re‑use.
+- **Multiple models & languages** — tiny → large‑v3; 12 languages plus auto‑detect; optional whisper translate‑to‑English.
+- **Apple Speech engine** — optional native streaming recognizer as an alternative to whisper.
+- **Launch at login**, a sleek recording overlay with live transcript, and a guided first‑run setup.
 
-- **100% Local** — All transcription runs on-device using whisper.cpp. No data leaves your machine.
-- **Real-Time Streaming** — Audio is processed in 1-second chunks as you speak, text appears as you talk.
-- **Auto-Type to Active Window** — Transcription results are typed directly into the focused application via CGEvent keyboard synthesis (Cmd+V approach).
-- **System Tray App** — Minimal interface. Runs silently in the menu bar.
-- **Multiple Models** — Choose between 5 Whisper model sizes (tiny → large-v3) balancing speed vs accuracy.
-- **Microphone Selection** — Pick any available input device in settings.
-- **Multi-Language** — Supports 12+ languages plus auto-detection.
-- **Clipboard Fallback** — Transcription also saved to clipboard and shown as a system notification.
-- **Hotkey Recording** — Hold a key to record/stream, release to stop.
+---
 
-## Architecture
+## Install
 
-```
-OpenWhisp/
-├── main.swift                    # @main entry point, NSApplicationDelegate
-│                                 # Menu bar item, menu builder, settings window
-├── Models/
-│   └── AppState.swift            # Central state management (@MainActor)
-│                                 # Settings persistence (UserDefaults)
-│                                 # Streaming pipeline: chunk → transcribe → type
-├── Services/
-│   ├── AudioRecorder.swift       # AVAudioRecorder wrapper
-│                                 # Streaming mode: chunk-based recording (~1s chunks)
-│                                 # CoreAudio device enumeration (input selection)
-│   ├── WhisperEngine.swift       # Process wrapper for whisper.cpp (whisper-cli) binary
-│                                 # Captures stdout, parses transcription text
-│   ├── HotkeyMonitor.swift       # Global keyboard event monitoring
-│                                 # keyDown/keyUp detection for hold-to-record
-│   └── KeyboardSynthesizer.swift # CGEvent keyboard synthesis (Cmd+V paste)
-│                                 # Types text into the active application
-├── Views/
-│   └── SettingsView.swift        # SwiftUI settings panel
-│                                 # Model picker, microphone selector, language
-│                                 # whisper.cpp binary path, verify button
-├── Info.plist                    # App metadata, microphone permission
-└── OpenWhisp.entitlements        # Code signing entitlements
-```
+OpenWhisp builds from source (no notarized release yet). See **[Building](#building)**.
 
-### Component Responsibilities
+A prebuilt `.app`/DMG may be attached to [GitHub Releases](../../releases) when available. Because builds are currently ad‑hoc signed, macOS Gatekeeper will warn on first open — right‑click the app → **Open**, or build it yourself.
 
-- **`main.swift`** — App lifecycle, menu bar icon (📶), menu popup, settings window
-- **`AppState`** — Single source of truth. Persists settings, orchestrates the streaming pipeline: `startStreaming()` → chunk loop → transcribe → `typeViaPaste()` → `stopStreaming()`
-- **`AudioRecorder`** — Records audio at 16kHz mono WAV (Whisper format). Supports two modes:
-  - **Standard**: Record entire session → single WAV → transcribe once
-  - **Streaming**: Record continuously, split into ~1s chunks → each chunk triggers a transcription callback
-- **`WhisperEngine`** — Spawns `whisper-cli` as a subprocess. Passes model path, WAV file, language. Parses stdout for transcription text. Supports async completion callbacks.
-- **`HotkeyMonitor`** — Uses `NSEvent.addGlobalMonitorForEvents` for keyDown/keyUp. Hold key = start streaming, release = stop streaming.
-- **`KeyboardSynthesizer`** — Types text into the active application using the Cmd+V approach:
-  1. Save current clipboard content
-  2. Set clipboard to transcribed text
-  3. Simulate Cmd+V via `CGEvent` (keyboardEventSource)
-  4. Restore original clipboard
-  This works with ANY application — Terminal, TextEdit, Slack, VS Code, etc.
-- **`SettingsView`** — SwiftUI Form with sections for Model, Microphone, Language, whisper.cpp binary path
+---
 
-### Streaming Data Flow
-
-```
-User starts streaming (hotkey / menu)
-    → AppState.startStreaming()
-    → AudioRecorder.startStreaming(chunkDuration: 1.5s)
-    → Records audio at 16kHz mono WAV
-    
-    ┌─────────────────────────────────────────┐
-    │  LOOP (while recording):                │
-    │                                         │
-    │  1. Timer fires every 1.5s             │
-    │  2. Current chunk WAV saved            │
-    │  3. Recorder starts new chunk          │
-    │  4. Callback: AppState onStreamingChunk│
-    │  5. WhisperEngine.transcribe(chunk)    │
-    │  6. Result → KeyboardSynthesizer.type  │
-    │  7. Text typed into active app         │
-    │                                         │
-    └─────────────────────────────────────────┘
-    
-User stops streaming (release hotkey / menu)
-    → AppState.stopStreaming()
-    → AudioRecorder.stop() (final chunk + cleanup)
-    → Status: "Idle"
-```
-
-## System Requirements
+## Requirements
 
 - **macOS 14.0+** (Sonoma or later)
-- **Apple Silicon** (arm64) or Intel Mac
-- **whisper.cpp** installed and built locally
-- **Microphone** (built-in or external)
-- **RAM**: Minimum 2GB for `tiny` model, 4GB+ for `base`, 8GB+ for `small`, 16GB+ for `medium`, 32GB+ for `large-v3`
+- **Apple Silicon** (the build targets `arm64`)
+- **whisper.cpp** built locally (for the bundled runtime) — see below
+- A **microphone**
 
-## Quick Start
+RAM scales with model size: ~2 GB for `tiny`, ~4 GB `base`, ~8 GB `small`, ~16 GB `medium`, ~32 GB `large‑v3`.
+
+---
+
+## Building
+
+OpenWhisp uses plain `swiftc` build scripts (no Xcode project). The app bundles the whisper.cpp runtime so end users don't need it on PATH.
 
 ### 1. Build whisper.cpp
 
 ```bash
 git clone https://github.com/ggerganov/whisper.cpp.git ~/whisper.cpp
 cd ~/whisper.cpp
-make -j$(sysctl -n hw.ncpu)
+cmake -B build && cmake --build build -j --config Release
 ```
 
-This produces the `main` binary at `~/whisper.cpp/main`.
+This produces `whisper-cli` and `whisper-server` under `~/whisper.cpp/build/bin/`. `package.sh` copies these (and their dylibs) into the app bundle.
 
-### 2. Download a model
-
-```bash
-mkdir -p ~/whisper.cpp/models
-
-# Base model — good balance of speed and accuracy (72 MB)
-curl -L -o ~/whisper.cpp/models/ggml-base.bin \
-  https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin
-
-# Or use the app's auto-download (Settings → Model → select size)
-```
-
-Available models:
-
-| Model | Size | Speed | Accuracy | Best For |
-|-------|------|-------|----------|----------|
-| tiny | 39 MB | Fastest | Low | Testing, quick notes |
-| base | 72 MB | Fast | Good | Default choice |
-| small | 464 MB | Medium | Very Good | Production use |
-| medium | 1.5 GB | Slow | Excellent | High accuracy needed |
-| large-v3 | 2.9 GB | Slowest | Best | Maximum quality |
-
-**Why whisper.cpp?** It was selected over alternatives (faster-whisper, openai-whisper) because:
-- Runs natively in C/C++ with no Python dependency
-- Optimized for Apple Silicon with Metal backend
-- Smallest binary footprint, easiest distribution
-- Direct command-line interface — no complex API integration needed
-- Actively maintained, battle-tested
-
-### 3. Build OpenWhisp
+### 2. Build & package OpenWhisp
 
 ```bash
-cd ~/projects/openwhisp
+git clone <this-repo> openwhisp
+cd openwhisp
 
-# Compile
-./build.sh
+./build.sh        # compile the Swift sources -> build/OpenWhisp
+./package.sh      # wrap into build/OpenWhisp.app (+ bundle whisper runtime, ad-hoc sign)
 
-# Package as .app
-./package.sh
-
-# Run
 open build/OpenWhisp.app
 ```
 
-> **Important:** Always run the app via `open build/OpenWhisp.app`, not the bare binary.
-> macOS requires a proper `.app` bundle for `UserNotifications` and microphone permissions to work correctly.
-> Running the raw binary will cause a silent crash.
+> Always run via the `.app` bundle, not the bare binary — `UserNotifications` and the permission prompts require a real bundle.
 
-### 4. Configure
+If your whisper.cpp build lives elsewhere:
 
-First launch will prompt for:
-1. **Microphone access** — grant in System Settings → Privacy & Security → Microphone
-2. **Notification access** — grant when prompted
-
-Then click the menu bar icon → **⚙ Settings**:
-
-1. **whisper.cpp Binary** — set path to `~/whisper.cpp/main`, click **Verify**
-2. **Model** — select model size (auto-downloads if missing)
-3. **Microphone** — select your preferred input device
-4. **Language** — select transcription language or "Auto Detect"
-
-### 5. Use
-
-**Streaming mode** (recommended):
-1. Click the menu bar icon → **🎙 Start Streaming**
-2. Click on the app where you want text to appear
-3. Start speaking — text will be typed in real-time
-4. Click the menu bar icon → **⏹ Stop Streaming** when done
-
-**Legacy mode** (record once, transcribe once):
-1. Click the menu bar icon → **🎙 Record (legacy)**
-2. Speak, then click → **⏹ Stop**
-3. Result appears in notification + clipboard
-
-## How Keyboard Synthesis Works
-
-OpenWhisp uses the **Cmd+V (paste)** approach to type text:
-
-```swift
-// KeyboardSynthesizer.typeViaPaste(text):
-1. Save current clipboard content
-2. pb.clearContents()
-3. pb.setString(transcribedText, forType: .string)
-4. CGEvent(keyboardEventSource: source, virtualKey: 0x09, keyDown: true)  // V down
-   → flags = .maskCommand  // Cmd held
-5. CGEvent(keyboardEventSource: source, virtualKey: 0x09, keyDown: false)  // V up
-   → flags = .maskCommand
-6. Restore original clipboard
+```bash
+WHISPER_BIN_DIR=/path/to/whisper.cpp/build/bin ./package.sh
 ```
 
-This approach has several advantages:
-- **Universal** — works with ANY application that accepts text input
-- **Multi-language** — handles any Unicode character (emoji, CJK, Cyrillic, etc.)
-- **No Accessibility hack needed** — uses standard CGEvent API (though Accessibility permissions are still recommended for the global hotkey)
-- **Non-intrusive** — clipboard is restored after each paste
+### Optional: build a DMG
+
+```bash
+./build-dmg.sh    # or ./create-dmg.sh
+```
+
+---
+
+## First run
+
+A short guided setup walks you through:
+
+1. **Microphone** permission
+2. **Accessibility** permission (needed to type into other apps and to detect the hotkey)
+3. **Model download** (the chosen Whisper model downloads automatically on first use)
+4. **Hotkey** choice (Fn or Control+Space)
+5. A live **test**
+
+You can re‑open it any time from the menu bar → **Setup Guide…**.
 
 ### Permissions
 
-| Permission | Purpose | Where to Grant |
-|-----------|---------|---------------|
-| **Microphone** | Record audio | System Settings → Privacy → Microphone |
-| **Notifications** | Show transcription results | System Settings → Notifications |
-| **Accessibility** | Global hotkey monitoring | System Settings → Privacy → Accessibility |
+| Permission | Why | Where |
+|-----------|-----|-------|
+| **Microphone** | record audio | System Settings → Privacy & Security → Microphone |
+| **Accessibility** | type into apps + global hotkey | System Settings → Privacy & Security → Accessibility |
+| **Input Monitoring** | hotkey capture (some setups) | System Settings → Privacy & Security → Input Monitoring |
+| **Notifications** | optional status notifications | granted on prompt |
 
-## Build System
+`reset-permissions.sh` resets OpenWhisp's TCC records if a rebuilt app identity gets stuck.
 
-OpenWhisp uses a **script-based build** (`swiftc`) instead of Xcode project files. This ensures deterministic builds without `.pbxproj` fragility.
+---
 
-### Scripts
+## Using it
 
-| Script | Purpose |
-|--------|---------|
-| `build.sh` | Compiles all Swift files into a Mach-O executable |
-| `package.sh` | Wraps the executable in a `.app` bundle with code signing |
+1. Click the menu‑bar **waveform** icon, or just use the hotkey.
+2. **Hold** the hotkey (default **Fn**), speak, **release** to insert. Press **Esc** to cancel.
+3. Text is typed into whatever app is focused.
 
-### Build Commands
+**Output modes** (Settings → Text Output):
 
-```bash
-# Debug build
-./build.sh
+- **Final paste only** *(default)* — insert everything at once when you finish.
+- **Live chunks** — paste as you speak (experimental).
+- **Preview & polish** — show the transcript in the overlay while you talk, then clean it up (and rephrase, if AI is on) and insert once.
 
-# Package as .app (also builds if needed)
-./package.sh
+**Insertion method** (Settings → Text Output):
 
-# Clean and rebuild
-rm -rf build/
-./build.sh && ./package.sh
-```
+- **Automatic** *(default)* — insert directly into the focused field via Accessibility (your clipboard is left untouched), falling back to paste when an app doesn't support it.
+- **Direct insert only** / **Paste (Cmd+V)**.
 
-### Build Flags
+---
 
-The `build.sh` script uses:
-- `-target arm64-apple-macosx14.0` — Apple Silicon, macOS 14+
-- `-parse-as-library` — allows `@main` with top-level code
-- Frameworks: `Cocoa`, `AVFoundation`, `Foundation`, `SwiftUI`, `UserNotifications`, `CoreAudio`, `CoreGraphics`
+## Settings overview
 
-## Technical Details
+Settings has a **Basic** and an **Advanced** tab.
 
-### Audio Recording
+**Basic**
 
-- Uses `AVAudioRecorder` for WAV capture
-- Format: 16kHz, mono, 16-bit PCM (Whisper's expected input format)
-- Files saved to `~/Library/Caches/com.openwhisp.app/`
-- Device selection via CoreAudio `AudioObjectGetPropertyData` API
-- **Streaming mode**: Timer-based chunk rotation (~1.5s default). Each chunk is a complete WAV file.
+- **General** — launch at login.
+- **Hotkey** — Fn / Globe or Control+Space.
+- **Microphone** — input device.
+- **Language** — 12 languages + Auto Detect; choose **English** to have whisper translate non‑English speech to English.
+- **Quality** — Faster / Balanced / Best (maps to Whisper models; downloads on demand).
+- **Smart Formatting** — clean‑up on/off, spoken punctuation, filler removal.
+- **Custom Vocabulary** — bias terms + "heard → correct" replacements.
+- **AI Post‑processing** — provider (OpenAI **or** local server), mode (rephrase / improve translation), and **voice commands**.
+- **Text Output** — insertion method, output mode, overlay, trailing space, clipboard restore.
 
-### whisper.cpp Integration
+**Advanced**
 
-The app invokes whisper.cpp as an external process:
+- Engine (Whisper vs Apple Speech), raw model picker + paths, live‑chunk tuning, whisper.cpp backend (CLI vs warm server), per‑app modes, history, permissions, diagnostics.
 
-```bash
-~/whisper.cpp/main -m ~/whisper.cpp/models/ggml-base.bin \
-  -f /path/to/recording.wav \
-  -l en \
-  --no-timestamps \
-  -otxt \
-  --print-special false \
-  --suppress-none
-```
+---
 
-Arguments explained:
-- `-m` — model file path
-- `-f` — input WAV file
-- `-l` — language code (`en`, `ru`, `auto`, etc.)
-- `--no-timestamps` — omit timestamps from output
-- `-otxt` — plain text output (no JSON/CSV/VTT)
-- `--print-special false` — no special tokens
-- `--suppress-none` — don't suppress any tokens
+## AI post‑processing (optional)
 
-### Streaming Pipeline
+OpenWhisp can run a final LLM pass to rephrase your text or improve a translation. It speaks the standard **OpenAI chat‑completions API**, so you can keep it fully local:
 
-The streaming pipeline runs as an async callback chain:
+- **Local (private)** — point it at any OpenAI‑compatible server. Default URL `http://localhost:8080/v1`.
+  - **llama.cpp**: `llama-server -m your-model.gguf --host 0.0.0.0 --port 8080`
+  - **Ollama**: runs an OpenAI‑compatible API at `http://localhost:11434/v1`
+- **OpenAI (cloud)** — paste an API key; the key is stored in the macOS **Keychain**, not in plain text.
 
-1. `Timer` fires every `chunkDuration` seconds (default: 1.5s)
-2. `AudioRecorder.rotateChunk()` stops current recording, saves WAV, starts new chunk
-3. Callback passes chunk URL to `AppState.onStreamingChunk()`
-4. `AppState` spawns `WhisperEngine.transcribe()` for this chunk
-5. On transcription success → `KeyboardSynthesizer.typeViaPaste(result)`
-6. Result text is typed into the currently focused application
-7. If transcription fails → chunk skipped, next chunk processed
+Use **Test Connection** / **Validate** in Settings to confirm reachability.
 
-Each transcription runs in a separate `Process`. Concurrent transcriptions are managed via `DispatchQueue` serialization.
+### Voice commands
 
-### Hotkey System
+With voice commands enabled, ending a dictation with a recognized instruction applies it to the rest:
 
-Uses `NSEvent.addGlobalMonitorForEvents(matching:)` for:
-- `.keyDown` — triggers `startStreaming()`
-- `.keyUp` — triggers `stopStreaming()`
+> "Schedule the review for Monday. **Make this formal.**" → the instruction is stripped and the text is rewritten formally.
 
-The global monitor requires **Accessibility permissions**. Grant in:
-System Settings → Privacy & Security → Accessibility → OpenWhisp
+Recognized leads include "make this/it…", "rewrite/rephrase this…", "translate this to…", "summarize this", plus an optional wake word. Works in **Final** and **Preview** modes and needs an AI provider configured. (Trailing translate/transcribe instructions are stripped from output even with voice commands off, so dictating in Russian and saying "translate this into English" won't leave that phrase in your text.)
 
-### Swift 6 Concurrency
+---
 
-The app is built with Swift 6 strict concurrency checking:
-- `AppState` is `@MainActor` isolated
-- Callbacks from non-isolated contexts (audio recorder, hotkey monitor, whisper process) use `Task { @MainActor in ... }` to cross actor boundaries
-- Service closures capture `[weak self]` to avoid retain cycles
-- `WhisperEngine` is a plain class with completion callbacks (no actor isolation needed)
+## Privacy
 
-## Project Structure
+- Transcription is **on‑device**. Audio is recorded to `~/Library/Caches/com.openwhisp.app/` and the WAV is deleted after each transcription.
+- History and settings are stored locally (`~/Library/Application Support/OpenWhisp/`, UserDefaults, Keychain).
+- The **only** time text leaves your machine is if you turn on AI post‑processing with the **OpenAI** provider. The **local** provider keeps everything on your machine/LAN.
+- Transcript text is **not** written to the app's log files.
+
+---
+
+## Architecture
 
 ```
-openwhisp/
-├── README.md           ← This file
-├── build.sh            ← Build script (swiftc)
-├── package.sh          ← Bundle packaging script
-├── OpenWhisp/          ← Source files
-│   ├── main.swift      ← Entry point, menu bar, window mgmt
-│   ├── Models/
-│   │   └── AppState.swift  ← State, settings, streaming pipeline
-│   ├── Services/
-│   │   ├── AudioRecorder.swift  ← Audio capture, streaming chunks
-│   │   ├── WhisperEngine.swift  ← whisper.cpp subprocess wrapper
-│   │   ├── HotkeyMonitor.swift  ← Global keyboard monitoring
-│   │   └── KeyboardSynthesizer.swift  ← CGEvent Cmd+V typing
-│   ├── Views/
-│   │   └── SettingsView.swift   ← SwiftUI settings panel
-│   ├── Info.plist                 ← App metadata
-│   └── OpenWhisp.entitlements    ← Code signing
-└── build/              ← Build output (gitignored)
-    ├── OpenWhisp       ← Raw executable
-    └── OpenWhisp.app   ← Application bundle
+OpenWhisp/
+├── main.swift                 # @main app delegate, menu bar, windows, onboarding
+├── Models/
+│   └── AppState.swift         # @MainActor source of truth: settings, session
+│                              # lifecycle, the transcription/insertion pipeline
+├── Services/
+│   ├── AudioRecorder.swift          # AVAudioEngine/AVAudioRecorder capture,
+│   │                                # 16 kHz mono resampling, chunking, VAD
+│   ├── WhisperEngine.swift          # whisper-cli subprocess + warm whisper-server (HTTP)
+│   ├── AppleSpeechEngine.swift      # optional SFSpeechRecognizer engine
+│   ├── TextInserter.swift           # Accessibility insert + Cmd+V paste fallback
+│   ├── KeyboardSynthesizer.swift    # thin shim over TextInserter
+│   ├── HotkeyMonitor.swift          # CGEventTap (+ NSEvent fallback) push-to-talk
+│   ├── PostProcessor.swift          # protocol + chain for text post-processing
+│   ├── SmartFormatter.swift         # local formatting/punctuation/filler rules
+│   ├── Vocabulary.swift             # custom terms + substitutions
+│   ├── VoiceCommandParser.swift     # trailing spoken-instruction detection
+│   ├── MetaInstructionStripper.swift# strips trailing "translate this…" etc.
+│   ├── OpenAITranslationService.swift # OpenAI-compatible LLM client (cloud/local)
+│   ├── AppProfile.swift             # per-app override profiles
+│   ├── TranscriptionHistory.swift   # local history store
+│   ├── LaunchAtLogin.swift          # SMAppService login item
+│   └── KeychainStore.swift          # API key storage
+├── Views/
+│   ├── SettingsView.swift     # Basic/Advanced settings
+│   ├── OverlayView.swift      # "Quiet Glass" recording overlay + live transcript
+│   └── OnboardingView.swift   # first-run setup
+├── Resources/models/manifest.json   # model catalog
+├── Info.plist
+└── OpenWhisp.entitlements
+
+Tests/OpenWhispCoreTests/      # XCTest for the pure-logic types (swift test)
+Package.swift                  # SwiftPM test package (OpenWhispCore) — tests only
+build.sh / package.sh          # compile + bundle the GUI app
+build-dmg.sh / create-dmg.sh   # DMG packaging
+scripts/bundle-whisper-runtime.sh  # copy whisper binaries + dylibs into the .app
 ```
 
-## Troubleshooting
+### Notable design points
 
-**"whisper.cpp binary not found"**
-→ Set the correct path in Settings → whisper.cpp → Binary Path. Default: `~/whisper.cpp/main`
+- **Transcription backends** — `whisper-cli` per request, or a warm `whisper-server` kept loaded for lower latency (Advanced → whisper.cpp backend). The app bundles both; falls back to `~/whisper.cpp/build/bin/`.
+- **Audio** — capture is resampled to whisper's required 16 kHz mono 16‑bit PCM; live mode supports timer‑based or pause‑based (VAD) chunking.
+- **Insertion** — Accessibility direct‑insert avoids clobbering the clipboard; paste is the universal fallback. All insertion is serialized so live chunks stay in order.
+- **Concurrency** — `AppState` is `@MainActor`; service callbacks hop back via `Task { @MainActor }`. Long‑running work (whisper subprocess/server, LLM calls, paste timing) runs off the main actor.
 
-**"Model not found"**
-→ Download a model manually or select a model in Settings. The app will attempt auto-download.
-
-**"Microphone access denied"**
-→ System Settings → Privacy & Security → Microphone → Enable OpenWhisp
-
-**Hotkey doesn't work**
-→ System Settings → Privacy & Security → Accessibility → Enable OpenWhisp
-→ Check that no other app is using the same hotkey
-
-**"Transcription returned empty result"**
-→ Check microphone input level. Try speaking louder or closer to the mic.
-→ Try a larger model (base → small) for better accuracy.
-→ In streaming mode, ensure chunks are long enough (at least ~1s of speech)
-
-**Text is not being typed**
-→ Make sure the target app has an active text field
-→ OpenWhisp uses Cmd+V (paste) — the app must support pasting
-→ Some security software may block CGEvent keyboard synthesis
-
-**App doesn't appear in menu bar**
-→ OpenWhisp is an agent app (`LSUIElement = true`). It has no dock icon.
-→ Look for the waveform icon (📶) in the top-right menu bar.
-→ **Make sure you're running via `open build/OpenWhisp.app`**, not the raw binary.
-→ Check Console.app for crash logs: filter by process name "OpenWhisp"
+---
 
 ## Development
 
-### Changing Chunk Duration
+```bash
+./build.sh                 # build the app
+swift test                 # run the unit tests for core logic
+```
 
-Edit `AppState.swift` → `startStreaming()` → change `chunkDuration` value (default: `1.5`).
+`swift test` covers the Foundation‑only logic (smart formatting, vocabulary substitution, voice‑command parsing, translate‑instruction stripping) via the `OpenWhispCore` SwiftPM package. The GUI app itself is built by `build.sh`/`package.sh` (SwiftPM can't produce a signed `.app`). CI runs `swift test` on every push/PR.
 
-### Adding a New Language
+### Common tweaks
 
-Edit `SettingsView.swift` → Language Section → add a `Text("Name").tag("code")` entry.
+- **Default hotkey / model / language** — `OpenWhisp/Models/AppState.swift` → `init()`.
+- **Add a language** — `OpenWhisp/Views/SettingsView.swift` → Language picker.
+- **Formatting rules** — `OpenWhisp/Services/SmartFormatter.swift`.
 
-### Changing Default Hotkey
+---
 
-Edit `AppState.swift` → `init()` → change the default `keyCode` value.
+## Contributing
 
-Common key codes:
-- Space: `0x31`
-- Caps Lock: `0x39`
-- Any letter: see [Apple Virtual Key Codes](https://apple.stackexchange.com/a/67735)
-
-### Model Research
-
-Why **whisper.cpp** was chosen as the STT engine:
-
-| Criterion | whisper.cpp | faster-whisper | openai-whisper |
-|-----------|-------------|----------------|----------------|
-| Local execution | ✅ Native C/C++ | ✅ Python + CTranslate2 | ✅ Python + PyTorch |
-| Apple Silicon optimized | ✅ Metal backend | ✅ MPS support | ✅ MPS support |
-| Binary distribution | ✅ Single binary | ❌ Requires Python env | ❌ Requires Python env |
-| Integration complexity | ✅ Subprocess call | ❌ Python interop | ❌ Python interop |
-| Startup time | ✅ Instant | ⚠️ Python startup | ⚠️ Python startup |
-| Memory efficiency | ✅ Best | ✅ Good | ❌ Heavy (PyTorch) |
-| Maintenance | ✅ Active | ✅ Active | ✅ Active |
-
-The decision favored whisper.cpp for its simplicity of integration (subprocess call), instant startup, and minimal dependencies — critical for a lightweight menu-bar app with streaming requirements.
+Issues and PRs welcome. Please run `swift test` and `./build.sh` before submitting. Keep new pure‑logic in Foundation‑only files where possible so it can be unit‑tested.
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE).
+
+Built on [whisper.cpp](https://github.com/ggerganov/whisper.cpp).
