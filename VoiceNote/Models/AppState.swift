@@ -1059,6 +1059,7 @@ class AppState: ObservableObject {
 
         liveInsertionInFlight = true
         statusMessage = "Rephrasing chunk..."
+        let sessionID = activeSessionID
         translationService.processFinalText(
             text: item,
             mode: "rephrase",
@@ -1067,7 +1068,7 @@ class AppState: ObservableObject {
             model: openAIModel
         ) { [weak self] result in
             Task { @MainActor in
-                guard let self else { return }
+                guard let self, sessionID == self.activeSessionID else { return }
                 let textToInsert: String
                 switch result {
                 case .success(let processedText):
@@ -1145,6 +1146,10 @@ class AppState: ObservableObject {
 
         statusMessage = openAIEnhancementMode == "rephrase" ? "Polishing..." : "Improving..."
         translationStatus = statusMessage
+        // Capture the session so a cancel (Esc) or new session started while the
+        // OpenAI call is in flight causes this callback to be ignored — otherwise
+        // it would paste/clobber the clipboard after the session was cancelled.
+        let sessionID = activeSessionID
         translationService.processFinalText(
             text: finalText,
             mode: openAIEnhancementMode,
@@ -1153,7 +1158,7 @@ class AppState: ObservableObject {
             model: openAIModel
         ) { [weak self] result in
             Task { @MainActor in
-                guard let self else { return }
+                guard let self, sessionID == self.activeSessionID else { return }
                 self.isTranscribing = false
                 switch result {
                 case .success(let processedText):
@@ -1182,10 +1187,13 @@ class AppState: ObservableObject {
     private func insertCompletedText(_ text: String, originalText: String) {
         streamingText = text
 
-        // finalOnly and preview both paste the whole text exactly once here
-        // (preview captured chunks without pasting). liveChunks already pasted
-        // incrementally, so it only needs the conditional trailing space.
-        if outputMode == "finalOnly" || isPreviewSession {
+        // Decide purely from session SNAPSHOTS, never the live @Published
+        // outputMode (which can change mid-session or after cancel). A session
+        // pastes the whole text once iff it didn't paste incrementally:
+        // finalOnly/legacy recording (isLiveChunkSession == false) or preview.
+        // liveChunks already pasted per chunk, so it only needs a trailing space.
+        let pastesWholeOnce = !isLiveChunkSession || isPreviewSession
+        if pastesWholeOnce {
             let insertion = addTrailingSpace ? "\(text) " : text
             KeyboardSynthesizer.typeViaPaste(
                 insertion,
@@ -1212,7 +1220,7 @@ class AppState: ObservableObject {
         }
 
         let finalWasEnhanced = shouldEnhanceCurrentSession
-            && (outputMode == "finalOnly" || isPreviewSession)
+            && (!isLiveChunkSession || isPreviewSession)
         statusMessage = finalWasEnhanced
             ? "Enhanced: \(text.prefix(50))..."
             : "Done: \(originalText.prefix(50))..."
@@ -1328,6 +1336,12 @@ class AppState: ObservableObject {
     private func finishSessionUI(delay: TimeInterval = 0) {
         sessionActive = false
         pendingStop = false
+        // Clear session snapshots so they're only ever true while a session is
+        // genuinely active (prevents a stale flag from being read by a late
+        // callback or the delayed overlay-hide between sessions).
+        isLiveChunkSession = false
+        isPreviewSession = false
+        isStreamingSession = false
         elapsedTimer?.invalidate()
         elapsedTimer = nil
         recordingStartedAt = nil
