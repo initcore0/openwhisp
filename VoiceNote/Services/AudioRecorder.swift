@@ -461,14 +461,22 @@ class AudioRecorder: NSObject, AVAudioRecorderDelegate {
         ]
     }
 
-    /// Canonical whisper.cpp capture format: 16 kHz, mono, 16-bit interleaved PCM.
-    /// Mirrors `makeSettings()`.
+    /// Converter target format: 16 kHz, mono, **non-interleaved float32**.
+    ///
+    /// This intentionally is NOT the on-disk format. `AVAudioFile`'s
+    /// `processingFormat` (what `write(from:)` requires the buffer to match) is
+    /// always a deinterleaved float format derived from the file settings, so the
+    /// converter must produce buffers in that format. The file is opened with
+    /// 16 kHz mono **int16** settings (`makeSettings()`), and `AVAudioFile`
+    /// transparently converts the float buffers to 16-bit PCM on disk — giving
+    /// whisper.cpp the WAV it needs. Producing an interleaved int16 buffer here
+    /// instead triggers a hard CoreAudio assertion inside `ExtAudioFileWrite`.
     private static func makeTargetFormat() -> AVAudioFormat? {
         AVAudioFormat(
-            commonFormat: .pcmFormatInt16,
+            commonFormat: .pcmFormatFloat32,
             sampleRate: 16000,
             channels: 1,
-            interleaved: true
+            interleaved: false
         )
     }
 
@@ -533,8 +541,10 @@ class AudioRecorder: NSObject, AVAudioRecorderDelegate {
         let fileName = "chunk_\(streamFileIndex)_\(Int(Date().timeIntervalSince1970 * 1000)).wav"
         streamFileIndex += 1
         let url = cacheDir.appendingPathComponent(fileName)
-        let settings = targetFormat?.settings ?? makeSettings()
-        streamingFile = try AVAudioFile(forWriting: url, settings: settings)
+        // On-disk WAV is 16 kHz mono 16-bit PCM (what whisper.cpp needs). The
+        // converter feeds float buffers matching this file's processingFormat;
+        // AVAudioFile converts them to int16 on write.
+        streamingFile = try AVAudioFile(forWriting: url, settings: makeSettings())
         streamingURL = url
     }
     
