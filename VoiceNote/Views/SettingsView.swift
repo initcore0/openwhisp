@@ -23,6 +23,10 @@ struct SettingsView: View {
     @State private var newSubFrom: String = ""
     @State private var newSubTo: String = ""
 
+    // New-profile draft fields.
+    @State private var newProfileBundleID: String = ""
+    @State private var newProfileName: String = ""
+
     private var isCustomOpenAIModel: Bool {
         openAIModelIsCustom || !SettingsView.presetOpenAIModels.contains(appState.openAIModel)
     }
@@ -85,6 +89,8 @@ struct SettingsView: View {
                 engineSection
                 modelSection
                 liveChunkAdvancedSection
+                profilesSection
+                historySection
                 whisperSection
                 permissionsSection
                 statusSection
@@ -573,6 +579,140 @@ struct SettingsView: View {
         }
     }
     
+    private var profilesSection: some View {
+        settingsSection("Per-App Modes") {
+            Toggle("Apply per-app profiles", isOn: $appState.perAppModesEnabled)
+
+            Text("When you start dictation, VoiceNote can apply overrides based on the app you're typing into. Add the current app with the button below, then set its overrides.")
+                .font(.caption)
+                .foregroundColor(.secondary)
+
+            ForEach($appState.profiles) { $profile in
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Text(profile.displayName.isEmpty ? profile.appBundleID : profile.displayName)
+                            .fontWeight(.medium)
+                        Spacer()
+                        Button(role: .destructive) {
+                            appState.profiles.removeAll { $0.id == profile.id }
+                        } label: { Image(systemName: "trash") }
+                        .buttonStyle(.borderless)
+                    }
+                    Text(profile.appBundleID).font(.caption).foregroundColor(.secondary)
+                    HStack {
+                        Picker("Language", selection: profileLanguageBinding($profile)) {
+                            Text("Inherit").tag("__inherit__")
+                            Text("Auto").tag("auto")
+                            Text("English").tag("en")
+                            Text("Russian").tag("ru")
+                        }
+                        Picker("Output", selection: profileOutputBinding($profile)) {
+                            Text("Inherit").tag("__inherit__")
+                            Text("Final").tag("finalOnly")
+                            Text("Live").tag("liveChunks")
+                            Text("Preview").tag("preview")
+                        }
+                    }
+                    Picker("AI cleanup", selection: profileAIBinding($profile)) {
+                        Text("Inherit").tag("__inherit__")
+                        Text("On").tag("on")
+                        Text("Off").tag("off")
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(maxWidth: 240)
+                }
+                .padding(8)
+                .background(RoundedRectangle(cornerRadius: 8).fill(Color.secondary.opacity(0.08)))
+            }
+
+            HStack {
+                Button("Add Profile for Frontmost App") {
+                    addProfileForFrontmostApp()
+                }
+                Spacer()
+            }
+        }
+    }
+
+    private var historySection: some View {
+        settingsSection("History") {
+            Toggle("Keep transcription history", isOn: $appState.historyEnabled)
+
+            if appState.history.isEmpty {
+                Text("No transcriptions yet. Recent dictations will appear here (stored locally).")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            } else {
+                ForEach(appState.history.prefix(15)) { entry in
+                    HStack(alignment: .top) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(entry.text)
+                                .font(.system(size: 12))
+                                .lineLimit(2)
+                            Text(historySubtitle(entry))
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        }
+                        Spacer()
+                        Button {
+                            appState.copyHistoryEntry(entry)
+                        } label: { Image(systemName: "doc.on.clipboard") }
+                        .buttonStyle(.borderless)
+                        .help("Copy to clipboard")
+                    }
+                    Divider()
+                }
+                Button("Clear History", role: .destructive) {
+                    appState.clearHistory()
+                }
+            }
+        }
+    }
+
+    private func historySubtitle(_ entry: TranscriptionEntry) -> String {
+        let when = entry.date.formatted(date: .abbreviated, time: .shortened)
+        if let app = entry.appName, !app.isEmpty { return "\(app) · \(when)" }
+        return when
+    }
+
+    // Inherit-aware bindings mapping the synthetic "__inherit__" tag to nil.
+    private func profileLanguageBinding(_ profile: Binding<AppProfile>) -> Binding<String> {
+        Binding(get: { profile.wrappedValue.language ?? "__inherit__" },
+                set: { profile.wrappedValue.language = $0 == "__inherit__" ? nil : $0 })
+    }
+    private func profileOutputBinding(_ profile: Binding<AppProfile>) -> Binding<String> {
+        Binding(get: { profile.wrappedValue.outputMode ?? "__inherit__" },
+                set: { profile.wrappedValue.outputMode = $0 == "__inherit__" ? nil : $0 })
+    }
+    private func profileAIBinding(_ profile: Binding<AppProfile>) -> Binding<String> {
+        Binding(
+            get: {
+                guard let v = profile.wrappedValue.aiCleanupEnabled else { return "__inherit__" }
+                return v ? "on" : "off"
+            },
+            set: {
+                switch $0 {
+                case "on": profile.wrappedValue.aiCleanupEnabled = true
+                case "off": profile.wrappedValue.aiCleanupEnabled = false
+                default: profile.wrappedValue.aiCleanupEnabled = nil
+                }
+            }
+        )
+    }
+
+    private func addProfileForFrontmostApp() {
+        // The frontmost app right now is Settings itself; use the previously
+        // active app instead so "add for the app I was just in" works.
+        let apps = NSWorkspace.shared.runningApplications
+            .filter { $0.activationPolicy == .regular && $0.bundleIdentifier != Bundle.main.bundleIdentifier }
+        let candidate = NSWorkspace.shared.frontmostApplication.flatMap {
+            $0.bundleIdentifier == Bundle.main.bundleIdentifier ? nil : $0
+        } ?? apps.first
+        guard let app = candidate, let bid = app.bundleIdentifier else { return }
+        guard !appState.profiles.contains(where: { $0.appBundleID == bid }) else { return }
+        appState.profiles.append(AppProfile(appBundleID: bid, displayName: app.localizedName ?? bid))
+    }
+
     private var statusSection: some View {
         settingsSection("Status") {
             HStack {
