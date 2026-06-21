@@ -813,7 +813,7 @@ class AppState: ObservableObject {
     private func handleAppleSpeechFinal(_ rawText: String) {
         guard isAppleSpeechSession, !appleDidCompleteFinal else { return }
         appleDidCompleteFinal = true
-        let finalText = postProcess(rawText.isEmpty ? streamingText : rawText)
+        let finalText = postProcess(rawText.isEmpty ? streamingText : rawText, isFinalTranscript: true)
 
         // liveChunks: completeFinalText only sets the clipboard for non-finalOnly, so words
         // in the final transcript that were not in the last pasted partial would be dropped.
@@ -1228,7 +1228,7 @@ class AppState: ObservableObject {
     }
 
     private func completeFinalText(_ text: String) {
-        let finalText = postProcess(text)
+        let finalText = postProcess(text, isFinalTranscript: true)
 
         guard !finalText.isEmpty else {
             isTranscribing = false
@@ -1383,7 +1383,11 @@ class AppState: ObservableObject {
         finishSessionUI(delay: 0.8)
     }
 
-    private func postProcess(_ text: String) -> String {
+    /// - Parameter isFinalTranscript: true for the whole-utterance final text
+    ///   (not per-chunk, not already-LLM-processed output). Only then do we strip
+    ///   a trailing spoken translate/transcribe instruction, which is never
+    ///   content but would be captured by whisper (esp. translate-to-English).
+    private func postProcess(_ text: String, isFinalTranscript: Bool = false) -> String {
         var normalized = removeNonSpeechMarkers(from: text)
             .replacingOccurrences(of: "\n", with: " ")
             .components(separatedBy: .whitespacesAndNewlines)
@@ -1406,6 +1410,12 @@ class AppState: ObservableObject {
 
         if smartFormattingEnabled {
             normalized = smartFormatter.format(normalized, language: language)
+        }
+
+        // Strip a trailing "translate this into English" / "transcribe this" the
+        // user spoke as an instruction — only on the final whole transcript.
+        if isFinalTranscript {
+            normalized = MetaInstructionStripper.strip(normalized)
         }
 
         return normalized

@@ -17,6 +17,7 @@ let package = Package(
                 "SmartFormatter.swift",
                 "Vocabulary.swift",
                 "VoiceCommandParser.swift",
+                "MetaInstructionStripper.swift",
                 "PostProcessor.swift",
                 "AppProfile.swift",
                 "TranscriptionHistory.swift"
