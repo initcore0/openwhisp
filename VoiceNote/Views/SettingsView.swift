@@ -348,6 +348,7 @@ struct SettingsView: View {
             Picker("Output Mode", selection: $appState.outputMode) {
                 Text("Final paste only").tag("finalOnly")
                 Text("Live chunks (experimental)").tag("liveChunks")
+                Text("Preview & polish").tag("preview")
             }
 
             Picker("Live Chunk Duration", selection: $appState.liveChunkDuration) {
@@ -369,6 +370,10 @@ struct SettingsView: View {
             Toggle("Add trailing space after paste", isOn: $appState.addTrailingSpace)
             Toggle("Restore clipboard after paste", isOn: $appState.restoreClipboard)
                 .disabled(appState.insertionMode == "directAX")
+
+            Text("Final paste inserts everything at once when you finish. Live chunks paste as you speak. Preview & polish shows the transcript in the overlay while you talk, then inserts it once when you stop — cleaned up (and rephrased, if OpenAI is enabled) before pasting.")
+                .font(.caption)
+                .foregroundColor(.secondary)
 
             Text("Pause-based chunks finalize when speech stops. Timer chunks use the selected duration. Chunks transcribe up to two at a time and paste in order.")
                 .font(.caption)

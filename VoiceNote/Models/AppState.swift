@@ -220,6 +220,12 @@ class AppState: ObservableObject {
     /// than the live @Published outputMode, so a mid-session settings change can't
     /// strand pendingLiveChunks and hang the session in "Finalizing...".
     private var isLiveChunkSession = false
+    /// Snapshot of preview-and-polish mode for this session. In preview mode
+    /// chunks are captured (into currentSessionText/streamingText for the overlay)
+    /// but NOT pasted; the whole text is polished once at finalization and pasted
+    /// a single time. Snapshotted at beginSession so a mid-session settings change
+    /// can't change the paste behavior partway through.
+    private var isPreviewSession = false
     private var isAppleSpeechSession = false
     private var appleLiveInsertedText = ""
     private var appleDidCompleteFinal = false
@@ -522,7 +528,7 @@ class AppState: ObservableObject {
             startAppleSpeech()
             return
         }
-        if outputMode == "liveChunks" {
+        if outputMode == "liveChunks" || outputMode == "preview" {
             startStreaming()
         } else {
             startRecording()
@@ -559,6 +565,8 @@ class AppState: ObservableObject {
         isAppleSpeechSession = false
         appleSpeechEngine.stop(cancel: true)
         isStreamingSession = false
+        isLiveChunkSession = false
+        isPreviewSession = false
         isTranscribing = false
         audioRecorder.stop { url in
             if let url {
@@ -837,8 +845,13 @@ class AppState: ObservableObject {
         isStreamingSession = false
         acceptingLiveChunks = false
         isTranscribing = true
-        statusMessage = "Finalizing..."
-        hideOverlayNow()
+        statusMessage = isPreviewSession ? "Polishing..." : "Finalizing..."
+        // Preview keeps the overlay up through the polish step so the user sees
+        // the captured transcript + "Polishing..." before the single paste.
+        // (finishSessionUI hides it after insertCompletedText.)
+        if !isPreviewSession {
+            hideOverlayNow()
+        }
 
         let sessionID = activeSessionID
         audioRecorder.stop { [weak self] finalPath in
@@ -874,6 +887,8 @@ class AppState: ObservableObject {
         resetLivePipeline()
         acceptingLiveChunks = false
         isStreamingSession = false
+        isLiveChunkSession = false
+        isPreviewSession = false
         isAppleSpeechSession = false
         isRecording = false
         isTranscribing = false
@@ -896,6 +911,8 @@ class AppState: ObservableObject {
         streamingText = ""
         openAIEnhancementEnabledForSession = openAIEnhancementEnabled
         isLiveChunkSession = streaming
+        // Preview mode captures via the chunk pipeline but defers pasting.
+        isPreviewSession = streaming && outputMode == "preview"
         chunkCount = 0
         audioLevel = 0
         recordingElapsed = 0
@@ -1042,6 +1059,7 @@ class AppState: ObservableObject {
 
         liveInsertionInFlight = true
         statusMessage = "Rephrasing chunk..."
+        let sessionID = activeSessionID
         translationService.processFinalText(
             text: item,
             mode: "rephrase",
@@ -1050,7 +1068,7 @@ class AppState: ObservableObject {
             model: openAIModel
         ) { [weak self] result in
             Task { @MainActor in
-                guard let self else { return }
+                guard let self, sessionID == self.activeSessionID else { return }
                 let textToInsert: String
                 switch result {
                 case .success(let processedText):
@@ -1084,6 +1102,15 @@ class AppState: ObservableObject {
         currentSessionText += text
         streamingText = currentSessionText
 
+        // Preview mode: capture into the overlay but DON'T paste yet. The whole
+        // text is polished and pasted once at finalization (completeFinalText ->
+        // insertCompletedText). Ordering/drain machinery still runs the chunk
+        // through this single choke point, just without the side effect.
+        guard !isPreviewSession else {
+            statusMessage = "Previewing: \(text.prefix(40))..."
+            return
+        }
+
         let insertion = needsSeparator ? " \(text)" : text
         KeyboardSynthesizer.typeViaPaste(
             insertion,
@@ -1107,14 +1134,22 @@ class AppState: ObservableObject {
         lastTranscription = finalText
         streamingText = finalText
 
-        guard shouldEnhanceCurrentSession && outputMode == "finalOnly" else {
+        // Run a whole-text OpenAI pass for finalOnly OR preview mode when
+        // enhancement is enabled. Otherwise paste/insert the captured text once.
+        let enhanceWholeText = shouldEnhanceCurrentSession
+            && (outputMode == "finalOnly" || outputMode == "preview")
+        guard enhanceWholeText else {
             isTranscribing = false
             insertCompletedText(finalText, originalText: finalText)
             return
         }
 
-        statusMessage = openAIEnhancementMode == "rephrase" ? "Rephrasing..." : "Improving..."
+        statusMessage = openAIEnhancementMode == "rephrase" ? "Polishing..." : "Improving..."
         translationStatus = statusMessage
+        // Capture the session so a cancel (Esc) or new session started while the
+        // OpenAI call is in flight causes this callback to be ignored — otherwise
+        // it would paste/clobber the clipboard after the session was cancelled.
+        let sessionID = activeSessionID
         translationService.processFinalText(
             text: finalText,
             mode: openAIEnhancementMode,
@@ -1123,7 +1158,7 @@ class AppState: ObservableObject {
             model: openAIModel
         ) { [weak self] result in
             Task { @MainActor in
-                guard let self else { return }
+                guard let self, sessionID == self.activeSessionID else { return }
                 self.isTranscribing = false
                 switch result {
                 case .success(let processedText):
@@ -1152,7 +1187,13 @@ class AppState: ObservableObject {
     private func insertCompletedText(_ text: String, originalText: String) {
         streamingText = text
 
-        if outputMode == "finalOnly" {
+        // Decide purely from session SNAPSHOTS, never the live @Published
+        // outputMode (which can change mid-session or after cancel). A session
+        // pastes the whole text once iff it didn't paste incrementally:
+        // finalOnly/legacy recording (isLiveChunkSession == false) or preview.
+        // liveChunks already pasted per chunk, so it only needs a trailing space.
+        let pastesWholeOnce = !isLiveChunkSession || isPreviewSession
+        if pastesWholeOnce {
             let insertion = addTrailingSpace ? "\(text) " : text
             KeyboardSynthesizer.typeViaPaste(
                 insertion,
@@ -1178,7 +1219,8 @@ class AppState: ObservableObject {
             KeyboardSynthesizer.setClipboard(text)
         }
 
-        let finalWasEnhanced = shouldEnhanceCurrentSession && outputMode == "finalOnly"
+        let finalWasEnhanced = shouldEnhanceCurrentSession
+            && (!isLiveChunkSession || isPreviewSession)
         statusMessage = finalWasEnhanced
             ? "Enhanced: \(text.prefix(50))..."
             : "Done: \(originalText.prefix(50))..."
@@ -1294,6 +1336,12 @@ class AppState: ObservableObject {
     private func finishSessionUI(delay: TimeInterval = 0) {
         sessionActive = false
         pendingStop = false
+        // Clear session snapshots so they're only ever true while a session is
+        // genuinely active (prevents a stale flag from being read by a late
+        // callback or the delayed overlay-hide between sessions).
+        isLiveChunkSession = false
+        isPreviewSession = false
+        isStreamingSession = false
         elapsedTimer?.invalidate()
         elapsedTimer = nil
         recordingStartedAt = nil
