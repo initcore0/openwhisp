@@ -14,4 +14,4 @@ tccutil reset Microphone "$BUNDLE_ID" || true
 echo ""
 echo "Done."
 echo "Now open the current app bundle and re-enable permissions when prompted:"
-echo "  open /Users/encryptedcat/projects/voice-note/build/VoiceNote.app"
+echo "  open \"$(cd "$(dirname "$0")" && pwd)/build/VoiceNote.app\""
