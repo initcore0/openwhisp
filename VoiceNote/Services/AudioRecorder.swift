@@ -20,12 +20,21 @@ class AudioRecorder: NSObject, AVAudioRecorderDelegate {
     private var recordingURL: URL?
     private var meterTimer: Timer?
     private let streamQueue = DispatchQueue(label: "com.encryptedcat.voicenote.audio-stream")
-    
+
+    // Desired input device (applied per-engine for streaming, per-recorder for legacy)
+    private var selectedDeviceID: String?
+    private var previousDefaultInputDevice: AudioDeviceID?
+
     // Streaming state
     private var streamingEngine: AVAudioEngine?
     private var streamingFile: AVAudioFile?
     private var streamingURL: URL?
     private var streamingFormat: AVAudioFormat?
+    /// Canonical whisper.cpp format: 16 kHz, mono, 16-bit interleaved PCM.
+    private var targetFormat: AVAudioFormat?
+    /// Converter from the native tap format to `targetFormat`. Persists across
+    /// buffers within a session to retain resampling state; recreated per session.
+    private var streamingConverter: AVAudioConverter?
     private var streamFileIndex = 0
     private var chunkTimer: Timer?
     private var streamingChunks: [URL] = []
@@ -46,25 +55,63 @@ class AudioRecorder: NSObject, AVAudioRecorderDelegate {
         super.init()
     }
     
+    /// Records the desired input device. The device is applied lazily:
+    /// - For streaming, it is scoped to the engine's input audio unit (`applyInputDevice`).
+    /// - For the legacy `AVAudioRecorder` path, the system default input is set in
+    ///   `start()` and restored in `stop()` (capture-and-restore), so no permanent
+    ///   global mutation remains.
     func selectDevice(_ deviceID: String) {
-        if let device = AudioDevice.byID(deviceID) {
-            var address = AudioObjectPropertyAddress(
-                mSelector: kAudioHardwarePropertyDefaultInputDevice,
-                mScope: kAudioObjectPropertyScopeGlobal,
-                mElement: kAudioObjectPropertyElementMain
-            )
-            var devID = device.deviceID
-            let size: UInt32 = UInt32(MemoryLayout<AudioDeviceID>.size)
-            let status = AudioObjectSetPropertyData(
-                UInt32(kAudioObjectSystemObject),
-                &address,
-                0, nil,
-                size,
-                &devID
-            )
-            if status != noErr {
-                print("Warning: Could not set input device: \(status)")
-            }
+        selectedDeviceID = deviceID
+    }
+
+    /// Address for the system default input device property.
+    private static func defaultInputAddress() -> AudioObjectPropertyAddress {
+        AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultInputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+    }
+
+    /// Reads the current system default input device.
+    private static func currentDefaultInputDevice() -> AudioDeviceID? {
+        var address = defaultInputAddress()
+        var devID = AudioDeviceID(0)
+        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+        let status = AudioObjectGetPropertyData(
+            UInt32(kAudioObjectSystemObject),
+            &address,
+            0, nil,
+            &size,
+            &devID
+        )
+        return status == noErr ? devID : nil
+    }
+
+    /// Sets the system default input device. Returns true on success.
+    @discardableResult
+    private static func setDefaultInputDevice(_ deviceID: AudioDeviceID) -> Bool {
+        var address = defaultInputAddress()
+        var devID = deviceID
+        let size = UInt32(MemoryLayout<AudioDeviceID>.size)
+        let status = AudioObjectSetPropertyData(
+            UInt32(kAudioObjectSystemObject),
+            &address,
+            0, nil,
+            size,
+            &devID
+        )
+        return status == noErr
+    }
+
+    /// Scopes the selected input device to a specific engine's input node.
+    /// Must be called before `engine.start()`. Does not mutate the global default.
+    private func applyInputDevice(to engine: AVAudioEngine) {
+        guard let deviceID = selectedDeviceID, let device = AudioDevice.byID(deviceID) else { return }
+        do {
+            try engine.inputNode.auAudioUnit.setDeviceID(device.deviceID)
+        } catch {
+            print("Warning: Could not set input device on engine: \(error.localizedDescription)")
         }
     }
     
@@ -79,9 +126,20 @@ class AudioRecorder: NSObject, AVAudioRecorderDelegate {
         
         let fileName = "recording_\(Int(Date().timeIntervalSince1970 * 1000)).wav"
         recordingURL = cacheDir.appendingPathComponent(fileName)
-        
+
         let settings = makeSettings()
-        
+
+        // Legacy AVAudioRecorder can only capture from the system default input.
+        // Temporarily switch the default to the selected device, capturing the
+        // previous default so it can be restored in stop().
+        if let deviceID = selectedDeviceID, let device = AudioDevice.byID(deviceID) {
+            previousDefaultInputDevice = Self.currentDefaultInputDevice()
+            if !Self.setDefaultInputDevice(device.deviceID) {
+                print("Warning: Could not set input device for legacy recording")
+                previousDefaultInputDevice = nil
+            }
+        }
+
         do {
             recorder = try AVAudioRecorder(url: recordingURL!, settings: settings)
             recorder?.delegate = self
@@ -110,22 +168,33 @@ class AudioRecorder: NSObject, AVAudioRecorderDelegate {
         streamFileIndex = 0
         
         let engine = AVAudioEngine()
+        applyInputDevice(to: engine)
         let input = engine.inputNode
         let format = input.outputFormat(forBus: 0)
         streamingEngine = engine
         streamingFormat = format
-        
+
+        guard let target = Self.makeTargetFormat(),
+              let converter = AVAudioConverter(from: format, to: target) else {
+            isStreaming = false
+            onStateChanged?(.error("Streaming failed: could not create 16kHz converter"))
+            return
+        }
+        targetFormat = target
+        streamingConverter = converter
+
         do {
             try streamQueue.sync {
-                try self.openNextStreamingFile(format: format)
+                try self.openNextStreamingFile()
             }
-            
+
             input.installTap(onBus: 0, bufferSize: 2048, format: format) { [weak self] buffer, _ in
                 guard let self else { return }
                 self.publishLevel(from: buffer)
                 self.streamQueue.async {
+                    guard let converted = self.convertToTarget(buffer) else { return }
                     do {
-                        try self.streamingFile?.write(from: buffer)
+                        try self.streamingFile?.write(from: converted)
                     } catch {
                         DispatchQueue.main.async {
                             self.onStateChanged?(.error("Streaming write failed: \(error.localizedDescription)"))
@@ -133,7 +202,7 @@ class AudioRecorder: NSObject, AVAudioRecorderDelegate {
                     }
                 }
             }
-            
+
             try engine.start()
             onStateChanged?(.recording)
             scheduleChunkTimer(chunkDuration: chunkDuration)
@@ -141,7 +210,19 @@ class AudioRecorder: NSObject, AVAudioRecorderDelegate {
             input.removeTap(onBus: 0)
             streamingEngine?.stop()
             streamingEngine = nil
+            streamingConverter = nil
+            streamingFormat = nil
+            targetFormat = nil
             isStreaming = false
+            // The first chunk file may already have been created; clean it up
+            // and clear the dangling streaming references on the stream queue.
+            streamQueue.sync {
+                if let url = self.streamingURL {
+                    try? FileManager.default.removeItem(at: url)
+                }
+                self.streamingFile = nil
+                self.streamingURL = nil
+            }
             onStateChanged?(.error("Streaming failed: \(error.localizedDescription)"))
         }
     }
@@ -169,17 +250,28 @@ class AudioRecorder: NSObject, AVAudioRecorderDelegate {
         resetPauseStreamingState()
 
         let engine = AVAudioEngine()
+        applyInputDevice(to: engine)
         let input = engine.inputNode
         let format = input.outputFormat(forBus: 0)
         streamingEngine = engine
         streamingFormat = format
+
+        guard let target = Self.makeTargetFormat(),
+              let converter = AVAudioConverter(from: format, to: target) else {
+            isStreaming = false
+            isPauseBasedStreaming = false
+            onStateChanged?(.error("Pause-based streaming failed: could not create 16kHz converter"))
+            return
+        }
+        targetFormat = target
+        streamingConverter = converter
 
         do {
             input.installTap(onBus: 0, bufferSize: 2048, format: format) { [weak self] buffer, _ in
                 guard let self else { return }
                 self.publishLevel(from: buffer)
                 self.streamQueue.async {
-                    self.handlePauseBasedBuffer(buffer, format: format)
+                    self.handlePauseBasedBuffer(buffer)
                 }
             }
 
@@ -189,6 +281,9 @@ class AudioRecorder: NSObject, AVAudioRecorderDelegate {
             input.removeTap(onBus: 0)
             streamingEngine?.stop()
             streamingEngine = nil
+            streamingConverter = nil
+            streamingFormat = nil
+            targetFormat = nil
             isStreaming = false
             isPauseBasedStreaming = false
             onStateChanged?(.error("Pause-based streaming failed: \(error.localizedDescription)"))
@@ -203,14 +298,14 @@ class AudioRecorder: NSObject, AVAudioRecorderDelegate {
     }
     
     private func rotateChunk() {
-        guard isStreaming, let format = streamingFormat else { return }
+        guard isStreaming else { return }
         streamQueue.async {
             let completedURL = self.streamingURL
             self.streamingFile = nil
             self.streamingURL = nil
-            
+
             do {
-                try self.openNextStreamingFile(format: format)
+                try self.openNextStreamingFile()
             } catch {
                 DispatchQueue.main.async {
                     self.onStateChanged?(.error("Chunk rotation failed: \(error.localizedDescription)"))
@@ -228,23 +323,26 @@ class AudioRecorder: NSObject, AVAudioRecorderDelegate {
         }
     }
 
-    private func handlePauseBasedBuffer(_ buffer: AVAudioPCMBuffer, format: AVAudioFormat) {
+    private func handlePauseBasedBuffer(_ buffer: AVAudioPCMBuffer) {
         guard isStreaming, isPauseBasedStreaming else { return }
 
+        // VAD operates on the native tap buffer (loudest channel).
         let now = ProcessInfo.processInfo.systemUptime
         let rms = Self.rmsLevel(from: buffer)
         let hasSpeech = rms >= speechThreshold
 
         do {
             if hasSpeech, streamingFile == nil {
-                try openNextStreamingFile(format: format)
+                try openNextStreamingFile()
                 activeChunkDuration = 0
                 activeChunkHasSpeech = true
             }
 
             guard streamingFile != nil else { return }
 
-            try streamingFile?.write(from: buffer)
+            // Write resampled 16kHz mono int16 audio to disk for whisper.cpp.
+            guard let converted = convertToTarget(buffer) else { return }
+            try streamingFile?.write(from: converted)
             let bufferDuration = Double(buffer.frameLength) / max(1.0, buffer.format.sampleRate)
             activeChunkDuration += bufferDuration
 
@@ -304,6 +402,10 @@ class AudioRecorder: NSObject, AVAudioRecorderDelegate {
             engine.stop()
             streamingEngine = nil
 
+            // Clear streaming flags and references on the same serial queue the
+            // tap handler observes. This orders the flag clears after any tap
+            // buffer already enqueued before removeTap, so a late buffer cannot
+            // see isStreaming == true and reopen an orphan chunk file.
             path = streamQueue.sync {
                 let shouldKeepCurrentChunk = !isPauseBasedStreaming
                     || (activeChunkHasSpeech && activeChunkDuration >= minimumSpeechDuration)
@@ -314,27 +416,33 @@ class AudioRecorder: NSObject, AVAudioRecorderDelegate {
                 streamingFile = nil
                 streamingURL = nil
                 streamingFormat = nil
+                streamingConverter = nil
+                targetFormat = nil
                 streamFileIndex = 0
                 resetPauseStreamingState()
+                isStreaming = false
+                isPauseBasedStreaming = false
+                onChunkComplete = nil
                 return currentURL
             }
+
+            // Chunk files may still be in use by whisper.cpp when streaming stops.
+            // WhisperEngine removes each WAV after its process exits.
+            streamingChunks = []
+            chunkCount = 0
         } else {
             recorder?.stop()
             path = recordingURL
             recorder = nil
             recordingURL = nil
+
+            // Restore the system default input device if the legacy path changed it.
+            if let previous = previousDefaultInputDevice {
+                Self.setDefaultInputDevice(previous)
+                previousDefaultInputDevice = nil
+            }
         }
-        
-        // Chunk files may still be in use by whisper.cpp when streaming stops.
-        // WhisperEngine removes each WAV after its process exits.
-        if isStreaming {
-            streamingChunks = []
-            chunkCount = 0
-            isStreaming = false
-            isPauseBasedStreaming = false
-            onChunkComplete = nil
-        }
-        
+
         onStateChanged?(.stopped)
         completion?(path)
     }
@@ -352,6 +460,56 @@ class AudioRecorder: NSObject, AVAudioRecorderDelegate {
             AVLinearPCMIsNonInterleaved: false
         ]
     }
+
+    /// Canonical whisper.cpp capture format: 16 kHz, mono, 16-bit interleaved PCM.
+    /// Mirrors `makeSettings()`.
+    private static func makeTargetFormat() -> AVAudioFormat? {
+        AVAudioFormat(
+            commonFormat: .pcmFormatInt16,
+            sampleRate: 16000,
+            channels: 1,
+            interleaved: true
+        )
+    }
+
+    /// Resamples/converts a native tap buffer to the 16 kHz mono int16 target
+    /// format using the session converter. Must be called on `streamQueue`.
+    private func convertToTarget(_ buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
+        guard let converter = streamingConverter, let target = targetFormat else { return nil }
+
+        // Size the output buffer for the resampled frame count (round up).
+        let ratio = target.sampleRate / buffer.format.sampleRate
+        let capacity = AVAudioFrameCount((Double(buffer.frameLength) * ratio).rounded(.up)) + 1
+        guard capacity > 0,
+              let output = AVAudioPCMBuffer(pcmFormat: target, frameCapacity: capacity) else {
+            return nil
+        }
+
+        // Feed the input buffer to the converter exactly once.
+        var provided = false
+        let inputBlock: AVAudioConverterInputBlock = { _, outStatus in
+            if provided {
+                outStatus.pointee = .noDataNow
+                return nil
+            }
+            provided = true
+            outStatus.pointee = .haveData
+            return buffer
+        }
+
+        var error: NSError?
+        let status = converter.convert(to: output, error: &error, withInputFrom: inputBlock)
+        if status == .error {
+            if let error {
+                DispatchQueue.main.async {
+                    self.onStateChanged?(.error("Audio conversion failed: \(error.localizedDescription)"))
+                }
+            }
+            return nil
+        }
+        guard output.frameLength > 0 else { return nil }
+        return output
+    }
     
     private func startMetering() {
         meterTimer?.invalidate()
@@ -364,15 +522,19 @@ class AudioRecorder: NSObject, AVAudioRecorderDelegate {
         }
     }
     
-    private func openNextStreamingFile(format: AVAudioFormat) throws {
+    /// Opens the next rotated chunk file using the 16 kHz mono int16 target
+    /// format so whisper.cpp receives correctly-formatted WAV files. Falls back
+    /// to `makeSettings()` if the target format is unavailable.
+    private func openNextStreamingFile() throws {
         let cacheDir = URL(fileURLWithPath: NSHomeDirectory())
             .appendingPathComponent("Library/Caches/com.encryptedcat.voicenote")
         try FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
-        
+
         let fileName = "chunk_\(streamFileIndex)_\(Int(Date().timeIntervalSince1970 * 1000)).wav"
         streamFileIndex += 1
         let url = cacheDir.appendingPathComponent(fileName)
-        streamingFile = try AVAudioFile(forWriting: url, settings: format.settings)
+        let settings = targetFormat?.settings ?? makeSettings()
+        streamingFile = try AVAudioFile(forWriting: url, settings: settings)
         streamingURL = url
     }
     
@@ -390,22 +552,27 @@ class AudioRecorder: NSObject, AVAudioRecorderDelegate {
         activeChunkHasSpeech = false
     }
 
+    /// RMS of the loudest channel. Using the max per-channel RMS (rather than
+    /// averaging across channels) avoids biasing VAD low on multi-channel
+    /// devices where only one channel carries the speaker's voice.
     private static func rmsLevel(from buffer: AVAudioPCMBuffer) -> Float {
         guard let channelData = buffer.floatChannelData, buffer.frameLength > 0 else { return 0 }
         let channelCount = Int(buffer.format.channelCount)
         let frameCount = Int(buffer.frameLength)
-        var sum: Float = 0
+        let divisor = Float(max(1, frameCount))
+        var maxRMS: Float = 0
 
         for channel in 0..<channelCount {
             let samples = channelData[channel]
+            var sum: Float = 0
             for frame in 0..<frameCount {
                 let sample = samples[frame]
                 sum += sample * sample
             }
+            maxRMS = max(maxRMS, sqrt(sum / divisor))
         }
 
-        let divisor = Float(max(1, channelCount * frameCount))
-        return sqrt(sum / divisor)
+        return maxRMS
     }
     
     func audioRecorderDidFinishRecording(_ recorder: AVAudioRecorder, successfully flag: Bool) {
