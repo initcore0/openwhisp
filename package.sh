@@ -46,7 +46,11 @@ fi
 
 # Code sign (ad-hoc)
 echo "Signing with ad-hoc certificate..."
-codesign --force --deep --sign - "$APP_DIR"
+if [ -f "$PROJECT_DIR/VoiceNote/VoiceNote.entitlements" ]; then
+    codesign --force --deep --sign - --entitlements "$PROJECT_DIR/VoiceNote/VoiceNote.entitlements" "$APP_DIR"
+else
+    codesign --force --deep --sign - "$APP_DIR"
+fi
 
 echo ""
 echo "✓ App bundle created: $APP_DIR"
