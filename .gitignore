@@ -10,3 +10,7 @@ build/
 # Xcode (if ever needed)
 *.xcworkspace
 *.xcodeproj/
+
+# SwiftPM
+.build/
+Package.resolved
