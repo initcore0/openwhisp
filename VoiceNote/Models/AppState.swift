@@ -177,6 +177,11 @@ class AppState: ObservableObject {
     @Published var recordingElapsed: TimeInterval = 0
     @Published var inputMonitoringPermissionLabel: String = "Unknown"
 
+    /// Whether the user has completed (or skipped) the first-run onboarding.
+    @Published var didCompleteOnboarding: Bool {
+        didSet { UserDefaults.standard.set(didCompleteOnboarding, forKey: "didCompleteOnboarding") }
+    }
+
     // MARK: - Services
 
     var audioRecorder: AudioRecorder!
@@ -300,6 +305,7 @@ class AppState: ObservableObject {
         openAIModel = UserDefaults.standard.string(forKey: "openAIModel") ?? "gpt-4o-mini"
         customVocabularyEnabled = UserDefaults.standard.object(forKey: "customVocabularyEnabled") as? Bool ?? true
         vocabulary = VocabularyStore.load()
+        didCompleteOnboarding = UserDefaults.standard.bool(forKey: "didCompleteOnboarding")
 
         wireUpServices()
         overlayController = OverlayWindowController(appState: self)
@@ -1349,6 +1355,29 @@ class AppState: ObservableObject {
     func retryHotkeyMonitor() {
         hotkeyMonitor.stop()
         hotkeyMonitor.start()
+    }
+
+    // MARK: - Onboarding helpers
+
+    /// Request microphone access (no-op if already decided). Calls `completion`
+    /// on the main actor with the resulting granted state.
+    func requestMicrophoneAccess(_ completion: @escaping (Bool) -> Void) {
+        AVCaptureDevice.requestAccess(for: .audio) { granted in
+            Task { @MainActor in
+                self.objectWillChange.send()
+                completion(granted)
+            }
+        }
+    }
+
+    /// Nudge SwiftUI to re-read the permission-label computed properties (they
+    /// reflect live system state, not stored @Published values).
+    func refreshPermissionLabels() {
+        objectWillChange.send()
+    }
+
+    func finishOnboarding() {
+        didCompleteOnboarding = true
     }
 
     func requestAccessibilityPermission() {
