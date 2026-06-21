@@ -46,24 +46,27 @@ RAM scales with model size: ~2 GB for `tiny`, ~4 GB `base`, ~8 GB `small`, ~16 G
 
 ## Building
 
-OpenWhisp uses plain `swiftc` build scripts (no Xcode project). The app bundles the whisper.cpp runtime so end users don't need it on PATH.
+OpenWhisp uses plain `swiftc` build scripts (no Xcode project). **whisper.cpp is vendored as a git submodule** (pinned to a stable release), so the only prerequisites are the Xcode command‑line tools and `cmake`. The app bundles the whisper.cpp runtime, so end users don't need it on PATH.
 
-### 1. Build whisper.cpp
+### 1. Clone (with the submodule)
 
 ```bash
-git clone https://github.com/ggerganov/whisper.cpp.git ~/whisper.cpp
-cd ~/whisper.cpp
-cmake -B build && cmake --build build -j --config Release
+git clone --recursive git@github.com:initcore0/openwhisp.git
+cd openwhisp
+# already cloned without --recursive?  ->  git submodule update --init --recursive
 ```
 
-This produces `whisper-cli` and `whisper-server` under `~/whisper.cpp/build/bin/`. `package.sh` copies these (and their dylibs) into the app bundle.
-
-### 2. Build & package OpenWhisp
+### 2. Build whisper.cpp (the submodule)
 
 ```bash
-git clone <this-repo> openwhisp
-cd openwhisp
+./scripts/build-whisper.sh
+```
 
+This builds `third_party/whisper.cpp` and produces `whisper-cli` + `whisper-server` under `third_party/whisper.cpp/build/bin/`, which the packaging step bundles into the app.
+
+### 3. Build & package OpenWhisp
+
+```bash
 ./build.sh        # compile the Swift sources -> build/OpenWhisp
 ./package.sh      # wrap into build/OpenWhisp.app (+ bundle whisper runtime, ad-hoc sign)
 
@@ -72,7 +75,7 @@ open build/OpenWhisp.app
 
 > Always run via the `.app` bundle, not the bare binary — `UserNotifications` and the permission prompts require a real bundle.
 
-If your whisper.cpp build lives elsewhere:
+To point at a whisper.cpp build elsewhere instead of the submodule:
 
 ```bash
 WHISPER_BIN_DIR=/path/to/whisper.cpp/build/bin ./package.sh
@@ -218,14 +221,16 @@ OpenWhisp/
 
 Tests/OpenWhispCoreTests/      # XCTest for the pure-logic types (swift test)
 Package.swift                  # SwiftPM test package (OpenWhispCore) — tests only
+third_party/whisper.cpp/       # vendored whisper.cpp (git submodule, pinned)
 build.sh / package.sh          # compile + bundle the GUI app
 build-dmg.sh / create-dmg.sh   # DMG packaging
+scripts/build-whisper.sh           # build the whisper.cpp submodule
 scripts/bundle-whisper-runtime.sh  # copy whisper binaries + dylibs into the .app
 ```
 
 ### Notable design points
 
-- **Transcription backends** — `whisper-cli` per request, or a warm `whisper-server` kept loaded for lower latency (Advanced → whisper.cpp backend). The app bundles both; falls back to `~/whisper.cpp/build/bin/`.
+- **Transcription backends** — `whisper-cli` per request, or a warm `whisper-server` kept loaded for lower latency (Advanced → whisper.cpp backend). The app bundles both (built from the `third_party/whisper.cpp` submodule); falls back to `~/whisper.cpp/build/bin/` if a bundled binary isn't present.
 - **Audio** — capture is resampled to whisper's required 16 kHz mono 16‑bit PCM; live mode supports timer‑based or pause‑based (VAD) chunking.
 - **Insertion** — Accessibility direct‑insert avoids clobbering the clipboard; paste is the universal fallback. All insertion is serialized so live chunks stay in order.
 - **Concurrency** — `AppState` is `@MainActor`; service callbacks hop back via `Task { @MainActor }`. Long‑running work (whisper subprocess/server, LLM calls, paste timing) runs off the main actor.

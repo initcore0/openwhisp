@@ -36,7 +36,7 @@ if [ -d "$PROJECT_DIR/OpenWhisp/Resources" ]; then
 fi
 
 # Bundle whisper.cpp runtime binaries and dylibs when available.
-WHISPER_BIN_DIR="${WHISPER_BIN_DIR:-$HOME/whisper.cpp/build/bin}"
+WHISPER_BIN_DIR="${WHISPER_BIN_DIR:-$PROJECT_DIR/third_party/whisper.cpp/build/bin}"
 "$PROJECT_DIR/scripts/bundle-whisper-runtime.sh" "$APP_DIR" "$WHISPER_BIN_DIR"
 
 # Copy entitlements

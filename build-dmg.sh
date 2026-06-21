@@ -17,7 +17,7 @@ APP_DIR="$BUILD_DIR/$APP_NAME"
 STAGE_DIR="$BUILD_DIR/dmg-stage"
 DMG_PATH="$DIST_DIR/OpenWhisp.dmg"
 VOL_NAME="OpenWhisp"
-WHISPER_BIN_DIR="${WHISPER_BIN_DIR:-$HOME/whisper.cpp/build/bin}"
+WHISPER_BIN_DIR="${WHISPER_BIN_DIR:-$PROJECT_DIR/third_party/whisper.cpp/build/bin}"
 
 echo "=== OpenWhisp Full DMG Build ==="
 echo "Config: $CONFIG"
