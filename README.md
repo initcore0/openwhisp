@@ -51,7 +51,7 @@ OpenWhisp uses plain `swiftc` build scripts (no Xcode project). **whisper.cpp is
 ### 1. Clone (with the submodule)
 
 ```bash
-git clone --recursive git@github.com:initcore0/openwhisp.git
+git clone --recursive https://github.com/initcore0/openwhisp.git
 cd openwhisp
 # already cloned without --recursive?  ->  git submodule update --init --recursive
 ```
