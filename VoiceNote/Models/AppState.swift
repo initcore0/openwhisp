@@ -166,6 +166,19 @@ class AppState: ObservableObject {
         didSet { UserDefaults.standard.set(localLLMModel, forKey: "localLLMModel") }
     }
 
+    /// Detect a spoken instruction at the end of a dictation ("…make this
+    /// formal") and apply it via the LLM. Off by default — it's the most "magic"
+    /// feature and needs an LLM configured. Works in Final / Preview modes.
+    @Published var voiceCommandsEnabled: Bool {
+        didSet { UserDefaults.standard.set(voiceCommandsEnabled, forKey: "voiceCommandsEnabled") }
+    }
+
+    /// Optional wake lead-in for voice commands (e.g. "voice note"). Empty =
+    /// rely on imperative templates only.
+    @Published var voiceCommandWakeWord: String {
+        didSet { UserDefaults.standard.set(voiceCommandWakeWord, forKey: "voiceCommandWakeWord") }
+    }
+
     /// Bias whisper recognition toward custom terms. Default-on; harmless when
     /// the vocabulary is empty (no prompt is sent).
     @Published var customVocabularyEnabled: Bool {
@@ -291,6 +304,14 @@ class AppState: ObservableObject {
         llmProvider == "local" ? localLLMModel : openAIModel
     }
 
+    /// Whether the active LLM provider is configured enough to call.
+    var llmConfigured: Bool {
+        if llmProvider == "local" {
+            return !localLLMBaseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        return !openAIAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     var hotkeyHelpText: String {
         let trigger = triggerMode == "fn" ? "Release Fn" : "Release Control+Space"
         return "\(trigger) to insert - Esc to cancel"
@@ -349,6 +370,8 @@ class AppState: ObservableObject {
         llmProvider = UserDefaults.standard.string(forKey: "llmProvider") ?? "openai"
         localLLMBaseURL = UserDefaults.standard.string(forKey: "localLLMBaseURL") ?? "http://192.168.68.52:8080/v1"
         localLLMModel = UserDefaults.standard.string(forKey: "localLLMModel") ?? ""
+        voiceCommandsEnabled = UserDefaults.standard.object(forKey: "voiceCommandsEnabled") as? Bool ?? false
+        voiceCommandWakeWord = UserDefaults.standard.string(forKey: "voiceCommandWakeWord") ?? ""
         customVocabularyEnabled = UserDefaults.standard.object(forKey: "customVocabularyEnabled") as? Bool ?? true
         vocabulary = VocabularyStore.load()
         didCompleteOnboarding = UserDefaults.standard.bool(forKey: "didCompleteOnboarding")
@@ -1175,6 +1198,18 @@ class AppState: ObservableObject {
         lastTranscription = finalText
         streamingText = finalText
 
+        // Voice commands: if the user ended with a spoken instruction
+        // ("…make this formal"), strip it and transform the content via the LLM.
+        // Only in whole-text modes (the command is in the buffer at finalize) and
+        // only when an LLM is configured.
+        if voiceCommandsEnabled,
+           outputMode == "finalOnly" || outputMode == "preview",
+           llmConfigured,
+           let command = VoiceCommandParser(wakeWord: voiceCommandWakeWord).parse(finalText) {
+            applyVoiceCommand(command)
+            return
+        }
+
         // Run a whole-text OpenAI pass for finalOnly OR preview mode when
         // enhancement is enabled. Otherwise paste/insert the captured text once.
         let enhanceWholeText = shouldEnhanceCurrentSession
@@ -1220,6 +1255,42 @@ class AppState: ObservableObject {
                     self.openAIEnhancementEnabledForSession = false
                     self.insertCompletedText(finalText, originalText: finalText)
                     self.statusMessage = "OpenAI failed; inserted local text"
+                }
+            }
+        }
+    }
+
+    /// Transform the dictated content per a detected spoken command and insert it.
+    /// On LLM failure, falls back to inserting the (command-stripped) content so
+    /// the user never gets the literal command words typed.
+    private func applyVoiceCommand(_ command: VoiceCommandParser.Result) {
+        streamingText = command.content
+        statusMessage = "Applying command..."
+        translationStatus = statusMessage
+        let directive = VoiceCommandParser.directive(for: command.instruction)
+        let sessionID = activeSessionID
+        translationService.processFinalText(
+            text: command.content,
+            mode: "rephrase",
+            targetLanguage: translationTargetLanguage,
+            endpoint: llmEndpoint,
+            model: llmModel,
+            customInstruction: directive
+        ) { [weak self] result in
+            Task { @MainActor in
+                guard let self, sessionID == self.activeSessionID else { return }
+                self.isTranscribing = false
+                switch result {
+                case .success(let processedText):
+                    let cleaned = self.postProcess(processedText)
+                    let textToInsert = cleaned.isEmpty ? command.content : cleaned
+                    self.translationStatus = "Command applied"
+                    self.insertCompletedText(textToInsert, originalText: command.content)
+                case .failure(let error):
+                    self.error = "Voice command failed: \(error.localizedDescription)"
+                    self.translationStatus = "Command failed"
+                    self.insertCompletedText(command.content, originalText: command.content)
+                    self.statusMessage = "Command failed; inserted text"
                 }
             }
         }
