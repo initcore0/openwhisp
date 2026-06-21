@@ -1,5 +1,5 @@
 #!/bin/bash
-# VoiceNote Build Script
+# OpenWhisp Build Script
 # Usage: ./build.sh [debug|release]
 
 set -e
@@ -8,7 +8,7 @@ CONFIG="${1:-debug}"
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BUILD_DIR="$PROJECT_DIR/build"
 
-echo "=== VoiceNote Build Script ==="
+echo "=== OpenWhisp Build Script ==="
 echo "Config: $CONFIG"
 echo "Dir: $PROJECT_DIR"
 
@@ -26,7 +26,7 @@ mkdir -p "$BUILD_DIR"
 echo ""
 echo "Step 1: Compiling Swift files..."
 
-SWIFT_FILES=$(find "$PROJECT_DIR/VoiceNote" -name "*.swift" | tr '\n' ' ')
+SWIFT_FILES=$(find "$PROJECT_DIR/OpenWhisp" -name "*.swift" | tr '\n' ' ')
 
 xcrun swiftc \
     -target arm64-apple-macosx14.0 \
@@ -43,13 +43,13 @@ xcrun swiftc \
     -framework CoreAudio \
     -framework CoreGraphics \
     $SWIFT_FILES \
-    -o "$BUILD_DIR/VoiceNote" \
+    -o "$BUILD_DIR/OpenWhisp" \
     2>&1
 
 if [ $? -eq 0 ]; then
     echo ""
     echo "✓ Build successful!"
-    echo "Output: $BUILD_DIR/VoiceNote"
+    echo "Output: $BUILD_DIR/OpenWhisp"
     echo ""
     echo "To create an .app bundle, run:"
     echo "  ./package.sh"

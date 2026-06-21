@@ -488,7 +488,7 @@ class WhisperEngine {
             throw WhisperWorkerError.invalidURL
         }
 
-        let boundary = "VoiceNoteBoundary-\(UUID().uuidString)"
+        let boundary = "OpenWhispBoundary-\(UUID().uuidString)"
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.timeoutInterval = 120
@@ -633,12 +633,12 @@ class WhisperEngine {
 
     private static func workerPIDFileURL() -> URL {
         URL(fileURLWithPath: NSHomeDirectory())
-            .appendingPathComponent("Library/Caches/com.encryptedcat.voicenote/whisper-server.pid")
+            .appendingPathComponent("Library/Caches/com.openwhisp.app/whisper-server.pid")
     }
 
     static func logFileURL() -> URL {
         URL(fileURLWithPath: NSHomeDirectory())
-            .appendingPathComponent("Library/Caches/com.encryptedcat.voicenote/whisper-engine.log")
+            .appendingPathComponent("Library/Caches/com.openwhisp.app/whisper-engine.log")
     }
 
     private func log(_ message: String) {

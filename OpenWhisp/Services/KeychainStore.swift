@@ -2,7 +2,7 @@ import Foundation
 import Security
 
 enum KeychainStore {
-    private static let service = "com.encryptedcat.voicenote"
+    private static let service = "com.openwhisp.app"
     
     static func read(key: String) -> String? {
         let query: [String: Any] = [

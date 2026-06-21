@@ -1,5 +1,5 @@
 import XCTest
-@testable import VoiceNoteCore
+@testable import OpenWhispCore
 
 final class VoiceCommandParserTests: XCTestCase {
     private let p = VoiceCommandParser(wakeWord: "voice note")

@@ -1,5 +1,5 @@
 import XCTest
-@testable import VoiceNoteCore
+@testable import OpenWhispCore
 
 final class VocabularyTests: XCTestCase {
     private func sub(_ from: String, _ to: String) -> Vocabulary.Substitution {

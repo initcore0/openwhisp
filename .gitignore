@@ -14,3 +14,7 @@ build/
 # SwiftPM
 .build/
 Package.resolved
+
+# Build artifacts / releases
+dist/
+build/

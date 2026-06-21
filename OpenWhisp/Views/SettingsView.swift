@@ -102,9 +102,9 @@ struct SettingsView: View {
     
     private var generalSection: some View {
         settingsSection("General") {
-            Toggle("Launch VoiceNote at login", isOn: $appState.launchAtLogin)
+            Toggle("Launch OpenWhisp at login", isOn: $appState.launchAtLogin)
 
-            Text("Automatically start VoiceNote after you log in or reboot. If macOS asks you to approve it, enable VoiceNote under System Settings > General > Login Items.")
+            Text("Automatically start OpenWhisp after you log in or reboot. If macOS asks you to approve it, enable OpenWhisp under System Settings > General > Login Items.")
                 .font(.caption)
                 .foregroundColor(.secondary)
 
@@ -307,7 +307,7 @@ struct SettingsView: View {
                 .font(.caption)
                 .foregroundColor(.secondary)
 
-            TextField("e.g. Claude, Anthropic, kubectl, VoiceNote", text: vocabularyTermsText, axis: .vertical)
+            TextField("e.g. Claude, Anthropic, kubectl, OpenWhisp", text: vocabularyTermsText, axis: .vertical)
                 .textFieldStyle(.roundedBorder)
                 .lineLimit(2...4)
                 .disabled(!appState.customVocabularyEnabled)
@@ -583,7 +583,7 @@ struct SettingsView: View {
         settingsSection("Per-App Modes") {
             Toggle("Apply per-app profiles", isOn: $appState.perAppModesEnabled)
 
-            Text("When you start dictation, VoiceNote can apply overrides based on the app you're typing into. Add the current app with the button below, then set its overrides.")
+            Text("When you start dictation, OpenWhisp can apply overrides based on the app you're typing into. Add the current app with the button below, then set its overrides.")
                 .font(.caption)
                 .foregroundColor(.secondary)
 
