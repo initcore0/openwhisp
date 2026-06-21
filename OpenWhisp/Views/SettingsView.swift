@@ -521,7 +521,11 @@ struct SettingsView: View {
                 Button("Open Input Monitoring") { appState.openInputMonitoringSettings() }
                 Button("Retry Hotkey") { appState.retryHotkeyMonitor() }
             }
-            
+
+            Text("Input Monitoring (the “OpenWhisp would like to receive keystrokes” prompt) lets OpenWhisp detect your push-to-talk key. Keystrokes are only checked against your chosen hotkey — they are never logged, stored, or sent anywhere. If you denied it, enable OpenWhisp under Input Monitoring above and click Retry Hotkey.")
+                .font(.caption)
+                .foregroundColor(.secondary)
+
             Text("Running app: \(appState.runningBundlePath)")
                 .font(.caption)
                 .foregroundColor(.secondary)

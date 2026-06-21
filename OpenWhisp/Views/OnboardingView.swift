@@ -91,11 +91,11 @@ struct OnboardingView: View {
             title: "Let OpenWhisp type for you",
             subtitle: "To insert text into other apps and detect your dictation hotkey, macOS needs you to enable OpenWhisp under Accessibility."
         ) {
-            if accessibilityGranted {
-                Label("Accessibility access granted", systemImage: "checkmark.circle.fill")
-                    .foregroundColor(.green)
-            } else {
-                VStack(spacing: 8) {
+            VStack(spacing: 10) {
+                if accessibilityGranted {
+                    Label("Accessibility access granted", systemImage: "checkmark.circle.fill")
+                        .foregroundColor(.green)
+                } else {
                     Button("Enable in Accessibility Settings") {
                         appState.requestAccessibilityPermission()
                         appState.openAccessibilitySettings()
@@ -106,6 +106,21 @@ struct OnboardingView: View {
                         .foregroundColor(.secondary)
                         .multilineTextAlignment(.center)
                 }
+
+                // Explain the separate "Keystroke Receiving" / Input Monitoring
+                // prompt up front so it isn't alarming when macOS shows it.
+                Label {
+                    Text("macOS may also ask to let OpenWhisp “receive keystrokes.” That's how it detects your push-to-talk key — keystrokes are **never logged, stored, or sent anywhere**. Allow it (or enable OpenWhisp under Privacy & Security → Input Monitoring).")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .multilineTextAlignment(.leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                } icon: {
+                    Image(systemName: "lock.shield")
+                        .foregroundColor(.secondary)
+                }
+                .padding(10)
+                .background(RoundedRectangle(cornerRadius: 8).fill(Color.secondary.opacity(0.10)))
             }
         }
     }
