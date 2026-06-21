@@ -52,6 +52,27 @@ class AppState: ObservableObject {
         didSet { UserDefaults.standard.set(showOverlay, forKey: "showOverlay") }
     }
 
+    /// Launch the app automatically after login/reboot. Source of truth is the
+    /// system (SMAppService), so this is initialized from and written through to
+    /// the real login-item status rather than UserDefaults.
+    @Published var launchAtLogin: Bool {
+        didSet {
+            guard launchAtLogin != oldValue else { return }
+            let applied = LaunchAtLogin.setEnabled(launchAtLogin)
+            // Re-sync to the actual system state in case the change didn't take
+            // (e.g. user disabled it in System Settings and macOS needs approval).
+            let actual = LaunchAtLogin.isEnabled
+            if applied == false || actual != launchAtLogin {
+                if LaunchAtLogin.requiresApproval {
+                    error = "VoiceNote was added to Login Items but needs your approval in System Settings > General > Login Items."
+                }
+                if actual != launchAtLogin {
+                    launchAtLogin = actual
+                }
+            }
+        }
+    }
+
     @Published var restoreClipboard: Bool {
         didSet { UserDefaults.standard.set(restoreClipboard, forKey: "restoreClipboard") }
     }
@@ -204,6 +225,7 @@ class AppState: ObservableObject {
         triggerMode = UserDefaults.standard.string(forKey: "triggerMode") ?? "fn"
         outputMode = UserDefaults.standard.string(forKey: "outputMode") ?? "finalOnly"
         showOverlay = UserDefaults.standard.object(forKey: "showOverlay") as? Bool ?? true
+        launchAtLogin = LaunchAtLogin.isEnabled
         restoreClipboard = UserDefaults.standard.object(forKey: "restoreClipboard") as? Bool ?? false
         addTrailingSpace = UserDefaults.standard.object(forKey: "addTrailingSpace") as? Bool ?? false
         liveChunkDuration = UserDefaults.standard.object(forKey: "liveChunkDuration") as? Double ?? 2.0
