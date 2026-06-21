@@ -81,6 +81,23 @@ class AppState: ObservableObject {
         didSet { UserDefaults.standard.set(addTrailingSpace, forKey: "addTrailingSpace") }
     }
 
+    /// Local, on-device cleanup of dictated text (punctuation, capitalization,
+    /// filler removal). Default-on — this is the baseline quality pass and runs
+    /// entirely locally, no network.
+    @Published var smartFormattingEnabled: Bool {
+        didSet { UserDefaults.standard.set(smartFormattingEnabled, forKey: "smartFormattingEnabled") }
+    }
+
+    /// Apply spoken-punctuation commands ("new line", "comma", "period", ...).
+    @Published var spokenPunctuationEnabled: Bool {
+        didSet { UserDefaults.standard.set(spokenPunctuationEnabled, forKey: "spokenPunctuationEnabled") }
+    }
+
+    /// Remove filler words ("um", "uh", ...) from dictated text.
+    @Published var fillerRemovalEnabled: Bool {
+        didSet { UserDefaults.standard.set(fillerRemovalEnabled, forKey: "fillerRemovalEnabled") }
+    }
+
     @Published var liveChunkDuration: Double {
         didSet { UserDefaults.standard.set(liveChunkDuration, forKey: "liveChunkDuration") }
     }
@@ -228,6 +245,9 @@ class AppState: ObservableObject {
         launchAtLogin = LaunchAtLogin.isEnabled
         restoreClipboard = UserDefaults.standard.object(forKey: "restoreClipboard") as? Bool ?? false
         addTrailingSpace = UserDefaults.standard.object(forKey: "addTrailingSpace") as? Bool ?? false
+        smartFormattingEnabled = UserDefaults.standard.object(forKey: "smartFormattingEnabled") as? Bool ?? true
+        spokenPunctuationEnabled = UserDefaults.standard.object(forKey: "spokenPunctuationEnabled") as? Bool ?? true
+        fillerRemovalEnabled = UserDefaults.standard.object(forKey: "fillerRemovalEnabled") as? Bool ?? true
         liveChunkDuration = UserDefaults.standard.object(forKey: "liveChunkDuration") as? Double ?? 2.0
         pauseBasedLiveChunksEnabled = UserDefaults.standard.object(forKey: "pauseBasedLiveChunksEnabled") as? Bool ?? false
         transcriptionEngine = UserDefaults.standard.string(forKey: "transcriptionEngine") ?? "whisper"
@@ -1135,7 +1155,27 @@ class AppState: ObservableObject {
             .trimmingCharacters(in: .whitespacesAndNewlines)
 
         normalized = normalized.trimmingCharacters(in: CharacterSet(charactersIn: "\"'` "))
-        return isIgnorableTranscript(normalized) ? "" : normalized
+
+        // Drop ignorable transcripts BEFORE smart formatting so we never
+        // capitalize/punctuate a marker we're about to discard.
+        guard !isIgnorableTranscript(normalized) else { return "" }
+
+        if smartFormattingEnabled {
+            normalized = smartFormatter.format(normalized, language: language)
+        }
+
+        return normalized
+    }
+
+    /// Built from the current formatting settings on each call so toggles take
+    /// effect immediately without rewiring.
+    private var smartFormatter: SmartFormatter {
+        SmartFormatter(options: SmartFormatter.Options(
+            removeFillers: fillerRemovalEnabled,
+            applySpokenPunctuation: spokenPunctuationEnabled,
+            capitalizeSentences: true,
+            ensureTerminalPunctuation: false
+        ))
     }
 
     private func isIgnorableTranscript(_ text: String) -> Bool {

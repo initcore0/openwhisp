@@ -48,6 +48,7 @@ struct SettingsView: View {
                 modelSection
                 microphoneSection
                 languageSection
+                formattingSection
                 translationSection
                 hotkeySection
                 outputSection
@@ -178,6 +179,21 @@ struct SettingsView: View {
             }
 
             Text("Whisper can translate non-English speech into English when English is selected. Auto Detect transcribes in the spoken language.")
+                .font(.caption)
+                .foregroundColor(.secondary)
+        }
+    }
+
+    private var formattingSection: some View {
+        settingsSection("Smart Formatting") {
+            Toggle("Clean up dictation automatically", isOn: $appState.smartFormattingEnabled)
+
+            if appState.smartFormattingEnabled {
+                Toggle("Apply spoken punctuation (\"new line\", \"comma\", \"period\")", isOn: $appState.spokenPunctuationEnabled)
+                Toggle("Remove filler words (\"um\", \"uh\")", isOn: $appState.fillerRemovalEnabled)
+            }
+
+            Text("Runs entirely on your Mac — no internet required. Capitalizes sentences, tidies spacing and punctuation, and optionally applies spoken punctuation and removes fillers.")
                 .font(.caption)
                 .foregroundColor(.secondary)
         }
