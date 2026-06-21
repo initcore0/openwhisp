@@ -81,7 +81,11 @@ echo "Step 3: Bundling whisper.cpp runtime..."
 
 echo ""
 echo "Step 4: Signing app bundle..."
-codesign --force --deep --sign - "$APP_DIR"
+if [ -f "$PROJECT_DIR/VoiceNote/VoiceNote.entitlements" ]; then
+    codesign --force --deep --sign - --entitlements "$PROJECT_DIR/VoiceNote/VoiceNote.entitlements" "$APP_DIR"
+else
+    codesign --force --deep --sign - "$APP_DIR"
+fi
 codesign --verify --deep --strict --verbose=2 "$APP_DIR"
 
 echo ""

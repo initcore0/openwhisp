@@ -10,6 +10,35 @@ struct SettingsView: View {
     @State private var availableMics: [AudioDevice] = []
     @State private var selectedMicIndex: Int = 0
     @State private var selectedModel: String = "base"
+
+    // OpenAI model picker support: preset models plus a synthetic "Custom" option.
+    private static let presetOpenAIModels = ["gpt-4o-mini", "gpt-4.1-mini", "gpt-4.1-nano"]
+    private static let customOpenAIModelTag = "__custom__"
+
+    // Tracks whether the user explicitly chose the Custom option, so the text field
+    // stays revealed even while the field is empty (which would otherwise look like a preset).
+    @State private var openAIModelIsCustom: Bool = false
+
+    private var isCustomOpenAIModel: Bool {
+        openAIModelIsCustom || !SettingsView.presetOpenAIModels.contains(appState.openAIModel)
+    }
+
+    // Drives the Picker so a free-form custom model never produces an invalid selection.
+    private var openAIModelPickerSelection: Binding<String> {
+        Binding(
+            get: {
+                isCustomOpenAIModel ? SettingsView.customOpenAIModelTag : appState.openAIModel
+            },
+            set: { newValue in
+                if newValue == SettingsView.customOpenAIModelTag {
+                    openAIModelIsCustom = true
+                } else {
+                    openAIModelIsCustom = false
+                    appState.openAIModel = newValue
+                }
+            }
+        )
+    }
     
     var body: some View {
         ScrollView {
@@ -153,14 +182,17 @@ struct SettingsView: View {
                 }
             }
 
-            Picker("OpenAI Model", selection: $appState.openAIModel) {
+            Picker("OpenAI Model", selection: openAIModelPickerSelection) {
                 Text("GPT-4o mini").tag("gpt-4o-mini")
                 Text("GPT-4.1 mini").tag("gpt-4.1-mini")
                 Text("GPT-4.1 nano").tag("gpt-4.1-nano")
+                Text("Custom…").tag(SettingsView.customOpenAIModelTag)
             }
 
-            TextField("Custom OpenAI model", text: $appState.openAIModel)
-                .textFieldStyle(.roundedBorder)
+            if isCustomOpenAIModel {
+                TextField("Custom OpenAI model", text: $appState.openAIModel)
+                    .textFieldStyle(.roundedBorder)
+            }
 
             SecureField("OpenAI API Key", text: $appState.openAIAPIKey)
                 .textFieldStyle(.roundedBorder)
