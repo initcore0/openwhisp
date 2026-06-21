@@ -262,11 +262,21 @@ struct SettingsView: View {
     
     private var outputSection: some View {
         settingsSection("Text Output") {
-            Picker("Insertion Mode", selection: $appState.outputMode) {
+            Picker("Insertion Method", selection: $appState.insertionMode) {
+                Text("Automatic (keep clipboard)").tag("auto")
+                Text("Direct insert only").tag("directAX")
+                Text("Paste (Cmd+V)").tag("paste")
+            }
+
+            Text("Automatic inserts text directly into the focused app (preserving your clipboard) and falls back to paste when an app doesn't support it.")
+                .font(.caption)
+                .foregroundColor(.secondary)
+
+            Picker("Output Mode", selection: $appState.outputMode) {
                 Text("Final paste only").tag("finalOnly")
                 Text("Live chunks (experimental)").tag("liveChunks")
             }
-            
+
             Picker("Live Chunk Duration", selection: $appState.liveChunkDuration) {
                 Text("1.0 sec - fastest").tag(1.0)
                 Text("1.5 sec").tag(1.5)
@@ -285,12 +295,13 @@ struct SettingsView: View {
             Toggle("Show overlay while recording", isOn: $appState.showOverlay)
             Toggle("Add trailing space after paste", isOn: $appState.addTrailingSpace)
             Toggle("Restore clipboard after paste", isOn: $appState.restoreClipboard)
-            
+                .disabled(appState.insertionMode == "directAX")
+
             Text("Pause-based chunks finalize when speech stops. Timer chunks use the selected duration. Chunks transcribe up to two at a time and paste in order.")
                 .font(.caption)
                 .foregroundColor(.secondary)
-            
-            Text("Clipboard restore reads your clipboard and may trigger macOS privacy prompts.")
+
+            Text("Clipboard restore only applies to the paste method — and reads your clipboard, which may trigger macOS privacy prompts. With Automatic or Direct insert, your clipboard is left untouched.")
                 .font(.caption)
                 .foregroundColor(.secondary)
         }

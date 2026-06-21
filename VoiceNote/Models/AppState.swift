@@ -77,6 +77,14 @@ class AppState: ObservableObject {
         didSet { UserDefaults.standard.set(restoreClipboard, forKey: "restoreClipboard") }
     }
 
+    /// How transcribed text is inserted into the focused app:
+    /// "auto" (try Accessibility direct-insert, fall back to paste),
+    /// "directAX" (Accessibility only), or "paste" (Cmd+V only).
+    /// Direct-insert preserves the user's clipboard entirely.
+    @Published var insertionMode: String {
+        didSet { UserDefaults.standard.set(insertionMode, forKey: "insertionMode") }
+    }
+
     @Published var addTrailingSpace: Bool {
         didSet { UserDefaults.standard.set(addTrailingSpace, forKey: "addTrailingSpace") }
     }
@@ -219,6 +227,10 @@ class AppState: ObservableObject {
         shouldEnhanceCurrentSession && outputMode == "liveChunks" && openAIEnhancementMode == "rephrase"
     }
 
+    private var currentInsertionMode: InsertionMode {
+        InsertionMode(rawValue: insertionMode) ?? .auto
+    }
+
     var hotkeyHelpText: String {
         let trigger = triggerMode == "fn" ? "Release Fn" : "Release Control+Space"
         return "\(trigger) to insert - Esc to cancel"
@@ -244,6 +256,7 @@ class AppState: ObservableObject {
         showOverlay = UserDefaults.standard.object(forKey: "showOverlay") as? Bool ?? true
         launchAtLogin = LaunchAtLogin.isEnabled
         restoreClipboard = UserDefaults.standard.object(forKey: "restoreClipboard") as? Bool ?? false
+        insertionMode = UserDefaults.standard.string(forKey: "insertionMode") ?? "auto"
         addTrailingSpace = UserDefaults.standard.object(forKey: "addTrailingSpace") as? Bool ?? false
         smartFormattingEnabled = UserDefaults.standard.object(forKey: "smartFormattingEnabled") as? Bool ?? true
         spokenPunctuationEnabled = UserDefaults.standard.object(forKey: "spokenPunctuationEnabled") as? Bool ?? true
@@ -657,6 +670,7 @@ class AppState: ObservableObject {
         currentSessionText = text
         KeyboardSynthesizer.typeViaPaste(
             insertion,
+            mode: currentInsertionMode,
             restoreClipboard: restoreClipboard,
             targetApplication: targetApplication
         )
@@ -677,6 +691,7 @@ class AppState: ObservableObject {
                 appleLiveInsertedText = finalText
                 KeyboardSynthesizer.typeViaPaste(
                     insertion,
+                    mode: currentInsertionMode,
                     restoreClipboard: restoreClipboard,
                     targetApplication: targetApplication
                 )
@@ -1051,6 +1066,7 @@ class AppState: ObservableObject {
         let insertion = needsSeparator ? " \(text)" : text
         KeyboardSynthesizer.typeViaPaste(
             insertion,
+            mode: currentInsertionMode,
             restoreClipboard: restoreClipboard,
             targetApplication: targetApplication
         )
@@ -1119,6 +1135,7 @@ class AppState: ObservableObject {
             let insertion = addTrailingSpace ? "\(text) " : text
             KeyboardSynthesizer.typeViaPaste(
                 insertion,
+                mode: currentInsertionMode,
                 restoreClipboard: restoreClipboard,
                 targetApplication: targetApplication
             )
@@ -1128,6 +1145,7 @@ class AppState: ObservableObject {
             if addTrailingSpace, !text.isEmpty {
                 KeyboardSynthesizer.typeViaPaste(
                     " ",
+                    mode: currentInsertionMode,
                     restoreClipboard: restoreClipboard,
                     targetApplication: targetApplication
                 )
