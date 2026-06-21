@@ -23,6 +23,12 @@ class WhisperEngine {
     private let pidFileURL: URL
     private let logFileURL: URL
 
+    /// Generation counter, guarded by `serverLock`. Bumped every time the server
+    /// state is started, stopped, or replaced. `ensureServer` snapshots it before
+    /// releasing the lock to wait for health, then verifies it is unchanged before
+    /// committing success — so a concurrent stop/replace can't be clobbered.
+    private var serverGeneration: Int = 0
+
     init() {
         serverPort = Self.availableLoopbackPort() ?? 8178
         pidFileURL = Self.workerPIDFileURL()
@@ -188,8 +194,19 @@ class WhisperEngine {
             do {
                 try process.run()
 
+                // Drain stdout and stderr concurrently. Reading them serially
+                // can deadlock: if whisper-cli fills the stderr pipe buffer while
+                // we block on stdout, the child stalls and never exits.
+                var stderrData = Data()
+                let stderrGroup = DispatchGroup()
+                stderrGroup.enter()
+                DispatchQueue.global(qos: .userInitiated).async {
+                    stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+                    stderrGroup.leave()
+                }
+
                 let stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-                let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+                stderrGroup.wait()
                 process.waitUntilExit()
                 if deleteWhenDone {
                     try? FileManager.default.removeItem(atPath: wavPath)
@@ -227,6 +244,9 @@ class WhisperEngine {
                     }
                 }
             } catch {
+                if deleteWhenDone {
+                    try? FileManager.default.removeItem(atPath: wavPath)
+                }
                 print("[WhisperEngine] FAILED to run: \(error.localizedDescription)")
                 log("CLI failed to run: \(error.localizedDescription)")
                 DispatchQueue.main.async {
@@ -258,16 +278,19 @@ class WhisperEngine {
     }
 
     private func ensureServer(binaryPath: String, modelPath: String) -> Bool {
+        // --- Phase 1: snapshot / start under the lock -------------------------
         serverLock.lock()
-        defer { serverLock.unlock() }
 
         if serverModelPath == modelPath, serverProcess?.isRunning == true, healthCheck() {
+            serverLock.unlock()
             return true
         }
 
+        // Tear down any existing/mismatched server before starting a new one.
         stopServerLocked()
 
         guard let serverPath = serverBinaryPath(for: binaryPath) else {
+            serverLock.unlock()
             log("whisper-server unavailable next to \(binaryPath)")
             DispatchQueue.main.async {
                 self.onWorkerStatus?("Worker unavailable")
@@ -305,23 +328,55 @@ class WhisperEngine {
                 self.onWorkerStatus?("Loading on port \(self.serverPort)...")
             }
             try process.run()
-            serverProcess = process
-            serverModelPath = modelPath
-            serverStdoutPipe = stdoutPipe
-            serverStderrPipe = stderrPipe
-            writeWorkerPID(process.processIdentifier)
-
-            if waitForHealth(timeout: 45), process.isRunning {
-                DispatchQueue.main.async {
-                    self.onWorkerStatus?("Loaded on port \(self.serverPort)")
-                }
-                return true
-            }
         } catch {
+            serverLock.unlock()
             log("Failed to start worker: \(error.localizedDescription)")
             print("[WhisperEngine] failed to start worker: \(error.localizedDescription)")
+            DispatchQueue.main.async {
+                self.onWorkerStatus?("Worker unavailable")
+            }
+            return false
         }
 
+        // Commit the freshly-started process into shared state and bump the
+        // generation so a concurrent stop/replace can be detected after we
+        // release the lock.
+        serverGeneration += 1
+        let myGeneration = serverGeneration
+        serverProcess = process
+        serverModelPath = modelPath
+        serverStdoutPipe = stdoutPipe
+        serverStderrPipe = stderrPipe
+        writeWorkerPID(process.processIdentifier)
+
+        serverLock.unlock()
+
+        // --- Phase 2: wait for health WITHOUT holding the lock ---------------
+        // `stopServer()` can bump `serverGeneration` to make this loop bail early.
+        let healthy = waitForHealth(timeout: 45, generation: myGeneration)
+
+        // --- Phase 3: re-acquire to commit success or tear down on failure ---
+        serverLock.lock()
+        defer { serverLock.unlock() }
+
+        // If a concurrent stop/replace happened, the process we started is no
+        // longer the current one — don't touch shared state, just bail.
+        guard serverGeneration == myGeneration, serverProcess === process else {
+            // Our process was already torn down (or replaced) by someone else.
+            if process.isRunning {
+                process.terminate()
+            }
+            return false
+        }
+
+        if healthy, process.isRunning {
+            DispatchQueue.main.async {
+                self.onWorkerStatus?("Loaded on port \(self.serverPort)")
+            }
+            return true
+        }
+
+        // Health failed (or process died): tear down the server we own.
         stopServerLocked()
         DispatchQueue.main.async {
             self.onWorkerStatus?("Worker unavailable")
@@ -329,7 +384,13 @@ class WhisperEngine {
         return false
     }
 
+    /// Must be called with `serverLock` held. Bumps `serverGeneration` so any
+    /// in-progress `ensureServer`/`waitForHealth` for the current server bails
+    /// out instead of committing or blocking on the doomed process.
     private func stopServerLocked() {
+        // Invalidate any in-progress health wait for the current generation.
+        serverGeneration += 1
+
         serverStdoutPipe?.fileHandleForReading.readabilityHandler = nil
         serverStderrPipe?.fileHandleForReading.readabilityHandler = nil
         if let process = serverProcess, process.isRunning {
@@ -371,9 +432,20 @@ class WhisperEngine {
         return nil
     }
 
-    private func waitForHealth(timeout: TimeInterval) -> Bool {
+    /// Polls `/health` until it succeeds, the timeout elapses, or the server
+    /// generation changes out from under us (set by `stopServer()` /
+    /// `stopServerLocked()`). Runs WITHOUT `serverLock` held so a concurrent
+    /// stop can bail it out early. Returns false if cancelled.
+    private func waitForHealth(timeout: TimeInterval, generation: Int) -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
+            // Bail early if our server was stopped or replaced.
+            serverLock.lock()
+            let cancelled = serverGeneration != generation
+            serverLock.unlock()
+            if cancelled {
+                return false
+            }
             if healthCheck() {
                 return true
             }
@@ -441,7 +513,13 @@ class WhisperEngine {
 
         guard http.statusCode == 200 else {
             let message = String(data: resultData, encoding: .utf8) ?? "HTTP \(http.statusCode)"
+            // Avoid persisting full response bodies: on some servers an error
+            // body can echo back request content (potentially transcript text).
+            #if DEBUG
             log("Server API HTTP \(http.statusCode): \(message.prefix(2000))")
+            #else
+            log("Server API HTTP \(http.statusCode) (\(resultData.count) bytes)")
+            #endif
             throw WhisperWorkerError.serverError(message)
         }
 
@@ -451,8 +529,9 @@ class WhisperEngine {
 
         let decoded = try JSONDecoder().decode(InferenceResponse.self, from: resultData)
         let text = decoded.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let rawBody = String(data: resultData, encoding: .utf8) ?? ""
-        log("Server API response HTTP \(http.statusCode), textLen=\(text.count), body=\(rawBody.prefix(1000))")
+        // Do NOT log the raw body: it contains the transcript and is written to
+        // a persistent, never-rotated cache log. Only record the length.
+        log("Server API response HTTP \(http.statusCode), textLen=\(text.count)")
         print("[WhisperEngine] worker result: \"\(text)\" (len=\(text.count))")
         return text
     }
@@ -489,6 +568,13 @@ class WhisperEngine {
         let socketFD = socket(AF_INET, SOCK_STREAM, 0)
         guard socketFD >= 0 else { return nil }
         defer { close(socketFD) }
+
+        // Set SO_REUSEADDR so that if whisper-server is launched with the same
+        // option, it can re-bind this port without a stale-binding rejection.
+        // (This does not eliminate the bind-then-close race; it only avoids
+        // SO_REUSEADDR-related rebind failures on the discovered port.)
+        var reuse: Int32 = 1
+        setsockopt(socketFD, SOL_SOCKET, SO_REUSEADDR, &reuse, socklen_t(MemoryLayout<Int32>.size))
 
         var addr = sockaddr_in()
         addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
@@ -565,7 +651,11 @@ class WhisperEngine {
             pid > 0
         else { return }
 
-        if kill(pid, 0) == 0 {
+        // Only signal if the PID is alive AND its executable is actually a
+        // whisper-server. After a crash + PID reuse the persisted PID can point
+        // at an unrelated user process — never kill that. If we can't resolve
+        // the path, err on the side of NOT killing.
+        if kill(pid, 0) == 0, isWhisperServerProcess(pid: pid) {
             print("[WhisperEngine] stopping stale whisper-server pid \(pid)")
             kill(pid, SIGTERM)
             Thread.sleep(forTimeInterval: 0.5)
@@ -575,6 +665,21 @@ class WhisperEngine {
         }
 
         try? FileManager.default.removeItem(at: pidFileURL)
+    }
+
+    /// Resolves the executable path of `pid` via libproc and returns true only
+    /// if its last path component is `whisper-server`. Returns false if the path
+    /// cannot be resolved (so callers won't signal an unknown process).
+    private static func isWhisperServerProcess(pid: Int32) -> Bool {
+        // proc_pidpath wants PROC_PIDPATHINFO_MAXSIZE (== 4*MAXPATHLEN) of space;
+        // that C macro isn't importable into Swift, so use its expansion directly.
+        // A smaller buffer (e.g. MAXPATHLEN) can truncate long paths, causing a
+        // real stale whisper-server to fail the name check and not be cleaned up.
+        var buffer = [CChar](repeating: 0, count: 4 * Int(MAXPATHLEN))
+        let length = proc_pidpath(pid, &buffer, UInt32(buffer.count))
+        guard length > 0 else { return false }
+        let path = String(cString: buffer)
+        return (path as NSString).lastPathComponent == "whisper-server"
     }
 }
 
