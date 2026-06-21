@@ -14,7 +14,11 @@ final class OverlayWindowController {
         if panel == nil {
             let view = OverlayView(appState: appState)
             let host = NSHostingController(rootView: view)
-            let size = NSSize(width: 386, height: 74)
+            // Fixed, generous panel size with the transcript region reserved
+            // below the waveform. The SwiftUI content self-sizes within this and
+            // is bottom-anchored, so an empty transcript shows just the pill —
+            // no per-update window resizing (which would flicker).
+            let size = NSSize(width: 420, height: 150)
             let panel = NSPanel(
                 contentRect: NSRect(origin: .zero, size: size),
                 styleMask: [.borderless, .nonactivatingPanel],
@@ -68,8 +72,65 @@ final class OverlayWindowController {
 
 struct OverlayView: View {
     @ObservedObject var appState: AppState
-    
+
+    private var transcriptText: String {
+        appState.streamingText.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var showTranscript: Bool {
+        !transcriptText.isEmpty
+    }
+
+    /// Status caption shown with the transcript while finalizing / polishing.
+    private var phaseCaption: String? {
+        guard appState.isTranscribing else { return nil }
+        return appState.statusMessage
+    }
+
     var body: some View {
+        VStack(spacing: 10) {
+            waveformPill
+
+            if showTranscript {
+                transcriptPanel
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .animation(.easeInOut(duration: 0.18), value: showTranscript)
+    }
+
+    private var transcriptPanel: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if let caption = phaseCaption {
+                Text(caption)
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundColor(Color(red: 0.95, green: 0.78, blue: 0.42).opacity(0.85))
+                    .textCase(.uppercase)
+            }
+            Text(transcriptText)
+                .font(.system(size: 13, weight: .regular, design: .rounded))
+                .foregroundColor(.white.opacity(0.85))
+                .lineLimit(3)
+                .truncationMode(.head)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .multilineTextAlignment(.leading)
+        }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 12)
+        .frame(width: 360, alignment: .leading)
+        .background {
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(Color(red: 0.02, green: 0.02, blue: 0.024).opacity(0.96))
+                .shadow(color: Color.black.opacity(0.55), radius: 16, x: 0, y: 8)
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(Color.white.opacity(0.06), lineWidth: 1)
+        }
+    }
+
+    private var waveformPill: some View {
         LuxuryWaveform(level: appState.audioLevel, isFinalizing: appState.isTranscribing)
             .frame(width: 322, height: 34)
             .padding(.horizontal, 32)
