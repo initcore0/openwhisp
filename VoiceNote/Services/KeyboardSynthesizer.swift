@@ -21,7 +21,7 @@ class KeyboardSynthesizer {
         targetApplication: NSRunningApplication? = nil
     ) {
         pasteQueue.async {
-            print("[KS] typing: \"\(text)\"")
+            print("[KS] typing (len=\(text.count))")
 
             let pb = NSPasteboard.general
 
@@ -69,6 +69,18 @@ class KeyboardSynthesizer {
             }
 
             print("[KS] done")
+        }
+    }
+
+    /// Set the clipboard to `text` on the same serial queue used for pasting.
+    /// Use this for any clipboard write that must stay ordered behind in-flight
+    /// pastes (e.g. the final liveChunks clipboard set), so it never races a
+    /// still-draining chunk paste and clobber/re-paste hazards are avoided.
+    static func setClipboard(_ text: String) {
+        pasteQueue.async {
+            let pb = NSPasteboard.general
+            pb.clearContents()
+            pb.setString(text, forType: .string)
         }
     }
 
