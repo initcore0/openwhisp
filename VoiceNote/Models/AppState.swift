@@ -152,6 +152,11 @@ class AppState: ObservableObject {
     /// Set when a stop arrives before the grant callback has started recording.
     private var pendingStop = false
     private var openAIEnhancementEnabledForSession = false
+    /// Snapshot of whether this session uses live-chunk output, captured at
+    /// beginSession(). The live-chunk drain pipeline must be gated on this rather
+    /// than the live @Published outputMode, so a mid-session settings change can't
+    /// strand pendingLiveChunks and hang the session in "Finalizing...".
+    private var isLiveChunkSession = false
     private var isAppleSpeechSession = false
     private var appleLiveInsertedText = ""
     private var appleDidCompleteFinal = false
@@ -813,6 +818,7 @@ class AppState: ObservableObject {
         currentSessionText = ""
         streamingText = ""
         openAIEnhancementEnabledForSession = openAIEnhancementEnabled
+        isLiveChunkSession = streaming
         chunkCount = 0
         audioLevel = 0
         recordingElapsed = 0
@@ -882,7 +888,7 @@ class AppState: ObservableObject {
     }
 
     private func processNextLiveChunk() {
-        guard outputMode == "liveChunks", liveInFlightCount < liveMaxConcurrentTranscriptions, let next = pendingLiveChunks.first else { return }
+        guard isLiveChunkSession, liveInFlightCount < liveMaxConcurrentTranscriptions, let next = pendingLiveChunks.first else { return }
         pendingLiveChunks.removeFirst()
         liveInFlightCount += 1
         statusMessage = isTranscribing ? "Finalizing..." : "Transcribing chunks..."
@@ -1084,9 +1090,11 @@ class AppState: ObservableObject {
                     targetApplication: targetApplication
                 )
             }
-            let pb = NSPasteboard.general
-            pb.clearContents()
-            pb.setString(text, forType: .string)
+            // Route the final clipboard write through the same serial paste queue
+            // so it stays FIFO-ordered behind any still-draining chunk pastes.
+            // A direct main-thread NSPasteboard write here would race the async
+            // paste queue and could clobber (or be clobbered by) a late chunk.
+            KeyboardSynthesizer.setClipboard(text)
         }
 
         let finalWasEnhanced = shouldEnhanceCurrentSession && outputMode == "finalOnly"
