@@ -348,8 +348,13 @@ struct SettingsView: View {
     }
 
     private var translationSection: some View {
-        settingsSection("OpenAI Post-processing") {
-            Toggle("Use OpenAI after transcription", isOn: $appState.openAIEnhancementEnabled)
+        settingsSection("AI Post-processing") {
+            Toggle("Clean up text with AI after transcription", isOn: $appState.openAIEnhancementEnabled)
+
+            Picker("Provider", selection: $appState.llmProvider) {
+                Text("OpenAI (cloud)").tag("openai")
+                Text("Local server (private)").tag("local")
+            }
 
             Picker("Mode", selection: $appState.openAIEnhancementMode) {
                 Text("Rephrase in same language").tag("rephrase")
@@ -363,36 +368,57 @@ struct SettingsView: View {
                 }
             }
 
-            Picker("OpenAI Model", selection: openAIModelPickerSelection) {
-                Text("GPT-4o mini").tag("gpt-4o-mini")
-                Text("GPT-4.1 mini").tag("gpt-4.1-mini")
-                Text("GPT-4.1 nano").tag("gpt-4.1-nano")
-                Text("Custom…").tag(SettingsView.customOpenAIModelTag)
+            if appState.llmProvider == "local" {
+                localLLMFields
+            } else {
+                openAIFields
             }
-
-            if isCustomOpenAIModel {
-                TextField("Custom OpenAI model", text: $appState.openAIModel)
-                    .textFieldStyle(.roundedBorder)
-            }
-
-            SecureField("OpenAI API Key", text: $appState.openAIAPIKey)
-                .textFieldStyle(.roundedBorder)
 
             HStack {
-                Button("Validate OpenAI Key") {
+                Button(appState.llmProvider == "local" ? "Test Connection" : "Validate OpenAI Key") {
                     appState.validateOpenAIKey()
                 }
 
                 Spacer()
 
                 Text(appState.translationStatus)
-                    .foregroundColor(appState.translationStatus == "OpenAI key valid" || appState.translationStatus == "Rephrased" || appState.translationStatus == "Improved" ? .green : .secondary)
+                    .foregroundColor(translationStatusIsGood ? .green : .secondary)
             }
 
-            Text("Whisper handles default translation locally through the language picker. OpenAI is optional and only edits final text, never live chunks.")
+            Text(appState.llmProvider == "local"
+                 ? "Local server keeps everything on your machine / LAN — no data leaves to the cloud. Any OpenAI-compatible server works (llama.cpp llama-server, Ollama). Only edits final text, never live chunks."
+                 : "Whisper handles default translation locally through the language picker. OpenAI is optional and only edits final text, never live chunks.")
                 .font(.caption)
                 .foregroundColor(.secondary)
         }
+    }
+
+    private var translationStatusIsGood: Bool {
+        ["OpenAI key valid", "Local LLM reachable", "Rephrased", "Improved"].contains(appState.translationStatus)
+    }
+
+    @ViewBuilder private var openAIFields: some View {
+        Picker("OpenAI Model", selection: openAIModelPickerSelection) {
+            Text("GPT-4o mini").tag("gpt-4o-mini")
+            Text("GPT-4.1 mini").tag("gpt-4.1-mini")
+            Text("GPT-4.1 nano").tag("gpt-4.1-nano")
+            Text("Custom…").tag(SettingsView.customOpenAIModelTag)
+        }
+
+        if isCustomOpenAIModel {
+            TextField("Custom OpenAI model", text: $appState.openAIModel)
+                .textFieldStyle(.roundedBorder)
+        }
+
+        SecureField("OpenAI API Key", text: $appState.openAIAPIKey)
+            .textFieldStyle(.roundedBorder)
+    }
+
+    @ViewBuilder private var localLLMFields: some View {
+        TextField("Server URL (e.g. http://192.168.68.52:8080/v1)", text: $appState.localLLMBaseURL)
+            .textFieldStyle(.roundedBorder)
+        TextField("Model (leave blank to use the server default)", text: $appState.localLLMModel)
+            .textFieldStyle(.roundedBorder)
     }
     
     private var hotkeySection: some View {

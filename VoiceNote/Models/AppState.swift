@@ -149,6 +149,23 @@ class AppState: ObservableObject {
         didSet { UserDefaults.standard.set(openAIModel, forKey: "openAIModel") }
     }
 
+    /// Which LLM backend powers post-processing: "openai" (cloud) or
+    /// "local" (an OpenAI-compatible local server — llama.cpp/Ollama). Local
+    /// keeps everything on-device/on-LAN, preserving the privacy story.
+    @Published var llmProvider: String {
+        didSet { UserDefaults.standard.set(llmProvider, forKey: "llmProvider") }
+    }
+
+    /// Base URL (through /v1) of the local OpenAI-compatible server.
+    @Published var localLLMBaseURL: String {
+        didSet { UserDefaults.standard.set(localLLMBaseURL, forKey: "localLLMBaseURL") }
+    }
+
+    /// Model name to request from the local server.
+    @Published var localLLMModel: String {
+        didSet { UserDefaults.standard.set(localLLMModel, forKey: "localLLMModel") }
+    }
+
     /// Bias whisper recognition toward custom terms. Default-on; harmless when
     /// the vocabulary is empty (no prompt is sent).
     @Published var customVocabularyEnabled: Bool {
@@ -254,6 +271,26 @@ class AppState: ObservableObject {
         InsertionMode(rawValue: insertionMode) ?? .auto
     }
 
+    /// The active LLM endpoint for post-processing, derived from the provider setting.
+    var llmEndpoint: LLMEndpoint {
+        if llmProvider == "local" {
+            return LLMEndpoint(
+                baseURL: localLLMBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+                    .replacingOccurrences(of: "/$", with: "", options: .regularExpression),
+                apiKey: "",
+                requiresKey: false
+            )
+        }
+        var ep = LLMEndpoint.openAI
+        ep.apiKey = openAIAPIKey
+        return ep
+    }
+
+    /// The model name to request, per provider.
+    var llmModel: String {
+        llmProvider == "local" ? localLLMModel : openAIModel
+    }
+
     var hotkeyHelpText: String {
         let trigger = triggerMode == "fn" ? "Release Fn" : "Release Control+Space"
         return "\(trigger) to insert - Esc to cancel"
@@ -309,6 +346,9 @@ class AppState: ObservableObject {
             openAIAPIKey = ""
         }
         openAIModel = UserDefaults.standard.string(forKey: "openAIModel") ?? "gpt-4o-mini"
+        llmProvider = UserDefaults.standard.string(forKey: "llmProvider") ?? "openai"
+        localLLMBaseURL = UserDefaults.standard.string(forKey: "localLLMBaseURL") ?? "http://192.168.68.52:8080/v1"
+        localLLMModel = UserDefaults.standard.string(forKey: "localLLMModel") ?? ""
         customVocabularyEnabled = UserDefaults.standard.object(forKey: "customVocabularyEnabled") as? Bool ?? true
         vocabulary = VocabularyStore.load()
         didCompleteOnboarding = UserDefaults.standard.bool(forKey: "didCompleteOnboarding")
@@ -601,15 +641,16 @@ class AppState: ObservableObject {
     func validateOpenAIKey() {
         translationStatus = "Validating..."
         error = nil
-        translationService.validate(apiKey: openAIAPIKey, model: openAIModel) { [weak self] result in
+        let isLocal = llmProvider == "local"
+        translationService.validate(endpoint: llmEndpoint, model: llmModel) { [weak self] result in
             Task { @MainActor in
                 guard let self else { return }
                 switch result {
                 case .success:
-                    self.translationStatus = "OpenAI key valid"
+                    self.translationStatus = isLocal ? "Local LLM reachable" : "OpenAI key valid"
                 case .failure(let error):
                     self.translationStatus = "Validation failed"
-                    self.error = "OpenAI validation failed: \(error.localizedDescription)"
+                    self.error = "LLM validation failed: \(error.localizedDescription)"
                 }
             }
         }
@@ -1064,8 +1105,8 @@ class AppState: ObservableObject {
             text: item,
             mode: "rephrase",
             targetLanguage: translationTargetLanguage,
-            apiKey: openAIAPIKey,
-            model: openAIModel
+            endpoint: llmEndpoint,
+            model: llmModel
         ) { [weak self] result in
             Task { @MainActor in
                 guard let self, sessionID == self.activeSessionID else { return }
@@ -1154,8 +1195,8 @@ class AppState: ObservableObject {
             text: finalText,
             mode: openAIEnhancementMode,
             targetLanguage: translationTargetLanguage,
-            apiKey: openAIAPIKey,
-            model: openAIModel
+            endpoint: llmEndpoint,
+            model: llmModel
         ) { [weak self] result in
             Task { @MainActor in
                 guard let self, sessionID == self.activeSessionID else { return }
