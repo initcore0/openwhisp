@@ -122,21 +122,17 @@ class VoiceNoteApp: NSObject, NSApplicationDelegate {
 
         let menu = NSMenu()
 
-        // Status
+        // Status (single line). Health details only surface when not ready.
         let statusItem = NSMenuItem(title: "● \(appState.statusMessage)", action: nil, keyEquivalent: "")
         statusItem.isEnabled = false
         menu.addItem(statusItem)
 
-        let modelStatusTitle = appState.isModelDownloading
-            ? "Model: \(appState.modelDownloadStatus)"
-            : "Model: \(appState.modelDownloadStatus)"
-        let modelStatus = NSMenuItem(title: modelStatusTitle, action: nil, keyEquivalent: "")
-        modelStatus.isEnabled = false
-        menu.addItem(modelStatus)
-
-        let whisperStatus = NSMenuItem(title: "Whisper Server: \(appState.whisperWorkerStatus)", action: nil, keyEquivalent: "")
-        whisperStatus.isEnabled = false
-        menu.addItem(whisperStatus)
+        // Only show the model line while it's downloading / not yet installed.
+        if appState.isModelDownloading || !appState.modelDownloadStatus.hasPrefix("Installed") {
+            let modelStatus = NSMenuItem(title: "Model: \(appState.modelDownloadStatus)", action: nil, keyEquivalent: "")
+            modelStatus.isEnabled = false
+            menu.addItem(modelStatus)
+        }
         menu.addItem(.separator())
 
         // Last transcription
@@ -160,19 +156,8 @@ class VoiceNoteApp: NSObject, NSApplicationDelegate {
 
         menu.addItem(.separator())
 
-        let engineMenu = NSMenu()
-        let whisper = NSMenuItem(title: "Whisper Local", action: #selector(useWhisperEngine), keyEquivalent: "")
-        whisper.state = appState.transcriptionEngine == "whisper" ? .on : .off
-        engineMenu.addItem(whisper)
-
-        let apple = NSMenuItem(title: "Apple Speech Streaming", action: #selector(useAppleSpeechEngine), keyEquivalent: "")
-        apple.state = appState.transcriptionEngine == "appleSpeech" ? .on : .off
-        engineMenu.addItem(apple)
-
-        let engineItem = NSMenuItem(title: "Engine", action: nil, keyEquivalent: "")
-        engineItem.submenu = engineMenu
-        menu.addItem(engineItem)
-
+        // Quick mid-use toggles only. Engine, live-chunk plumbing, etc. live in
+        // Settings → Advanced; the menu holds what you flip between dictations.
         let languageMenu = NSMenu()
         for option in languageOptions {
             let item = NSMenuItem(
@@ -193,21 +178,13 @@ class VoiceNoteApp: NSObject, NSApplicationDelegate {
         languageItem.submenu = languageMenu
         menu.addItem(languageItem)
 
-        let pauseChunks = NSMenuItem(
-            title: "Pause-based Live Chunks",
-            action: #selector(togglePauseBasedLiveChunks),
+        let aiCleanup = NSMenuItem(
+            title: "Clean up with AI (OpenAI)",
+            action: #selector(toggleAICleanup),
             keyEquivalent: ""
         )
-        pauseChunks.state = appState.pauseBasedLiveChunksEnabled ? .on : .off
-        menu.addItem(pauseChunks)
-
-        let rephraseChunks = NSMenuItem(
-            title: "OpenAI Rephrase Chunks",
-            action: #selector(toggleOpenAIRephraseChunks),
-            keyEquivalent: ""
-        )
-        rephraseChunks.state = (appState.openAIEnhancementEnabled && appState.openAIEnhancementMode == "rephrase") ? .on : .off
-        menu.addItem(rephraseChunks)
+        aiCleanup.state = appState.openAIEnhancementEnabled ? .on : .off
+        menu.addItem(aiCleanup)
 
         menu.addItem(.separator())
 
@@ -244,26 +221,12 @@ class VoiceNoteApp: NSObject, NSApplicationDelegate {
     @objc private func stopStreaming()  { appState.stopStreaming() }
     @objc private func startRecording() { appState.startRecording() }
     @objc private func stopRecording()  { appState.stopRecording() }
-    @objc private func useWhisperEngine() { appState.transcriptionEngine = "whisper" }
-    @objc private func useAppleSpeechEngine() { appState.transcriptionEngine = "appleSpeech" }
     @objc private func selectLanguage(_ sender: NSMenuItem) {
         guard let code = sender.representedObject as? String else { return }
         appState.language = code
     }
-    @objc private func togglePauseBasedLiveChunks() {
-        appState.pauseBasedLiveChunksEnabled.toggle()
-        if appState.pauseBasedLiveChunksEnabled {
-            appState.outputMode = "liveChunks"
-        }
-    }
-    @objc private func toggleOpenAIRephraseChunks() {
-        let shouldEnable = !(appState.openAIEnhancementEnabled && appState.openAIEnhancementMode == "rephrase")
-        appState.openAIEnhancementMode = "rephrase"
-        appState.openAIEnhancementEnabled = shouldEnable
-        if shouldEnable {
-            appState.pauseBasedLiveChunksEnabled = true
-            appState.outputMode = "liveChunks"
-        }
+    @objc private func toggleAICleanup() {
+        appState.openAIEnhancementEnabled.toggle()
     }
     @objc private func terminate()      { NSApp.terminate(nil) }
 
