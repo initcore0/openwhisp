@@ -5,26 +5,26 @@ import Cocoa
 final class OverlayWindowController {
     private var panel: NSPanel?
     private let appState: AppState
-    
+
     init(appState: AppState) {
         self.appState = appState
     }
-    
+
     func show() {
         if panel == nil {
             let view = OverlayView(appState: appState)
             let host = NSHostingController(rootView: view)
-            // Fixed, generous panel size with the transcript region reserved
-            // below the waveform. The SwiftUI content self-sizes within this and
-            // is bottom-anchored, so an empty transcript shows just the pill —
-            // no per-update window resizing (which would flicker).
-            let size = NSSize(width: 420, height: 150)
+            // Fixed, generous panel; content self-sizes within it and is
+            // bottom-anchored so an empty transcript shows just the pill. No
+            // per-update window resizing (which would flicker).
+            let size = NSSize(width: 440, height: 180)
             let panel = NSPanel(
                 contentRect: NSRect(origin: .zero, size: size),
                 styleMask: [.borderless, .nonactivatingPanel],
                 backing: .buffered,
                 defer: false
             )
+            host.view.frame = NSRect(origin: .zero, size: size)
             panel.contentViewController = host
             panel.isFloatingPanel = true
             panel.level = .floating
@@ -35,20 +35,20 @@ final class OverlayWindowController {
             panel.hidesOnDeactivate = false
             self.panel = panel
         }
-        
+
         positionPanel()
         panel?.alphaValue = 0
         panel?.orderFrontRegardless()
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.12
+            context.duration = 0.16
             panel?.animator().alphaValue = 1
         }
     }
-    
+
     func hide() {
         guard let panel else { return }
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.12
+            context.duration = 0.14
             panel.animator().alphaValue = 0
         } completionHandler: { [weak self, weak panel] in
             Task { @MainActor in
@@ -59,32 +59,79 @@ final class OverlayWindowController {
             }
         }
     }
-    
+
+    /// Bottom-center placement (like the leading dictation apps), so the pill
+    /// doesn't cover what the user is looking at and the transcript grows
+    /// downward into empty space.
     private func positionPanel() {
         guard let panel else { return }
         let screen = NSScreen.main ?? NSScreen.screens.first
         guard let frame = screen?.visibleFrame else { return }
         let x = frame.midX - panel.frame.width / 2
-        let y = frame.midY - panel.frame.height / 2
+        let y = frame.minY + 140
         panel.setFrameOrigin(NSPoint(x: x, y: y))
     }
 }
 
+// MARK: - Real glass material
+
+/// Thin wrapper over NSVisualEffectView so the pill is true desktop-sampling
+/// glass rather than a flat fill. Clipped to a shape by the caller.
+struct VisualEffectView: NSViewRepresentable {
+    var material: NSVisualEffectView.Material = .hudWindow
+    var blending: NSVisualEffectView.BlendingMode = .behindWindow
+
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let v = NSVisualEffectView()
+        v.material = material
+        v.blendingMode = blending
+        v.state = .active
+        v.isEmphasized = true
+        return v
+    }
+
+    func updateNSView(_ nsView: NSVisualEffectView, context: Context) {
+        nsView.material = material
+        nsView.blendingMode = blending
+    }
+}
+
+// MARK: - Overlay
+
 struct OverlayView: View {
     @ObservedObject var appState: AppState
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
+    /// Distinct visual states drive accent color + waveform behavior.
+    enum Phase {
+        case listening, speaking, finalizing, error
+
+        var accent: Color {
+            switch self {
+            case .listening:  return Color(red: 0.80, green: 0.82, blue: 0.88)   // cool white
+            case .speaking:   return Color(red: 0.35, green: 0.78, blue: 0.98)   // calm cyan-blue
+            case .finalizing: return Color(red: 0.66, green: 0.55, blue: 0.98)   // violet (polishing)
+            case .error:      return Color(red: 0.95, green: 0.45, blue: 0.45)   // red
+            }
+        }
+    }
+
+    private var phase: Phase {
+        if appState.error != nil, !appState.isRecording, !appState.isTranscribing { return .error }
+        if appState.isTranscribing { return .finalizing }
+        if appState.audioLevel > 0.06 { return .speaking }
+        return .listening
+    }
 
     private var transcriptText: String {
         appState.streamingText.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private var showTranscript: Bool {
-        !transcriptText.isEmpty
-    }
+    private var showTranscript: Bool { !transcriptText.isEmpty }
 
-    /// Status caption shown with the transcript while finalizing / polishing.
     private var phaseCaption: String? {
-        guard appState.isTranscribing else { return nil }
-        return appState.statusMessage
+        appState.isTranscribing ? appState.statusMessage : nil
     }
 
     var body: some View {
@@ -97,20 +144,60 @@ struct OverlayView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .padding(.top, 6)
         .animation(.easeInOut(duration: 0.18), value: showTranscript)
     }
+
+    // MARK: Pill
+
+    private var waveformPill: some View {
+        QuietWaveform(
+            level: appState.audioLevel,
+            accent: phase.accent,
+            isFinalizing: appState.isTranscribing,
+            reduceMotion: reduceMotion
+        )
+        .frame(width: 220, height: 26)
+        .padding(.horizontal, 22)
+        .padding(.vertical, 13)
+        .background {
+            ZStack {
+                if reduceTransparency {
+                    Capsule(style: .continuous)
+                        .fill(Color(red: 0.07, green: 0.07, blue: 0.08))
+                } else {
+                    VisualEffectView()
+                        .clipShape(Capsule(style: .continuous))
+                }
+            }
+            .overlay {
+                // Hairline edge.
+                Capsule(style: .continuous)
+                    .stroke(Color.white.opacity(0.10), lineWidth: 0.8)
+            }
+            // Single ambient shadow + an accent glow that blooms with energy.
+            .shadow(color: Color.black.opacity(0.32), radius: 18, x: 0, y: 8)
+            .shadow(
+                color: phase.accent.opacity(reduceMotion ? 0.18 : Double(min(0.5, max(0.0, appState.audioLevel))) * 0.5),
+                radius: 16, x: 0, y: 0
+            )
+        }
+        .animation(.easeInOut(duration: 0.25), value: phase)
+    }
+
+    // MARK: Transcript
 
     private var transcriptPanel: some View {
         VStack(alignment: .leading, spacing: 6) {
             if let caption = phaseCaption {
                 Text(caption)
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundColor(Color(red: 0.95, green: 0.78, blue: 0.42).opacity(0.85))
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundColor(phase.accent.opacity(0.9))
                     .textCase(.uppercase)
             }
             Text(transcriptText)
                 .font(.system(size: 13, weight: .regular, design: .rounded))
-                .foregroundColor(.white.opacity(0.85))
+                .foregroundColor(.white.opacity(0.88))
                 .lineLimit(3)
                 .truncationMode(.head)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -120,124 +207,108 @@ struct OverlayView: View {
         .padding(.vertical, 12)
         .frame(width: 360, alignment: .leading)
         .background {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(Color(red: 0.02, green: 0.02, blue: 0.024).opacity(0.96))
-                .shadow(color: Color.black.opacity(0.55), radius: 16, x: 0, y: 8)
-        }
-        .overlay {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .stroke(Color.white.opacity(0.06), lineWidth: 1)
-        }
-    }
-
-    private var waveformPill: some View {
-        LuxuryWaveform(level: appState.audioLevel, isFinalizing: appState.isTranscribing)
-            .frame(width: 322, height: 34)
-            .padding(.horizontal, 32)
-            .padding(.vertical, 20)
-            .background {
-                Capsule(style: .continuous)
-                    .fill(
-                        LinearGradient(
-                            colors: [
-                                Color(red: 0.005, green: 0.005, blue: 0.006).opacity(0.98),
-                                Color(red: 0.03, green: 0.028, blue: 0.024).opacity(0.97),
-                                Color(red: 0.006, green: 0.006, blue: 0.008).opacity(0.99)
-                            ],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
-                    .shadow(color: Color.black.opacity(0.72), radius: 22, x: 0, y: 14)
-                    .shadow(color: Color(red: 0.88, green: 0.72, blue: 0.42).opacity(0.13), radius: 18, x: 0, y: 0)
+            ZStack {
+                if reduceTransparency {
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .fill(Color(red: 0.06, green: 0.06, blue: 0.07))
+                } else {
+                    VisualEffectView()
+                        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                }
             }
-        .overlay {
-            Capsule(style: .continuous)
-                .stroke(Color.white.opacity(0.055), lineWidth: 1)
-                .padding(1)
+            .overlay {
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .stroke(Color.white.opacity(0.08), lineWidth: 0.8)
+            }
+            .shadow(color: Color.black.opacity(0.30), radius: 16, x: 0, y: 8)
         }
-        .overlay {
-            Capsule(style: .continuous)
-                .stroke(
-                    LinearGradient(
-                        colors: [
-                            Color.white.opacity(0.12),
-                            Color(red: 0.95, green: 0.78, blue: 0.42).opacity(0.16),
-                            Color.white.opacity(0.04)
-                        ],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    ),
-                    lineWidth: 0.8
-                )
-                .padding(4)
-        }
-        .overlay {
-            Capsule(style: .continuous)
-                .fill(
-                    LinearGradient(
-                        colors: [
-                            Color.white.opacity(0.075),
-                            Color.clear
-                        ],
-                        startPoint: .top,
-                        endPoint: .center
-                    )
-                )
-                .blendMode(.screen)
-                .padding(5)
-        }
-        .padding(2)
     }
 }
 
-struct LuxuryWaveform: View {
+// MARK: - Quiet Glass waveform
+
+/// A single continuous symmetric waveform drawn in a Canvas. Tracks the live
+/// mic level through attack/peak-decay smoothing, fakes spatial frequency
+/// variation with summed sines ("fbm"), and maps color to the session state.
+/// Honors Reduce Motion by rendering a static level-driven envelope.
+struct QuietWaveform: View {
     let level: Float
+    let accent: Color
     let isFinalizing: Bool
-    
+    let reduceMotion: Bool
+
+    // Smoothed level, updated outside the draw pass (via onChange) so we never
+    // mutate @State during view evaluation. Attack fast, release slow.
+    @State private var displayLevel: Double = 0.08
+
     var body: some View {
-        TimelineView(.animation) { timeline in
-            GeometryReader { proxy in
-                let bars = 48
-                let spacing: CGFloat = 4
-                let width = max(2, (proxy.size.width - CGFloat(bars - 1) * spacing) / CGFloat(bars))
+        TimelineView(.animation(minimumInterval: 1.0 / 60.0)) { timeline in
+            Canvas { context, size in
                 let now = timeline.date.timeIntervalSinceReferenceDate
-                let liveLevel = max(0.08, min(1.0, Double(level)))
-                
-                ZStack {
-                    Capsule()
-                        .fill(Color.white.opacity(0.055))
-                        .frame(height: 1)
-                        .blur(radius: 0.8)
-                    
-                    HStack(alignment: .center, spacing: spacing) {
-                        ForEach(0..<bars, id: \.self) { index in
-                            let centerDistance = abs(Double(index) - Double(bars - 1) / 2.0)
-                            let centerBoost = 1.0 - min(1.0, centerDistance / (Double(bars) * 0.58))
-                            let wave = (sin(now * 5.6 + Double(index) * 0.38) + 1.0) / 2.0
-                            let ripple = (sin(now * 1.9 - Double(index) * 0.16) + 1.0) / 2.0
-                            let finalizingPulse = isFinalizing ? 0.72 + 0.28 * sin(now * 6.0) : 1.0
-                            let amplitude = (0.14 + liveLevel * 0.66) * (0.34 + centerBoost * 0.7) * (0.62 + wave * 0.38) * finalizingPulse
-                            let height = max(4, proxy.size.height * CGFloat(amplitude + ripple * 0.045))
-                            
-                            Capsule()
-                                .fill(
-                                    LinearGradient(
-                                        colors: [
-                                            Color(red: 1.0, green: 0.94, blue: 0.78),
-                                            Color(red: 0.86, green: 0.66, blue: 0.34),
-                                            Color(red: 0.78, green: 0.78, blue: 0.82)
-                                        ],
-                                        startPoint: .top,
-                                        endPoint: .bottom
-                                    )
-                                )
-                                .frame(width: width, height: height)
-                                .shadow(color: Color(red: 1.0, green: 0.82, blue: 0.46).opacity(0.22), radius: 3, x: 0, y: 0)
-                        }
+                let midY = size.height / 2
+
+                // Idle breathing so "listening" looks alive (skipped for reduce-motion).
+                let breath = reduceMotion ? 0.0 : (sin(now * 1.6) * 0.5 + 0.5) * 0.05
+                let baseline = max(displayLevel, 0.06 + breath)
+
+                let steps = 56
+                var top = Path()
+                var bottom = Path()
+
+                for i in 0...steps {
+                    let t = Double(i) / Double(steps)
+                    let x = t * size.width
+
+                    // Center-weighted envelope so energy concentrates mid-pill.
+                    let centerEnv = pow(sin(t * .pi), 0.85)
+
+                    // fbm-ish spatial variation; loudness raises both amplitude
+                    // and wiggle frequency, which sells "accuracy".
+                    let motion: Double
+                    if reduceMotion {
+                        motion = 1.0
+                    } else {
+                        let freq = 5.0 + baseline * 7.0
+                        let o1 = sin(t * freq + now * 4.0)
+                        let o2 = sin(t * freq * 2.1 - now * 2.3) * 0.5
+                        let o3 = sin(t * freq * 0.5 + now * 1.3) * 0.3
+                        motion = 0.55 + ((o1 + o2 + o3) / 1.8 * 0.5 + 0.5) * 0.45
                     }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                    let finalizingPulse = (isFinalizing && !reduceMotion)
+                        ? 0.72 + 0.28 * sin(now * 6.0)
+                        : 1.0
+
+                    let amp = baseline * centerEnv * motion * finalizingPulse
+                    let half = max(0.5, amp * (size.height / 2))
+
+                    let yTop = midY - half
+                    let yBottom = midY + half
+                    if i == 0 {
+                        top.move(to: CGPoint(x: x, y: yTop))
+                        bottom.move(to: CGPoint(x: x, y: yBottom))
+                    } else {
+                        top.addLine(to: CGPoint(x: x, y: yTop))
+                        bottom.addLine(to: CGPoint(x: x, y: yBottom))
+                    }
                 }
+
+                let gradient = GraphicsContext.Shading.linearGradient(
+                    Gradient(colors: [accent.opacity(0.95), accent.opacity(0.6)]),
+                    startPoint: CGPoint(x: 0, y: 0),
+                    endPoint: CGPoint(x: size.width, y: 0)
+                )
+                let style = StrokeStyle(lineWidth: 2.4, lineCap: .round, lineJoin: .round)
+                context.stroke(top, with: gradient, style: style)
+                context.stroke(bottom, with: gradient, style: style)
+            }
+        }
+        .onChange(of: level) { _, newValue in
+            let target = max(0.06, min(1.0, Double(newValue)))
+            // Attack fast (snap up), release slow (decay down) — meter feel.
+            let factor = target > displayLevel ? 0.5 : 0.18
+            withAnimation(.linear(duration: 0.05)) {
+                displayLevel = displayLevel + (target - displayLevel) * factor
             }
         }
     }
