@@ -44,13 +44,28 @@ if [ -f "$PROJECT_DIR/OpenWhisp/OpenWhisp.entitlements" ]; then
     cp "$PROJECT_DIR/OpenWhisp/OpenWhisp.entitlements" "$APP_DIR/Contents/"
 fi
 
-# Code sign (ad-hoc)
-echo "Signing with ad-hoc certificate..."
-if [ -f "$PROJECT_DIR/OpenWhisp/OpenWhisp.entitlements" ]; then
-    codesign --force --deep --sign - --entitlements "$PROJECT_DIR/OpenWhisp/OpenWhisp.entitlements" "$APP_DIR"
-else
-    codesign --force --deep --sign - "$APP_DIR"
+# Code sign. Prefer a stable signing identity so TCC permissions (Microphone,
+# Accessibility, Input Monitoring) survive rebuilds. Priority:
+#   1) SIGN_IDENTITY env var (e.g. a "Developer ID Application: ..." cert)
+#   2) the self-signed "OpenWhisp Self-Signed" cert (scripts/create-signing-cert.sh)
+#   3) ad-hoc ("-") — works, but re-prompts for permissions every build
+SIGN_IDENTITY="${SIGN_IDENTITY:-}"
+if [ -z "$SIGN_IDENTITY" ] && security find-identity -v -p codesigning 2>/dev/null | grep -q "OpenWhisp Self-Signed"; then
+    SIGN_IDENTITY="OpenWhisp Self-Signed"
 fi
+if [ -z "$SIGN_IDENTITY" ]; then
+    SIGN_IDENTITY="-"
+    echo "Signing ad-hoc (permissions WILL be re-requested each build)."
+    echo "  Tip: run scripts/create-signing-cert.sh once for a stable identity."
+else
+    echo "Signing with identity: $SIGN_IDENTITY"
+fi
+
+ENTITLEMENTS_ARGS=()
+if [ -f "$PROJECT_DIR/OpenWhisp/OpenWhisp.entitlements" ]; then
+    ENTITLEMENTS_ARGS=(--entitlements "$PROJECT_DIR/OpenWhisp/OpenWhisp.entitlements")
+fi
+codesign --force --deep --sign "$SIGN_IDENTITY" "${ENTITLEMENTS_ARGS[@]}" "$APP_DIR"
 
 echo ""
 echo "✓ App bundle created: $APP_DIR"
