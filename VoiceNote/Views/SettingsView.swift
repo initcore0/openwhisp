@@ -45,30 +45,53 @@ struct SettingsView: View {
     }
     
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 22) {
-                generalSection
-                engineSection
-                modelSection
-                microphoneSection
-                languageSection
-                formattingSection
-                vocabularySection
-                translationSection
-                hotkeySection
-                outputSection
-                permissionsSection
-                whisperSection
-                statusSection
-            }
-            .padding(24)
-            .frame(maxWidth: .infinity, alignment: .leading)
+        TabView {
+            basicTab
+                .tabItem { Label("Basic", systemImage: "slider.horizontal.3") }
+            advancedTab
+                .tabItem { Label("Advanced", systemImage: "gearshape.2") }
         }
         .onAppear {
             selectedModel = appState.modelName
             refreshDevices()
         }
-        .frame(minWidth: 660, minHeight: 620)
+        .frame(minWidth: 640, minHeight: 600)
+    }
+
+    /// What 95% of users ever need: how to talk to it and how text comes out.
+    private var basicTab: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 22) {
+                generalSection
+                hotkeySection
+                microphoneSection
+                languageSection
+                qualitySection
+                formattingSection
+                vocabularySection
+                translationSection
+                outputSection
+            }
+            .padding(24)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    /// Power-user / developer controls: engine, raw model + paths, live-chunk
+    /// plumbing, whisper.cpp backend, permissions, diagnostics.
+    private var advancedTab: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 22) {
+                engineSection
+                modelSection
+                liveChunkAdvancedSection
+                whisperSection
+                permissionsSection
+                statusSection
+            }
+            .padding(24)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
     }
     
     private var generalSection: some View {
@@ -84,6 +107,58 @@ struct SettingsView: View {
                     LaunchAtLogin.openLoginItemsSettings()
                 }
             }
+        }
+    }
+
+    // Friendly quality tiers mapped to whisper models. "Custom" appears only
+    // when the active model isn't one of the tiers (e.g. set via Advanced).
+    private static let qualityTiers: [(label: String, model: String)] = [
+        ("Faster — quick notes", "base"),
+        ("Balanced — recommended", "small"),
+        ("Best — most accurate, slowest", "large-v3-turbo")
+    ]
+    private static let customQualityTag = "__custom_model__"
+
+    private var qualityPickerSelection: Binding<String> {
+        Binding(
+            get: {
+                Self.qualityTiers.first(where: { $0.model == appState.modelName })?.model
+                    ?? Self.customQualityTag
+            },
+            set: { newValue in
+                guard newValue != Self.customQualityTag else { return }
+                appState.modelName = newValue
+                selectedModel = newValue
+                appState.ensureModelExists()
+            }
+        )
+    }
+
+    private var qualitySection: some View {
+        settingsSection("Quality") {
+            Picker("Transcription Quality", selection: qualityPickerSelection) {
+                ForEach(Self.qualityTiers, id: \.model) { tier in
+                    Text(tier.label).tag(tier.model)
+                }
+                // Only shows when a non-tier model is active (chosen in Advanced).
+                if Self.qualityTiers.allSatisfy({ $0.model != appState.modelName }) {
+                    Text("Custom (\(appState.modelName))").tag(Self.customQualityTag)
+                }
+            }
+            .frame(maxWidth: 420, alignment: .leading)
+
+            HStack(spacing: 10) {
+                if appState.isModelDownloading {
+                    ProgressView().controlSize(.small)
+                }
+                Text(appState.modelDownloadStatus)
+                    .font(.caption)
+                    .foregroundColor(appState.isModelDownloading ? .orange : .secondary)
+            }
+
+            Text("Higher quality is more accurate but slower and uses more memory. Models download automatically on first use and run entirely on your Mac. For specific models or paths, see Advanced.")
+                .font(.caption)
+                .foregroundColor(.secondary)
         }
     }
 
@@ -351,6 +426,23 @@ struct SettingsView: View {
                 Text("Preview & polish").tag("preview")
             }
 
+            Toggle("Show overlay while recording", isOn: $appState.showOverlay)
+            Toggle("Add trailing space after paste", isOn: $appState.addTrailingSpace)
+            Toggle("Restore clipboard after paste", isOn: $appState.restoreClipboard)
+                .disabled(appState.insertionMode == "directAX")
+
+            Text("Final paste inserts everything at once when you finish. Live chunks paste as you speak. Preview & polish shows the transcript in the overlay while you talk, then inserts it once when you stop — cleaned up (and rephrased, if OpenAI is enabled) before pasting.")
+                .font(.caption)
+                .foregroundColor(.secondary)
+
+            Text("Clipboard restore only applies to the paste method — and reads your clipboard, which may trigger macOS privacy prompts. With Automatic or Direct insert, your clipboard is left untouched.")
+                .font(.caption)
+                .foregroundColor(.secondary)
+        }
+    }
+
+    private var liveChunkAdvancedSection: some View {
+        settingsSection("Live Chunks (Advanced)") {
             Picker("Live Chunk Duration", selection: $appState.liveChunkDuration) {
                 Text("1.0 sec - fastest").tag(1.0)
                 Text("1.5 sec").tag(1.5)
@@ -365,26 +457,13 @@ struct SettingsView: View {
                         appState.outputMode = "liveChunks"
                     }
                 }
-            
-            Toggle("Show overlay while recording", isOn: $appState.showOverlay)
-            Toggle("Add trailing space after paste", isOn: $appState.addTrailingSpace)
-            Toggle("Restore clipboard after paste", isOn: $appState.restoreClipboard)
-                .disabled(appState.insertionMode == "directAX")
 
-            Text("Final paste inserts everything at once when you finish. Live chunks paste as you speak. Preview & polish shows the transcript in the overlay while you talk, then inserts it once when you stop — cleaned up (and rephrased, if OpenAI is enabled) before pasting.")
-                .font(.caption)
-                .foregroundColor(.secondary)
-
-            Text("Pause-based chunks finalize when speech stops. Timer chunks use the selected duration. Chunks transcribe up to two at a time and paste in order.")
-                .font(.caption)
-                .foregroundColor(.secondary)
-
-            Text("Clipboard restore only applies to the paste method — and reads your clipboard, which may trigger macOS privacy prompts. With Automatic or Direct insert, your clipboard is left untouched.")
+            Text("Only applies to the Live chunks output mode. Pause-based chunks finalize when speech stops; timer chunks use the selected duration. Chunks transcribe up to two at a time and paste in order.")
                 .font(.caption)
                 .foregroundColor(.secondary)
         }
     }
-    
+
     private var permissionsSection: some View {
         settingsSection("Permissions") {
             permissionRow("Microphone", value: appState.microphonePermissionLabel)
