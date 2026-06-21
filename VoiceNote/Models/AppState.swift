@@ -34,7 +34,7 @@ class AppState: ObservableObject {
     }
 
     @Published var language: String {
-        didSet { UserDefaults.standard.set(language, forKey: "language") }
+        didSet { persist(language, "language") }
     }
 
     @Published var triggerMode: String {
@@ -45,7 +45,7 @@ class AppState: ObservableObject {
     }
 
     @Published var outputMode: String {
-        didSet { UserDefaults.standard.set(outputMode, forKey: "outputMode") }
+        didSet { persist(outputMode, "outputMode") }
     }
 
     @Published var showOverlay: Bool {
@@ -130,7 +130,7 @@ class AppState: ObservableObject {
     }
 
     @Published var openAIEnhancementEnabled: Bool {
-        didSet { UserDefaults.standard.set(openAIEnhancementEnabled, forKey: "openAIEnhancementEnabled") }
+        didSet { persist(openAIEnhancementEnabled, "openAIEnhancementEnabled") }
     }
 
     @Published var openAIEnhancementMode: String {
@@ -178,6 +178,25 @@ class AppState: ObservableObject {
     @Published var voiceCommandWakeWord: String {
         didSet { UserDefaults.standard.set(voiceCommandWakeWord, forKey: "voiceCommandWakeWord") }
     }
+
+    /// Apply per-app profile overrides (language / output mode / AI cleanup)
+    /// based on the frontmost app when a dictation starts.
+    @Published var perAppModesEnabled: Bool {
+        didSet { UserDefaults.standard.set(perAppModesEnabled, forKey: "perAppModesEnabled") }
+    }
+
+    /// Keep a local history of completed transcriptions (recover/reuse). Local only.
+    @Published var historyEnabled: Bool {
+        didSet { UserDefaults.standard.set(historyEnabled, forKey: "historyEnabled") }
+    }
+
+    /// Per-app override profiles (persisted to profiles.json).
+    @Published var profiles: [AppProfile] {
+        didSet { AppProfileStore.save(profiles) }
+    }
+
+    /// Recent transcriptions (persisted to history.json), newest first.
+    @Published var history: [TranscriptionEntry] = []
 
     /// Bias whisper recognition toward custom terms. Default-on; harmless when
     /// the vocabulary is empty (no prompt is sent).
@@ -260,6 +279,21 @@ class AppState: ObservableObject {
     private var appleLiveInsertedText = ""
     private var appleDidCompleteFinal = false
     private var downloadingModelPath: String?
+
+    /// Global setting values saved before a per-app profile temporarily overrode
+    /// them for the current session, so they can be restored when it ends.
+    private var profileOverrideBackup: (language: String, outputMode: String, aiCleanup: Bool)?
+
+    /// While a per-app profile override is in effect, don't persist the overridden
+    /// settings to UserDefaults — otherwise a crash/force-quit mid-session would
+    /// leave the profile's values as the user's globals on next launch.
+    private var suppressSettingsPersistence = false
+
+    /// Persist a setting unless a profile override is currently active.
+    private func persist<T>(_ value: T, _ key: String) {
+        guard !suppressSettingsPersistence else { return }
+        UserDefaults.standard.set(value, forKey: key)
+    }
 
     private enum TranscriptionKind {
         case liveChunk
@@ -372,6 +406,10 @@ class AppState: ObservableObject {
         localLLMModel = UserDefaults.standard.string(forKey: "localLLMModel") ?? ""
         voiceCommandsEnabled = UserDefaults.standard.object(forKey: "voiceCommandsEnabled") as? Bool ?? false
         voiceCommandWakeWord = UserDefaults.standard.string(forKey: "voiceCommandWakeWord") ?? ""
+        perAppModesEnabled = UserDefaults.standard.object(forKey: "perAppModesEnabled") as? Bool ?? false
+        historyEnabled = UserDefaults.standard.object(forKey: "historyEnabled") as? Bool ?? true
+        profiles = AppProfileStore.load()
+        history = TranscriptionHistoryStore.load()
         customVocabularyEnabled = UserDefaults.standard.object(forKey: "customVocabularyEnabled") as? Bool ?? true
         vocabulary = VocabularyStore.load()
         didCompleteOnboarding = UserDefaults.standard.bool(forKey: "didCompleteOnboarding")
@@ -587,6 +625,10 @@ class AppState: ObservableObject {
 
     func startDictation() {
         guard !isRecording, !isTranscribing else { return }
+        // Apply a per-app profile (if any) BEFORE routing, so an override of
+        // outputMode/language/AI-cleanup affects the whole session including the
+        // streaming-vs-recording decision below. Restored when the session ends.
+        applyProfileForFrontmostApp()
         if transcriptionEngine == "appleSpeech" {
             startAppleSpeech()
             return
@@ -1331,6 +1373,8 @@ class AppState: ObservableObject {
             KeyboardSynthesizer.setClipboard(text)
         }
 
+        recordHistory(text)
+
         let finalWasEnhanced = shouldEnhanceCurrentSession
             && (!isLiveChunkSession || isPreviewSession)
         statusMessage = finalWasEnhanced
@@ -1448,6 +1492,9 @@ class AppState: ObservableObject {
     private func finishSessionUI(delay: TimeInterval = 0) {
         sessionActive = false
         pendingStop = false
+        // Restore any per-app profile overrides immediately (independent of the
+        // overlay-hide delay) so the next session sees the user's real globals.
+        restoreProfileOverridesIfNeeded()
         // Clear session snapshots so they're only ever true while a session is
         // genuinely active (prevents a stale flag from being read by a late
         // callback or the delayed overlay-hide between sessions).
@@ -1575,6 +1622,71 @@ class AppState: ObservableObject {
         }
 
         return nil
+    }
+
+    // MARK: - Per-app profiles
+
+    /// If per-app modes are on and the frontmost app has a profile, temporarily
+    /// apply its non-nil overrides to the global settings, backing up originals.
+    private func applyProfileForFrontmostApp() {
+        guard perAppModesEnabled, profileOverrideBackup == nil else { return }
+        let frontmost = currentTextTargetApplication()
+        guard let profile = AppProfileStore.profile(for: frontmost?.bundleIdentifier, in: profiles) else { return }
+
+        // Back up the three overridable globals.
+        profileOverrideBackup = (language: language, outputMode: outputMode, aiCleanup: openAIEnhancementEnabled)
+
+        // Don't persist the overridden values; they're session-scoped.
+        suppressSettingsPersistence = true
+        if let lang = profile.language { language = lang }
+        if let mode = profile.outputMode { outputMode = mode }
+        if let ai = profile.aiCleanupEnabled { openAIEnhancementEnabled = ai }
+    }
+
+    /// Restore any settings a profile overrode for the just-finished session.
+    private func restoreProfileOverridesIfNeeded() {
+        guard let backup = profileOverrideBackup else { return }
+        profileOverrideBackup = nil
+        // Re-enable persistence so restoring the originals writes them back.
+        suppressSettingsPersistence = false
+        if language != backup.language { language = backup.language }
+        if outputMode != backup.outputMode { outputMode = backup.outputMode }
+        if openAIEnhancementEnabled != backup.aiCleanup { openAIEnhancementEnabled = backup.aiCleanup }
+        // Originals were already in UserDefaults from before the override; the
+        // assignments above re-persist them anyway. Belt-and-suspenders: ensure
+        // they reflect the true globals.
+        UserDefaults.standard.set(language, forKey: "language")
+        UserDefaults.standard.set(outputMode, forKey: "outputMode")
+        UserDefaults.standard.set(openAIEnhancementEnabled, forKey: "openAIEnhancementEnabled")
+    }
+
+    // MARK: - History
+
+    /// Record a completed transcription (newest first), trimming to the cap.
+    private func recordHistory(_ text: String) {
+        guard historyEnabled else { return }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        let entry = TranscriptionEntry(
+            text: trimmed,
+            date: Date(),
+            appBundleID: targetApplication?.bundleIdentifier,
+            appName: targetApplication?.localizedName
+        )
+        history.insert(entry, at: 0)
+        if history.count > TranscriptionHistoryStore.maxEntries {
+            history = Array(history.prefix(TranscriptionHistoryStore.maxEntries))
+        }
+        TranscriptionHistoryStore.save(history)
+    }
+
+    func clearHistory() {
+        history = []
+        TranscriptionHistoryStore.save(history)
+    }
+
+    func copyHistoryEntry(_ entry: TranscriptionEntry) {
+        KeyboardSynthesizer.setClipboard(entry.text)
     }
 
     // MARK: - Model
