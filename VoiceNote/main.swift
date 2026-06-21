@@ -11,6 +11,7 @@ class VoiceNoteApp: NSObject, NSApplicationDelegate {
 
     var statusItem: NSStatusItem!
     var settingsWindow: NSWindow?
+    var onboardingWindow: NSWindow?
     var appState: AppState!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -45,7 +46,45 @@ class VoiceNoteApp: NSObject, NSApplicationDelegate {
 
         // Ensure model exists
         appState.ensureModelExists()
+
+        // First-run onboarding
+        showOnboardingIfNeeded()
         print("[VoiceNote] Ready")
+    }
+
+    private func showOnboardingIfNeeded() {
+        guard let appState, !appState.didCompleteOnboarding else { return }
+        // Onboarding requires a real .app bundle for the permission prompts to
+        // behave; skip the guided flow when running the bare binary.
+        guard Bundle.main.bundlePath.contains(".app") else { return }
+        presentOnboarding()
+    }
+
+    private func presentOnboarding() {
+        guard let appState else { return }
+        if let onboardingWindow {
+            onboardingWindow.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+
+        let view = OnboardingView(appState: appState) { [weak self] in
+            self?.onboardingWindow?.close()
+            self?.onboardingWindow = nil
+        }
+        let host = NSHostingController(rootView: view)
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 520, height: 460),
+            styleMask: [.titled, .closable],
+            backing: .buffered, defer: false
+        )
+        window.title = "Welcome to VoiceNote"
+        window.isReleasedWhenClosed = false
+        window.contentViewController = host
+        window.center()
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        onboardingWindow = window
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
@@ -176,6 +215,9 @@ class VoiceNoteApp: NSObject, NSApplicationDelegate {
         let settings = NSMenuItem(title: "⚙ Settings", action: #selector(openSettings), keyEquivalent: ",")
         menu.addItem(settings)
 
+        let setupGuide = NSMenuItem(title: "Setup Guide…", action: #selector(openSetupGuide), keyEquivalent: "")
+        menu.addItem(setupGuide)
+
         menu.addItem(.separator())
 
         // Quit
@@ -234,6 +276,10 @@ class VoiceNoteApp: NSObject, NSApplicationDelegate {
             ("fr", "French"),
             ("de", "German")
         ]
+    }
+
+    @objc private func openSetupGuide() {
+        presentOnboarding()
     }
 
     @objc private func openSettings() {
