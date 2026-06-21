@@ -34,7 +34,7 @@ class AppState: ObservableObject {
     }
 
     @Published var language: String {
-        didSet { UserDefaults.standard.set(language, forKey: "language") }
+        didSet { persist(language, "language") }
     }
 
     @Published var triggerMode: String {
@@ -45,7 +45,7 @@ class AppState: ObservableObject {
     }
 
     @Published var outputMode: String {
-        didSet { UserDefaults.standard.set(outputMode, forKey: "outputMode") }
+        didSet { persist(outputMode, "outputMode") }
     }
 
     @Published var showOverlay: Bool {
@@ -130,7 +130,7 @@ class AppState: ObservableObject {
     }
 
     @Published var openAIEnhancementEnabled: Bool {
-        didSet { UserDefaults.standard.set(openAIEnhancementEnabled, forKey: "openAIEnhancementEnabled") }
+        didSet { persist(openAIEnhancementEnabled, "openAIEnhancementEnabled") }
     }
 
     @Published var openAIEnhancementMode: String {
@@ -283,6 +283,17 @@ class AppState: ObservableObject {
     /// Global setting values saved before a per-app profile temporarily overrode
     /// them for the current session, so they can be restored when it ends.
     private var profileOverrideBackup: (language: String, outputMode: String, aiCleanup: Bool)?
+
+    /// While a per-app profile override is in effect, don't persist the overridden
+    /// settings to UserDefaults — otherwise a crash/force-quit mid-session would
+    /// leave the profile's values as the user's globals on next launch.
+    private var suppressSettingsPersistence = false
+
+    /// Persist a setting unless a profile override is currently active.
+    private func persist<T>(_ value: T, _ key: String) {
+        guard !suppressSettingsPersistence else { return }
+        UserDefaults.standard.set(value, forKey: key)
+    }
 
     private enum TranscriptionKind {
         case liveChunk
@@ -1625,6 +1636,8 @@ class AppState: ObservableObject {
         // Back up the three overridable globals.
         profileOverrideBackup = (language: language, outputMode: outputMode, aiCleanup: openAIEnhancementEnabled)
 
+        // Don't persist the overridden values; they're session-scoped.
+        suppressSettingsPersistence = true
         if let lang = profile.language { language = lang }
         if let mode = profile.outputMode { outputMode = mode }
         if let ai = profile.aiCleanupEnabled { openAIEnhancementEnabled = ai }
@@ -1634,9 +1647,17 @@ class AppState: ObservableObject {
     private func restoreProfileOverridesIfNeeded() {
         guard let backup = profileOverrideBackup else { return }
         profileOverrideBackup = nil
+        // Re-enable persistence so restoring the originals writes them back.
+        suppressSettingsPersistence = false
         if language != backup.language { language = backup.language }
         if outputMode != backup.outputMode { outputMode = backup.outputMode }
         if openAIEnhancementEnabled != backup.aiCleanup { openAIEnhancementEnabled = backup.aiCleanup }
+        // Originals were already in UserDefaults from before the override; the
+        // assignments above re-persist them anyway. Belt-and-suspenders: ensure
+        // they reflect the true globals.
+        UserDefaults.standard.set(language, forKey: "language")
+        UserDefaults.standard.set(outputMode, forKey: "outputMode")
+        UserDefaults.standard.set(openAIEnhancementEnabled, forKey: "openAIEnhancementEnabled")
     }
 
     // MARK: - History
