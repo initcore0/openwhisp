@@ -29,7 +29,7 @@ class OpenWhispApp: NSObject, NSApplicationDelegate {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         print("[OpenWhisp] StatusItem created: \(statusItem != nil ? "YES" : "NO")")
         if let button = statusItem.button {
-            button.image = NSImage(systemSymbolName: "waveform", accessibilityDescription: "OpenWhisp")
+            button.image = Self.menuBarImage()
             button.toolTip = "OpenWhisp"
             button.target = self
             button.action = #selector(showMenu)
@@ -85,6 +85,19 @@ class OpenWhispApp: NSObject, NSApplicationDelegate {
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         onboardingWindow = window
+    }
+
+    /// Menu-bar icon: the bundled waveform glyph (template, so macOS tints it for
+    /// light/dark menu bars) that matches the app icon. Falls back to the SF
+    /// `waveform` symbol if the bundled image isn't present.
+    private static func menuBarImage() -> NSImage? {
+        if let url = Bundle.main.url(forResource: "MenuBarIcon", withExtension: "png"),
+           let image = NSImage(contentsOf: url) {
+            image.size = NSSize(width: 18, height: 18)
+            image.isTemplate = true
+            return image
+        }
+        return NSImage(systemSymbolName: "waveform", accessibilityDescription: "OpenWhisp")
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
