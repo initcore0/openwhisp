@@ -465,9 +465,9 @@ struct SettingsView: View {
                 .foregroundColor(.secondary)
 
             Picker("Output Mode", selection: $appState.outputMode) {
-                Text("Final paste only").tag("finalOnly")
-                Text("Live chunks (experimental)").tag("liveChunks")
-                Text("Preview & polish").tag("preview")
+                Text("Preview, then paste (recommended)").tag("preview")
+                Text("Paste at end, no preview").tag("finalOnly")
+                Text("Type live as you speak").tag("liveChunks")
             }
 
             Toggle("Show overlay while recording", isOn: $appState.showOverlay)
@@ -475,7 +475,12 @@ struct SettingsView: View {
             Toggle("Restore clipboard after paste", isOn: $appState.restoreClipboard)
                 .disabled(appState.insertionMode == "directAX")
 
-            Text("Final paste inserts everything at once when you finish. Live chunks paste as you speak. Preview & polish shows the transcript in the overlay while you talk, then inserts it once when you stop — cleaned up (and rephrased, if OpenAI is enabled) before pasting.")
+            Text("""
+            How your words reach the app while you hold the hotkey:
+            • Preview, then paste — text streams into the on‑screen overlay as you speak; nothing is inserted until you release, then it's pasted once (cleaned up, and rephrased if AI is on).
+            • Paste at end — like Preview, but without the live overlay text; inserts once on release.
+            • Type live — each phrase is pasted into the app as you speak.
+            """)
                 .font(.caption)
                 .foregroundColor(.secondary)
 
@@ -612,9 +617,9 @@ struct SettingsView: View {
                         }
                         Picker("Output", selection: profileOutputBinding($profile)) {
                             Text("Inherit").tag("__inherit__")
+                            Text("Preview").tag("preview")
                             Text("Final").tag("finalOnly")
                             Text("Live").tag("liveChunks")
-                            Text("Preview").tag("preview")
                         }
                     }
                     Picker("AI cleanup", selection: profileAIBinding($profile)) {

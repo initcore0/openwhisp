@@ -367,7 +367,7 @@ class AppState: ObservableObject {
         microphoneID = UserDefaults.standard.string(forKey: "microphoneID") ?? ""
         language = UserDefaults.standard.string(forKey: "language") ?? "auto"
         triggerMode = UserDefaults.standard.string(forKey: "triggerMode") ?? "fn"
-        outputMode = UserDefaults.standard.string(forKey: "outputMode") ?? "finalOnly"
+        outputMode = UserDefaults.standard.string(forKey: "outputMode") ?? "preview"
         showOverlay = UserDefaults.standard.object(forKey: "showOverlay") as? Bool ?? true
         launchAtLogin = LaunchAtLogin.isEnabled
         restoreClipboard = UserDefaults.standard.object(forKey: "restoreClipboard") as? Bool ?? false
