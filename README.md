@@ -119,14 +119,14 @@ You can re‑open it any time from the menu bar → **Setup Guide…**.
 ## Using it
 
 1. Click the menu‑bar **waveform** icon, or just use the hotkey.
-2. **Hold** the hotkey (default **Fn**), speak, **release** to insert. Press **Esc** to cancel.
+2. **Hold** the hotkey (default **Fn**) and speak — your words stream into the on‑screen overlay as you talk. **Release** to insert; press **Esc** to cancel.
 3. Text is typed into whatever app is focused.
 
 **Output modes** (Settings → Text Output):
 
-- **Final paste only** *(default)* — insert everything at once when you finish.
-- **Live chunks** — paste as you speak (experimental).
-- **Preview & polish** — show the transcript in the overlay while you talk, then clean it up (and rephrase, if AI is on) and insert once.
+- **Preview, then paste** *(default)* — text streams into the overlay while you speak; **nothing is inserted until you release**, then it's pasted once (cleaned up, and rephrased if AI is on). The recommended flow: see it, then commit it.
+- **Paste at end** — inserts once on release, without the live overlay text.
+- **Type live** — each phrase is pasted into the app as you speak (experimental).
 
 **Insertion method** (Settings → Text Output):
 
