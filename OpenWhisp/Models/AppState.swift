@@ -646,6 +646,16 @@ class AppState: ObservableObject {
 
     func startDictation() {
         guard !isRecording, !isTranscribing else { return }
+        // Privacy guard: never dictate into a focused password/secure field. The
+        // speech would otherwise be transcribed, typed in, copied to the clipboard
+        // and saved to history. Refuse at the source before any session begins.
+        // Detection is fail-open (see SecureFieldDetector): we only refuse on a
+        // positive secure-field match, so dictation is never broken when AX can't
+        // determine the role.
+        guard !SecureFieldDetector.focusedFieldIsSecure() else {
+            refuseDictationIntoSecureField()
+            return
+        }
         // Apply a per-app profile (if any) BEFORE routing, so an override of
         // outputMode/language/AI-cleanup affects the whole session including the
         // streaming-vs-recording decision below. Restored when the session ends.
@@ -705,6 +715,19 @@ class AppState: ObservableObject {
         finishSessionUI()
     }
 
+    /// Refuse to start a dictation session because a secure/password field is
+    /// focused. Surfaces a clear status without starting recording or touching
+    /// the clipboard/history, and ensures no half-started session lingers.
+    private func refuseDictationIntoSecureField() {
+        error = nil
+        statusMessage = "Won't dictate into a password field"
+        // Belt-and-suspenders: make sure no session state is left active.
+        sessionActive = false
+        pendingStop = false
+        isRecording = false
+        isTranscribing = false
+    }
+
     func shutdown() {
         cancelDictation()
         whisperEngine.stopServer()
@@ -744,6 +767,10 @@ class AppState: ObservableObject {
 
     func startAppleSpeech() {
         guard !isRecording, !isTranscribing else { return }
+        guard !SecureFieldDetector.focusedFieldIsSecure() else {
+            refuseDictationIntoSecureField()
+            return
+        }
         beginSession(streaming: false)
         isAppleSpeechSession = true
         appleLiveInsertedText = ""
@@ -820,6 +847,12 @@ class AppState: ObservableObject {
 
         // Use a leading separator (matching insertLiveChunk) so the trailing space stays
         // conditional and is typed once at finalization based on addTrailingSpace.
+        // Defensive privacy guard: don't paste a live partial into a secure field
+        // if focus moved to one mid-session. Fail-open on detection errors.
+        guard !SecureFieldDetector.focusedFieldIsSecure() else {
+            statusMessage = "Won't dictate into a password field"
+            return
+        }
         let insertion = appleLiveInsertedText.isEmpty ? delta : " \(delta)"
         appleLiveInsertedText = text
         currentSessionText = text
@@ -839,7 +872,7 @@ class AppState: ObservableObject {
         // liveChunks: completeFinalText only sets the clipboard for non-finalOnly, so words
         // in the final transcript that were not in the last pasted partial would be dropped.
         // Paste the trailing delta here (mirroring handleAppleSpeechPartial) before routing.
-        if outputMode == "liveChunks" {
+        if outputMode == "liveChunks", !SecureFieldDetector.focusedFieldIsSecure() {
             let delta = liveDelta(previous: appleLiveInsertedText, current: finalText)
             if !delta.isEmpty {
                 let insertion = appleLiveInsertedText.isEmpty ? delta : " \(delta)"
@@ -868,6 +901,10 @@ class AppState: ObservableObject {
 
     func startRecording() {
         guard !isRecording, !isTranscribing else { return }
+        guard !SecureFieldDetector.focusedFieldIsSecure() else {
+            refuseDictationIntoSecureField()
+            return
+        }
         beginSession(streaming: false)
 
         let micID = microphoneID
@@ -927,6 +964,10 @@ class AppState: ObservableObject {
     /// Optional live mode: record chunks, transcribe each, paste stable-ish chunks.
     func startStreaming() {
         guard !isRecording, !isTranscribing else { return }
+        guard !SecureFieldDetector.focusedFieldIsSecure() else {
+            refuseDictationIntoSecureField()
+            return
+        }
         beginSession(streaming: true)
 
         let micID = microphoneID
@@ -1238,6 +1279,14 @@ class AppState: ObservableObject {
             return
         }
 
+        // Defensive privacy guard: skip the incremental paste if a secure field
+        // became focused mid-session. The text stays captured in currentSessionText
+        // for the overlay, but is never typed into a password field. Fail-open.
+        guard !SecureFieldDetector.focusedFieldIsSecure() else {
+            statusMessage = "Won't dictate into a password field"
+            return
+        }
+
         let insertion = needsSeparator ? " \(text)" : text
         KeyboardSynthesizer.typeViaPaste(
             insertion,
@@ -1360,6 +1409,18 @@ class AppState: ObservableObject {
     }
 
     private func insertCompletedText(_ text: String, originalText: String) {
+        // Defensive privacy guard: even though we refuse at session start, a field
+        // can become secure mid-session (or focus can shift to a password field
+        // before the final paste). Never insert into, copy to the clipboard, or
+        // persist a transcript when a secure field is now focused. Fail-open.
+        guard !SecureFieldDetector.focusedFieldIsSecure() else {
+            isTranscribing = false
+            streamingText = ""
+            currentSessionText = ""
+            statusMessage = "Won't dictate into a password field"
+            finishSessionUI()
+            return
+        }
         streamingText = text
 
         // Decide purely from session SNAPSHOTS, never the live @Published
@@ -1696,6 +1757,9 @@ class AppState: ObservableObject {
     /// Record a completed transcription (newest first), trimming to the cap.
     private func recordHistory(_ text: String) {
         guard historyEnabled else { return }
+        // Defensive privacy guard: never persist a transcript if a secure field is
+        // focused at record time. Fail-open on detection errors.
+        guard !SecureFieldDetector.focusedFieldIsSecure() else { return }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         let entry = TranscriptionEntry(

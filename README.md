@@ -29,7 +29,12 @@ Transcription runs locally with [whisper.cpp](https://github.com/ggerganov/whisp
 
 OpenWhisp builds from source (no notarized release yet). See **[Building](#building)**.
 
-A prebuilt `.app`/DMG may be attached to [GitHub Releases](../../releases) when available. Because builds are currently ad‑hoc signed, macOS Gatekeeper will warn on first open — right‑click the app → **Open**, or build it yourself.
+A prebuilt `.app`/DMG is attached to each [GitHub Release](../../releases). Builds are currently **ad‑hoc signed** (no paid Apple Developer ID yet), so macOS Gatekeeper blocks them on first launch and shows *"OpenWhisp is damaged / cannot be opened."* That's expected — to open it:
+
+- **macOS 15 (Sequoia) and later:** double‑click once (it gets blocked), then go to **System Settings → Privacy & Security**, scroll to the OpenWhisp message and click **Open Anyway**.
+- **Or, from Terminal (any version):** `xattr -dr com.apple.quarantine /Applications/OpenWhisp.app`
+
+> The old "right‑click → Open" trick no longer works for ad‑hoc‑signed apps on macOS 15+. To avoid the warning entirely, [build it yourself](#building).
 
 ---
 
