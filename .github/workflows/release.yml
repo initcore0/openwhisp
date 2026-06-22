@@ -72,9 +72,12 @@ jobs:
 
           **Install:** download \`OpenWhisp.dmg\`, open it, drag **OpenWhisp** to Applications.
 
-          > This build is **ad-hoc signed**, so on first launch macOS Gatekeeper will warn.
-          > Right‑click **OpenWhisp.app → Open**, then confirm. (A notarized Developer ID
-          > build would remove this warning.)
+          > This build is **ad-hoc signed** (no paid Apple Developer ID yet), so macOS
+          > Gatekeeper blocks it on first launch ("damaged / cannot be opened"). To open:
+          > • **macOS 15+:** launch once, then **System Settings → Privacy & Security → Open Anyway**.
+          > • **Any version (Terminal):** \`xattr -dr com.apple.quarantine /Applications/OpenWhisp.app\`
+          > (Right‑click → Open no longer works for ad-hoc apps on macOS 15+. Building from
+          > source avoids the warning; a notarized Developer ID build would remove it entirely.)
 
           See the [README](https://github.com/${GITHUB_REPOSITORY}#readme) for setup and permissions.
           EOF
