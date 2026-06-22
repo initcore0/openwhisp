@@ -67,26 +67,24 @@ onboarding · launch-at-login · "Quiet Glass" overlay with live transcript.
 
 ---
 
-## 4. ⚠️ Verified issues to fix first (gate everything else)
+## 4. ✅ Verified issues — FIXED (were the Phase 0 gate)
 
-These were found by reading the code during research and confirmed:
+Found by reading the code during research, confirmed, and **all three now fixed**
+(PRs #34/#35/#36):
 
-1. **Secure-field password leak (critical).** Nothing checks `AXSecureTextField`
-   in the dictation path. If a user dictates into a password/secure field, the
-   text is still transcribed, typed, **and saved to `history.json` + the clipboard**.
-   This is the worst possible bug for a privacy-positioned app.
-   → Detect a focused secure field and refuse to record / insert / persist.
-2. **Model download looks hung (critical for activation).** `ModelDownloader`
-   implements `didFinishDownloadingTo` but **not `didWriteData`**, so there's no
-   progress during the ~147 MB default download — onboarding shows an
-   indeterminate spinner at the most abandonment-prone moment.
-   → Add `didWriteData` (percent + MB), a determinate progress bar, a Retry on
-   failure, and consider defaulting first-run to the **tiny** model (39 MB) for
-   near-instant first success.
-3. **Outdated Gatekeeper install docs (high).** README and the release-notes
-   template say "right-click → Open," which **no longer works for ad-hoc apps on
-   macOS 15+**. The path is System Settings → Privacy & Security → *Open Anyway*
-   (or `xattr -dr com.apple.quarantine`). Failures read as "the app is broken."
+1. **Secure-field password leak (critical) — ✅ fixed (#35).** Now detects a focused
+   secure field via the Accessibility API (`AXSecureTextField` subrole) and refuses
+   to record / insert / persist; fail-open on AX errors, fail-safe on a positive
+   match. Pure `SecureFieldPolicy` + 14 unit tests.
+2. **Model download looked hung (critical for activation) — ✅ fixed (#36).** Added
+   `didWriteData` progress (percent + "X / Y MB"), a determinate bar in onboarding
+   and settings, a Retry on failure, and **defaulted first-run to the tiny model
+   (39 MB)** for near-instant first success. Pure `DownloadProgressFormatter` +
+   11 unit tests.
+3. **Outdated Gatekeeper install docs (high) — ✅ fixed (#34).** README + release-
+   notes template now give the macOS 15+ path (System Settings → Privacy &
+   Security → *Open Anyway*, or `xattr -dr com.apple.quarantine`) and explain the
+   ad-hoc signing.
    → Fix README + `release.yml`, and state *why* the app is unsigned.
 
 ---
@@ -209,10 +207,10 @@ dictation — fall back to the raw text), and **declare network use** per plugin
 
 ## 8. Prioritized roadmap
 
-### Phase 0 — Trust & safety *(do first; cheap and existential)*
-- Detect `AXSecureTextField` → refuse to record / insert / persist.
-- Add `didWriteData` progress to `ModelDownloader`; default first-run to **tiny**.
-- Fix Gatekeeper install docs in README + `release.yml`.
+### Phase 0 — Trust & safety ✅ DONE
+- ✅ Detect `AXSecureTextField` → refuse to record / insert / persist (#35).
+- ✅ `didWriteData` progress + Retry; first-run defaults to **tiny** (#36).
+- ✅ Gatekeeper install docs fixed in README + `release.yml` (#34).
 
 ### Phase 1 — Positioning & proof
 - Lock the tagline (vs Wispr / vs VoiceInk: *MIT, zero-egress, hackable*).
