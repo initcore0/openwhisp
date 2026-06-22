@@ -141,6 +141,40 @@ struct SettingsView: View {
         )
     }
 
+    /// Shared download status row used by both the Quality and Model sections.
+    /// Shows a determinate ProgressView when a total size is known, falls back to
+    /// an indeterminate spinner otherwise, and offers a Retry button on failure.
+    @ViewBuilder
+    private var modelDownloadStatusView: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 10) {
+                if appState.isModelDownloading {
+                    if let progress = appState.modelDownloadProgress {
+                        ProgressView(value: progress)
+                            .frame(maxWidth: 240)
+                    } else {
+                        ProgressView().controlSize(.small)
+                    }
+                }
+
+                Text(appState.modelDownloadStatus)
+                    .font(.caption)
+                    .foregroundColor(downloadStatusColor)
+            }
+
+            if appState.modelDownloadFailed && !appState.isModelDownloading {
+                Button("Retry Download") {
+                    appState.retryModelDownload()
+                }
+            }
+        }
+    }
+
+    private var downloadStatusColor: Color {
+        if appState.modelDownloadFailed && !appState.isModelDownloading { return .red }
+        return appState.isModelDownloading ? .orange : .secondary
+    }
+
     private var qualitySection: some View {
         settingsSection("Quality") {
             Picker("Transcription Quality", selection: qualityPickerSelection) {
@@ -154,14 +188,7 @@ struct SettingsView: View {
             }
             .frame(maxWidth: 420, alignment: .leading)
 
-            HStack(spacing: 10) {
-                if appState.isModelDownloading {
-                    ProgressView().controlSize(.small)
-                }
-                Text(appState.modelDownloadStatus)
-                    .font(.caption)
-                    .foregroundColor(appState.isModelDownloading ? .orange : .secondary)
-            }
+            modelDownloadStatusView
 
             Text("Higher quality is more accurate but slower and uses more memory. Models download automatically on first use and run entirely on your Mac. For specific models or paths, see Advanced.")
                 .font(.caption)
@@ -199,17 +226,8 @@ struct SettingsView: View {
                 .font(.caption)
                 .foregroundColor(.secondary)
             
-            HStack(spacing: 10) {
-                if appState.isModelDownloading {
-                    ProgressView()
-                        .controlSize(.small)
-                }
-                
-                Text(appState.modelDownloadStatus)
-                    .font(.caption)
-                    .foregroundColor(appState.isModelDownloading ? .orange : .secondary)
-            }
-            
+            modelDownloadStatusView
+
             TextField("Model Path", text: $appState.modelPath)
                 .textFieldStyle(.roundedBorder)
             

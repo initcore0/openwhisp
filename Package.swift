@@ -21,7 +21,8 @@ let package = Package(
                 "PostProcessor.swift",
                 "AppProfile.swift",
                 "TranscriptionHistory.swift",
-                "SecureFieldPolicy.swift"
+                "SecureFieldPolicy.swift",
+                "DownloadProgressFormatter.swift"
             ]
         ),
         .testTarget(
