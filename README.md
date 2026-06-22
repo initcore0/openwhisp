@@ -279,6 +279,8 @@ swift test                 # run the unit tests for core logic
 
 Issues and PRs welcome. Please run `swift test` and `./build.sh` before submitting. Keep new pure‑logic in Foundation‑only files where possible so it can be unit‑tested.
 
+Direction and priorities (competitive analysis, feature gaps, plugin plan) live in **[docs/ROADMAP.md](docs/ROADMAP.md)**.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
