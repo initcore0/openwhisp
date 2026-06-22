@@ -26,6 +26,7 @@ struct SettingsView: View {
     // New-profile draft fields.
     @State private var newProfileBundleID: String = ""
     @State private var newProfileName: String = ""
+    @State private var profileAddMessage: String = ""
 
     private var isCustomOpenAIModel: Bool {
         openAIModelIsCustom || !SettingsView.presetOpenAIModels.contains(appState.openAIModel)
@@ -640,10 +641,19 @@ struct SettingsView: View {
             }
 
             HStack {
-                Button("Add Profile for Frontmost App") {
+                Button("Choose App…") {
+                    chooseAppForProfile()
+                }
+                Button("Add Last‑Used App") {
                     addProfileForFrontmostApp()
                 }
                 Spacer()
+            }
+
+            if !profileAddMessage.isEmpty {
+                Text(profileAddMessage)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
             }
         }
     }
@@ -714,17 +724,52 @@ struct SettingsView: View {
         )
     }
 
+    /// Pick any app from /Applications and add a profile for it. Reliable way to
+    /// target a specific app (vs. guessing "frontmost", which is OpenWhisp itself
+    /// while Settings is open).
+    private func chooseAppForProfile() {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = false
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowedContentTypes = [.application]
+        panel.directoryURL = URL(fileURLWithPath: "/Applications")
+        panel.prompt = "Add Profile"
+        panel.message = "Choose an app to create a per‑app profile for"
+        guard panel.runModal() == .OK, let url = panel.url,
+              let bundle = Bundle(url: url), let bid = bundle.bundleIdentifier else {
+            return
+        }
+        let name = FileManager.default.displayName(atPath: url.path)
+            .replacingOccurrences(of: ".app", with: "")
+        addProfile(bundleID: bid, name: name)
+    }
+
+    /// Convenience: add a profile for the most recently used regular app (the one
+    /// you were in before opening Settings).
     private func addProfileForFrontmostApp() {
-        // The frontmost app right now is Settings itself; use the previously
-        // active app instead so "add for the app I was just in" works.
-        let apps = NSWorkspace.shared.runningApplications
-            .filter { $0.activationPolicy == .regular && $0.bundleIdentifier != Bundle.main.bundleIdentifier }
-        let candidate = NSWorkspace.shared.frontmostApplication.flatMap {
-            $0.bundleIdentifier == Bundle.main.bundleIdentifier ? nil : $0
-        } ?? apps.first
-        guard let app = candidate, let bid = app.bundleIdentifier else { return }
-        guard !appState.profiles.contains(where: { $0.appBundleID == bid }) else { return }
-        appState.profiles.append(AppProfile(appBundleID: bid, displayName: app.localizedName ?? bid))
+        let candidate = NSWorkspace.shared.runningApplications.first {
+            $0.activationPolicy == .regular
+                && $0.bundleIdentifier != Bundle.main.bundleIdentifier
+                && !$0.isActive
+        } ?? NSWorkspace.shared.runningApplications.first {
+            $0.activationPolicy == .regular && $0.bundleIdentifier != Bundle.main.bundleIdentifier
+        }
+        guard let app = candidate, let bid = app.bundleIdentifier else {
+            profileAddMessage = "Couldn't determine the last‑used app. Use “Choose App…” instead."
+            return
+        }
+        addProfile(bundleID: bid, name: app.localizedName ?? bid)
+    }
+
+    /// Shared add path with explicit feedback (instead of a silent no‑op).
+    private func addProfile(bundleID: String, name: String) {
+        if appState.profiles.contains(where: { $0.appBundleID == bundleID }) {
+            profileAddMessage = "A profile for “\(name)” already exists."
+            return
+        }
+        appState.profiles.append(AppProfile(appBundleID: bundleID, displayName: name))
+        profileAddMessage = "Added profile for “\(name)”."
     }
 
     private var statusSection: some View {
