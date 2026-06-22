@@ -20,7 +20,8 @@ let package = Package(
                 "MetaInstructionStripper.swift",
                 "PostProcessor.swift",
                 "AppProfile.swift",
-                "TranscriptionHistory.swift"
+                "TranscriptionHistory.swift",
+                "DownloadProgressFormatter.swift"
             ]
         ),
         .testTarget(

@@ -126,20 +126,40 @@ struct OnboardingView: View {
     }
 
     private var modelStep: some View {
-        stepLayout(
-            icon: appState.isModelDownloading ? "arrow.down.circle" : "checkmark.circle.fill",
-            iconColor: appState.isModelDownloading ? .accentColor : .green,
-            title: appState.isModelDownloading ? "Preparing your speech model" : "Your speech model is ready",
-            subtitle: appState.isModelDownloading
-                ? "Downloading the speech model. This is a one-time download and runs entirely on your Mac afterward."
-                : "OpenWhisp is ready to transcribe locally — no internet required from here on."
+        let failed = appState.modelDownloadFailed && !appState.isModelDownloading
+        return stepLayout(
+            icon: failed ? "exclamationmark.triangle.fill"
+                : (appState.isModelDownloading ? "arrow.down.circle" : "checkmark.circle.fill"),
+            iconColor: failed ? .orange : (appState.isModelDownloading ? .accentColor : .green),
+            title: failed ? "Couldn't download the speech model"
+                : (appState.isModelDownloading ? "Preparing your speech model" : "Your speech model is ready"),
+            subtitle: failed
+                ? "The download didn't complete. Check your internet connection and try again — it runs entirely on your Mac once installed."
+                : (appState.isModelDownloading
+                    ? "Downloading the speech model. This is a one-time download and runs entirely on your Mac afterward."
+                    : "OpenWhisp is ready to transcribe locally — no internet required from here on.")
         ) {
             if appState.isModelDownloading {
                 VStack(spacing: 8) {
-                    ProgressView().controlSize(.small)
+                    if let progress = appState.modelDownloadProgress {
+                        ProgressView(value: progress)
+                            .frame(maxWidth: 280)
+                    } else {
+                        ProgressView().controlSize(.small)
+                    }
                     Text(appState.modelDownloadStatus)
                         .font(.caption)
                         .foregroundColor(.secondary)
+                }
+            } else if failed {
+                VStack(spacing: 10) {
+                    Text(appState.modelDownloadStatus)
+                        .font(.caption)
+                        .foregroundColor(.orange)
+                    Button("Retry Download") {
+                        appState.retryModelDownload()
+                    }
+                    .controlSize(.large)
                 }
             } else {
                 Label(appState.modelDownloadStatus, systemImage: "internaldrive")

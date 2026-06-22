@@ -232,6 +232,12 @@ class AppState: ObservableObject {
     @Published var translationStatus: String = "Not configured"
     @Published var modelDownloadStatus: String = "Not checked"
     @Published var isModelDownloading = false
+    /// Download completion fraction in 0.0...1.0, or `nil` when the total size
+    /// is unknown (indeterminate progress — fall back to a spinner).
+    @Published var modelDownloadProgress: Double? = nil
+    /// Set when the most recent model download failed, so the UI can offer a
+    /// retry action. Cleared when a (re)download starts or succeeds.
+    @Published var modelDownloadFailed = false
     @Published var audioLevel: Float = 0
     @Published var recordingElapsed: TimeInterval = 0
     @Published var inputMonitoringPermissionLabel: String = "Unknown"
@@ -369,7 +375,10 @@ class AppState: ObservableObject {
         let savedWhisperBinaryPath = UserDefaults.standard.string(forKey: "whisperBinaryPath") ?? ""
         whisperBinaryPath = Self.preferredWhisperCLIPath(savedPath: savedWhisperBinaryPath)
 
-        let savedModel = UserDefaults.standard.string(forKey: "modelName") ?? "base"
+        // Default first-run model is "tiny" (39 MB) for a near-instant first
+        // success during onboarding. Users can upgrade to higher-quality models
+        // from Settings → Quality at any time.
+        let savedModel = UserDefaults.standard.string(forKey: "modelName") ?? "tiny"
         let fileName = Self.modelFileName(for: savedModel)
         modelName = savedModel
         let savedModelPath = UserDefaults.standard.string(forKey: "modelPath") ?? ""
@@ -1736,6 +1745,8 @@ class AppState: ObservableObject {
         guard !FileManager.default.fileExists(atPath: modelPath) else {
             modelDownloadStatus = "Installed: \(URL(fileURLWithPath: modelPath).lastPathComponent)"
             isModelDownloading = false
+            modelDownloadFailed = false
+            modelDownloadProgress = nil
             warmWhisperServerIfPossible()
             return
         }
@@ -1745,6 +1756,8 @@ class AppState: ObservableObject {
         let currentModelPath = modelPath
         downloadingModelPath = currentModelPath
         isModelDownloading = true
+        modelDownloadFailed = false
+        modelDownloadProgress = nil
         modelDownloadStatus = "Downloading \(fileName)..."
         statusMessage = "Downloading model..."
 
@@ -1757,6 +1770,8 @@ class AppState: ObservableObject {
                 await MainActor.run {
                     self.isModelDownloading = false
                     self.downloadingModelPath = nil
+                    self.modelDownloadProgress = 1.0
+                    self.modelDownloadFailed = false
                     self.modelDownloadStatus = "Installed: \(fileName)"
                     if self.statusMessage == "Downloading model..." {
                         self.statusMessage = "Ready"
@@ -1767,6 +1782,8 @@ class AppState: ObservableObject {
                 await MainActor.run {
                     self.isModelDownloading = false
                     self.downloadingModelPath = nil
+                    self.modelDownloadProgress = nil
+                    self.modelDownloadFailed = true
                     self.modelDownloadStatus = "Download failed: \(fileName)"
                     self.error = "Model download failed: \(error.localizedDescription)\nPath: \(currentModelPath)"
                     if self.statusMessage == "Downloading model..." {
@@ -1775,6 +1792,25 @@ class AppState: ObservableObject {
                 }
             }
         }
+    }
+
+    /// Re-attempt a model download after a failure. Clears any prior error state
+    /// (including the stale `downloadingModelPath` guard) and restarts the flow.
+    func retryModelDownload() {
+        guard !isModelDownloading else { return }
+        downloadingModelPath = nil
+        modelDownloadFailed = false
+        error = nil
+        ensureModelExists()
+    }
+
+    /// Receives progress updates from `ModelDownloader` on the main actor and
+    /// publishes a fraction + human-readable status string.
+    fileprivate func updateModelDownloadProgress(written: Int64, totalExpected: Int64) {
+        guard isModelDownloading else { return }
+        let progress = DownloadProgressFormatter.make(written: written, totalExpected: totalExpected)
+        modelDownloadProgress = progress.fraction
+        modelDownloadStatus = progress.label
     }
 
     func revealModelsFolder() {
@@ -1788,7 +1824,11 @@ class AppState: ObservableObject {
             .deletingLastPathComponent()
             .appendingPathComponent(".\(destination.lastPathComponent).download")
         try? FileManager.default.removeItem(at: tempURL)
-        let downloadedURL = try await ModelDownloader.download(from: url)
+        let downloadedURL = try await ModelDownloader.download(from: url) { [weak self] written, totalExpected in
+            Task { @MainActor in
+                self?.updateModelDownloadProgress(written: written, totalExpected: totalExpected)
+            }
+        }
         try? FileManager.default.removeItem(at: destination)
         try FileManager.default.moveItem(at: downloadedURL, to: tempURL)
         try FileManager.default.moveItem(at: tempURL, to: destination)
@@ -1845,15 +1885,20 @@ struct ModelManifestEntry: Decodable {
 
 final class ModelDownloader: NSObject, URLSessionDownloadDelegate {
     private var continuation: CheckedContinuation<URL, Error>?
+    /// Called as bytes arrive with (totalBytesWritten, totalBytesExpectedToWrite).
+    /// `totalBytesExpectedToWrite` is `NSURLSessionTransferSizeUnknown` (-1) when
+    /// the server does not advertise a Content-Length.
+    private var progressHandler: ((Int64, Int64) -> Void)?
 
-    static func download(from url: URL) async throws -> URL {
+    static func download(from url: URL, progress: ((Int64, Int64) -> Void)? = nil) async throws -> URL {
         let downloader = ModelDownloader()
-        return try await downloader.download(from: url)
+        return try await downloader.download(from: url, progress: progress)
     }
 
-    private func download(from url: URL) async throws -> URL {
+    private func download(from url: URL, progress: ((Int64, Int64) -> Void)?) async throws -> URL {
         try await withCheckedThrowingContinuation { continuation in
             self.continuation = continuation
+            self.progressHandler = progress
             let configuration = URLSessionConfiguration.default
             configuration.timeoutIntervalForRequest = 60
             configuration.timeoutIntervalForResource = 60 * 60
@@ -1861,6 +1906,14 @@ final class ModelDownloader: NSObject, URLSessionDownloadDelegate {
             let session = URLSession(configuration: configuration, delegate: self, delegateQueue: nil)
             session.downloadTask(with: url).resume()
         }
+    }
+
+    func urlSession(_ session: URLSession,
+                    downloadTask: URLSessionDownloadTask,
+                    didWriteData bytesWritten: Int64,
+                    totalBytesWritten: Int64,
+                    totalBytesExpectedToWrite: Int64) {
+        progressHandler?(totalBytesWritten, totalBytesExpectedToWrite)
     }
 
     func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
