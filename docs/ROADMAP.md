@@ -238,7 +238,11 @@ makes the macOS app more testable **and** converts "port the whole app" into
   constructing concrete types:
   - ✅ `SecretStore` (Keychain → Credential Manager) — extracted; `AppState`
     injects it, `InMemorySecretStore` covers the logic in `swift test`.
-  - `TranscriptionEngine` (whisper CLI/server, Apple Speech)
+  - ✅ `FileTranscriptionEngine` (whisper CLI/server) + `StreamingTranscriptionEngine`
+    (Apple Speech) — extracted as two focused protocols (the engines have different
+    request/response vs. streaming shapes); `AppleSpeechEngine`'s permission statics
+    stay concrete (they return platform types). `WhisperBackend` moved to the core;
+    fakes added for both.
   - `AudioCapture` (AVAudioEngine today → WASAPI on Windows)
   - ✅ `TextOutput` (AX + Cmd+V → UI Automation + SendInput) — extracted;
     `AppState` injects it, `InsertionMode` moved to the core, the

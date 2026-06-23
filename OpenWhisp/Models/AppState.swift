@@ -281,8 +281,8 @@ class AppState: ObservableObject {
     let textOutput: TextOutput
 
     var audioRecorder: AudioRecorder!
-    var whisperEngine: WhisperEngine!
-    var appleSpeechEngine: AppleSpeechEngine!
+    var whisperEngine: FileTranscriptionEngine!
+    var appleSpeechEngine: StreamingTranscriptionEngine!
     var translationService: OpenAITranslationService!
     var hotkeyMonitor: HotkeyControlling!
 
