@@ -1,5 +1,8 @@
 # OpenWhisp — Local‑First Dictation for macOS
 
+> **Wispr Flow‑style dictation, but fully on‑device, free, and open source.**
+> No cloud, no subscription, no telemetry — your voice never leaves your Mac.
+
 OpenWhisp is a menu‑bar dictation app for macOS. Hold a key, speak, release — your words are transcribed **on‑device** and typed into whatever app is focused. No cloud account, no subscription, no audio leaving your machine (unless you explicitly opt into a cloud LLM for cleanup).
 
 Transcription runs locally with [whisper.cpp](https://github.com/ggerganov/whisper.cpp); optional text cleanup can run **fully locally** against your own LLM server, or via OpenAI if you choose.
@@ -208,6 +211,17 @@ Recognized leads include "make this/it…", "rewrite/rephrase this…", "transla
 - History and settings are stored locally (`~/Library/Application Support/OpenWhisp/`, UserDefaults, Keychain).
 - The **only** time text leaves your machine is if you turn on AI post‑processing with the **OpenAI** provider. The **local** provider keeps everything on your machine/LAN.
 - Transcript text is **not** written to the app's log files.
+- **Password / secure fields** are detected and skipped — OpenWhisp won't dictate into, insert, or store their contents.
+- Settings → Status shows a live **privacy indicator** ("Fully on‑device" vs "Sends text to OpenAI") for your current configuration.
+
+**Verify it yourself** — you don't have to take our word for it:
+
+```bash
+# Should stay silent while you dictate, unless you enabled the OpenAI cloud provider:
+nettop -p "$(pgrep -x OpenWhisp)"
+```
+
+See [SECURITY.md](SECURITY.md) for the full privacy model and how to report issues.
 
 ---
 
@@ -282,7 +296,7 @@ swift test                 # run the unit tests for core logic
 
 ## Contributing
 
-Issues and PRs welcome. Please run `swift test` and `./build.sh` before submitting. Keep new pure‑logic in Foundation‑only files where possible so it can be unit‑tested.
+Issues and PRs welcome — see **[CONTRIBUTING.md](CONTRIBUTING.md)** for the dev setup, test conventions, and the privacy requirement. Run `swift test` and `./build.sh` before submitting.
 
 Direction and priorities (competitive analysis, feature gaps, plugin plan) live in **[docs/ROADMAP.md](docs/ROADMAP.md)**.
 

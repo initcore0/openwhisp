@@ -808,6 +808,16 @@ struct SettingsView: View {
 
     private var statusSection: some View {
         settingsSection("Status") {
+            // Privacy indicator — makes "local-first" visible at a glance.
+            HStack(spacing: 6) {
+                Image(systemName: appState.sendsTextToCloud ? "wifi" : "lock.shield.fill")
+                    .foregroundColor(appState.sendsTextToCloud ? .orange : .green)
+                Text(appState.privacyStatusText)
+                    .font(.callout)
+                    .foregroundColor(appState.sendsTextToCloud ? .orange : .green)
+                Spacer()
+            }
+
             HStack {
                 Text("Status:")
                 Spacer()
@@ -815,7 +825,7 @@ struct SettingsView: View {
                     .foregroundColor(statusColor)
                     .frame(width: 180, alignment: .trailing)
             }
-            
+
             if let error = appState.error, !error.isEmpty {
                 Text(error)
                     .foregroundColor(.red)

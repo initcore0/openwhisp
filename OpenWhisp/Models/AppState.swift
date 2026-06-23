@@ -382,6 +382,19 @@ class AppState: ObservableObject {
         return "\(trigger) to insert - Esc to cancel"
     }
 
+    /// Whether dictation can send any text off this machine to the internet.
+    /// Transcription is always on-device; the only egress is AI post-processing
+    /// with the OpenAI (cloud) provider. The local provider stays on machine/LAN.
+    /// (One-time model downloads aren't counted — they're not your dictated text.)
+    var sendsTextToCloud: Bool {
+        PrivacyStatus.sendsTextToCloud(enhancementEnabled: openAIEnhancementEnabled, provider: llmProvider)
+    }
+
+    /// Short, user-facing privacy statement for the current configuration.
+    var privacyStatusText: String {
+        PrivacyStatus.statusText(enhancementEnabled: openAIEnhancementEnabled, provider: llmProvider)
+    }
+
     var languageDisplayName: String {
         Self.languageDisplayName(for: language)
     }
