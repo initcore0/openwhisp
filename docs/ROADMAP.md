@@ -244,7 +244,10 @@ makes the macOS app more testable **and** converts "port the whole app" into
     `AppState` injects it, `InsertionMode` moved to the core, the
     `KeyboardSynthesizer` shim removed, and a `SpyTextOutput` double unlocks
     paste/clipboard assertions in `swift test`.
-  - `HotkeyMonitor` (CGEventTap → RegisterHotKey)
+  - ✅ `HotkeyControlling` (CGEventTap → RegisterHotKey) — extracted; `AppState`
+    injects it and receives gestures via callbacks (incl. a new `onCancel` so the
+    monitor no longer reaches into `AppState`). The press/release edge logic moved
+    to a pure, unit-tested `HotkeyGesture`.
   - ✅ `LaunchAtLoginService` (SMAppService → Run-key/Task Scheduler) — extracted;
     `AppState` injects it, and the toggle re-sync logic moved to a pure,
     unit-tested `LaunchAtLoginReconciler`.
