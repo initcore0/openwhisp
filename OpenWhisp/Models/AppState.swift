@@ -284,7 +284,7 @@ class AppState: ObservableObject {
     var whisperEngine: WhisperEngine!
     var appleSpeechEngine: AppleSpeechEngine!
     var translationService: OpenAITranslationService!
-    var hotkeyMonitor: HotkeyMonitor!
+    var hotkeyMonitor: HotkeyControlling!
 
     private var overlayController: OverlayWindowController?
     private var elapsedTimer: Timer?
@@ -672,7 +672,7 @@ class AppState: ObservableObject {
             }
         }
 
-        hotkeyMonitor = HotkeyMonitor(appState: self)
+        hotkeyMonitor = HotkeyMonitor()
         hotkeyMonitor.triggerMode = triggerMode
         hotkeyMonitor.onPermissionStateChanged = { [weak self] isGranted in
             Task { @MainActor in
@@ -690,6 +690,11 @@ class AppState: ObservableObject {
         hotkeyMonitor.onHotkeyUp = { [weak self] in
             Task { @MainActor in
                 self?.stopDictation()
+            }
+        }
+        hotkeyMonitor.onCancel = { [weak self] in
+            Task { @MainActor in
+                self?.cancelDictation()
             }
         }
     }
