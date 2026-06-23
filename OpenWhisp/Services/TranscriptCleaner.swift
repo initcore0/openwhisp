@@ -47,18 +47,13 @@ struct TranscriptCleaner {
 
         // 3) Vocabulary substitutions before formatting, so a corrected term
         //    (e.g. "claude code" -> "Claude Code") is then cased/spaced consistently.
-        if config.customVocabularyEnabled, !config.substitutions.isEmpty {
-            normalized = VocabularySubstitutor(substitutions: config.substitutions).apply(to: normalized)
+        if let sub = vocabularyStage {
+            normalized = sub.apply(to: normalized)
         }
 
         // 4) Smart formatting (caps / punctuation / fillers / spoken punctuation).
-        if config.smartFormattingEnabled {
-            normalized = SmartFormatter(options: SmartFormatter.Options(
-                removeFillers: config.fillerRemovalEnabled,
-                applySpokenPunctuation: config.spokenPunctuationEnabled,
-                capitalizeSentences: true,
-                ensureTerminalPunctuation: false
-            )).format(normalized, language: config.language)
+        if let fmt = smartFormatterStage {
+            normalized = fmt.format(normalized, language: config.language)
         }
 
         // 5) Strip a trailing "translate this into English" / "transcribe this"
@@ -76,21 +71,27 @@ struct TranscriptCleaner {
     /// is the extensible form the rest of the roadmap builds on.
     func makeChain(isFinalTranscript: Bool) -> PostProcessorChain {
         var stages: [PostProcessor] = [NonSpeechMarkerStage(), NormalizeStage(), IgnorableGuardStage()]
-        if config.customVocabularyEnabled, !config.substitutions.isEmpty {
-            stages.append(VocabularySubstitutor(substitutions: config.substitutions))
-        }
-        if config.smartFormattingEnabled {
-            stages.append(SmartFormatter(options: SmartFormatter.Options(
-                removeFillers: config.fillerRemovalEnabled,
-                applySpokenPunctuation: config.spokenPunctuationEnabled,
-                capitalizeSentences: true,
-                ensureTerminalPunctuation: false
-            )))
-        }
-        if isFinalTranscript {
-            stages.append(MetaInstructionStage())
-        }
+        if let sub = vocabularyStage { stages.append(sub) }
+        if let fmt = smartFormatterStage { stages.append(fmt) }
+        if isFinalTranscript { stages.append(MetaInstructionStage()) }
         return PostProcessorChain(stages)
+    }
+
+    // Single source of truth for the optional stages, so clean() and makeChain()
+    // can never disagree on gating or formatter options.
+    private var vocabularyStage: VocabularySubstitutor? {
+        guard config.customVocabularyEnabled, !config.substitutions.isEmpty else { return nil }
+        return VocabularySubstitutor(substitutions: config.substitutions)
+    }
+
+    private var smartFormatterStage: SmartFormatter? {
+        guard config.smartFormattingEnabled else { return nil }
+        return SmartFormatter(options: SmartFormatter.Options(
+            removeFillers: config.fillerRemovalEnabled,
+            applySpokenPunctuation: config.spokenPunctuationEnabled,
+            capitalizeSentences: true,
+            ensureTerminalPunctuation: false
+        ))
     }
 
     // MARK: - Pure helpers (moved out of AppState)
