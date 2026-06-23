@@ -25,7 +25,8 @@ let package = Package(
                 "DownloadProgressFormatter.swift",
                 "PrivacyStatus.swift",
                 "TranscriptCleaner.swift",
-                "SecretStore.swift"
+                "SecretStore.swift",
+                "LaunchAtLoginService.swift"
             ]
         ),
         .testTarget(
