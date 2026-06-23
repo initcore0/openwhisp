@@ -29,7 +29,8 @@ let package = Package(
                 "LaunchAtLoginService.swift",
                 "TextOutput.swift",
                 "HotkeyControlling.swift",
-                "TranscriptionEngine.swift"
+                "TranscriptionEngine.swift",
+                "AudioCapture.swift"
             ]
         ),
         .testTarget(

@@ -234,6 +234,15 @@ sites with no seams. Extracting protocols + moving the orchestration into a core
 makes the macOS app more testable **and** converts "port the whole app" into
 "write platform adapters." Do this incrementally; no behavior change.
 
+**Status:** all six I/O service seams are extracted and injected (✅ below) —
+secrets, launch-at-login, text output, hotkeys, transcription (file + streaming),
+and audio capture. Each concrete macOS type now conforms to a Foundation-only
+protocol in `OpenWhispCore`, AppState holds the protocol type and injects the
+macOS adapter via its initializer, and test doubles exist for every seam. What
+remains is the app-shell / UI layer (`MenuBarUI`, `Permissions`), which the
+[Windows study](WINDOWS_PORT.md) classes as a full per-OS rewrite rather than a
+seam, plus optionally lifting more orchestration out of `AppState`.
+
 - Define platform protocols and dependency-inject them into `AppState` instead of
   constructing concrete types:
   - ✅ `SecretStore` (Keychain → Credential Manager) — extracted; `AppState`
@@ -243,7 +252,10 @@ makes the macOS app more testable **and** converts "port the whole app" into
     request/response vs. streaming shapes); `AppleSpeechEngine`'s permission statics
     stay concrete (they return platform types). `WhisperBackend` moved to the core;
     fakes added for both.
-  - `AudioCapture` (AVAudioEngine today → WASAPI on Windows)
+  - ✅ `AudioCapture` (AVAudioEngine today → WASAPI on Windows) — extracted;
+    `AppState` injects it, `RecorderState` moved to the core, the dead AppState
+    back-ref removed. The CoreAudio `AudioDevice` enumeration stays concrete.
+    Adversarially reviewed (it's the audio pipeline) — body byte-identical.
   - ✅ `TextOutput` (AX + Cmd+V → UI Automation + SendInput) — extracted;
     `AppState` injects it, `InsertionMode` moved to the core, the
     `KeyboardSynthesizer` shim removed, and a `SpyTextOutput` double unlocks
