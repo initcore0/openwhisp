@@ -1512,110 +1512,26 @@ class AppState: ObservableObject {
         finishSessionUI(delay: 0.8)
     }
 
-    /// - Parameter isFinalTranscript: true for the whole-utterance final text
-    ///   (not per-chunk, not already-LLM-processed output). Only then do we strip
-    ///   a trailing spoken translate/transcribe instruction, which is never
-    ///   content but would be captured by whisper (esp. translate-to-English).
+    /// Local transcript cleanup. Delegates to TranscriptCleaner (in OpenWhispCore)
+    /// — the OS-independent post-processing pipeline — built from current settings.
+    /// `isFinalTranscript` enables the trailing meta-instruction strip (only on the
+    /// whole final utterance, never per chunk or on already-LLM-processed output).
     private func postProcess(_ text: String, isFinalTranscript: Bool = false) -> String {
-        var normalized = removeNonSpeechMarkers(from: text)
-            .replacingOccurrences(of: "\n", with: " ")
-            .components(separatedBy: .whitespacesAndNewlines)
-            .filter { !$0.isEmpty }
-            .joined(separator: " ")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-
-        normalized = normalized.trimmingCharacters(in: CharacterSet(charactersIn: "\"'` "))
-
-        // Drop ignorable transcripts BEFORE smart formatting so we never
-        // capitalize/punctuate a marker we're about to discard.
-        guard !isIgnorableTranscript(normalized) else { return "" }
-
-        // Apply vocabulary substitutions before formatting, so a corrected term
-        // (e.g. "claude code" -> "Claude Code") is then handled consistently by
-        // capitalization/spacing rules.
-        if customVocabularyEnabled, !vocabulary.substitutions.isEmpty {
-            normalized = VocabularySubstitutor(substitutions: vocabulary.substitutions).apply(to: normalized)
-        }
-
-        if smartFormattingEnabled {
-            normalized = smartFormatter.format(normalized, language: language)
-        }
-
-        // Strip a trailing "translate this into English" / "transcribe this" the
-        // user spoke as an instruction — only on the final whole transcript.
-        if isFinalTranscript {
-            normalized = MetaInstructionStripper.strip(normalized)
-        }
-
-        return normalized
+        TranscriptCleaner(config: transcriptCleanerConfig)
+            .clean(text, isFinalTranscript: isFinalTranscript)
     }
 
-    /// Built from the current formatting settings on each call so toggles take
-    /// effect immediately without rewiring.
-    private var smartFormatter: SmartFormatter {
-        SmartFormatter(options: SmartFormatter.Options(
-            removeFillers: fillerRemovalEnabled,
-            applySpokenPunctuation: spokenPunctuationEnabled,
-            capitalizeSentences: true,
-            ensureTerminalPunctuation: false
-        ))
-    }
-
-    private func isIgnorableTranscript(_ text: String) -> Bool {
-        let lowercased = text
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased()
-
-        let ignorableTokens: Set<String> = [
-            "[blank_audio]",
-            "[silence]",
-            "(silence)",
-            "[no speech]",
-            "(no speech)",
-            "[music]",
-            "(music)",
-            "[video playback]",
-            "(video playback)",
-            "[background noise]",
-            "(background noise)",
-            "[noise]",
-            "(noise)",
-            "[applause]",
-            "(applause)",
-            "[laughter]",
-            "(laughter)"
-        ]
-
-        return lowercased.isEmpty || ignorableTokens.contains(lowercased)
-    }
-
-    private func removeNonSpeechMarkers(from text: String) -> String {
-        let markerTerms = [
-            "blank_audio",
-            "silence",
-            "no speech",
-            "music",
-            "video playback",
-            "background noise",
-            "noise",
-            "static",
-            "applause",
-            "laughter",
-            "laughing",
-            "cough",
-            "coughing",
-            "sigh",
-            "breath",
-            "breathing",
-            "inaudible",
-            "unintelligible"
-        ]
-        var cleaned = text
-        for term in markerTerms {
-            cleaned = cleaned.replacingOccurrences(of: "[\(term)]", with: "", options: [.caseInsensitive])
-            cleaned = cleaned.replacingOccurrences(of: "(\(term))", with: "", options: [.caseInsensitive])
-        }
-        return cleaned
+    /// Snapshot of the formatting/vocabulary settings the cleaner needs, built on
+    /// each call so toggles take effect immediately.
+    private var transcriptCleanerConfig: TranscriptCleaner.Config {
+        TranscriptCleaner.Config(
+            language: language,
+            customVocabularyEnabled: customVocabularyEnabled,
+            substitutions: vocabulary.substitutions,
+            smartFormattingEnabled: smartFormattingEnabled,
+            fillerRemovalEnabled: fillerRemovalEnabled,
+            spokenPunctuationEnabled: spokenPunctuationEnabled
+        )
     }
 
     private func startElapsedTimer() {

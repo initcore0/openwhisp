@@ -1,0 +1,159 @@
+import Foundation
+
+/// The local, on-device transcript post-processing pipeline, assembled as a
+/// `PostProcessorChain`. This is the OS-independent core of what used to live as
+/// hardcoded steps in `AppState.postProcess(...)`: normalize → drop non-speech
+/// markers → (vocabulary substitutions) → (smart formatting) → (meta-instruction
+/// strip). Pure and Foundation-only, so it lives in `OpenWhispCore` and is unit-
+/// tested directly.
+///
+/// The async LLM pass (rephrase / improve-translation / voice commands) is NOT
+/// part of this chain — it has its own control flow (session guards, status,
+/// fallback-on-failure) in AppState. It can be added as a `PostProcessor` stage
+/// later; this stage covers exactly the prior synchronous behavior.
+struct TranscriptCleaner {
+    struct Config {
+        var language: String
+        var customVocabularyEnabled: Bool
+        var substitutions: [Vocabulary.Substitution]
+        var smartFormattingEnabled: Bool
+        var fillerRemovalEnabled: Bool
+        var spokenPunctuationEnabled: Bool
+    }
+
+    let config: Config
+
+    init(config: Config) {
+        self.config = config
+    }
+
+    /// Clean a transcript. `isFinalTranscript` enables the trailing
+    /// meta-instruction strip (only meaningful on the whole final utterance, not
+    /// per live chunk). Returns "" when the transcript is empty/ignorable.
+    func clean(_ text: String, isFinalTranscript: Bool) -> String {
+        // 1) Normalize whitespace and strip whisper's leading space / stray quotes,
+        //    after removing non-speech markers like [music] / (laughter).
+        var normalized = Self.removeNonSpeechMarkers(from: text)
+            .replacingOccurrences(of: "\n", with: " ")
+            .components(separatedBy: .whitespacesAndNewlines)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        normalized = normalized.trimmingCharacters(in: CharacterSet(charactersIn: "\"'` "))
+
+        // 2) Drop ignorable transcripts BEFORE formatting so we never
+        //    capitalize/punctuate a marker we're about to discard.
+        guard !Self.isIgnorable(normalized) else { return "" }
+
+        // 3) Vocabulary substitutions before formatting, so a corrected term
+        //    (e.g. "claude code" -> "Claude Code") is then cased/spaced consistently.
+        if config.customVocabularyEnabled, !config.substitutions.isEmpty {
+            normalized = VocabularySubstitutor(substitutions: config.substitutions).apply(to: normalized)
+        }
+
+        // 4) Smart formatting (caps / punctuation / fillers / spoken punctuation).
+        if config.smartFormattingEnabled {
+            normalized = SmartFormatter(options: SmartFormatter.Options(
+                removeFillers: config.fillerRemovalEnabled,
+                applySpokenPunctuation: config.spokenPunctuationEnabled,
+                capitalizeSentences: true,
+                ensureTerminalPunctuation: false
+            )).format(normalized, language: config.language)
+        }
+
+        // 5) Strip a trailing "translate this into English" / "transcribe this"
+        //    the user spoke as an instruction — only on the whole final transcript.
+        if isFinalTranscript {
+            normalized = MetaInstructionStripper.strip(normalized)
+        }
+
+        return normalized
+    }
+
+    /// The same steps expressed as a composable `PostProcessorChain`, so plugins
+    /// and future stages (e.g. an LLM stage) can extend the pipeline uniformly.
+    /// `clean(_:isFinalTranscript:)` is the synchronous fast path used today; this
+    /// is the extensible form the rest of the roadmap builds on.
+    func makeChain(isFinalTranscript: Bool) -> PostProcessorChain {
+        var stages: [PostProcessor] = [NonSpeechMarkerStage(), NormalizeStage(), IgnorableGuardStage()]
+        if config.customVocabularyEnabled, !config.substitutions.isEmpty {
+            stages.append(VocabularySubstitutor(substitutions: config.substitutions))
+        }
+        if config.smartFormattingEnabled {
+            stages.append(SmartFormatter(options: SmartFormatter.Options(
+                removeFillers: config.fillerRemovalEnabled,
+                applySpokenPunctuation: config.spokenPunctuationEnabled,
+                capitalizeSentences: true,
+                ensureTerminalPunctuation: false
+            )))
+        }
+        if isFinalTranscript {
+            stages.append(MetaInstructionStage())
+        }
+        return PostProcessorChain(stages)
+    }
+
+    // MARK: - Pure helpers (moved out of AppState)
+
+    static func removeNonSpeechMarkers(from text: String) -> String {
+        var cleaned = text
+        for term in markerTerms {
+            cleaned = cleaned.replacingOccurrences(of: "[\(term)]", with: "", options: [.caseInsensitive])
+            cleaned = cleaned.replacingOccurrences(of: "(\(term))", with: "", options: [.caseInsensitive])
+        }
+        return cleaned
+    }
+
+    static func isIgnorable(_ text: String) -> Bool {
+        let lowercased = text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return lowercased.isEmpty || ignorableTokens.contains(lowercased)
+    }
+
+    private static let markerTerms = [
+        "blank_audio", "silence", "no speech", "music", "video playback",
+        "background noise", "noise", "static", "applause", "laughter", "laughing",
+        "cough", "coughing", "sigh", "breath", "breathing", "inaudible", "unintelligible"
+    ]
+
+    private static let ignorableTokens: Set<String> = [
+        "[blank_audio]", "[silence]", "(silence)", "[no speech]", "(no speech)",
+        "[music]", "(music)", "[video playback]", "(video playback)",
+        "[background noise]", "(background noise)", "[noise]", "(noise)",
+        "[applause]", "(applause)", "[laughter]", "(laughter)"
+    ]
+}
+
+// MARK: - PostProcessor stage adapters
+
+/// Removes non-speech markers ([music], (laughter), …).
+struct NonSpeechMarkerStage: PostProcessor {
+    func process(_ text: String, context: PostProcessContext) async throws -> String {
+        TranscriptCleaner.removeNonSpeechMarkers(from: text)
+    }
+}
+
+/// Collapses whitespace / newlines and trims stray quotes.
+struct NormalizeStage: PostProcessor {
+    func process(_ text: String, context: PostProcessContext) async throws -> String {
+        text.replacingOccurrences(of: "\n", with: " ")
+            .components(separatedBy: .whitespacesAndNewlines)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "\"'` "))
+    }
+}
+
+/// Collapses an ignorable transcript to "" so downstream stages no-op.
+struct IgnorableGuardStage: PostProcessor {
+    func process(_ text: String, context: PostProcessContext) async throws -> String {
+        TranscriptCleaner.isIgnorable(text) ? "" : text
+    }
+}
+
+/// Strips a trailing translate/transcribe meta-instruction.
+struct MetaInstructionStage: PostProcessor {
+    func process(_ text: String, context: PostProcessContext) async throws -> String {
+        text.isEmpty ? text : MetaInstructionStripper.strip(text)
+    }
+}
