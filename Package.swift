@@ -24,7 +24,8 @@ let package = Package(
                 "SecureFieldPolicy.swift",
                 "DownloadProgressFormatter.swift",
                 "PrivacyStatus.swift",
-                "TranscriptCleaner.swift"
+                "TranscriptCleaner.swift",
+                "SecretStore.swift"
             ]
         ),
         .testTarget(
