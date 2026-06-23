@@ -3,16 +3,11 @@ import AVFoundation
 
 // MARK: - Audio Recorder
 
-class AudioRecorder: NSObject, AVAudioRecorderDelegate {
-    
-    enum RecorderState {
-        case idle
-        case recording
-        case stopped
-        case error(String)
-    }
-    
-    weak var appState: AppState?
+/// macOS `AudioCapture`: AVAudioEngine + AVAudioConverter capture with CoreAudio
+/// device handling. The Apple-only audio stack is isolated here; AppState depends
+/// on the `AudioCapture` protocol. `RecorderState` lives in OpenWhispCore.
+class AudioRecorder: NSObject, AVAudioRecorderDelegate, AudioCapture {
+
     var onStateChanged: ((RecorderState) -> Void)?
     var onLevelChanged: ((Float) -> Void)?
     
@@ -56,8 +51,7 @@ class AudioRecorder: NSObject, AVAudioRecorderDelegate {
     private var activeChunkDuration: TimeInterval = 0
     private var activeChunkHasSpeech = false
     
-    init(appState: AppState) {
-        self.appState = appState
+    override init() {
         super.init()
     }
     

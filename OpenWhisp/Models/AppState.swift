@@ -280,7 +280,7 @@ class AppState: ObservableObject {
     /// inserter. See TextOutput.
     let textOutput: TextOutput
 
-    var audioRecorder: AudioRecorder!
+    var audioRecorder: AudioCapture!
     var whisperEngine: FileTranscriptionEngine!
     var appleSpeechEngine: StreamingTranscriptionEngine!
     var translationService: OpenAITranslationService!
@@ -620,7 +620,7 @@ class AppState: ObservableObject {
             }
         }
 
-        audioRecorder = AudioRecorder(appState: self)
+        audioRecorder = AudioRecorder()
         audioRecorder.autoGainEnabled = autoGainEnabled
         audioRecorder.onStateChanged = { [weak self] state in
             Task { @MainActor in
