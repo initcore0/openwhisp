@@ -293,15 +293,14 @@ class AppState: ObservableObject {
     private var overlayIsVisible = false
     private var activeSessionID = UUID()
     private var transcriptionRequests: [UUID: TranscriptionRequest] = [:]
-    private var pendingLiveChunks: [(sequence: Int, url: URL)] = []
-    private var liveInFlightCount = 0
-    private let liveMaxConcurrentTranscriptions = 2
-    private var nextLiveChunkSequence = 0
-    private var nextLiveOutputSequence = 0
-    private var liveChunkResults: [Int: String] = [:]
-    private var liveInsertionQueue: [String] = []
-    private var liveInsertionInFlight = false
-    private var chunkCount = 0
+    /// Pure ordering/sequencing state machine for live-chunk dictation (sequence
+    /// assignment, concurrency cap, out-of-order reorder buffer, insertion queue,
+    /// drain detection). AppState owns the side effects (transcribe/insert/file IO);
+    /// this owns the bookkeeping. See LiveChunkPipeline.
+    private var livePipeline = LiveChunkPipeline(maxConcurrent: 2)
+    /// Chunk payloads (WAV file URLs) keyed by the pipeline's ChunkID, so AppState
+    /// can transcribe / clean up files while the pipeline tracks only sequencing.
+    private var liveChunkURLs: [LiveChunkPipeline.ChunkID: URL] = [:]
     private var currentSessionText = ""
     private var isStreamingSession = false
     private var acceptingLiveChunks = false
@@ -314,7 +313,7 @@ class AppState: ObservableObject {
     /// Snapshot of whether this session uses live-chunk output, captured at
     /// beginSession(). The live-chunk drain pipeline must be gated on this rather
     /// than the live @Published outputMode, so a mid-session settings change can't
-    /// strand pendingLiveChunks and hang the session in "Finalizing...".
+    /// strand queued chunks and hang the session in "Finalizing...".
     private var isLiveChunkSession = false
     /// Snapshot of preview-and-polish mode for this session. In preview mode
     /// chunks are captured (into currentSessionText/streamingText for the overlay)
@@ -590,9 +589,8 @@ class AppState: ObservableObject {
                 guard let request = self.consumeRequest(requestID), request.sessionID == self.activeSessionID else { return }
                 if request.kind == .liveChunk {
                     if let sequence = request.sequence {
-                        self.liveChunkResults[sequence] = ""
+                        self.livePipeline.complete(sequence, text: "")
                     }
-                    self.liveInFlightCount = max(0, self.liveInFlightCount - 1)
                     self.processNextLiveChunk()
                     self.flushOrderedLiveResults()
                     if self.isTranscribing && self.livePipelineIsDrained {
@@ -1136,7 +1134,6 @@ class AppState: ObservableObject {
         isLiveChunkSession = streaming
         // Preview mode captures via the chunk pipeline but defers pasting.
         isPreviewSession = streaming && outputMode == "preview"
-        chunkCount = 0
         audioLevel = 0
         recordingElapsed = 0
         recordingStartedAt = Date()
@@ -1158,9 +1155,8 @@ class AppState: ObservableObject {
         guard !text.isEmpty else {
             if request.kind == .liveChunk {
                 if let sequence = request.sequence {
-                    liveChunkResults[sequence] = ""
+                    livePipeline.complete(sequence, text: "")
                 }
-                liveInFlightCount = max(0, liveInFlightCount - 1)
                 processNextLiveChunk()
                 flushOrderedLiveResults()
                 if isTranscribing && livePipelineIsDrained {
@@ -1179,9 +1175,8 @@ class AppState: ObservableObject {
         switch request.kind {
         case .liveChunk:
             if let sequence = request.sequence {
-                liveChunkResults[sequence] = text
+                livePipeline.complete(sequence, text: text)
             }
-            liveInFlightCount = max(0, liveInFlightCount - 1)
             processNextLiveChunk()
             flushOrderedLiveResults()
             if isTranscribing && livePipelineIsDrained {
@@ -1196,21 +1191,24 @@ class AppState: ObservableObject {
     }
 
     private func enqueueLiveChunk(_ path: URL) {
-        let sequence = nextLiveChunkSequence
-        nextLiveChunkSequence += 1
-        pendingLiveChunks.append((sequence, path))
-        chunkCount += 1
-        statusMessage = isTranscribing ? "Finalizing..." : "Queued chunk #\(chunkCount)..."
+        let id = livePipeline.enqueue()
+        liveChunkURLs[id] = path
+        statusMessage = isTranscribing ? "Finalizing..." : "Queued chunk #\(livePipeline.queuedCount)..."
         processNextLiveChunk()
     }
 
     private func processNextLiveChunk() {
-        guard isLiveChunkSession, liveInFlightCount < liveMaxConcurrentTranscriptions, let next = pendingLiveChunks.first else { return }
-        pendingLiveChunks.removeFirst()
-        liveInFlightCount += 1
+        guard isLiveChunkSession else { return }
+        let dispatched = livePipeline.dispatchable()
+        guard !dispatched.isEmpty else { return }
         statusMessage = isTranscribing ? "Finalizing..." : "Transcribing chunks..."
-        startTranscription(path: next.url, kind: .liveChunk, sequence: next.sequence)
-        processNextLiveChunk()
+        for id in dispatched {
+            // Hand the file to whisper (deleteWhenDone: true) and stop tracking it
+            // here, so cleanup on cancel only removes still-undispatched files —
+            // it must never yank a WAV out from under an in-flight transcription.
+            guard let url = liveChunkURLs.removeValue(forKey: id) else { continue }
+            startTranscription(path: url, kind: .liveChunk, sequence: id)
+        }
     }
 
     private func startTranscription(path: URL, kind: TranscriptionKind, sequence: Int? = nil) {
@@ -1231,56 +1229,47 @@ class AppState: ObservableObject {
         transcriptionRequests.removeValue(forKey: requestID)
     }
 
+    /// Delete the WAV files for any chunks the pipeline still holds, then drop the
+    /// payload map. The pipeline's own sequencing reset happens in resetLivePipeline.
     private func cleanupPendingLiveChunks() {
-        for chunk in pendingLiveChunks {
-            try? FileManager.default.removeItem(at: chunk.url)
+        for url in liveChunkURLs.values {
+            try? FileManager.default.removeItem(at: url)
         }
-        pendingLiveChunks.removeAll()
+        liveChunkURLs.removeAll()
     }
 
     private var livePipelineIsDrained: Bool {
-        pendingLiveChunks.isEmpty
-            && liveInFlightCount == 0
-            && liveChunkResults.isEmpty
-            && liveInsertionQueue.isEmpty
-            && !liveInsertionInFlight
+        livePipeline.isDrained
     }
 
     private func resetLivePipeline() {
         cleanupPendingLiveChunks()
-        liveInFlightCount = 0
-        nextLiveChunkSequence = 0
-        nextLiveOutputSequence = 0
-        liveChunkResults.removeAll()
-        liveInsertionQueue.removeAll()
-        liveInsertionInFlight = false
+        livePipeline.reset()
     }
 
+    /// Emit the now-contiguous ordered results from the pipeline into the
+    /// insertion stage.
     private func flushOrderedLiveResults() {
-        while let text = liveChunkResults.removeValue(forKey: nextLiveOutputSequence) {
-            if !text.isEmpty {
-                queueLiveInsertion(text)
-            }
-            nextLiveOutputSequence += 1
+        for text in livePipeline.takeOrderedReady() {
+            queueLiveInsertion(text)
         }
     }
 
     private func queueLiveInsertion(_ text: String) {
-        liveInsertionQueue.append(text)
+        livePipeline.queueForInsertion([text])
         processNextLiveInsertion()
     }
 
     private func processNextLiveInsertion() {
-        guard !liveInsertionInFlight, !liveInsertionQueue.isEmpty else { return }
-        let item = liveInsertionQueue.removeFirst()
+        guard let item = livePipeline.nextInsertion() else { return }
 
         guard shouldEnhanceLiveChunks else {
             insertLiveChunk(item)
+            livePipeline.finishInsertion()
             processNextLiveInsertion()
             return
         }
 
-        liveInsertionInFlight = true
         statusMessage = "Rephrasing chunk..."
         let sessionID = activeSessionID
         translationService.processFinalText(
@@ -1305,7 +1294,7 @@ class AppState: ObservableObject {
                 }
 
                 self.insertLiveChunk(textToInsert)
-                self.liveInsertionInFlight = false
+                self.livePipeline.finishInsertion()
                 self.processNextLiveInsertion()
                 if self.isTranscribing && self.livePipelineIsDrained {
                     self.completeFinalText(self.currentSessionText)

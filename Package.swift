@@ -30,7 +30,8 @@ let package = Package(
                 "TextOutput.swift",
                 "HotkeyControlling.swift",
                 "TranscriptionEngine.swift",
-                "AudioCapture.swift"
+                "AudioCapture.swift",
+                "LiveChunkPipeline.swift"
             ]
         ),
         .testTarget(
