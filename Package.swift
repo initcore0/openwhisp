@@ -23,7 +23,8 @@ let package = Package(
                 "TranscriptionHistory.swift",
                 "SecureFieldPolicy.swift",
                 "DownloadProgressFormatter.swift",
-                "PrivacyStatus.swift"
+                "PrivacyStatus.swift",
+                "TranscriptCleaner.swift"
             ]
         ),
         .testTarget(
