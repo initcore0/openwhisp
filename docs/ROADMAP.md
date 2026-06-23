@@ -223,6 +223,32 @@ dictation — fall back to the raw text), and **declare network use** per plugin
   `processFinalText` path with one `PostProcessorChain`.
 - Wrap `OpenAITranslationService` as an `AIPostProcessor`.
 - Extract the pipeline out of `AppState`.
+- *(This is also step 1 of the platform-agnostic core below — the post-processing
+  chain is the first piece of the OS-independent core.)*
+
+### Phase 2.5 — Platform-agnostic core *(unblocks plugins AND a future Windows port)*
+
+Per the [Windows feasibility study](WINDOWS_PORT.md): ~40% of the code is already
+OS-independent logic, but `AppState` wires **concrete** platform types at ~50
+sites with no seams. Extracting protocols + moving the orchestration into a core
+makes the macOS app more testable **and** converts "port the whole app" into
+"write platform adapters." Do this incrementally; no behavior change.
+
+- Define platform protocols and dependency-inject them into `AppState` instead of
+  constructing concrete types:
+  - `TranscriptionEngine` (whisper CLI/server, Apple Speech)
+  - `AudioCapture` (AVAudioEngine today → WASAPI on Windows)
+  - `TextInserter` (AX + Cmd+V → UI Automation + SendInput)
+  - `HotkeyMonitor` (CGEventTap → RegisterHotKey)
+  - `MenuBarUI` / app shell, `Permissions`, `SecretStore` (Keychain → Credential
+    Manager), `LaunchAtLogin`
+- Move the pipeline + post-processing + profile/vocab application out of `AppState`
+  into `OpenWhispCore` (the existing SwiftPM target), behind those protocols.
+- Keep the macOS implementations as the first set of adapters. A Windows app then
+  becomes "implement the adapters" (or a Tauri/Electron shell on the same
+  `whisper-server` HTTP backend) — a separate, incremental community effort.
+- **A full Windows port stays out of scope for the core team** (L–XL); this stage
+  only makes it *possible* without a rewrite.
 
 ### Phase 3 — Hackability *(the wedge)*
 - ✅ **Named voice actions** — built-in voice commands with curated, user-editable
@@ -242,8 +268,10 @@ dictation — fall back to the raw text), and **declare network use** per plugin
 - Whisper streaming partials.
 - Voice editing / undo ("scratch that", edit-before-commit).
 - Richer formatting (lists/markdown/code/numbers) + deeper vocab.
-- **Out of scope:** cross-platform ports, file/meeting transcription — they
-  dilute identity for a small project.
+- **Out of scope (for the core team):** a full Windows/Linux app and
+  file/meeting transcription — they dilute identity for a small project. Note the
+  Phase 2.5 core extraction *enables* a community Windows port without committing
+  the core team to building one (see [WINDOWS_PORT.md](WINDOWS_PORT.md)).
 
 ---
 
