@@ -236,12 +236,13 @@ makes the macOS app more testable **and** converts "port the whole app" into
 
 - Define platform protocols and dependency-inject them into `AppState` instead of
   constructing concrete types:
+  - ✅ `SecretStore` (Keychain → Credential Manager) — extracted; `AppState`
+    injects it, `InMemorySecretStore` covers the logic in `swift test`.
   - `TranscriptionEngine` (whisper CLI/server, Apple Speech)
   - `AudioCapture` (AVAudioEngine today → WASAPI on Windows)
   - `TextInserter` (AX + Cmd+V → UI Automation + SendInput)
   - `HotkeyMonitor` (CGEventTap → RegisterHotKey)
-  - `MenuBarUI` / app shell, `Permissions`, `SecretStore` (Keychain → Credential
-    Manager), `LaunchAtLogin`
+  - `MenuBarUI` / app shell, `Permissions`, `LaunchAtLogin`
 - Move the pipeline + post-processing + profile/vocab application out of `AppState`
   into `OpenWhispCore` (the existing SwiftPM target), behind those protocols.
 - Keep the macOS implementations as the first set of adapters. A Windows app then

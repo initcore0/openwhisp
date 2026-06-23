@@ -152,7 +152,7 @@ class AppState: ObservableObject {
     }
 
     @Published var openAIAPIKey: String {
-        didSet { KeychainStore.save(openAIAPIKey, key: "openAIAPIKey") }
+        didSet { secretStore.save(openAIAPIKey, key: "openAIAPIKey") }
     }
 
     @Published var openAIModel: String {
@@ -263,6 +263,10 @@ class AppState: ObservableObject {
     }
 
     // MARK: - Services
+
+    /// Platform secret backend (Keychain on macOS). Injected so the secret
+    /// logic is testable and a port can swap the implementation. See SecretStore.
+    let secretStore: SecretStore
 
     var audioRecorder: AudioRecorder!
     var whisperEngine: WhisperEngine!
@@ -399,7 +403,8 @@ class AppState: ObservableObject {
         Self.languageDisplayName(for: language)
     }
 
-    private init() {
+    private init(secretStore: SecretStore = KeychainStore()) {
+        self.secretStore = secretStore
         let savedWhisperBinaryPath = UserDefaults.standard.string(forKey: "whisperBinaryPath") ?? ""
         whisperBinaryPath = Self.preferredWhisperCLIPath(savedPath: savedWhisperBinaryPath)
 
@@ -437,12 +442,12 @@ class AppState: ObservableObject {
         translationTargetLanguage = UserDefaults.standard.string(forKey: "translationTargetLanguage") ?? "en"
         // One-time migration: move any legacy plaintext key out of UserDefaults into the
         // Keychain. didSet does not fire during init, so the keychain write must be explicit.
-        let keychainKey = KeychainStore.read(key: "openAIAPIKey")
+        let keychainKey = secretStore.read(key: "openAIAPIKey")
         if let keychainKey, !keychainKey.isEmpty {
             openAIAPIKey = keychainKey
         } else if let legacyKey = UserDefaults.standard.string(forKey: "openAIAPIKey"),
                   !legacyKey.isEmpty {
-            KeychainStore.save(legacyKey, key: "openAIAPIKey")
+            secretStore.save(legacyKey, key: "openAIAPIKey")
             UserDefaults.standard.removeObject(forKey: "openAIAPIKey")
             openAIAPIKey = legacyKey
         } else {
