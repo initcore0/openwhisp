@@ -961,7 +961,6 @@ class AppState: ObservableObject {
         beginSession(streaming: false)
 
         let micID = microphoneID
-        let recorder = self.audioRecorder!
         let sessionID = activeSessionID
         AVCaptureDevice.requestAccess(for: .audio) { granted in
             Task { @MainActor in
@@ -976,6 +975,10 @@ class AppState: ObservableObject {
                     self.abortSessionBeforeStart()
                     return
                 }
+                // Read the recorder here (inside the @MainActor Task) rather than
+                // capturing it into the @Sendable access-grant closure — the
+                // non-Sendable existential never crosses the concurrency boundary.
+                let recorder = self.audioRecorder!
                 if !micID.isEmpty {
                     recorder.selectDevice(micID)
                 }
@@ -1024,7 +1027,6 @@ class AppState: ObservableObject {
         beginSession(streaming: true)
 
         let micID = microphoneID
-        let recorder = self.audioRecorder!
         let sessionID = activeSessionID
         AVCaptureDevice.requestAccess(for: .audio) { granted in
             Task { @MainActor in
@@ -1038,6 +1040,10 @@ class AppState: ObservableObject {
                     self.abortSessionBeforeStart()
                     return
                 }
+                // Read the recorder here (inside the @MainActor Task) rather than
+                // capturing it into the @Sendable access-grant closure — the
+                // non-Sendable existential never crosses the concurrency boundary.
+                let recorder = self.audioRecorder!
                 if !micID.isEmpty {
                     recorder.selectDevice(micID)
                 }
