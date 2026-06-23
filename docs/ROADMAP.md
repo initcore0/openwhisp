@@ -270,6 +270,11 @@ seam, plus optionally lifting more orchestration out of `AppState`.
   - `MenuBarUI` / app shell, `Permissions`
 - Move the pipeline + post-processing + profile/vocab application out of `AppState`
   into `OpenWhispCore` (the existing SwiftPM target), behind those protocols.
+  - ✅ `LiveChunkPipeline` — the live-chunk ordering/sequencing state machine
+    (sequence assignment, concurrency cap, out-of-order reorder buffer, insertion
+    gate, drain detection) extracted as a pure, unit-tested struct. AppState keeps
+    the side effects (transcribe/insert/file IO) and delegates the bookkeeping.
+    Adversarially reviewed — behavior-identical.
 - Keep the macOS implementations as the first set of adapters. A Windows app then
   becomes "implement the adapters" (or a Tauri/Electron shell on the same
   `whisper-server` HTTP backend) — a separate, incremental community effort.
