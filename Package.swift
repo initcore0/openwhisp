@@ -26,7 +26,8 @@ let package = Package(
                 "PrivacyStatus.swift",
                 "TranscriptCleaner.swift",
                 "SecretStore.swift",
-                "LaunchAtLoginService.swift"
+                "LaunchAtLoginService.swift",
+                "TextOutput.swift"
             ]
         ),
         .testTarget(

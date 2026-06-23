@@ -240,7 +240,10 @@ makes the macOS app more testable **and** converts "port the whole app" into
     injects it, `InMemorySecretStore` covers the logic in `swift test`.
   - `TranscriptionEngine` (whisper CLI/server, Apple Speech)
   - `AudioCapture` (AVAudioEngine today → WASAPI on Windows)
-  - `TextInserter` (AX + Cmd+V → UI Automation + SendInput)
+  - ✅ `TextOutput` (AX + Cmd+V → UI Automation + SendInput) — extracted;
+    `AppState` injects it, `InsertionMode` moved to the core, the
+    `KeyboardSynthesizer` shim removed, and a `SpyTextOutput` double unlocks
+    paste/clipboard assertions in `swift test`.
   - `HotkeyMonitor` (CGEventTap → RegisterHotKey)
   - ✅ `LaunchAtLoginService` (SMAppService → Run-key/Task Scheduler) — extracted;
     `AppState` injects it, and the toggle re-sync logic moved to a pure,

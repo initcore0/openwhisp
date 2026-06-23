@@ -1,7 +1,7 @@
 import Cocoa
 import ApplicationServices
 
-/// Inserts dictated text into the focused app.
+/// macOS `TextOutput`: inserts dictated text into the focused app.
 ///
 /// Two strategies:
 ///   - **Accessibility (AX) direct insert** — writes text at the caret / over the
@@ -15,45 +15,38 @@ import ApplicationServices
 /// `insert(...)` picks per the `mode`: `.directAX` only, `.paste` only, or
 /// `.auto` (try AX, fall back to paste). All work is serialized on one queue so
 /// rapid live-chunk insertions stay in order.
-enum InsertionMode: String {
-    case auto
-    case directAX
-    case paste
-}
-
-enum TextInserter {
+///
+/// The Apple-only AppKit/Accessibility/CoreGraphics calls are isolated here;
+/// AppState depends on the `TextOutput` protocol, not this type. `InsertionMode`
+/// lives in OpenWhispCore.
+final class TextInserter: TextOutput {
 
     /// Serial queue shared with clipboard writes so insertions and clipboard
     /// sets stay strictly FIFO-ordered (prevents the paste/clobber races).
-    private static let queue = DispatchQueue(label: "com.openwhisp.app.insert")
+    private let queue = DispatchQueue(label: "com.openwhisp.app.insert")
 
     /// Insert `text` into the focused app. Fire-and-forget; runs off the main thread.
-    static func insert(
-        _ text: String,
-        mode: InsertionMode,
-        restoreClipboard: Bool,
-        targetApplication: NSRunningApplication? = nil
-    ) {
+    func insert(_ text: String, mode: InsertionMode, restoreClipboard: Bool) {
         guard !text.isEmpty else { return }
         queue.async {
             switch mode {
             case .directAX:
-                if !insertViaAccessibility(text) {
+                if !Self.insertViaAccessibility(text) {
                     // Even in AX-only mode, fall back rather than silently dropping text.
-                    pasteSynchronously(text, restoreClipboard: restoreClipboard)
+                    Self.pasteSynchronously(text, restoreClipboard: restoreClipboard)
                 }
             case .paste:
-                pasteSynchronously(text, restoreClipboard: restoreClipboard)
+                Self.pasteSynchronously(text, restoreClipboard: restoreClipboard)
             case .auto:
-                if !insertViaAccessibility(text) {
-                    pasteSynchronously(text, restoreClipboard: restoreClipboard)
+                if !Self.insertViaAccessibility(text) {
+                    Self.pasteSynchronously(text, restoreClipboard: restoreClipboard)
                 }
             }
         }
     }
 
     /// Set the clipboard, FIFO-ordered behind any in-flight insertions.
-    static func setClipboard(_ text: String) {
+    func setClipboard(_ text: String) {
         queue.async {
             let pb = NSPasteboard.general
             pb.clearContents()
@@ -102,8 +95,8 @@ enum TextInserter {
 
     // MARK: - Paste fallback
 
-    /// Synchronous paste (already on `queue`). Mirrors the prior KeyboardSynthesizer
-    /// behavior: snapshot all clipboard item types, set our text, Cmd+V, restore.
+    /// Synchronous paste (already on `queue`): snapshot all clipboard item types,
+    /// set our text, Cmd+V, restore.
     private static func pasteSynchronously(_ text: String, restoreClipboard: Bool) {
         let pb = NSPasteboard.general
 

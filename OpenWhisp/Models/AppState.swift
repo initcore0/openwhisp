@@ -275,6 +275,11 @@ class AppState: ObservableObject {
     /// same reasons. See LaunchAtLoginService.
     let launchAtLoginService: LaunchAtLoginService
 
+    /// Platform text-insertion backend (Accessibility + Cmd+V on macOS). Injected
+    /// so the orchestration depends on the TextOutput protocol, not the concrete
+    /// inserter. See TextOutput.
+    let textOutput: TextOutput
+
     var audioRecorder: AudioRecorder!
     var whisperEngine: WhisperEngine!
     var appleSpeechEngine: AppleSpeechEngine!
@@ -412,10 +417,12 @@ class AppState: ObservableObject {
 
     private init(
         secretStore: SecretStore = KeychainStore(),
-        launchAtLoginService: LaunchAtLoginService = LaunchAtLogin()
+        launchAtLoginService: LaunchAtLoginService = LaunchAtLogin(),
+        textOutput: TextOutput = TextInserter()
     ) {
         self.secretStore = secretStore
         self.launchAtLoginService = launchAtLoginService
+        self.textOutput = textOutput
         let savedWhisperBinaryPath = UserDefaults.standard.string(forKey: "whisperBinaryPath") ?? ""
         whisperBinaryPath = Self.preferredWhisperCLIPath(savedPath: savedWhisperBinaryPath)
 
@@ -901,11 +908,10 @@ class AppState: ObservableObject {
         let insertion = appleLiveInsertedText.isEmpty ? delta : " \(delta)"
         appleLiveInsertedText = text
         currentSessionText = text
-        KeyboardSynthesizer.typeViaPaste(
+        textOutput.insert(
             insertion,
             mode: currentInsertionMode,
-            restoreClipboard: restoreClipboard,
-            targetApplication: targetApplication
+            restoreClipboard: restoreClipboard
         )
     }
 
@@ -922,11 +928,10 @@ class AppState: ObservableObject {
             if !delta.isEmpty {
                 let insertion = appleLiveInsertedText.isEmpty ? delta : " \(delta)"
                 appleLiveInsertedText = finalText
-                KeyboardSynthesizer.typeViaPaste(
+                textOutput.insert(
                     insertion,
                     mode: currentInsertionMode,
-                    restoreClipboard: restoreClipboard,
-                    targetApplication: targetApplication
+                    restoreClipboard: restoreClipboard
                 )
             }
         }
@@ -1333,11 +1338,10 @@ class AppState: ObservableObject {
         }
 
         let insertion = needsSeparator ? " \(text)" : text
-        KeyboardSynthesizer.typeViaPaste(
+        textOutput.insert(
             insertion,
             mode: currentInsertionMode,
-            restoreClipboard: restoreClipboard,
-            targetApplication: targetApplication
+            restoreClipboard: restoreClipboard
         )
         statusMessage = "Inserted: \(text.prefix(40))..."
     }
@@ -1494,28 +1498,26 @@ class AppState: ObservableObject {
         let pastesWholeOnce = !isLiveChunkSession || isPreviewSession
         if pastesWholeOnce {
             let insertion = addTrailingSpace ? "\(text) " : text
-            KeyboardSynthesizer.typeViaPaste(
+            textOutput.insert(
                 insertion,
                 mode: currentInsertionMode,
-                restoreClipboard: restoreClipboard,
-                targetApplication: targetApplication
+                restoreClipboard: restoreClipboard
             )
         } else {
             // liveChunks: the text was already pasted incrementally (no trailing space).
             // Type the single conditional trailing space now, honoring addTrailingSpace.
             if addTrailingSpace, !text.isEmpty {
-                KeyboardSynthesizer.typeViaPaste(
+                textOutput.insert(
                     " ",
                     mode: currentInsertionMode,
-                    restoreClipboard: restoreClipboard,
-                    targetApplication: targetApplication
+                    restoreClipboard: restoreClipboard
                 )
             }
             // Route the final clipboard write through the same serial paste queue
             // so it stays FIFO-ordered behind any still-draining chunk pastes.
             // A direct main-thread NSPasteboard write here would race the async
             // paste queue and could clobber (or be clobbered by) a late chunk.
-            KeyboardSynthesizer.setClipboard(text)
+            textOutput.setClipboard(text)
         }
 
         recordHistory(text)
@@ -1760,7 +1762,7 @@ class AppState: ObservableObject {
     }
 
     func copyHistoryEntry(_ entry: TranscriptionEntry) {
-        KeyboardSynthesizer.setClipboard(entry.text)
+        textOutput.setClipboard(entry.text)
     }
 
     // MARK: - Model
