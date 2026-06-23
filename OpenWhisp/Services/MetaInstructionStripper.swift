@@ -31,22 +31,38 @@ enum MetaInstructionStripper {
         guard !trimmed.isEmpty else { return text }
 
         for pattern in trailingPatterns {
-            // Anchor to the end; allow an optional leading sentence separator and
-            // an optional trailing ", please" / punctuation.
-            let full = #"(?i)[\s,.;:!?-]*"# + pattern + #"(?:[\s,]*please)?[\s,.!?]*$"#
+            // Anchor to the end. Before the command, allow a sentence separator and
+            // an optional politeness lead-in — the instruction may be phrased
+            // "Please translate this into English" (leading "please") or
+            // "translate this to English, please" (trailing). This also covers a
+            // Russian "переведите на английский" that whisper rendered in English.
+            // Separators before the command exclude sentence terminators (.!?) so
+            // the preceding sentence keeps its own "?"/"!"/"." (e.g. "...how are
+            // you? Please translate…" → keep the "?"). Allows an optional
+            // politeness lead-in ("Please"/"could you"/…) right before the command.
+            let lead = #"[\s,;:-]*(?:(?:could you|can you|would you|please|kindly)[\s,]*)*"#
+            let trail = #"(?:[\s,]*please)?[\s,.!?]*$"#
+            let full = #"(?i)"# + lead + pattern + trail
             guard let range = trimmed.range(of: full, options: .regularExpression) else { continue }
 
-            let content = String(trimmed[..<range.lowerBound])
+            // The slice that precedes the matched instruction. Trim trailing
+            // whitespace/separators, but remember the sentence's own terminal
+            // punctuation so "...how are you?" keeps its "?" rather than being
+            // turned into a period.
+            let rawContent = String(trimmed[..<range.lowerBound])
+                .trimmingCharacters(in: CharacterSet(charactersIn: " ,;:-\t\n"))
+            let originalTerminator: Character? =
+                (rawContent.last.map { ".!?".contains($0) } ?? false) ? rawContent.last : nil
+
+            let content = rawContent
                 .trimmingCharacters(in: CharacterSet(charactersIn: " ,.;:!?-\t\n"))
 
             // Require real content before the instruction; never empty the text.
             guard wordCount(content) >= 2 else { return trimmed }
 
-            // Restore a terminal period so the remaining text reads complete.
-            if let last = content.last, !".!?".contains(last) {
-                return content + "."
-            }
-            return content
+            // Restore terminal punctuation: keep the original (?/!/.) or add "."
+            // if the sentence had none, so the remaining text reads complete.
+            return content + String(originalTerminator ?? ".")
         }
         return trimmed
     }
