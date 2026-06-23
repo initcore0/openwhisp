@@ -68,4 +68,50 @@ final class MetaInstructionStripperTests: XCTestCase {
         let s = "just a normal note about the project status."
         XCTAssertEqual(MetaInstructionStripper.strip(s), s)
     }
+
+    // MARK: Leading "please" / politeness lead-in (regression for the reported bug)
+
+    func testLeadingPleaseTranslate() {
+        // The reported bug: "Please translate…" left "Please" in the output.
+        XCTAssertEqual(
+            MetaInstructionStripper.strip("Hello, how are you? Please translate this into English."),
+            "Hello, how are you?")
+    }
+
+    func testLeadingPleasePreservesPeriod() {
+        XCTAssertEqual(
+            MetaInstructionStripper.strip("Hello, how are you. Please translate this into English"),
+            "Hello, how are you.")
+    }
+
+    func testCouldYouLeadIn() {
+        XCTAssertEqual(
+            MetaInstructionStripper.strip("the meeting is at noon, could you translate this to English please"),
+            "the meeting is at noon.")
+    }
+
+    func testKindlyLeadIn() {
+        XCTAssertEqual(
+            MetaInstructionStripper.strip("ship it on Friday, kindly translate to English"),
+            "ship it on Friday.")
+    }
+
+    // MARK: Terminal punctuation preserved
+
+    func testPreservesQuestionMark() {
+        XCTAssertEqual(
+            MetaInstructionStripper.strip("are we still on for tomorrow? translate this to English"),
+            "are we still on for tomorrow?")
+    }
+
+    func testPreservesExclamation() {
+        XCTAssertEqual(
+            MetaInstructionStripper.strip("that's amazing! translate this to English"),
+            "that's amazing!")
+    }
+
+    func testLeadingPleaseDoesNotOverStrip() {
+        let s = "please review the document by Monday"
+        XCTAssertEqual(MetaInstructionStripper.strip(s), s)
+    }
 }
