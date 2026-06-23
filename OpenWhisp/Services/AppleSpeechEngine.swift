@@ -2,7 +2,7 @@ import Foundation
 import AVFoundation
 import Speech
 
-final class AppleSpeechEngine {
+final class AppleSpeechEngine: StreamingTranscriptionEngine {
     var onPartial: ((String) -> Void)?
     var onFinal: ((String) -> Void)?
     var onError: ((String) -> Void)?

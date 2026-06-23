@@ -28,7 +28,8 @@ let package = Package(
                 "SecretStore.swift",
                 "LaunchAtLoginService.swift",
                 "TextOutput.swift",
-                "HotkeyControlling.swift"
+                "HotkeyControlling.swift",
+                "TranscriptionEngine.swift"
             ]
         ),
         .testTarget(

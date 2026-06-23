@@ -3,11 +3,11 @@ import Darwin
 
 // MARK: - Whisper Engine
 
-class WhisperEngine {
-    enum Backend {
-        case cli
-        case serverAPI
-    }
+class WhisperEngine: FileTranscriptionEngine {
+    /// The backend enum now lives in OpenWhispCore as `WhisperBackend` so the
+    /// `FileTranscriptionEngine` protocol can name it; kept as a typealias so the
+    /// engine body and `.cli`/`.serverAPI` references are unchanged.
+    typealias Backend = WhisperBackend
 
     var onTranscriptionComplete: ((UUID, String) -> Void)?
     var onTranscriptionError: ((UUID, String) -> Void)?
