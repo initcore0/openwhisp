@@ -16,10 +16,40 @@ struct VoiceCommandParser {
     /// Optional wake lead-in (e.g. "voice note"). Empty disables the wake form.
     var wakeWord: String
 
+    /// A recognized built-in action with a curated prompt, vs. a free-form
+    /// instruction the user spoke verbatim.
+    enum Action: String, Equatable {
+        case telegramPost
+    }
+
     struct Result: Equatable {
         let content: String
+        /// The free-form instruction the user spoke (for generic commands), or a
+        /// short label for a built-in action. AppState uses `action` (if set) to
+        /// pick a curated prompt and falls back to `instruction` otherwise.
         let instruction: String
+        /// Set when the command matched a known built-in action (e.g. Telegram post).
+        let action: Action?
+
+        init(content: String, instruction: String, action: Action? = nil) {
+            self.content = content
+            self.instruction = instruction
+            self.action = action
+        }
     }
+
+    /// Trailing phrases (matched case-insensitively) that trigger a built-in
+    /// action. English forms cover whisper's translate-to-English output; the
+    /// Russian forms cover dictation when translation is off.
+    private static let actionPhrases: [(phrases: [String], action: Action)] = [
+        ([
+            "make a telegram post", "make this a telegram post", "make it a telegram post",
+            "turn this into a telegram post", "telegram post", "post to telegram",
+            "сделай пост для телеграм", "сделай пост для телеграма",
+            "сделай телеграм пост", "пост для телеграм", "пост в телеграм",
+            "оформи как пост для телеграм"
+        ], .telegramPost)
+    ]
 
     /// Verb stems that begin a recognized trailing command clause.
     private static let imperativeLeads = [
@@ -42,10 +72,39 @@ struct VoiceCommandParser {
             if let r = matchWake(in: trimmed, wake: wake) { return r }
         }
 
-        // 2) Trailing imperative form: find the last sentence and check if it
+        // 2) Built-in action phrases (e.g. "make a telegram post") at the end.
+        if let r = matchTrailingAction(in: trimmed) { return r }
+
+        // 3) Trailing imperative form: find the last sentence and check if it
         //    starts with a recognized command lead.
         if let r = matchTrailingImperative(in: trimmed) { return r }
 
+        return nil
+    }
+
+    /// Match a known action phrase at the very end of the utterance. The phrase
+    /// may be its own clause ("…done. Make a telegram post.") or trail directly.
+    private func matchTrailingAction(in text: String) -> Result? {
+        let lower = text.lowercased()
+        for (phrases, action) in Self.actionPhrases {
+            for phrase in phrases {
+                // Allow an optional leading separator/politeness and trailing
+                // punctuation around the phrase, anchored to the end.
+                let pattern = #"(?i)[\s,.;:!?-]*(?:please[\s,]*)?"#
+                    + NSRegularExpression.escapedPattern(for: phrase)
+                    + #"[\s,.!?]*$"#
+                guard let range = lower.range(of: pattern, options: .regularExpression) else { continue }
+
+                // Map the lowercased match range back to the original string.
+                let cutIndex = text.index(text.startIndex,
+                                          offsetBy: lower.distance(from: lower.startIndex, to: range.lowerBound))
+                var content = String(text[..<cutIndex])
+                    .trimmingCharacters(in: CharacterSet(charactersIn: " ,;:-\t\n"))
+                guard wordCount(content) >= 2 else { return nil }   // need real content
+                content = restoreTerminalPunctuation(content, from: text)
+                return Result(content: content, instruction: phrase, action: action)
+            }
+        }
         return nil
     }
 

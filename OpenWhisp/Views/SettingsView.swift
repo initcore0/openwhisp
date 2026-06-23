@@ -422,9 +422,25 @@ struct SettingsView: View {
             if appState.voiceCommandsEnabled {
                 TextField("Wake word (optional, e.g. \"voice note\")", text: $appState.voiceCommandWakeWord)
                     .textFieldStyle(.roundedBorder)
-                Text("End a dictation with an instruction and it's applied to the rest: \"…ship it tomorrow. Make this formal.\" Recognized commands (make this/it…, rewrite/translate/summarize this…) are stripped and the text is transformed by the AI. Works in Final paste and Preview modes; needs an AI provider above.")
+                Text("End a dictation with an instruction and it's applied to the rest: \"…ship it tomorrow. Make this formal.\" Recognized commands (make this/it…, rewrite/translate/summarize this…, make a Telegram post) are stripped and the text is transformed by the AI. Works in Final paste and Preview modes; needs an AI provider above.")
                     .font(.caption)
                     .foregroundColor(.secondary)
+
+                Divider()
+
+                Text("Telegram post prompt")
+                    .font(.caption).bold()
+                Text("Say \"make a telegram post\" (or \"сделай пост для телеграм\") at the end of a dictation to rewrite it as a Telegram post using this prompt.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                TextEditor(text: $appState.telegramPostPrompt)
+                    .font(.system(size: 12, design: .monospaced))
+                    .frame(minHeight: 70, maxHeight: 120)
+                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.3)))
+                Button("Reset to default") {
+                    appState.telegramPostPrompt = AppState.defaultTelegramPostPrompt
+                }
+                .disabled(appState.telegramPostPrompt == AppState.defaultTelegramPostPrompt)
             }
 
             Text(appState.llmProvider == "local"

@@ -225,6 +225,10 @@ dictation — fall back to the raw text), and **declare network use** per plugin
 - Extract the pipeline out of `AppState`.
 
 ### Phase 3 — Hackability *(the wedge)*
+- ✅ **Named voice actions** — built-in voice commands with curated, user-editable
+  prompts. First one: **"make a Telegram post"** (EN + RU) → shortens, lightly
+  rewrites, adds Telegram-friendly emoji. Pattern generalizes to more named
+  actions (commit message, tweet, summary, …).
 - JSON import/export for profiles / vocab / prompts.
 - Ship rule/prompt **packs** (config-only).
 - Add `ScriptPostProcessor` (stdin→stdout, opt-in, timeout, fail-open).

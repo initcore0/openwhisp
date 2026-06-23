@@ -189,6 +189,21 @@ class AppState: ObservableObject {
         didSet { UserDefaults.standard.set(voiceCommandWakeWord, forKey: "voiceCommandWakeWord") }
     }
 
+    /// Prompt used by the "make a Telegram post" voice command. Editable so the
+    /// user can tune tone / length / emoji density.
+    @Published var telegramPostPrompt: String {
+        didSet { UserDefaults.standard.set(telegramPostPrompt, forKey: "telegramPostPrompt") }
+    }
+
+    /// Default Telegram-post prompt: lightly shorten + rewrite + Telegram-friendly emoji.
+    static let defaultTelegramPostPrompt =
+        "Rewrite the user's text as a short, engaging Telegram post. "
+        + "Lightly shorten and tighten it for readability, keep the original language, "
+        + "meaning, names, URLs, and any code. Use a friendly, natural tone and add a few "
+        + "relevant emoji that render correctly in Telegram (place them inline or at the "
+        + "start of lines, do not overuse). Keep it to a few short paragraphs. "
+        + "Return only the post text, with no preamble, quotes, or markdown code fences."
+
     /// Apply per-app profile overrides (language / output mode / AI cleanup)
     /// based on the frontmost app when a dictation starts.
     @Published var perAppModesEnabled: Bool {
@@ -426,6 +441,7 @@ class AppState: ObservableObject {
         localLLMModel = UserDefaults.standard.string(forKey: "localLLMModel") ?? ""
         voiceCommandsEnabled = UserDefaults.standard.object(forKey: "voiceCommandsEnabled") as? Bool ?? false
         voiceCommandWakeWord = UserDefaults.standard.string(forKey: "voiceCommandWakeWord") ?? ""
+        telegramPostPrompt = UserDefaults.standard.string(forKey: "telegramPostPrompt") ?? Self.defaultTelegramPostPrompt
         perAppModesEnabled = UserDefaults.standard.object(forKey: "perAppModesEnabled") as? Bool ?? false
         historyEnabled = UserDefaults.standard.object(forKey: "historyEnabled") as? Bool ?? true
         profiles = AppProfileStore.load()
@@ -1311,14 +1327,21 @@ class AppState: ObservableObject {
         streamingText = finalText
 
         // Voice commands: if the user ended with a spoken instruction
-        // ("…make this formal"), strip it and transform the content via the LLM.
-        // Only in whole-text modes (the command is in the buffer at finalize) and
-        // only when an LLM is configured.
+        // ("…make this formal" / "…make a telegram post"), strip it and transform
+        // the content via the LLM. Only in whole-text modes (the command is in the
+        // buffer at finalize).
         if voiceCommandsEnabled,
            outputMode == "finalOnly" || outputMode == "preview",
-           llmConfigured,
            let command = VoiceCommandParser(wakeWord: voiceCommandWakeWord).parse(finalText) {
-            applyVoiceCommand(command)
+            if llmConfigured {
+                applyVoiceCommand(command)
+            } else {
+                // Command recognized but no LLM to run it: never type the command
+                // words. Insert the (stripped) content and tell the user why.
+                isTranscribing = false
+                insertCompletedText(command.content, originalText: command.content)
+                statusMessage = "Set up an AI provider in Settings to run voice commands"
+            }
             return
         }
 
@@ -1377,9 +1400,20 @@ class AppState: ObservableObject {
     /// the user never gets the literal command words typed.
     private func applyVoiceCommand(_ command: VoiceCommandParser.Result) {
         streamingText = command.content
-        statusMessage = "Applying command..."
+        // Built-in actions use a curated (and, for Telegram, user-editable) prompt;
+        // free-form commands use the generic "apply this transformation" directive.
+        let directive: String
+        switch command.action {
+        case .telegramPost:
+            directive = telegramPostPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? Self.defaultTelegramPostPrompt
+                : telegramPostPrompt
+            statusMessage = "Making Telegram post..."
+        case nil:
+            directive = VoiceCommandParser.directive(for: command.instruction)
+            statusMessage = "Applying command..."
+        }
         translationStatus = statusMessage
-        let directive = VoiceCommandParser.directive(for: command.instruction)
         let sessionID = activeSessionID
         translationService.processFinalText(
             text: command.content,
