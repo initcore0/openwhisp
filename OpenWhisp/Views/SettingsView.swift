@@ -109,9 +109,9 @@ struct SettingsView: View {
                 .font(.caption)
                 .foregroundColor(.secondary)
 
-            if LaunchAtLogin.requiresApproval {
+            if appState.launchAtLoginService.requiresApproval {
                 Button("Open Login Items Settings") {
-                    LaunchAtLogin.openLoginItemsSettings()
+                    appState.launchAtLoginService.openSettings()
                 }
             }
         }

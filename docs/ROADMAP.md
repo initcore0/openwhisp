@@ -242,7 +242,10 @@ makes the macOS app more testable **and** converts "port the whole app" into
   - `AudioCapture` (AVAudioEngine today → WASAPI on Windows)
   - `TextInserter` (AX + Cmd+V → UI Automation + SendInput)
   - `HotkeyMonitor` (CGEventTap → RegisterHotKey)
-  - `MenuBarUI` / app shell, `Permissions`, `LaunchAtLogin`
+  - ✅ `LaunchAtLoginService` (SMAppService → Run-key/Task Scheduler) — extracted;
+    `AppState` injects it, and the toggle re-sync logic moved to a pure,
+    unit-tested `LaunchAtLoginReconciler`.
+  - `MenuBarUI` / app shell, `Permissions`
 - Move the pipeline + post-processing + profile/vocab application out of `AppState`
   into `OpenWhispCore` (the existing SwiftPM target), behind those protocols.
 - Keep the macOS implementations as the first set of adapters. A Windows app then

@@ -58,17 +58,20 @@ class AppState: ObservableObject {
     @Published var launchAtLogin: Bool {
         didSet {
             guard launchAtLogin != oldValue else { return }
-            let applied = LaunchAtLogin.setEnabled(launchAtLogin)
+            let applied = launchAtLoginService.setEnabled(launchAtLogin)
             // Re-sync to the actual system state in case the change didn't take
             // (e.g. user disabled it in System Settings and macOS needs approval).
-            let actual = LaunchAtLogin.isEnabled
-            if applied == false || actual != launchAtLogin {
-                if LaunchAtLogin.requiresApproval {
-                    error = "OpenWhisp was added to Login Items but needs your approval in System Settings > General > Login Items."
-                }
-                if actual != launchAtLogin {
-                    launchAtLogin = actual
-                }
+            let outcome = LaunchAtLoginReconciler.reconcile(
+                desired: launchAtLogin,
+                applied: applied,
+                actual: launchAtLoginService.isEnabled,
+                requiresApproval: launchAtLoginService.requiresApproval
+            )
+            if outcome.needsApprovalMessage {
+                error = "OpenWhisp was added to Login Items but needs your approval in System Settings > General > Login Items."
+            }
+            if outcome.resolvedValue != launchAtLogin {
+                launchAtLogin = outcome.resolvedValue
             }
         }
     }
@@ -268,6 +271,10 @@ class AppState: ObservableObject {
     /// logic is testable and a port can swap the implementation. See SecretStore.
     let secretStore: SecretStore
 
+    /// Platform launch-at-login backend (SMAppService on macOS). Injected for the
+    /// same reasons. See LaunchAtLoginService.
+    let launchAtLoginService: LaunchAtLoginService
+
     var audioRecorder: AudioRecorder!
     var whisperEngine: WhisperEngine!
     var appleSpeechEngine: AppleSpeechEngine!
@@ -403,8 +410,12 @@ class AppState: ObservableObject {
         Self.languageDisplayName(for: language)
     }
 
-    private init(secretStore: SecretStore = KeychainStore()) {
+    private init(
+        secretStore: SecretStore = KeychainStore(),
+        launchAtLoginService: LaunchAtLoginService = LaunchAtLogin()
+    ) {
         self.secretStore = secretStore
+        self.launchAtLoginService = launchAtLoginService
         let savedWhisperBinaryPath = UserDefaults.standard.string(forKey: "whisperBinaryPath") ?? ""
         whisperBinaryPath = Self.preferredWhisperCLIPath(savedPath: savedWhisperBinaryPath)
 
@@ -421,7 +432,7 @@ class AppState: ObservableObject {
         triggerMode = UserDefaults.standard.string(forKey: "triggerMode") ?? "fn"
         outputMode = UserDefaults.standard.string(forKey: "outputMode") ?? "preview"
         showOverlay = UserDefaults.standard.object(forKey: "showOverlay") as? Bool ?? true
-        launchAtLogin = LaunchAtLogin.isEnabled
+        launchAtLogin = launchAtLoginService.isEnabled
         restoreClipboard = UserDefaults.standard.object(forKey: "restoreClipboard") as? Bool ?? false
         insertionMode = UserDefaults.standard.string(forKey: "insertionMode") ?? "auto"
         addTrailingSpace = UserDefaults.standard.object(forKey: "addTrailingSpace") as? Bool ?? false
