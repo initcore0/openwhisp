@@ -212,11 +212,11 @@ dictation — fall back to the raw text), and **declare network use** per plugin
 - ✅ `didWriteData` progress + Retry; first-run defaults to **tiny** (#36).
 - ✅ Gatekeeper install docs fixed in README + `release.yml` (#34).
 
-### Phase 1 — Positioning & proof
-- Lock the tagline (vs Wispr / vs VoiceInk: *MIT, zero-egress, hackable*).
-- Add a demo GIF.
-- Add the network indicator + "verify it yourself" note.
-- Add `SECURITY` / `ISSUE` / `PR` / `CONTRIBUTING` templates.
+### Phase 1 — Positioning & proof *(mostly ✅)*
+- ✅ Tagline locked (Wispr-style, fully on-device, free, open source).
+- ⬜ Demo GIF *(deferred — needs a screen recording)*.
+- ✅ Network/privacy indicator in Settings → Status + "verify it yourself" note.
+- ✅ `SECURITY` / `CONTRIBUTING` / issue + PR templates added.
 
 ### Phase 2 — Wire the chain *(plugin prerequisite + tech-debt paydown)*
 - Replace the hardcoded stages in `postProcess()` and the separate

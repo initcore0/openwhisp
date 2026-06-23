@@ -22,7 +22,8 @@ let package = Package(
                 "AppProfile.swift",
                 "TranscriptionHistory.swift",
                 "SecureFieldPolicy.swift",
-                "DownloadProgressFormatter.swift"
+                "DownloadProgressFormatter.swift",
+                "PrivacyStatus.swift"
             ]
         ),
         .testTarget(
