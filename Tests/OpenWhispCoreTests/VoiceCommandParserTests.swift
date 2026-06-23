@@ -55,4 +55,38 @@ final class VoiceCommandParserTests: XCTestCase {
     func testWakeWordButNoContent() {
         XCTAssertNil(p.parse("voice note make this formal"))
     }
+
+    // MARK: Telegram-post built-in action
+
+    func testTelegramPostEnglish() {
+        let r = pNoWake.parse("We shipped dark mode and faster sync. Make a telegram post.")
+        XCTAssertEqual(r?.action, .telegramPost)
+        XCTAssertEqual(r?.content, "We shipped dark mode and faster sync.")
+    }
+
+    func testTelegramPostPhraseVariants() {
+        XCTAssertEqual(pNoWake.parse("the release is live and tested, make this a telegram post")?.action, .telegramPost)
+        XCTAssertEqual(pNoWake.parse("our feature is great, post to telegram")?.action, .telegramPost)
+    }
+
+    func testTelegramPostRussian() {
+        let r = pNoWake.parse("Мы выпустили обновление с тёмной темой. Сделай пост для телеграм.")
+        XCTAssertEqual(r?.action, .telegramPost)
+        XCTAssertEqual(r?.content, "Мы выпустили обновление с тёмной темой.")
+    }
+
+    func testTelegramNotTriggeredByMention() {
+        // "telegram" as content, not a trailing command, must not fire.
+        XCTAssertNil(pNoWake.parse("I sent the file to him on telegram yesterday"))
+        XCTAssertNil(pNoWake.parse("please add my telegram handle to the contact list"))
+    }
+
+    func testTelegramPostNeedsContent() {
+        // Pure command, no preceding content -> not a command (don't empty text).
+        XCTAssertNil(pNoWake.parse("make a telegram post"))
+    }
+
+    func testGenericCommandHasNoAction() {
+        XCTAssertNil(pNoWake.parse("ship it on Friday. make this formal")?.action)
+    }
 }
