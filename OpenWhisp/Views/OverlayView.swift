@@ -6,6 +6,12 @@ final class OverlayWindowController {
     private var panel: NSPanel?
     private let appState: AppState
 
+    /// Bumped on every show/hide. A fade-out completion only tears the panel down
+    /// if its generation is still current — so a `show()` that arrives during a
+    /// `hide()` fade-out cancels the teardown instead of being clobbered by it
+    /// (the rapid-toggle "overlay stuck visible" bug).
+    private var generation = 0
+
     init(appState: AppState) {
         self.appState = appState
     }
@@ -33,11 +39,14 @@ final class OverlayWindowController {
             panel.isOpaque = false
             panel.hasShadow = false
             panel.hidesOnDeactivate = false
+            panel.alphaValue = 0   // a fresh panel fades in from 0
             self.panel = panel
         }
 
+        generation += 1
         positionPanel()
-        panel?.alphaValue = 0
+        // Re-targets any in-flight fade-out animation toward fully-shown. A reused
+        // panel mid-fade animates from its current alpha; a fresh one from 0.
         panel?.orderFrontRegardless()
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.16
@@ -47,12 +56,17 @@ final class OverlayWindowController {
 
     func hide() {
         guard let panel else { return }
+        generation += 1
+        let hideGeneration = generation
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.14
             panel.animator().alphaValue = 0
         } completionHandler: { [weak self, weak panel] in
             Task { @MainActor in
                 guard let self, let panel else { return }
+                // A show()/hide() happened after this fade started — don't tear
+                // down the panel the newer call is now using/animating.
+                guard hideGeneration == self.generation else { return }
                 panel.orderOut(nil)
                 panel.contentViewController = nil
                 self.panel = nil
