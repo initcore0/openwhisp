@@ -35,7 +35,8 @@ let package = Package(
                 "ConfigBundle.swift",
                 "ConfigPack.swift",
                 "ScriptPostProcessor.swift",
-                "WhisperTask.swift"
+                "WhisperTask.swift",
+                "VoiceAction.swift"
             ]
         ),
         .testTarget(

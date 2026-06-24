@@ -198,14 +198,10 @@ class AppState: ObservableObject {
         didSet { UserDefaults.standard.set(telegramPostPrompt, forKey: "telegramPostPrompt") }
     }
 
-    /// Default Telegram-post prompt: lightly shorten + rewrite + Telegram-friendly emoji.
-    static let defaultTelegramPostPrompt =
-        "Rewrite the user's text as a short, engaging Telegram post. "
-        + "Lightly shorten and tighten it for readability, keep the original language, "
-        + "meaning, names, URLs, and any code. Use a friendly, natural tone and add a few "
-        + "relevant emoji that render correctly in Telegram (place them inline or at the "
-        + "start of lines, do not overuse). Keep it to a few short paragraphs. "
-        + "Return only the post text, with no preamble, quotes, or markdown code fences."
+    /// Default Telegram-post prompt. The source of truth is the built-in voice
+    /// action (`VoiceAction.defaultTelegramPostPrompt`); this alias keeps existing
+    /// call sites (Settings reset button, init default) working.
+    static let defaultTelegramPostPrompt = VoiceAction.defaultTelegramPostPrompt
 
     /// Opt-in custom **script** post-processor. When enabled with a valid
     /// executable path, the final transcript is piped through the script (stdin →
@@ -1378,7 +1374,7 @@ class AppState: ObservableObject {
         // buffer at finalize).
         if voiceCommandsEnabled,
            outputMode == "finalOnly" || outputMode == "preview",
-           let command = VoiceCommandParser(wakeWord: voiceCommandWakeWord).parse(finalText) {
+           let command = VoiceCommandParser(wakeWord: voiceCommandWakeWord, actions: voiceActionRegistry).parse(finalText) {
             if llmConfigured {
                 applyVoiceCommand(command)
             } else {
@@ -1444,18 +1440,28 @@ class AppState: ObservableObject {
     /// Transform the dictated content per a detected spoken command and insert it.
     /// On LLM failure, falls back to inserting the (command-stripped) content so
     /// the user never gets the literal command words typed.
+    /// The voice actions in effect this session: the built-ins, with the user's
+    /// editable Telegram prompt overlaid (empty = keep the built-in default). Pack/
+    /// import-supplied actions will be merged here in a later step.
+    private var voiceActionRegistry: VoiceActionRegistry {
+        let trimmed = telegramPostPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed != VoiceAction.defaultTelegramPostPrompt else {
+            return .builtins
+        }
+        var telegram = VoiceAction.telegramPost
+        telegram.prompt = telegramPostPrompt
+        return VoiceActionRegistry.builtins.merging([telegram])
+    }
+
     private func applyVoiceCommand(_ command: VoiceCommandParser.Result) {
         streamingText = command.content
-        // Built-in actions use a curated (and, for Telegram, user-editable) prompt;
-        // free-form commands use the generic "apply this transformation" directive.
+        // Named actions use their curated prompt from the registry; free-form
+        // commands use the generic "apply this transformation" directive.
         let directive: String
-        switch command.action {
-        case .telegramPost:
-            directive = telegramPostPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                ? Self.defaultTelegramPostPrompt
-                : telegramPostPrompt
-            statusMessage = "Making Telegram post..."
-        case nil:
+        if let actionID = command.actionID, let action = voiceActionRegistry.action(id: actionID) {
+            directive = action.prompt
+            statusMessage = "Running \(action.displayName)..."
+        } else {
             directive = VoiceCommandParser.directive(for: command.instruction)
             statusMessage = "Applying command..."
         }

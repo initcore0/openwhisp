@@ -60,18 +60,18 @@ final class VoiceCommandParserTests: XCTestCase {
 
     func testTelegramPostEnglish() {
         let r = pNoWake.parse("We shipped dark mode and faster sync. Make a telegram post.")
-        XCTAssertEqual(r?.action, .telegramPost)
+        XCTAssertEqual(r?.actionID, VoiceAction.telegramPostID)
         XCTAssertEqual(r?.content, "We shipped dark mode and faster sync.")
     }
 
     func testTelegramPostPhraseVariants() {
-        XCTAssertEqual(pNoWake.parse("the release is live and tested, make this a telegram post")?.action, .telegramPost)
-        XCTAssertEqual(pNoWake.parse("our feature is great, post to telegram")?.action, .telegramPost)
+        XCTAssertEqual(pNoWake.parse("the release is live and tested, make this a telegram post")?.actionID, VoiceAction.telegramPostID)
+        XCTAssertEqual(pNoWake.parse("our feature is great, post to telegram")?.actionID, VoiceAction.telegramPostID)
     }
 
     func testTelegramPostRussian() {
         let r = pNoWake.parse("Мы выпустили обновление с тёмной темой. Сделай пост для телеграм.")
-        XCTAssertEqual(r?.action, .telegramPost)
+        XCTAssertEqual(r?.actionID, VoiceAction.telegramPostID)
         XCTAssertEqual(r?.content, "Мы выпустили обновление с тёмной темой.")
     }
 
@@ -87,6 +87,6 @@ final class VoiceCommandParserTests: XCTestCase {
     }
 
     func testGenericCommandHasNoAction() {
-        XCTAssertNil(pNoWake.parse("ship it on Friday. make this formal")?.action)
+        XCTAssertNil(pNoWake.parse("ship it on Friday. make this formal")?.actionID)
     }
 }
