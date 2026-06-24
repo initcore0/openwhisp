@@ -18,3 +18,8 @@ Package.resolved
 # Build artifacts / releases
 dist/
 build/
+
+# Stray compiled binaries from one-off swiftc harnesses (repo root)
+/main
+*.o
+a.out
