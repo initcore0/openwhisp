@@ -34,7 +34,8 @@ let package = Package(
                 "LiveChunkPipeline.swift",
                 "ConfigBundle.swift",
                 "ConfigPack.swift",
-                "ScriptPostProcessor.swift"
+                "ScriptPostProcessor.swift",
+                "WhisperTask.swift"
             ]
         ),
         .testTarget(
