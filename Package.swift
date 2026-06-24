@@ -33,7 +33,8 @@ let package = Package(
                 "AudioCapture.swift",
                 "LiveChunkPipeline.swift",
                 "ConfigBundle.swift",
-                "ConfigPack.swift"
+                "ConfigPack.swift",
+                "ScriptPostProcessor.swift"
             ]
         ),
         .testTarget(

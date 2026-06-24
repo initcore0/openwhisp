@@ -96,6 +96,7 @@ struct SettingsView: View {
                 modelSection
                 liveChunkAdvancedSection
                 profilesSection
+                scriptSection
                 historySection
                 backupSection
                 whisperSection
@@ -737,6 +738,59 @@ struct SettingsView: View {
         let when = entry.date.formatted(date: .abbreviated, time: .shortened)
         if let app = entry.appName, !app.isEmpty { return "\(app) · \(when)" }
         return when
+    }
+
+    private var scriptSection: some View {
+        settingsSection("Script Post‑processor") {
+            Toggle("Run my script on the final transcript", isOn: $appState.scriptPostProcessorEnabled)
+
+            Text("Advanced: pipe the final transcript through an executable you choose (your text on stdin, the result on stdout). Runs only at the end, with a ~2s timeout, and falls back to the original text on any error — but it does run code you point it at, so only use a script you trust.")
+                .font(.caption)
+                .foregroundColor(.secondary)
+
+            if appState.scriptPostProcessorEnabled {
+                HStack {
+                    Text(appState.scriptPostProcessorPath.isEmpty ? "No script chosen" : appState.scriptPostProcessorPath)
+                        .font(.caption)
+                        .foregroundColor(appState.scriptPostProcessorPath.isEmpty ? .secondary : .primary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Spacer()
+                    Button("Choose…") { chooseScript() }
+                    if !appState.scriptPostProcessorPath.isEmpty {
+                        Button("Clear") { appState.scriptPostProcessorPath = "" }
+                    }
+                }
+                if let warning = scriptPathWarning {
+                    Text(warning).font(.caption).foregroundColor(.orange)
+                }
+            }
+        }
+    }
+
+    /// Inline validation of the chosen script path (pure validator + FileManager).
+    private var scriptPathWarning: String? {
+        let path = appState.scriptPostProcessorPath
+        switch ScriptPathValidator.validate(
+            path,
+            fileExists: { FileManager.default.fileExists(atPath: $0) },
+            isExecutable: { FileManager.default.isExecutableFile(atPath: $0) }
+        ) {
+        case .ok, .empty: return nil
+        case .notFound: return "That file doesn't exist."
+        case .notExecutable: return "That file isn't executable (chmod +x it)."
+        }
+    }
+
+    private func chooseScript() {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = false
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.prompt = "Choose Script"
+        panel.message = "Choose an executable script to post‑process the final transcript"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        appState.scriptPostProcessorPath = url.path
     }
 
     private var backupSection: some View {
