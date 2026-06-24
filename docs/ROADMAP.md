@@ -286,7 +286,10 @@ seam, plus optionally lifting more orchestration out of `AppState`.
   prompts. First one: **"make a Telegram post"** (EN + RU) → shortens, lightly
   rewrites, adds Telegram-friendly emoji. Pattern generalizes to more named
   actions (commit message, tweet, summary, …).
-- JSON import/export for profiles / vocab / prompts.
+- ✅ **JSON import/export** for profiles / vocab / prompts — versioned, tolerant
+  `ConfigBundle` (OpenWhispCore, unit-tested); Settings → Backup & Sharing.
+  Partial bundles supported (import touches only the sections present), which is
+  the foundation packs reuse.
 - Ship rule/prompt **packs** (config-only).
 - Add `ScriptPostProcessor` (stdin→stdout, opt-in, timeout, fail-open).
 

@@ -181,6 +181,7 @@ Settings has a **Basic** and an **Advanced** tab.
 **Advanced**
 
 - Engine (Whisper vs Apple Speech), raw model picker + paths, live‑chunk tuning, whisper.cpp backend (CLI vs warm server), per‑app modes, history, permissions, diagnostics.
+- **Backup & Sharing** — export your per‑app profiles, vocabulary, and command prompts to a JSON file you can back up, hand‑edit, or share; import replaces only the sections present in the file (so a vocab‑only file touches just your vocabulary).
 
 ---
 
