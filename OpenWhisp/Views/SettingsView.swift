@@ -77,8 +77,6 @@ struct SettingsView: View {
                 microphoneSection
                 languageSection
                 qualitySection
-                formattingSection
-                vocabularySection
                 translationSection
                 outputSection
             }
@@ -92,6 +90,8 @@ struct SettingsView: View {
     private var advancedTab: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
+                formattingSection
+                vocabularySection
                 engineSection
                 modelSection
                 liveChunkAdvancedSection
@@ -386,6 +386,7 @@ struct SettingsView: View {
 
     private var translationSection: some View {
         settingsSection("AI Post-processing") {
+            // Always visible: whether AI runs at all, and where text goes (privacy).
             Toggle("Clean up text with AI after transcription", isOn: $appState.openAIEnhancementEnabled)
 
             Picker("Provider", selection: $appState.llmProvider) {
@@ -393,33 +394,43 @@ struct SettingsView: View {
                 Text("Local server (private)").tag("local")
             }
 
-            Picker("Mode", selection: $appState.openAIEnhancementMode) {
-                Text("Rephrase in same language").tag("rephrase")
-                Text("Improve Whisper translation").tag("improveTranslation")
-            }
+            Text(appState.llmProvider == "local"
+                 ? "Local server keeps everything on your machine / LAN — no data leaves to the cloud. Any OpenAI-compatible server works (llama.cpp llama-server, Ollama). Only edits final text, never live chunks."
+                 : "Whisper handles default translation locally through the language picker. OpenAI is optional and only edits final text, never live chunks.")
+                .font(.caption)
+                .foregroundColor(.secondary)
 
-            if appState.openAIEnhancementMode == "improveTranslation" {
-                Picker("Translation Language", selection: $appState.translationTargetLanguage) {
-                    Text("English").tag("en")
-                    Text("Russian").tag("ru")
+            // Provider details (mode, key/model, connection test) — collapsed.
+            DisclosureGroup("Provider details") {
+                VStack(alignment: .leading, spacing: 10) {
+                    Picker("Mode", selection: $appState.openAIEnhancementMode) {
+                        Text("Rephrase in same language").tag("rephrase")
+                        Text("Improve Whisper translation").tag("improveTranslation")
+                    }
+
+                    if appState.openAIEnhancementMode == "improveTranslation" {
+                        Picker("Translation Language", selection: $appState.translationTargetLanguage) {
+                            Text("English").tag("en")
+                            Text("Russian").tag("ru")
+                        }
+                    }
+
+                    if appState.llmProvider == "local" {
+                        localLLMFields
+                    } else {
+                        openAIFields
+                    }
+
+                    HStack {
+                        Button(appState.llmProvider == "local" ? "Test Connection" : "Validate OpenAI Key") {
+                            appState.validateOpenAIKey()
+                        }
+                        Spacer()
+                        Text(appState.translationStatus)
+                            .foregroundColor(translationStatusIsGood ? .green : .secondary)
+                    }
                 }
-            }
-
-            if appState.llmProvider == "local" {
-                localLLMFields
-            } else {
-                openAIFields
-            }
-
-            HStack {
-                Button(appState.llmProvider == "local" ? "Test Connection" : "Validate OpenAI Key") {
-                    appState.validateOpenAIKey()
-                }
-
-                Spacer()
-
-                Text(appState.translationStatus)
-                    .foregroundColor(translationStatusIsGood ? .green : .secondary)
+                .padding(.top, 4)
             }
 
             Divider()
@@ -433,49 +444,47 @@ struct SettingsView: View {
                     .font(.caption)
                     .foregroundColor(.secondary)
 
-                Divider()
-
-                Text("Telegram post prompt")
-                    .font(.caption).bold()
-                Text("Say \"make a telegram post\" (or \"сделай пост для телеграм\") at the end of a dictation to rewrite it as a Telegram post using this prompt.")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                TextEditor(text: $appState.telegramPostPrompt)
-                    .font(.system(size: 12, design: .monospaced))
-                    .frame(minHeight: 70, maxHeight: 120)
-                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.3)))
-                Button("Reset to default") {
-                    appState.telegramPostPrompt = AppState.defaultTelegramPostPrompt
-                }
-                .disabled(appState.telegramPostPrompt == AppState.defaultTelegramPostPrompt)
-
-                Divider()
-
-                Text("Active voice actions")
-                    .font(.caption).bold()
-                Text("Say one of an action's phrases at the end of a dictation to run it. Built-in actions ship with the app; more can be added by applying a pack (Backup & Sharing).")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                ForEach(appState.activeVoiceActions) { action in
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(action.displayName).font(.caption).fontWeight(.medium)
-                        Text(action.triggerPhrases.prefix(4).joined(separator: " · ")
-                             + (action.triggerPhrases.count > 4 ? " · …" : ""))
-                            .font(.caption2)
+                // Telegram prompt editor + active-actions list — collapsed.
+                DisclosureGroup("Voice actions & prompts") {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Telegram post prompt")
+                            .font(.caption).bold()
+                        Text("Say \"make a telegram post\" (or \"сделай пост для телеграм\") at the end of a dictation to rewrite it as a Telegram post using this prompt.")
+                            .font(.caption)
                             .foregroundColor(.secondary)
-                            .lineLimit(2)
+                        TextEditor(text: $appState.telegramPostPrompt)
+                            .font(.system(size: 12, design: .monospaced))
+                            .frame(minHeight: 70, maxHeight: 120)
+                            .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.3)))
+                        Button("Reset to default") {
+                            appState.telegramPostPrompt = AppState.defaultTelegramPostPrompt
+                        }
+                        .disabled(appState.telegramPostPrompt == AppState.defaultTelegramPostPrompt)
+
+                        Divider()
+
+                        Text("Active voice actions")
+                            .font(.caption).bold()
+                        Text("Say one of an action's phrases at the end of a dictation to run it. Built-in actions ship with the app; more can be added by applying a pack (Backup & Sharing).")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        ForEach(appState.activeVoiceActions) { action in
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(action.displayName).font(.caption).fontWeight(.medium)
+                                Text(action.triggerPhrases.prefix(4).joined(separator: " · ")
+                                     + (action.triggerPhrases.count > 4 ? " · …" : ""))
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                                    .lineLimit(2)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(6)
+                            .background(RoundedRectangle(cornerRadius: 6).fill(Color.secondary.opacity(0.06)))
+                        }
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(6)
-                    .background(RoundedRectangle(cornerRadius: 6).fill(Color.secondary.opacity(0.06)))
+                    .padding(.top, 4)
                 }
             }
-
-            Text(appState.llmProvider == "local"
-                 ? "Local server keeps everything on your machine / LAN — no data leaves to the cloud. Any OpenAI-compatible server works (llama.cpp llama-server, Ollama). Only edits final text, never live chunks."
-                 : "Whisper handles default translation locally through the language picker. OpenAI is optional and only edits final text, never live chunks.")
-                .font(.caption)
-                .foregroundColor(.secondary)
         }
     }
 
