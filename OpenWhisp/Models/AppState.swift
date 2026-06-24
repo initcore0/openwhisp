@@ -1448,6 +1448,9 @@ class AppState: ObservableObject {
     /// Transform the dictated content per a detected spoken command and insert it.
     /// On LLM failure, falls back to inserting the (command-stripped) content so
     /// the user never gets the literal command words typed.
+    /// Read-only view of the active voice actions, for the Settings overview.
+    var activeVoiceActions: [VoiceAction] { voiceActionRegistry.actions }
+
     /// The voice actions in effect this session: the built-ins, then the user's
     /// editable Telegram prompt overlay, then any pack/import-supplied custom
     /// actions (which can override Telegram again or add brand-new actions).
