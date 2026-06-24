@@ -16,40 +16,26 @@ struct VoiceCommandParser {
     /// Optional wake lead-in (e.g. "voice note"). Empty disables the wake form.
     var wakeWord: String
 
-    /// A recognized built-in action with a curated prompt, vs. a free-form
-    /// instruction the user spoke verbatim.
-    enum Action: String, Equatable {
-        case telegramPost
-    }
+    /// Named actions to match against (built-ins overlaid with pack/user actions).
+    /// Defaults to the built-ins so existing call sites keep working.
+    var actions: VoiceActionRegistry = .builtins
 
     struct Result: Equatable {
         let content: String
-        /// The free-form instruction the user spoke (for generic commands), or a
-        /// short label for a built-in action. AppState uses `action` (if set) to
-        /// pick a curated prompt and falls back to `instruction` otherwise.
+        /// The free-form instruction the user spoke (for generic commands), or the
+        /// matched action's first trigger phrase for a named action. AppState uses
+        /// `actionID` (if set) to pick that action's prompt, falling back to the
+        /// generic directive built from `instruction`.
         let instruction: String
-        /// Set when the command matched a known built-in action (e.g. Telegram post).
-        let action: Action?
+        /// Id of the matched named action (e.g. "telegram-post"), if any.
+        let actionID: String?
 
-        init(content: String, instruction: String, action: Action? = nil) {
+        init(content: String, instruction: String, actionID: String? = nil) {
             self.content = content
             self.instruction = instruction
-            self.action = action
+            self.actionID = actionID
         }
     }
-
-    /// Trailing phrases (matched case-insensitively) that trigger a built-in
-    /// action. English forms cover whisper's translate-to-English output; the
-    /// Russian forms cover dictation when translation is off.
-    private static let actionPhrases: [(phrases: [String], action: Action)] = [
-        ([
-            "make a telegram post", "make this a telegram post", "make it a telegram post",
-            "turn this into a telegram post", "telegram post", "post to telegram",
-            "сделай пост для телеграм", "сделай пост для телеграма",
-            "сделай телеграм пост", "пост для телеграм", "пост в телеграм",
-            "оформи как пост для телеграм"
-        ], .telegramPost)
-    ]
 
     /// Verb stems that begin a recognized trailing command clause.
     private static let imperativeLeads = [
@@ -82,28 +68,30 @@ struct VoiceCommandParser {
         return nil
     }
 
-    /// Match a known action phrase at the very end of the utterance. The phrase
-    /// may be its own clause ("…done. Make a telegram post.") or trail directly.
+    /// Match a known action's trigger phrase at the very end of the utterance. The
+    /// phrase may be its own clause ("…done. Make a telegram post.") or trail
+    /// directly. Phrases are tried longest-first so a specific phrase wins over a
+    /// shorter substring of it (e.g. "make a telegram post" before "telegram post").
     private func matchTrailingAction(in text: String) -> Result? {
         let lower = text.lowercased()
-        for (phrases, action) in Self.actionPhrases {
-            for phrase in phrases {
-                // Allow an optional leading separator/politeness and trailing
-                // punctuation around the phrase, anchored to the end.
-                let pattern = #"(?i)[\s,.;:!?-]*(?:please[\s,]*)?"#
-                    + NSRegularExpression.escapedPattern(for: phrase)
-                    + #"[\s,.!?]*$"#
-                guard let range = lower.range(of: pattern, options: .regularExpression) else { continue }
+        let candidates = actions.allPhrases
+            .sorted { $0.phrase.count > $1.phrase.count }
+        for candidate in candidates {
+            // Allow an optional leading separator/politeness and trailing
+            // punctuation around the phrase, anchored to the end.
+            let pattern = #"(?i)[\s,.;:!?-]*(?:please[\s,]*)?"#
+                + NSRegularExpression.escapedPattern(for: candidate.phrase)
+                + #"[\s,.!?]*$"#
+            guard let range = lower.range(of: pattern, options: .regularExpression) else { continue }
 
-                // Map the lowercased match range back to the original string.
-                let cutIndex = text.index(text.startIndex,
-                                          offsetBy: lower.distance(from: lower.startIndex, to: range.lowerBound))
-                var content = String(text[..<cutIndex])
-                    .trimmingCharacters(in: CharacterSet(charactersIn: " ,;:-\t\n"))
-                guard wordCount(content) >= 2 else { return nil }   // need real content
-                content = restoreTerminalPunctuation(content, from: text)
-                return Result(content: content, instruction: phrase, action: action)
-            }
+            // Map the lowercased match range back to the original string.
+            let cutIndex = text.index(text.startIndex,
+                                      offsetBy: lower.distance(from: lower.startIndex, to: range.lowerBound))
+            var content = String(text[..<cutIndex])
+                .trimmingCharacters(in: CharacterSet(charactersIn: " ,;:-\t\n"))
+            guard wordCount(content) >= 2 else { return nil }   // need real content
+            content = restoreTerminalPunctuation(content, from: text)
+            return Result(content: content, instruction: candidate.phrase, actionID: candidate.id)
         }
         return nil
     }
