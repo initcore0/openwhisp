@@ -31,7 +31,8 @@ let package = Package(
                 "HotkeyControlling.swift",
                 "TranscriptionEngine.swift",
                 "AudioCapture.swift",
-                "LiveChunkPipeline.swift"
+                "LiveChunkPipeline.swift",
+                "ConfigBundle.swift"
             ]
         ),
         .testTarget(

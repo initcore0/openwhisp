@@ -28,6 +28,9 @@ struct SettingsView: View {
     @State private var newProfileName: String = ""
     @State private var profileAddMessage: String = ""
 
+    // Config import/export feedback.
+    @State private var configMessage: String = ""
+
     private var isCustomOpenAIModel: Bool {
         openAIModelIsCustom || !SettingsView.presetOpenAIModels.contains(appState.openAIModel)
     }
@@ -92,6 +95,7 @@ struct SettingsView: View {
                 liveChunkAdvancedSection
                 profilesSection
                 historySection
+                backupSection
                 whisperSection
                 permissionsSection
                 statusSection
@@ -731,6 +735,62 @@ struct SettingsView: View {
         let when = entry.date.formatted(date: .abbreviated, time: .shortened)
         if let app = entry.appName, !app.isEmpty { return "\(app) · \(when)" }
         return when
+    }
+
+    private var backupSection: some View {
+        settingsSection("Backup & Sharing") {
+            Text("Export your per‑app profiles, vocabulary, and command prompts to a JSON file you can back up, edit, or share. Import replaces only the sections present in the file.")
+                .font(.caption)
+                .foregroundColor(.secondary)
+
+            HStack {
+                Button("Export Config…") { exportConfig() }
+                Button("Import Config…") { importConfig() }
+                Spacer()
+            }
+
+            if !configMessage.isEmpty {
+                Text(configMessage)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+        }
+    }
+
+    private func exportConfig() {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.json]
+        panel.nameFieldStringValue = "openwhisp-config.json"
+        panel.prompt = "Export"
+        panel.message = "Save your OpenWhisp config (profiles, vocabulary, prompts)"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            try appState.exportConfig(to: url)
+            configMessage = "Exported \(appState.exportConfig().summary) to \(url.lastPathComponent)."
+        } catch {
+            configMessage = "Export failed: \(error.localizedDescription)"
+        }
+    }
+
+    private func importConfig() {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = false
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowedContentTypes = [.json]
+        panel.prompt = "Import"
+        panel.message = "Choose an OpenWhisp config file to import"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            let summary = try appState.importConfig(from: url)
+            configMessage = "Imported \(summary)."
+        } catch let ConfigBundle.DecodeError.unsupportedVersion(found, supported) {
+            configMessage = "This file needs a newer OpenWhisp (config v\(found); this app supports up to v\(supported))."
+        } catch ConfigBundle.DecodeError.malformed {
+            configMessage = "Couldn't read that file — it doesn't look like an OpenWhisp config."
+        } catch {
+            configMessage = "Import failed: \(error.localizedDescription)"
+        }
     }
 
     // Inherit-aware bindings mapping the synthetic "__inherit__" tag to nil.

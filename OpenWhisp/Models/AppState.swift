@@ -1765,6 +1765,55 @@ class AppState: ObservableObject {
         textOutput.setClipboard(entry.text)
     }
 
+    // MARK: - Config import / export
+
+    /// Snapshot the user-editable config (profiles, vocabulary, prompts) as a
+    /// portable bundle. History and secrets are intentionally excluded.
+    func exportConfig() -> ConfigBundle {
+        ConfigBundle(
+            profiles: profiles,
+            vocabulary: vocabulary,
+            prompts: ConfigBundle.Prompts(
+                telegramPost: telegramPostPrompt,
+                voiceCommandWakeWord: voiceCommandWakeWord
+            )
+        )
+    }
+
+    /// Apply the sections present in `bundle` to the live settings (each setter's
+    /// didSet persists it). Sections absent from the bundle are left untouched, so
+    /// a vocab-only pack only changes vocabulary. Returns the bundle's summary for
+    /// user feedback.
+    @discardableResult
+    func applyConfig(_ bundle: ConfigBundle) -> String {
+        if let importedProfiles = bundle.profiles {
+            profiles = importedProfiles
+        }
+        if let importedVocab = bundle.vocabulary {
+            vocabulary = importedVocab
+        }
+        if let prompts = bundle.prompts {
+            if let tg = prompts.telegramPost { telegramPostPrompt = tg }
+            if let wake = prompts.voiceCommandWakeWord { voiceCommandWakeWord = wake }
+        }
+        return bundle.summary
+    }
+
+    /// Write the current config to `url` as JSON. Throws on encode/write failure.
+    func exportConfig(to url: URL) throws {
+        let data = try exportConfig().jsonData()
+        try data.write(to: url, options: .atomic)
+    }
+
+    /// Read, validate, and apply a config bundle from `url`. Throws
+    /// `ConfigBundle.DecodeError` on malformed/too-new data. Returns the summary.
+    @discardableResult
+    func importConfig(from url: URL) throws -> String {
+        let data = try Data(contentsOf: url)
+        let bundle = try ConfigBundle.decode(from: data)
+        return applyConfig(bundle)
+    }
+
     // MARK: - Model
 
     func availableModelsList() -> [(name: String, label: String, size: String)] {
