@@ -245,6 +245,13 @@ class AppState: ObservableObject {
         didSet { VocabularyStore.save(vocabulary) }
     }
 
+    /// User/pack-supplied voice actions, overlaid on the built-ins by id (a pack
+    /// can retune Telegram or add a new action like "make a tweet"). Persisted to
+    /// voice-actions.json.
+    @Published var customVoiceActions: [VoiceAction] {
+        didSet { VoiceActionStore.save(customVoiceActions) }
+    }
+
     // MARK: - Runtime State
 
     @Published var isRecording = false
@@ -492,6 +499,7 @@ class AppState: ObservableObject {
         history = TranscriptionHistoryStore.load()
         customVocabularyEnabled = UserDefaults.standard.object(forKey: "customVocabularyEnabled") as? Bool ?? true
         vocabulary = VocabularyStore.load()
+        customVoiceActions = VoiceActionStore.load()
         didCompleteOnboarding = UserDefaults.standard.bool(forKey: "didCompleteOnboarding")
 
         wireUpServices()
@@ -1440,17 +1448,21 @@ class AppState: ObservableObject {
     /// Transform the dictated content per a detected spoken command and insert it.
     /// On LLM failure, falls back to inserting the (command-stripped) content so
     /// the user never gets the literal command words typed.
-    /// The voice actions in effect this session: the built-ins, with the user's
-    /// editable Telegram prompt overlaid (empty = keep the built-in default). Pack/
-    /// import-supplied actions will be merged here in a later step.
+    /// The voice actions in effect this session: the built-ins, then the user's
+    /// editable Telegram prompt overlay, then any pack/import-supplied custom
+    /// actions (which can override Telegram again or add brand-new actions).
     private var voiceActionRegistry: VoiceActionRegistry {
+        var registry = VoiceActionRegistry.builtins
         let trimmed = telegramPostPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, trimmed != VoiceAction.defaultTelegramPostPrompt else {
-            return .builtins
+        if !trimmed.isEmpty, trimmed != VoiceAction.defaultTelegramPostPrompt {
+            var telegram = VoiceAction.telegramPost
+            telegram.prompt = telegramPostPrompt
+            registry = registry.merging([telegram])
         }
-        var telegram = VoiceAction.telegramPost
-        telegram.prompt = telegramPostPrompt
-        return VoiceActionRegistry.builtins.merging([telegram])
+        if !customVoiceActions.isEmpty {
+            registry = registry.merging(customVoiceActions)
+        }
+        return registry
     }
 
     private func applyVoiceCommand(_ command: VoiceCommandParser.Result) {
@@ -1803,8 +1815,8 @@ class AppState: ObservableObject {
         ConfigBundle(
             profiles: profiles,
             vocabulary: vocabulary,
+            actions: customVoiceActions.isEmpty ? nil : customVoiceActions,
             prompts: ConfigBundle.Prompts(
-                telegramPost: telegramPostPrompt,
                 voiceCommandWakeWord: voiceCommandWakeWord
             )
         )
@@ -1822,9 +1834,15 @@ class AppState: ObservableObject {
         if let importedVocab = bundle.vocabulary {
             vocabulary = importedVocab
         }
-        if let prompts = bundle.prompts {
-            if let tg = prompts.telegramPost { telegramPostPrompt = tg }
-            if let wake = prompts.voiceCommandWakeWord { voiceCommandWakeWord = wake }
+        if let importedActions = bundle.actions {
+            // Merge by id onto the existing custom actions (override or append),
+            // so importing a pack adds/updates actions without wiping others.
+            customVoiceActions = VoiceActionRegistry(customVoiceActions)
+                .merging(importedActions)
+                .actions
+        }
+        if let wake = bundle.prompts?.voiceCommandWakeWord {
+            voiceCommandWakeWord = wake
         }
         return bundle.summary
     }

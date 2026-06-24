@@ -104,3 +104,34 @@ extension VoiceActionRegistry {
     /// merged on top of this. Always available even with no config files.
     static let builtins = VoiceActionRegistry([.telegramPost])
 }
+
+/// Loads/saves the user's custom voice actions (pack-added or hand-edited) as
+/// JSON in Application Support. These overlay the built-ins by id.
+enum VoiceActionStore {
+    private static var fileURL: URL {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support")
+        return base
+            .appendingPathComponent("OpenWhisp", isDirectory: true)
+            .appendingPathComponent("voice-actions.json")
+    }
+
+    static func load() -> [VoiceAction] {
+        guard let data = try? Data(contentsOf: fileURL),
+              let actions = try? JSONDecoder().decode([VoiceAction].self, from: data) else {
+            return []
+        }
+        return actions
+    }
+
+    static func save(_ actions: [VoiceAction]) {
+        do {
+            let dir = fileURL.deletingLastPathComponent()
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            let data = try JSONEncoder().encode(actions)
+            try data.write(to: fileURL, options: .atomic)
+        } catch {
+            print("[VoiceActionStore] save failed: \(error.localizedDescription)")
+        }
+    }
+}

@@ -1,0 +1,20 @@
+{
+  "id": "openwhisp.tweet-action",
+  "name": "Tweet Action",
+  "description": "Add a \"make a tweet\" voice command that condenses your dictation into a single tweet.",
+  "bundle": {
+    "schemaVersion": 1,
+    "actions": [
+      {
+        "id": "tweet",
+        "displayName": "Tweet",
+        "triggerPhrases": [
+          "make a tweet", "make this a tweet", "turn this into a tweet",
+          "tweet this", "post this on twitter", "post to twitter", "post to x",
+          "сделай твит", "оформи как твит", "напиши твит"
+        ],
+        "prompt": "Rewrite the user's text as a single tweet of at most 280 characters. Tighten it to one punchy thought, keep the original language, meaning, names, URLs, and any code. You may add one or two relevant hashtags or emoji if they fit naturally. Return only the tweet text, with no preamble, quotes, or markdown code fences."
+      }
+    ]
+  }
+}
