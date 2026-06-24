@@ -448,6 +448,27 @@ struct SettingsView: View {
                     appState.telegramPostPrompt = AppState.defaultTelegramPostPrompt
                 }
                 .disabled(appState.telegramPostPrompt == AppState.defaultTelegramPostPrompt)
+
+                Divider()
+
+                Text("Active voice actions")
+                    .font(.caption).bold()
+                Text("Say one of an action's phrases at the end of a dictation to run it. Built-in actions ship with the app; more can be added by applying a pack (Backup & Sharing).")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                ForEach(appState.activeVoiceActions) { action in
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(action.displayName).font(.caption).fontWeight(.medium)
+                        Text(action.triggerPhrases.prefix(4).joined(separator: " · ")
+                             + (action.triggerPhrases.count > 4 ? " · …" : ""))
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                            .lineLimit(2)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(6)
+                    .background(RoundedRectangle(cornerRadius: 6).fill(Color.secondary.opacity(0.06)))
+                }
             }
 
             Text(appState.llmProvider == "local"

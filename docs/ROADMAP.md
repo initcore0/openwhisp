@@ -286,7 +286,8 @@ seam, plus optionally lifting more orchestration out of `AppState`.
   {id, phrases, prompt}). Built-ins ship in code (Telegram post, EN + RU);
   packs/import overlay by id (retune a prompt or add a NEW action). Demo packs:
   "Punchy Telegram Posts" (overrides Telegram) and "Tweet Action" (adds "make a
-  tweet"). A full in-app action editor is the remaining piece.
+  tweet"). Settings shows a read-only **Active voice actions** overview. A full
+  in-app action editor (add/edit phrases+prompt in the UI) is the remaining piece.
 - ✅ **JSON import/export** for profiles / vocab / prompts — versioned, tolerant
   `ConfigBundle` (OpenWhispCore, unit-tested); Settings → Backup & Sharing.
   Partial bundles supported (import touches only the sections present), which is
