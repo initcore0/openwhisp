@@ -183,14 +183,21 @@ class WhisperEngine: FileTranscriptionEngine {
 
             let process = Process()
             process.executableURL = URL(fileURLWithPath: binaryPath)
+            // Map the Language setting to whisper's (source language, translate)
+            // params. "en" => translate speech to English (-l auto --translate);
+            // see WhisperTask. The app previously sent -l en and never translated.
+            let task = WhisperTask.resolve(languageSetting: language)
             var arguments = [
                 "-m", modelPath,
                 "-f", wavPath,
-                "-l", language == "auto" ? "auto" : language,
+                "-l", task.language,
                 "--no-timestamps",
                 "-otxt",
                 "-nt"
             ]
+            if task.translate {
+                arguments.append("--translate")
+            }
             let trimmedPrompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
             if !trimmedPrompt.isEmpty {
                 arguments.append(contentsOf: ["--prompt", trimmedPrompt])
@@ -558,12 +565,18 @@ class WhisperEngine: FileTranscriptionEngine {
             data.append("\(value)\r\n".data(using: .utf8)!)
         }
 
+        // Same mapping as the CLI path (see WhisperTask): "en" => translate to
+        // English with source auto-detected, sent as translate=true + language=auto.
+        let task = WhisperTask.resolve(languageSetting: language)
         appendField("response_format", "json")
         appendField("temperature", "0.0")
         appendField("temperature_inc", "0.2")
         appendField("no_speech_thold", "0.6")
         appendField("no_timestamps", "true")
-        appendField("language", language == "auto" ? "auto" : language)
+        appendField("language", task.language)
+        if task.translate {
+            appendField("translate", "true")
+        }
         appendField("suppress_non_speech", "true")
         let trimmedPrompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmedPrompt.isEmpty {
