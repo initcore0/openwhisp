@@ -30,6 +30,8 @@ struct SettingsView: View {
 
     // Config import/export feedback.
     @State private var configMessage: String = ""
+    // Built-in config packs (loaded from the app bundle on appear).
+    @State private var configPacks: [ConfigPack] = []
 
     private var isCustomOpenAIModel: Bool {
         openAIModelIsCustom || !SettingsView.presetOpenAIModels.contains(appState.openAIModel)
@@ -749,10 +751,43 @@ struct SettingsView: View {
                 Spacer()
             }
 
+            if !configPacks.isEmpty {
+                Divider()
+                Text("Packs")
+                    .font(.subheadline).fontWeight(.medium)
+                Text("One‑click config bundles. Applying a pack changes only the sections it contains.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+
+                ForEach(configPacks) { pack in
+                    HStack(alignment: .top) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(pack.name).fontWeight(.medium)
+                            Text(pack.packDescription)
+                                .font(.caption).foregroundColor(.secondary)
+                            Text("Applies: \(pack.contentsSummary)")
+                                .font(.caption2).foregroundColor(.secondary)
+                        }
+                        Spacer()
+                        Button("Apply") {
+                            let summary = appState.applyPack(pack)
+                            configMessage = "Applied “\(pack.name)” (\(summary))."
+                        }
+                    }
+                    .padding(8)
+                    .background(RoundedRectangle(cornerRadius: 8).fill(Color.secondary.opacity(0.08)))
+                }
+            }
+
             if !configMessage.isEmpty {
                 Text(configMessage)
                     .font(.caption)
                     .foregroundColor(.secondary)
+            }
+        }
+        .onAppear {
+            if configPacks.isEmpty {
+                configPacks = appState.bundledConfigPacks()
             }
         }
     }

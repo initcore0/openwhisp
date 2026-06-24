@@ -32,7 +32,8 @@ let package = Package(
                 "TranscriptionEngine.swift",
                 "AudioCapture.swift",
                 "LiveChunkPipeline.swift",
-                "ConfigBundle.swift"
+                "ConfigBundle.swift",
+                "ConfigPack.swift"
             ]
         ),
         .testTarget(
