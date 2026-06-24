@@ -26,7 +26,13 @@ enum ScriptRunner {
         let stdoutPipe = Pipe()
         process.standardInput = stdinPipe
         process.standardOutput = stdoutPipe
-        process.standardError = Pipe()   // swallow stderr; never block on it
+        // Discard stderr to /dev/null so a script writing lots of stderr can't
+        // block on a full, undrained pipe buffer (which would force a timeout).
+        process.standardError = FileHandle.nullDevice
+        // Run the script in its OWN process group so that if we have to kill it we
+        // can signal the whole group — killing any subprocesses it spawned that
+        // would otherwise keep the stdout pipe open and the reader blocked.
+        process.environment = ProcessInfo.processInfo.environment
 
         do {
             try process.run()
@@ -35,6 +41,10 @@ enum ScriptRunner {
                 original: input, stdout: nil, exitCode: nil, timedOut: false, launchFailed: true
             )
         }
+        let pid = process.processIdentifier
+        // Put the child in its own process group (best-effort; ignore EACCES if it
+        // already exec'd). Lets us SIGKILL(-pgid) to reap daemonized grandchildren.
+        setpgid(pid, pid)
 
         // Feed stdin then close so the script sees EOF. Guard the write — a script
         // that exits without reading would otherwise raise SIGPIPE.
@@ -62,12 +72,25 @@ enum ScriptRunner {
         }
         if waitGroup.wait(timeout: deadline) == .timedOut {
             timedOut = true
-            process.terminate()                       // SIGTERM
+            process.terminate()                       // SIGTERM to the child
             if waitGroup.wait(timeout: .now() + 0.25) == .timedOut {
-                kill(process.processIdentifier, SIGKILL)  // hard stop if it ignores SIGTERM
+                kill(-pid, SIGKILL)                   // SIGKILL the whole group
+                kill(pid, SIGKILL)                    // and the child directly, in case setpgid lost the race
             }
         }
-        _ = readGroup.wait(timeout: .now() + 0.5)
+
+        // We must touch `stdoutData` only AFTER the reader block completes (else a
+        // data race). On the happy path the child has exited, the write end is
+        // closed, and the reader hits EOF on its own — give it a brief grace.
+        if readGroup.wait(timeout: .now() + 0.5) == .timedOut {
+            // A killed script left a grandchild holding the pipe open, so the
+            // reader is still blocked. Force EOF by closing the read end, then wait
+            // for the (now-unblocked) reader to finish — this prevents an orphaned
+            // reader thread/FD leak and still establishes the happens-before edge
+            // we need before reading `stdoutData`.
+            try? stdoutPipe.fileHandleForReading.close()
+            readGroup.wait()
+        }
 
         let exitCode: Int32? = timedOut ? nil : process.terminationStatus
         let stdout = String(data: stdoutData, encoding: .utf8)
