@@ -1,0 +1,11 @@
+{
+  "id": "openwhisp.concise-telegram",
+  "name": "Punchy Telegram Posts",
+  "description": "Swap the \"make a Telegram post\" prompt for a punchier, very-short variant with light emoji.",
+  "bundle": {
+    "schemaVersion": 1,
+    "prompts": {
+      "telegramPost": "Rewrite the user's text as a punchy, very short Telegram post. Cut it to the essentials — one or two tight sentences, no fluff. Keep the original language, meaning, names, URLs, and any code. Add at most one or two relevant emoji. Return only the post text, with no preamble, quotes, or markdown code fences."
+    }
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "id": "openwhisp.developer-vocabulary",
+  "name": "Developer Vocabulary",
+  "description": "Bias whisper toward common dev tools, languages, and brand names, plus fix-ups for terms it routinely mishears.",
+  "bundle": {
+    "schemaVersion": 1,
+    "vocabulary": {
+      "terms": [
+        "Claude", "Anthropic", "OpenWhisp", "kubectl", "Kubernetes", "Docker",
+        "Postgres", "PostgreSQL", "Redis", "nginx", "GraphQL", "TypeScript",
+        "JavaScript", "Python", "Rust", "Swift", "SwiftUI", "Xcode", "GitHub",
+        "GitLab", "OAuth", "JWT", "Webhook", "API", "CLI", "SDK", "JSON", "YAML",
+        "Terraform", "Ansible", "CI/CD", "Grafana", "Prometheus", "async", "await"
+      ],
+      "substitutions": [
+        { "id": "00000000-0000-0000-0000-0000000000d1", "from": "clod code", "to": "Claude Code" },
+        { "id": "00000000-0000-0000-0000-0000000000d2", "from": "cube cuddle", "to": "kubectl" },
+        { "id": "00000000-0000-0000-0000-0000000000d3", "from": "cuber netties", "to": "Kubernetes" },
+        { "id": "00000000-0000-0000-0000-0000000000d4", "from": "post gres", "to": "Postgres" },
+        { "id": "00000000-0000-0000-0000-0000000000d5", "from": "java script", "to": "JavaScript" },
+        { "id": "00000000-0000-0000-0000-0000000000d6", "from": "type script", "to": "TypeScript" },
+        { "id": "00000000-0000-0000-0000-0000000000d7", "from": "git hub", "to": "GitHub" }
+      ]
+    }
+  }
+}

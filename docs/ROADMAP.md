@@ -290,7 +290,10 @@ seam, plus optionally lifting more orchestration out of `AppState`.
   `ConfigBundle` (OpenWhispCore, unit-tested); Settings → Backup & Sharing.
   Partial bundles supported (import touches only the sections present), which is
   the foundation packs reuse.
-- Ship rule/prompt **packs** (config-only).
+- ✅ **Config packs** (config-only) — named `ConfigPack` bundles shipped in
+  Resources/packs (Developer Vocabulary, Punchy Telegram Posts), applied one-click
+  via the same import path. Pure `ConfigPack.parseAll` (sort/dedup/skip-bad) is
+  unit-tested, and a test loads the shipped packs so an authoring typo fails CI.
 - Add `ScriptPostProcessor` (stdin→stdout, opt-in, timeout, fail-open).
 
 ### Phase 4 — Output & ergonomics

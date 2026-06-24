@@ -1814,6 +1814,29 @@ class AppState: ObservableObject {
         return applyConfig(bundle)
     }
 
+    /// Built-in config packs shipped in the app bundle (Resources/packs/*.json).
+    /// Parsing/sorting/dedup is done by the pure `ConfigPack.parseAll`; this just
+    /// reads the directory. Bad/too-new pack files are skipped, not fatal.
+    func bundledConfigPacks() -> [ConfigPack] {
+        guard let dir = Bundle.main.resourceURL?.appendingPathComponent("packs", isDirectory: true),
+              let names = try? FileManager.default.contentsOfDirectory(atPath: dir.path) else {
+            return []
+        }
+        let files: [(name: String, data: Data)] = names
+            .filter { $0.hasSuffix(".json") }
+            .compactMap { name in
+                guard let data = try? Data(contentsOf: dir.appendingPathComponent(name)) else { return nil }
+                return (name, data)
+            }
+        return ConfigPack.parseAll(files)
+    }
+
+    /// Apply a pack's bundle (same path as a hand-imported file). Returns the summary.
+    @discardableResult
+    func applyPack(_ pack: ConfigPack) -> String {
+        applyConfig(pack.bundle)
+    }
+
     // MARK: - Model
 
     func availableModelsList() -> [(name: String, label: String, size: String)] {
