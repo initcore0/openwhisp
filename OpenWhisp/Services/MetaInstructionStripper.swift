@@ -21,7 +21,20 @@ enum MetaInstructionStripper {
         // "transcribe this/it/that ..."
         #"transcribe (?:this|it|that)(?: (?:in ?to|to) [a-z]+)?"#,
         // bare "in English/Russian/..." as a trailing language directive
-        #"in (?:english|russian|spanish|french|german|italian|portuguese|japanese|chinese|korean|arabic)"#
+        #"in (?:english|russian|spanish|french|german|italian|portuguese|japanese|chinese|korean|arabic)"#,
+
+        // --- Russian ---
+        // When dictating in Russian with translate-on, whisper renders the Russian
+        // command ("переведи на английский"). It must be stripped here, before the
+        // text reaches the LLM — otherwise the model treats it as content and
+        // "executes" it, baking the instruction into the translated output.
+        // "переведи(те)/переводи(те) [это|этот текст|текст|всё это] на <язык>"
+        #"перевед[иь](?:те)?(?: (?:это|этот текст|текст|всё это|все это|сообщение))? на [а-яё]+"#,
+        #"переводи(?:те)?(?: (?:это|этот текст|текст|всё это|все это|сообщение))? на [а-яё]+"#,
+        // "переведи это/текст" without an explicit language.
+        #"перевед[иь](?:те)? (?:это|этот текст|текст|всё это|все это|сообщение)"#,
+        // bare "на английский/русский/…" as a trailing language directive.
+        #"на (?:английский|русский|испанский|французский|немецкий|итальянский|португальский|японский|китайский|корейский|арабский)"#
     ]
 
     /// Strip a trailing translate/transcribe instruction if present. Returns the
@@ -40,8 +53,8 @@ enum MetaInstructionStripper {
             // the preceding sentence keeps its own "?"/"!"/"." (e.g. "...how are
             // you? Please translate…" → keep the "?"). Allows an optional
             // politeness lead-in ("Please"/"could you"/…) right before the command.
-            let lead = #"[\s,;:-]*(?:(?:could you|can you|would you|please|kindly)[\s,]*)*"#
-            let trail = #"(?:[\s,]*please)?[\s,.!?]*$"#
+            let lead = #"[\s,;:-]*(?:(?:could you|can you|would you|please|kindly|пожалуйста|будьте добры|будь добр[а]?)[\s,]*)*"#
+            let trail = #"(?:[\s,]*(?:please|пожалуйста))?[\s,.!?]*$"#
             let full = #"(?i)"# + lead + pattern + trail
             guard let range = trimmed.range(of: full, options: .regularExpression) else { continue }
 

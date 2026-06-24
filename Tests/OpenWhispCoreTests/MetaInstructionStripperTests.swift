@@ -114,4 +114,45 @@ final class MetaInstructionStripperTests: XCTestCase {
         let s = "please review the document by Monday"
         XCTAssertEqual(MetaInstructionStripper.strip(s), s)
     }
+
+    // MARK: Russian translate command (dictated in RU with translate-on)
+
+    // These are the exact transcripts whisper produced for the reported bug — the
+    // Russian command must be stripped BEFORE the text reaches the LLM, else the
+    // model "executes" it and bakes the instruction into the translated output.
+    func testRussianTranslateStrippedExclamation() {
+        XCTAssertEqual(
+            MetaInstructionStripper.strip("Всем привет! Пожалуйста, переведи на английский!"),
+            "Всем привет!")
+    }
+
+    func testRussianTranslateStrippedPeriod() {
+        XCTAssertEqual(
+            MetaInstructionStripper.strip("Всем привет, пожалуйста переведи на английский."),
+            "Всем привет.")
+    }
+
+    func testRussianTranslateNoPolitenessLead() {
+        XCTAssertEqual(
+            MetaInstructionStripper.strip("Привет всем. Переведи на английский."),
+            "Привет всем.")
+    }
+
+    func testRussianTranslateWithObjectWord() {
+        XCTAssertEqual(
+            MetaInstructionStripper.strip("Запиши заметку про встречу переведи это на английский"),
+            "Запиши заметку про встречу.")
+    }
+
+    func testRussianCommandOnlyIsLeftUntouched() {
+        // No real content before the command — never empty the text.
+        let s = "Переведи на английский."
+        XCTAssertEqual(MetaInstructionStripper.strip(s), s)
+    }
+
+    func testRussianMentioningLanguageIsNotStripped() {
+        // "учу английский язык" is ordinary content, not a "на <язык>" directive.
+        let s = "Я учу английский язык каждый день."
+        XCTAssertEqual(MetaInstructionStripper.strip(s), s)
+    }
 }
