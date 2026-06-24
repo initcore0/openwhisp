@@ -204,6 +204,10 @@ With voice commands enabled, ending a dictation with a recognized instruction ap
 
 Recognized leads include "make this/it…", "rewrite/rephrase this…", "translate this to…", "summarize this", plus an optional wake word. Works in **Final** and **Preview** modes and needs an AI provider configured. (Trailing translate/transcribe instructions are stripped from output even with voice commands off, so dictating in Russian and saying "translate this into English" won't leave that phrase in your text.)
 
+### Script post‑processor (advanced)
+
+Settings → Advanced → **Script Post‑processor** lets you pipe the **final** transcript through any executable you choose: your text arrives on **stdin**, and whatever the script prints to **stdout** is inserted instead. Off by default. It runs only at the end of a dictation, with a **~2 second timeout**, and **fails open** — on any error, timeout, non‑zero exit, or empty output, your original transcript is used unchanged. It does run code you point it at, so only use a script you trust. Example (uppercase): a script that runs `tr '[:lower:]' '[:upper:]'`.
+
 ---
 
 ## Privacy

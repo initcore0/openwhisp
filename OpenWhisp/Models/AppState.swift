@@ -207,6 +207,17 @@ class AppState: ObservableObject {
         + "start of lines, do not overuse). Keep it to a few short paragraphs. "
         + "Return only the post text, with no preamble, quotes, or markdown code fences."
 
+    /// Opt-in custom **script** post-processor. When enabled with a valid
+    /// executable path, the final transcript is piped through the script (stdin →
+    /// stdout) just before insertion. Off by default; fail-open (any error/timeout
+    /// keeps the original text). See ScriptRunner / ScriptOutcome.
+    @Published var scriptPostProcessorEnabled: Bool {
+        didSet { UserDefaults.standard.set(scriptPostProcessorEnabled, forKey: "scriptPostProcessorEnabled") }
+    }
+    @Published var scriptPostProcessorPath: String {
+        didSet { UserDefaults.standard.set(scriptPostProcessorPath, forKey: "scriptPostProcessorPath") }
+    }
+
     /// Apply per-app profile overrides (language / output mode / AI cleanup)
     /// based on the frontmost app when a dictation starts.
     @Published var perAppModesEnabled: Bool {
@@ -477,6 +488,8 @@ class AppState: ObservableObject {
         voiceCommandsEnabled = UserDefaults.standard.object(forKey: "voiceCommandsEnabled") as? Bool ?? false
         voiceCommandWakeWord = UserDefaults.standard.string(forKey: "voiceCommandWakeWord") ?? ""
         telegramPostPrompt = UserDefaults.standard.string(forKey: "telegramPostPrompt") ?? Self.defaultTelegramPostPrompt
+        scriptPostProcessorEnabled = UserDefaults.standard.object(forKey: "scriptPostProcessorEnabled") as? Bool ?? false
+        scriptPostProcessorPath = UserDefaults.standard.string(forKey: "scriptPostProcessorPath") ?? ""
         perAppModesEnabled = UserDefaults.standard.object(forKey: "perAppModesEnabled") as? Bool ?? false
         historyEnabled = UserDefaults.standard.object(forKey: "historyEnabled") as? Bool ?? true
         profiles = AppProfileStore.load()
@@ -1488,6 +1501,17 @@ class AppState: ObservableObject {
             finishSessionUI()
             return
         }
+
+        // Opt-in custom script post-processor: pipe the final text through the
+        // user's executable (stdin -> stdout) as the last transform before
+        // insertion. Bounded to ~2s and fail-open (any error/timeout/empty output
+        // keeps the original), so a broken script can't break dictation.
+        var text = text
+        if scriptPostProcessorEnabled, !scriptPostProcessorPath.isEmpty {
+            statusMessage = "Running script..."
+            text = ScriptRunner.run(text, scriptPath: scriptPostProcessorPath)
+        }
+
         streamingText = text
 
         // Decide purely from session SNAPSHOTS, never the live @Published

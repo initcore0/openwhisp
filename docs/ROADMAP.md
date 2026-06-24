@@ -281,7 +281,7 @@ seam, plus optionally lifting more orchestration out of `AppState`.
 - **A full Windows port stays out of scope for the core team** (L–XL); this stage
   only makes it *possible* without a rewrite.
 
-### Phase 3 — Hackability *(the wedge)*
+### Phase 3 — Hackability *(the wedge)* — ✅ complete
 - ✅ **Named voice actions** — built-in voice commands with curated, user-editable
   prompts. First one: **"make a Telegram post"** (EN + RU) → shortens, lightly
   rewrites, adds Telegram-friendly emoji. Pattern generalizes to more named
@@ -294,7 +294,11 @@ seam, plus optionally lifting more orchestration out of `AppState`.
   Resources/packs (Developer Vocabulary, Punchy Telegram Posts), applied one-click
   via the same import path. Pure `ConfigPack.parseAll` (sort/dedup/skip-bad) is
   unit-tested, and a test loads the shipped packs so an authoring typo fails CI.
-- Add `ScriptPostProcessor` (stdin→stdout, opt-in, timeout, fail-open).
+- ✅ **Script post-processor** (stdin→stdout, opt-in, timeout, fail-open) — pipe
+  the final transcript through a user-chosen executable just before insertion.
+  Off by default; ~2s timeout; any error/timeout/empty output keeps the original
+  text. Pure `ScriptOutcome`/`ScriptPathValidator` (decision + validation) unit-
+  tested; the `Process`/timeout glue (`ScriptRunner`) verified end-to-end.
 
 ### Phase 4 — Output & ergonomics
 - `OutputTarget` protocol: file / webhook / Notion / Things / Shortcuts.
