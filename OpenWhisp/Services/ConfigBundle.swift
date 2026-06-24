@@ -19,15 +19,16 @@ struct ConfigBundle: Codable, Equatable {
     var profiles: [AppProfile]?
     /// Custom vocabulary (terms + substitutions).
     var vocabulary: Vocabulary?
-    /// Named-command prompts.
+    /// Named voice actions to add or override (by id) on top of the built-ins —
+    /// e.g. retune the Telegram prompt, or add a brand-new "make a tweet" action.
+    var actions: [VoiceAction]?
+    /// Misc voice-command config that isn't a named action.
     var prompts: Prompts?
 
     static let currentSchemaVersion = 1
 
-    /// User-editable prompt/config strings for the voice-command system.
+    /// Voice-command config that isn't a per-action prompt.
     struct Prompts: Codable, Equatable {
-        /// Prompt used for the built-in "make a Telegram post" action.
-        var telegramPost: String?
         /// Wake word that introduces a spoken command (e.g. "computer").
         var voiceCommandWakeWord: String?
     }
@@ -36,11 +37,13 @@ struct ConfigBundle: Codable, Equatable {
         schemaVersion: Int = ConfigBundle.currentSchemaVersion,
         profiles: [AppProfile]? = nil,
         vocabulary: Vocabulary? = nil,
+        actions: [VoiceAction]? = nil,
         prompts: Prompts? = nil
     ) {
         self.schemaVersion = schemaVersion
         self.profiles = profiles
         self.vocabulary = vocabulary
+        self.actions = actions
         self.prompts = prompts
     }
 
@@ -92,11 +95,11 @@ struct ConfigBundle: Codable, Equatable {
             if t > 0 { parts.append("\(t) vocab term\(t == 1 ? "" : "s")") }
             if s > 0 { parts.append("\(s) substitution\(s == 1 ? "" : "s")") }
         }
-        if let prompts {
-            var promptCount = 0
-            if let p = prompts.telegramPost, !p.isEmpty { promptCount += 1 }
-            if let w = prompts.voiceCommandWakeWord, !w.isEmpty { promptCount += 1 }
-            if promptCount > 0 { parts.append("\(promptCount) prompt\(promptCount == 1 ? "" : "s")") }
+        if let actions, !actions.isEmpty {
+            parts.append("\(actions.count) voice action\(actions.count == 1 ? "" : "s")")
+        }
+        if let w = prompts?.voiceCommandWakeWord, !w.isEmpty {
+            parts.append("wake word")
         }
         return parts.isEmpty ? "nothing" : parts.joined(separator: ", ")
     }

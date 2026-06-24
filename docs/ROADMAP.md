@@ -282,10 +282,11 @@ seam, plus optionally lifting more orchestration out of `AppState`.
   only makes it *possible* without a rewrite.
 
 ### Phase 3 — Hackability *(the wedge)* — ✅ complete
-- ✅ **Named voice actions** — built-in voice commands with curated, user-editable
-  prompts. First one: **"make a Telegram post"** (EN + RU) → shortens, lightly
-  rewrites, adds Telegram-friendly emoji. Pattern generalizes to more named
-  actions (commit message, tweet, summary, …).
+- ✅ **Named voice actions** — now a data-driven registry (`VoiceAction` =
+  {id, phrases, prompt}). Built-ins ship in code (Telegram post, EN + RU);
+  packs/import overlay by id (retune a prompt or add a NEW action). Demo packs:
+  "Punchy Telegram Posts" (overrides Telegram) and "Tweet Action" (adds "make a
+  tweet"). A full in-app action editor is the remaining piece.
 - ✅ **JSON import/export** for profiles / vocab / prompts — versioned, tolerant
   `ConfigBundle` (OpenWhispCore, unit-tested); Settings → Backup & Sharing.
   Partial bundles supported (import touches only the sections present), which is
