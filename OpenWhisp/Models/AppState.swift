@@ -192,16 +192,6 @@ class AppState: ObservableObject {
         didSet { UserDefaults.standard.set(voiceCommandWakeWord, forKey: "voiceCommandWakeWord") }
     }
 
-    /// Prompt used by the "make a Telegram post" voice command. Editable so the
-    /// user can tune tone / length / emoji density.
-    @Published var telegramPostPrompt: String {
-        didSet { UserDefaults.standard.set(telegramPostPrompt, forKey: "telegramPostPrompt") }
-    }
-
-    /// Default Telegram-post prompt. The source of truth is the built-in voice
-    /// action (`VoiceAction.defaultTelegramPostPrompt`); this alias keeps existing
-    /// call sites (Settings reset button, init default) working.
-    static let defaultTelegramPostPrompt = VoiceAction.defaultTelegramPostPrompt
 
     /// Opt-in custom **script** post-processor. When enabled with a valid
     /// executable path, the final transcript is piped through the script (stdin →
@@ -490,7 +480,6 @@ class AppState: ObservableObject {
         localLLMModel = UserDefaults.standard.string(forKey: "localLLMModel") ?? ""
         voiceCommandsEnabled = UserDefaults.standard.object(forKey: "voiceCommandsEnabled") as? Bool ?? false
         voiceCommandWakeWord = UserDefaults.standard.string(forKey: "voiceCommandWakeWord") ?? ""
-        telegramPostPrompt = UserDefaults.standard.string(forKey: "telegramPostPrompt") ?? Self.defaultTelegramPostPrompt
         scriptPostProcessorEnabled = UserDefaults.standard.object(forKey: "scriptPostProcessorEnabled") as? Bool ?? false
         scriptPostProcessorPath = UserDefaults.standard.string(forKey: "scriptPostProcessorPath") ?? ""
         perAppModesEnabled = UserDefaults.standard.object(forKey: "perAppModesEnabled") as? Bool ?? false
@@ -501,6 +490,11 @@ class AppState: ObservableObject {
         vocabulary = VocabularyStore.load()
         customVoiceActions = VoiceActionStore.load()
         didCompleteOnboarding = UserDefaults.standard.bool(forKey: "didCompleteOnboarding")
+
+        // All stored properties are now initialized; safe to run migrations that
+        // read/mutate them. One-time: fold a legacy `telegramPostPrompt` (now
+        // unified into customVoiceActions) into a telegram-post override.
+        Self.migrateLegacyTelegramPrompt(into: &customVoiceActions)
 
         wireUpServices()
         overlayController = OverlayWindowController(appState: self)
@@ -1448,24 +1442,62 @@ class AppState: ObservableObject {
     /// Transform the dictated content per a detected spoken command and insert it.
     /// On LLM failure, falls back to inserting the (command-stripped) content so
     /// the user never gets the literal command words typed.
-    /// Read-only view of the active voice actions, for the Settings overview.
+    /// Read-only view of the active voice actions, for the Settings overview/editor.
     var activeVoiceActions: [VoiceAction] { voiceActionRegistry.actions }
 
-    /// The voice actions in effect this session: the built-ins, then the user's
-    /// editable Telegram prompt overlay, then any pack/import-supplied custom
-    /// actions (which can override Telegram again or add brand-new actions).
+    /// The voice actions in effect this session: the built-ins overlaid with the
+    /// user's custom actions (overrides built-ins by id, plus any brand-new ones).
+    /// `customVoiceActions` is the single source of overlays — the Settings editor,
+    /// imports, and packs all write here.
     private var voiceActionRegistry: VoiceActionRegistry {
-        var registry = VoiceActionRegistry.builtins
-        let trimmed = telegramPostPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmed.isEmpty, trimmed != VoiceAction.defaultTelegramPostPrompt {
+        customVoiceActions.isEmpty
+            ? .builtins
+            : VoiceActionRegistry.builtins.merging(customVoiceActions)
+    }
+
+    // MARK: Voice-action editor support
+
+    /// Upsert an edited/added action into the custom overlay (override-or-append
+    /// by id). Used by the Settings editor.
+    func upsertVoiceAction(_ action: VoiceAction) {
+        customVoiceActions = VoiceActionRegistry(customVoiceActions).merging([action]).actions
+    }
+
+    /// Remove a custom action by id. Built-in ids can't be removed (use reset);
+    /// removing a custom override of a built-in just reverts it to the built-in.
+    func removeVoiceAction(id: String) {
+        customVoiceActions.removeAll { $0.id == id }
+    }
+
+    /// True if `id` is a built-in action (can be reset but not deleted).
+    func isBuiltinVoiceAction(id: String) -> Bool {
+        VoiceActionRegistry.builtins.action(id: id) != nil
+    }
+
+    /// True if `id` currently has a custom override (a built-in that's been edited,
+    /// or a user-added action).
+    func hasCustomOverride(id: String) -> Bool {
+        customVoiceActions.contains { $0.id == id }
+    }
+
+    /// Reset a built-in action to its shipped definition by dropping any override.
+    func resetVoiceAction(id: String) {
+        customVoiceActions.removeAll { $0.id == id }
+    }
+
+    /// One-time migration of the removed `telegramPostPrompt` setting into the
+    /// unified customVoiceActions overlay. No-op once migrated (key removed).
+    private static func migrateLegacyTelegramPrompt(into actions: inout [VoiceAction]) {
+        guard let legacy = UserDefaults.standard.string(forKey: "telegramPostPrompt") else { return }
+        let trimmed = legacy.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty, trimmed != VoiceAction.defaultTelegramPostPrompt,
+           !actions.contains(where: { $0.id == VoiceAction.telegramPostID }) {
             var telegram = VoiceAction.telegramPost
-            telegram.prompt = telegramPostPrompt
-            registry = registry.merging([telegram])
+            telegram.prompt = legacy
+            actions.append(telegram)
+            VoiceActionStore.save(actions)
         }
-        if !customVoiceActions.isEmpty {
-            registry = registry.merging(customVoiceActions)
-        }
-        return registry
+        UserDefaults.standard.removeObject(forKey: "telegramPostPrompt")
     }
 
     private func applyVoiceCommand(_ command: VoiceCommandParser.Result) {

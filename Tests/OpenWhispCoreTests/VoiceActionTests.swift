@@ -57,6 +57,32 @@ final class VoiceActionRegistryTests: XCTestCase {
         XCTAssertEqual(base.actions.map(\.id), ["a"], "merging must not mutate the receiver")
     }
 
+    // MARK: Editor semantics (override built-in, then reset back)
+
+    func testEditBuiltinThenResetRestoresShippedDefinition() {
+        // Editor flow modeled at the registry/overlay level: a custom override of a
+        // built-in changes the effective action; dropping that override restores it.
+        var custom: [VoiceAction] = []
+        var tg = VoiceAction.telegramPost
+        tg.prompt = "edited prompt"
+        custom = VoiceActionRegistry(custom).merging([tg]).actions   // upsert
+        XCTAssertEqual(VoiceActionRegistry.builtins.merging(custom)
+                        .action(id: VoiceAction.telegramPostID)?.prompt, "edited prompt")
+
+        custom.removeAll { $0.id == VoiceAction.telegramPostID }     // reset
+        XCTAssertEqual(VoiceActionRegistry.builtins.merging(custom)
+                        .action(id: VoiceAction.telegramPostID)?.prompt,
+                       VoiceAction.defaultTelegramPostPrompt)
+    }
+
+    func testCustomActionAddThenDelete() {
+        var custom: [VoiceAction] = []
+        custom = VoiceActionRegistry(custom).merging([action("tweet", ["make a tweet"])]).actions
+        XCTAssertNotNil(VoiceActionRegistry.builtins.merging(custom).action(id: "tweet"))
+        custom.removeAll { $0.id == "tweet" }
+        XCTAssertNil(VoiceActionRegistry.builtins.merging(custom).action(id: "tweet"))
+    }
+
     // MARK: Codable round-trip (so packs can carry actions later)
 
     func testCodableRoundTrip() throws {
