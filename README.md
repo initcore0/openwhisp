@@ -176,7 +176,7 @@ Settings has a **Basic** and an **Advanced** tab.
 - **Hotkey** — Fn / Globe or Control+Space.
 - **Microphone** — input device.
 - **Language** — 12 languages + Auto Detect; choose **English** to have whisper translate non‑English speech to English.
-- **Quality** — Faster / Balanced / Best (maps to Whisper models; downloads on demand).
+- **Quality** — Faster / Balanced / **Best (Large v3 Turbo, recommended)** — maps to Whisper models; downloads on demand. Turbo is near top accuracy and still fast on Apple Silicon.
 - **AI Post‑processing** — the on/off toggle and provider (OpenAI **or** local server) are always visible (they decide whether text leaves your machine); provider details (mode, key/model, connection test) and the voice‑actions/prompt editor are tucked into collapsible "▸" groups.
 - **Text Output** — insertion method, output mode, overlay, trailing space, clipboard restore.
 

@@ -128,8 +128,11 @@ struct SettingsView: View {
     // when the active model isn't one of the tiers (e.g. set via Advanced).
     private static let qualityTiers: [(label: String, model: String)] = [
         ("Faster — quick notes", "base"),
-        ("Balanced — recommended", "small"),
-        ("Best — most accurate, slowest", "large-v3-turbo")
+        ("Balanced — good all-rounder", "small"),
+        // large-v3-turbo is the recommended tier: near large-v3 accuracy at
+        // ~2.3–4× the speed (it's faster than large-v3, not slower). See
+        // docs/ASR_ALTERNATIVES.md.
+        ("Best — most accurate, recommended", "large-v3-turbo")
     ]
     private static let customQualityTag = "__custom_model__"
 
@@ -197,7 +200,7 @@ struct SettingsView: View {
 
             modelDownloadStatusView
 
-            Text("Higher quality is more accurate but slower and uses more memory. Models download automatically on first use and run entirely on your Mac. For specific models or paths, see Advanced.")
+            Text("“Best” (Large v3 Turbo) is the recommended choice — near top accuracy and still fast on Apple Silicon, with full multilingual + translate. Larger models use more memory and download on first use; everything runs entirely on your Mac. For specific models or paths, see Advanced.")
                 .font(.caption)
                 .foregroundColor(.secondary)
         }
