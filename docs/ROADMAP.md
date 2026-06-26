@@ -308,7 +308,10 @@ seam, plus optionally lifting more orchestration out of `AppState`.
 - Insert-verification; remappable hotkey + toggle mode.
 
 ### Phase 5 — Bigger bets *(valuable, large)*
-- Whisper streaming partials.
+- Whisper streaming partials. See the [ASR alternatives study](ASR_ALTERNATIVES.md)
+  for the on-device streaming options (WhisperKit pilot, sherpa-onnx+T-one for
+  Russian) and why the Python AlignAtt projects (incl. SimulStreaming) aren't
+  shippable in a signed `.app`.
 - Voice editing / undo ("scratch that", edit-before-commit).
 - Richer formatting (lists/markdown/code/numbers) + deeper vocab.
 - **Out of scope (for the core team):** a full Windows/Linux app and
