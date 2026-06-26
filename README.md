@@ -173,13 +173,13 @@ Settings has a **Basic** and an **Advanced** tab.
 - **Microphone** — input device.
 - **Language** — 12 languages + Auto Detect; choose **English** to have whisper translate non‑English speech to English.
 - **Quality** — Faster / Balanced / Best (maps to Whisper models; downloads on demand).
-- **Smart Formatting** — clean‑up on/off, spoken punctuation, filler removal.
-- **Custom Vocabulary** — bias terms + "heard → correct" replacements.
-- **AI Post‑processing** — provider (OpenAI **or** local server), mode (rephrase / improve translation), and **voice commands**.
+- **AI Post‑processing** — the on/off toggle and provider (OpenAI **or** local server) are always visible (they decide whether text leaves your machine); provider details (mode, key/model, connection test) and the voice‑actions/prompt editor are tucked into collapsible "▸" groups.
 - **Text Output** — insertion method, output mode, overlay, trailing space, clipboard restore.
 
 **Advanced**
 
+- **Smart Formatting** — clean‑up on/off, spoken punctuation, filler removal (defaults are fine for most; here if you need to turn them off, e.g. for verbatim/code).
+- **Custom Vocabulary** — bias terms + "heard → correct" replacements.
 - Engine (Whisper vs Apple Speech), raw model picker + paths, live‑chunk tuning, whisper.cpp backend (CLI vs warm server), per‑app modes, history, permissions, diagnostics.
 - **Backup & Sharing** — export your per‑app profiles, vocabulary, and command prompts to a JSON file you can back up, hand‑edit, or share; import replaces only the sections present in the file (so a vocab‑only file touches just your vocabulary). Also includes one‑click **config packs** (e.g. a developer vocabulary) — small bundled config files; the same JSON format works for your own.
 
