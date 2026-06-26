@@ -444,48 +444,46 @@ struct SettingsView: View {
                     .font(.caption)
                     .foregroundColor(.secondary)
 
-                // Telegram prompt editor + active-actions list — collapsed.
+                // Voice-action editor — collapsed. Built-ins (Telegram) and any
+                // custom/pack actions, each editable; add new; reset/delete.
                 DisclosureGroup("Voice actions & prompts") {
                     VStack(alignment: .leading, spacing: 10) {
-                        Text("Telegram post prompt")
-                            .font(.caption).bold()
-                        Text("Say \"make a telegram post\" (or \"сделай пост для телеграм\") at the end of a dictation to rewrite it as a Telegram post using this prompt.")
+                        Text("Each action runs when you end a dictation with one of its phrases (the phrase is stripped and the rest is transformed by the AI). Built-in actions can be edited and reset; custom ones can be deleted.")
                             .font(.caption)
                             .foregroundColor(.secondary)
-                        TextEditor(text: $appState.telegramPostPrompt)
-                            .font(.system(size: 12, design: .monospaced))
-                            .frame(minHeight: 70, maxHeight: 120)
-                            .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.3)))
-                        Button("Reset to default") {
-                            appState.telegramPostPrompt = AppState.defaultTelegramPostPrompt
-                        }
-                        .disabled(appState.telegramPostPrompt == AppState.defaultTelegramPostPrompt)
 
-                        Divider()
-
-                        Text("Active voice actions")
-                            .font(.caption).bold()
-                        Text("Say one of an action's phrases at the end of a dictation to run it. Built-in actions ship with the app; more can be added by applying a pack (Backup & Sharing).")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
                         ForEach(appState.activeVoiceActions) { action in
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(action.displayName).font(.caption).fontWeight(.medium)
-                                Text(action.triggerPhrases.prefix(4).joined(separator: " · ")
-                                     + (action.triggerPhrases.count > 4 ? " · …" : ""))
-                                    .font(.caption2)
-                                    .foregroundColor(.secondary)
-                                    .lineLimit(2)
-                            }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(6)
-                            .background(RoundedRectangle(cornerRadius: 6).fill(Color.secondary.opacity(0.06)))
+                            VoiceActionEditorRow(
+                                action: action,
+                                isBuiltin: appState.isBuiltinVoiceAction(id: action.id),
+                                isModified: appState.hasCustomOverride(id: action.id),
+                                onSave: { appState.upsertVoiceAction($0) },
+                                onReset: { appState.resetVoiceAction(id: action.id) },
+                                onDelete: { appState.removeVoiceAction(id: action.id) }
+                            )
                         }
+
+                        Button {
+                            appState.upsertVoiceAction(SettingsView.newDraftAction(existing: appState.activeVoiceActions))
+                        } label: {
+                            Label("Add action", systemImage: "plus.circle")
+                        }
+                        .padding(.top, 2)
                     }
                     .padding(.top, 4)
                 }
             }
         }
+    }
+
+    /// A fresh blank action with a unique id, for the "Add action" button.
+    static func newDraftAction(existing: [VoiceAction]) -> VoiceAction {
+        let base = "custom-action"
+        var id = base
+        var n = 1
+        let ids = Set(existing.map(\.id))
+        while ids.contains(id) { n += 1; id = "\(base)-\(n)" }
+        return VoiceAction(id: id, displayName: "New action", triggerPhrases: [], prompt: "")
     }
 
     private var translationStatusIsGood: Bool {
