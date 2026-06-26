@@ -117,25 +117,26 @@ struct OverlayView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
-    /// Distinct visual states drive accent color + waveform behavior.
-    enum Phase {
-        case listening, speaking, finalizing, error
-
-        var accent: Color {
-            switch self {
-            case .listening:  return Color(red: 0.80, green: 0.82, blue: 0.88)   // cool white
-            case .speaking:   return Color(red: 0.35, green: 0.78, blue: 0.98)   // calm cyan-blue
-            case .finalizing: return Color(red: 0.66, green: 0.55, blue: 0.98)   // violet (polishing)
-            case .error:      return Color(red: 0.95, green: 0.45, blue: 0.45)   // red
-            }
+    /// Visual styling per overlay phase. The phase *decision* is the pure
+    /// `OverlayPhase` (tested in OpenWhispCore); this only maps it to colors.
+    private var accent: Color {
+        switch phase {
+        case .arming:     return Color(red: 0.98, green: 0.74, blue: 0.30)   // amber: not capturing yet
+        case .listening:  return Color(red: 0.80, green: 0.82, blue: 0.88)   // cool white
+        case .speaking:   return Color(red: 0.35, green: 0.78, blue: 0.98)   // calm cyan-blue
+        case .finalizing: return Color(red: 0.66, green: 0.55, blue: 0.98)   // violet (polishing)
+        case .error:      return Color(red: 0.95, green: 0.45, blue: 0.45)   // red
         }
     }
 
-    private var phase: Phase {
-        if appState.error != nil, !appState.isRecording, !appState.isTranscribing { return .error }
-        if appState.isTranscribing { return .finalizing }
-        if appState.audioLevel > 0.06 { return .speaking }
-        return .listening
+    private var phase: OverlayPhase {
+        OverlayPhase.resolve(
+            hasError: appState.error != nil,
+            isCapturing: appState.isRecording,
+            isTranscribing: appState.isTranscribing,
+            isArming: appState.isArming,
+            audioLevel: appState.audioLevel
+        )
     }
 
     private var transcriptText: String {
@@ -148,9 +149,23 @@ struct OverlayView: View {
         appState.isTranscribing ? appState.statusMessage : nil
     }
 
+    /// While arming, tell the user capture isn't live yet so they don't speak into
+    /// the startup gap (which would lose the first word). Shown as a small pill
+    /// label since there's no transcript yet.
+    private var armingCaption: String? {
+        phase == .arming ? "Starting — wait to speak" : nil
+    }
+
     var body: some View {
         VStack(spacing: 10) {
             waveformPill
+
+            if let armingCaption {
+                Text(armingCaption)
+                    .font(.system(size: 11, weight: .semibold, design: .rounded))
+                    .foregroundColor(accent.opacity(0.95))
+                    .transition(.opacity)
+            }
 
             if showTranscript {
                 transcriptPanel
@@ -160,6 +175,7 @@ struct OverlayView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .padding(.top, 6)
         .animation(.easeInOut(duration: 0.18), value: showTranscript)
+        .animation(.easeInOut(duration: 0.18), value: phase)
     }
 
     // MARK: Pill
@@ -167,7 +183,7 @@ struct OverlayView: View {
     private var waveformPill: some View {
         QuietWaveform(
             level: appState.audioLevel,
-            accent: phase.accent,
+            accent: accent,
             isFinalizing: appState.isTranscribing,
             reduceMotion: reduceMotion
         )
@@ -192,7 +208,7 @@ struct OverlayView: View {
             // Single ambient shadow + an accent glow that blooms with energy.
             .shadow(color: Color.black.opacity(0.32), radius: 18, x: 0, y: 8)
             .shadow(
-                color: phase.accent.opacity(reduceMotion ? 0.18 : Double(min(0.5, max(0.0, appState.audioLevel))) * 0.5),
+                color: accent.opacity(reduceMotion ? 0.18 : Double(min(0.5, max(0.0, appState.audioLevel))) * 0.5),
                 radius: 16, x: 0, y: 0
             )
         }
@@ -206,7 +222,7 @@ struct OverlayView: View {
             if let caption = phaseCaption {
                 Text(caption)
                     .font(.system(size: 10, weight: .semibold))
-                    .foregroundColor(phase.accent.opacity(0.9))
+                    .foregroundColor(accent.opacity(0.9))
                     .textCase(.uppercase)
             }
             Text(transcriptText)

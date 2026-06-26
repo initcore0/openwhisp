@@ -246,6 +246,12 @@ class AppState: ObservableObject {
 
     @Published var isRecording = false
     @Published var isTranscribing = false
+    /// True from `beginSession()` until audio capture actually goes live
+    /// (`.recording`) or the session tears down. During this window the overlay
+    /// is visible but the microphone is NOT capturing yet — speaking here loses
+    /// the leading word(s). The overlay shows a "starting / not capturing yet"
+    /// cue instead of the green "speak now" cue. See `OverlayPhase`.
+    @Published var isArming = false
     @Published var lastTranscription: String?
     @Published var streamingText: String = ""
     @Published var statusMessage: String = "Ready"
@@ -636,11 +642,16 @@ class AppState: ObservableObject {
                 guard let self else { return }
                 switch state {
                 case .recording:
+                    // Capture is now genuinely live: leave the arming window so the
+                    // overlay flips from "starting" to the green "speak now" cue.
+                    self.isArming = false
                     self.isRecording = true
                     self.statusMessage = self.outputMode == "liveChunks" ? "Listening..." : "Recording..."
                 case .stopped, .idle:
+                    self.isArming = false
                     self.isRecording = false
                 case .error(let msg):
+                    self.isArming = false
                     self.error = msg
                     self.statusMessage = "Error"
                     self.isRecording = false
@@ -841,7 +852,9 @@ class AppState: ObservableObject {
         isAppleSpeechSession = true
         appleLiveInsertedText = ""
         appleDidCompleteFinal = false
-        statusMessage = "Listening..."
+        // Keep the "Starting..." arming cue from beginSession until the recognizer
+        // is actually live (below). Apple Speech has the same startup gap as the
+        // whisper path: async mic + speech-auth grants, then engine start.
         let sessionID = activeSessionID
 
         AVCaptureDevice.requestAccess(for: .audio) { granted in
@@ -871,6 +884,7 @@ class AppState: ObservableObject {
 
                         do {
                             try self.appleSpeechEngine.start(language: self.language)
+                            self.isArming = false
                             self.isRecording = true
                             self.statusMessage = "Listening..."
                         } catch {
@@ -1157,7 +1171,12 @@ class AppState: ObservableObject {
         targetApplication = currentTextTargetApplication()
         isStreamingSession = streaming
         isTranscribing = false
-        statusMessage = streaming ? "Listening..." : "Recording..."
+        // Capture isn't live until the recorder reports `.recording` (after the
+        // async mic-permission grant + engine start). Until then we're "arming":
+        // the overlay shows a wait cue so the user doesn't speak into the gap and
+        // lose the first word(s). `.recording` clears isArming.
+        isArming = true
+        statusMessage = "Starting..."
         startElapsedTimer()
         if showOverlay {
             overlayController?.show()
@@ -1642,6 +1661,9 @@ class AppState: ObservableObject {
     private func finishSessionUI(delay: TimeInterval = 0) {
         sessionActive = false
         pendingStop = false
+        // Never leave the overlay stuck in the "starting" arming cue once a session
+        // ends (capture may never have gone live — denied permission, abort, error).
+        isArming = false
         // Restore any per-app profile overrides immediately (independent of the
         // overlay-hide delay) so the next session sees the user's real globals.
         restoreProfileOverridesIfNeeded()
