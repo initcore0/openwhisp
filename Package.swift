@@ -31,6 +31,7 @@ let package = Package(
                 "HotkeyControlling.swift",
                 "TranscriptionEngine.swift",
                 "AudioCapture.swift",
+                "OverlayPhase.swift",
                 "LiveChunkPipeline.swift",
                 "ConfigBundle.swift",
                 "ConfigPack.swift",
