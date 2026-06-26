@@ -79,6 +79,10 @@ This builds `third_party/whisper.cpp` and produces `whisper-cli` + `whisper-serv
 ./package.sh      # wrap into build/OpenWhisp.app (+ bundle whisper runtime, ad-hoc sign)
 
 open build/OpenWhisp.app
+
+# Or, to build AND replace the copy in /Applications in one go (quits the running
+# app, installs the fresh bundle, relaunches):
+./build.sh && ./package.sh --install
 ```
 
 > Always run via the `.app` bundle, not the bare binary — `UserNotifications` and the permission prompts require a real bundle.

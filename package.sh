@@ -1,6 +1,10 @@
 #!/bin/bash
 # Package OpenWhisp as .app bundle
-# Usage: ./package.sh
+# Usage: ./package.sh [--install]
+#
+# With --install (or INSTALL=1), after packaging it replaces the copy in
+# /Applications with the fresh build: quits the running app, copies the new
+# bundle, and relaunches. Off by default so plain packaging / CI is unaffected.
 
 set -e
 
@@ -8,6 +12,13 @@ PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BUILD_DIR="$PROJECT_DIR/build"
 APP_NAME="OpenWhisp.app"
 APP_DIR="$BUILD_DIR/$APP_NAME"
+
+INSTALL="${INSTALL:-0}"
+for arg in "$@"; do
+    case "$arg" in
+        --install) INSTALL=1 ;;
+    esac
+done
 
 # Build first if binary doesn't exist
 if [ ! -f "$BUILD_DIR/OpenWhisp" ]; then
@@ -79,3 +90,22 @@ echo ""
 echo "Before first use:"
 echo "  1. Grant microphone/accessibility/input monitoring permissions"
 echo "  2. Let OpenWhisp download the selected model into Application Support"
+
+# Optional: replace the installed copy in /Applications with this fresh build.
+if [ "$INSTALL" = "1" ]; then
+    INSTALLED="/Applications/$APP_NAME"
+    echo ""
+    echo "Installing to $INSTALLED ..."
+    # Quit a running copy (and any lingering whisper-server it spawned) so the
+    # bundle isn't in use while we replace it.
+    osascript -e 'quit app "OpenWhisp"' 2>/dev/null || true
+    sleep 1
+    pkill -f "$INSTALLED/Contents/MacOS/OpenWhisp" 2>/dev/null || true
+    pkill -f "$INSTALLED/Contents/Resources/whisper/whisper-server" 2>/dev/null || true
+    sleep 1
+    rm -rf "$INSTALLED"
+    # ditto preserves the bundle's signature/attributes (unlike a plain cp -R).
+    ditto "$APP_DIR" "$INSTALLED"
+    echo "Installed. Relaunching..."
+    open "$INSTALLED"
+fi
