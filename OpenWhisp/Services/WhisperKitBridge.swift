@@ -36,24 +36,15 @@ import CoreML
 /// path — `tiny.en` loads with none present). An automated download+stage is the
 /// follow-up for additional models.
 enum WhisperKitModelInstaller {
-    /// Base dir where compiled model folders live.
-    static var baseDir: URL {
-        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-            ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support")
-        return appSupport
-            .appendingPathComponent("OpenWhisp", isDirectory: true)
-            .appendingPathComponent("whisperkit-models", isDirectory: true)
-    }
+    /// Base dir where compiled model folders live (shared with the build-independent
+    /// `WhisperKitModelCatalog`, the single source of truth for the path + layout).
+    static var baseDir: URL { WhisperKitModelCatalog.baseDir }
 
-    /// Returns the compiled model folder for `model` iff it exists and contains the
-    /// three required compiled sub-models; otherwise nil (caller falls back).
+    /// Returns the compiled model folder for `model` iff it's staged with all three
+    /// required compiled sub-models; otherwise nil (caller falls back).
     static func compiledModelFolder(for model: String) -> URL? {
-        let folder = baseDir.appendingPathComponent(model, isDirectory: true)
-        let fm = FileManager.default
-        for sub in ["MelSpectrogram.mlmodelc", "AudioEncoder.mlmodelc", "TextDecoder.mlmodelc"] {
-            if !fm.fileExists(atPath: folder.appendingPathComponent(sub).path) { return nil }
-        }
-        return folder
+        guard WhisperKitModelCatalog.isStaged(model) else { return nil }
+        return baseDir.appendingPathComponent(model, isDirectory: true)
     }
 }
 
@@ -118,6 +109,112 @@ enum WhisperKitBridge {
         let results = try await kit.transcribe(audioPath: wavPath, decodeOptions: options)
         let text = results.map(\.text).joined(separator: " ")
         return text.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Construct a streaming handle from an already-loaded WhisperKit. The handle
+    /// wraps `AudioStreamTranscriber` (which owns the mic + its own energy VAD so
+    /// silence is skipped) and translates its WhisperKit `State` into plain Swift
+    /// values via `onState`, so callers never name WhisperKit types.
+    ///
+    /// Language: when explicit (e.g. "ru") it's pinned via `options.language`. For
+    /// "auto" we leave it nil and let WhisperKit detect; because the engine only
+    /// surfaces CONFIRMED text as live partials, the per-window detection on the
+    /// unconfirmed tail doesn't cause visible flapping.
+    static func makeStreamHandle(
+        kit: WhisperKit,
+        task: WhisperKitTaskMapper.Resolved,
+        languageOverride: String?,
+        onState: @escaping (WhisperKitStreamState) -> Void
+    ) throws -> WhisperKitStreamHandle {
+        guard let tokenizer = kit.tokenizer else {
+            throw WhisperKitBridgeError.tokenizerUnavailable
+        }
+        let resolvedLanguage = languageOverride ?? task.language
+        // "auto" (no explicit language, not translating): WhisperKit's prefill
+        // otherwise FORCES a default language token (English), so Russian speech comes
+        // out translated/forced to English. Turning on `detectLanguage` makes it
+        // detect the spoken language per window and decode in it. When a language is
+        // pinned (e.g. "ru") or we're translating, leave detection off.
+        let autoDetect = resolvedLanguage == nil && !task.translate
+        let options = DecodingOptions(
+            task: task.translate ? .translate : .transcribe,
+            language: resolvedLanguage,
+            detectLanguage: autoDetect,
+            // Streaming segment text is the RAW token stream unless we ask for clean
+            // output: strip the special tokens (<|startoftranscript|>, <|en|>, …) and
+            // the per-segment timestamp markers. Without this the preview shows token
+            // soup instead of words.
+            skipSpecialTokens: true,
+            withoutTimestamps: true
+        )
+        let handle = WhisperKitStreamHandle()
+        let transcriber = AudioStreamTranscriber(
+            audioEncoder: kit.audioEncoder,
+            featureExtractor: kit.featureExtractor,
+            segmentSeeker: kit.segmentSeeker,
+            textDecoder: kit.textDecoder,
+            tokenizer: tokenizer,
+            audioProcessor: kit.audioProcessor,
+            decodingOptions: options,
+            useVAD: true,                 // skip silence — don't transcribe dead air
+            stateChangeCallback: { _, new in
+                let snapshot = WhisperKitStreamState(from: new)
+                handle.latest = snapshot      // keep the newest for `fullText()` at stop
+                onState(snapshot)
+            }
+        )
+        handle.attach(transcriber)
+        return handle
+    }
+}
+
+/// Plain-Swift snapshot of the streaming state — keeps WhisperKit types out of the
+/// engine/AppState. `confirmedText` is the stable, committed transcript; `fullText`
+/// also folds in the still-unconfirmed tail.
+struct WhisperKitStreamState {
+    let confirmedText: String
+    let fullText: String
+    /// Peak relative mic energy in the latest buffer (0–1), for the waveform.
+    let peakEnergy: Float?
+
+    init(from state: AudioStreamTranscriber.State) {
+        let confirmed = state.confirmedSegments.map(\.text).joined(separator: " ")
+        let unconfirmed = state.unconfirmedSegments.map(\.text).joined(separator: " ")
+        self.confirmedText = confirmed
+        self.fullText = (confirmed + " " + unconfirmed)
+        self.peakEnergy = state.bufferEnergy.max()
+    }
+}
+
+/// Lifecycle wrapper around `AudioStreamTranscriber` so the engine can start/stop
+/// and read the final transcript without importing WhisperKit. The transcriber's
+/// `state` is private, so we cache the latest snapshot from the state callback.
+final class WhisperKitStreamHandle {
+    private var transcriber: AudioStreamTranscriber?
+    /// Newest state snapshot, written from the state-change callback.
+    fileprivate var latest: WhisperKitStreamState?
+
+    fileprivate func attach(_ transcriber: AudioStreamTranscriber) {
+        self.transcriber = transcriber
+    }
+
+    /// Starts mic capture + the realtime loop. Returns when the stream stops.
+    func start() async throws { try await transcriber?.startStreamTranscription() }
+    func stop() async { await transcriber?.stopStreamTranscription() }
+
+    /// The full assembled transcript (confirmed + unconfirmed) as of the last state.
+    func fullText() -> String {
+        (latest?.fullText ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
+enum WhisperKitBridgeError: Error, LocalizedError {
+    case tokenizerUnavailable
+    var errorDescription: String? {
+        switch self {
+        case .tokenizerUnavailable:
+            return "WhisperKit tokenizer not loaded (model may still be loading)."
+        }
     }
 }
 #endif

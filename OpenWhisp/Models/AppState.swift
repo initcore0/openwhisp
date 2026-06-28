@@ -29,6 +29,17 @@ class AppState: ObservableObject {
         }
     }
 
+    /// WhisperKit CoreML model id (its own `openai_whisper-*` namespace), separate
+    /// from the whisper.cpp GGML `modelName`. Drives the WhisperKit file + streaming
+    /// engines. Changing it rebuilds the WhisperKit engine so the new model loads.
+    @Published var whisperKitModel: String {
+        didSet {
+            guard whisperKitModel != oldValue else { return }
+            UserDefaults.standard.set(whisperKitModel, forKey: "whisperKitModel")
+            if transcriptionEngine == "whisperKit" { rebuildFileEngine() }
+        }
+    }
+
     @Published var microphoneID: String {
         didSet { UserDefaults.standard.set(microphoneID, forKey: "microphoneID") }
     }
@@ -131,6 +142,13 @@ class AppState: ObservableObject {
         didSet {
             guard transcriptionEngine != oldValue else { return }
             UserDefaults.standard.set(transcriptionEngine, forKey: "transcriptionEngine")
+            // WhisperKit doesn't support the "type live" (liveChunks) output mode —
+            // it streams via its own pipeline. If a stale liveChunks value carries
+            // over when switching to WhisperKit, snap it to the streaming-friendly
+            // "preview" so behavior matches the (filtered) Settings options.
+            if transcriptionEngine == "whisperKit", outputMode == "liveChunks" {
+                outputMode = "preview"
+            }
             // Rebuild + rewire the file engine so switching backends takes effect
             // without an app restart (the Whisper-family path uses `whisperEngine`).
             rebuildFileEngine()
@@ -140,11 +158,11 @@ class AppState: ObservableObject {
     /// Build the file-transcription engine for the given setting. "whisperKit" is
     /// the experimental CoreML backend (only functional in a WHISPERKIT build —
     /// otherwise its stub reports unavailability); everything else uses whisper.cpp.
-    private static func makeFileEngine(for engine: String, model: String) -> FileTranscriptionEngine {
+    private static func makeFileEngine(for engine: String, model: String, whisperKitModel: String) -> FileTranscriptionEngine {
         switch engine {
         // WhisperKit uses its OWN model namespace (openai_whisper-*), not the
-        // whisper.cpp GGML model id, so it keeps its built-in default.
-        case "whisperKit": return WhisperKitEngine()
+        // whisper.cpp GGML model id.
+        case "whisperKit": return WhisperKitEngine(modelName: whisperKitModel)
         default:           return WhisperEngine()
         }
     }
@@ -311,6 +329,10 @@ class AppState: ObservableObject {
     var audioRecorder: AudioCapture!
     var whisperEngine: FileTranscriptionEngine!
     var appleSpeechEngine: StreamingTranscriptionEngine!
+    /// Experimental real-time WhisperKit engine. Shares the streaming session
+    /// machinery with Apple Speech (same handlers) but uses WhisperKit's
+    /// `AudioStreamTranscriber` (owns the mic, built-in VAD, multilingual).
+    var whisperKitStreamEngine: StreamingTranscriptionEngine!
     var translationService: OpenAITranslationService!
     var hotkeyMonitor: HotkeyControlling!
 
@@ -352,6 +374,16 @@ class AppState: ObservableObject {
     private var isAppleSpeechSession = false
     private var appleLiveInsertedText = ""
     private var appleDidCompleteFinal = false
+    /// True when the current streaming session is WhisperKit (vs Apple Speech).
+    /// Selects the engine and whether to run the Speech-framework authorization.
+    private var streamingUsesWhisperKit = false
+
+    /// The streaming engine for the current/next session. WhisperKit when its
+    /// backend is selected, otherwise Apple Speech. Both conform to the same
+    /// protocol and route through the same session handlers.
+    private var activeStreamingEngine: StreamingTranscriptionEngine {
+        transcriptionEngine == "whisperKit" ? whisperKitStreamEngine : appleSpeechEngine
+    }
     private var downloadingModelPath: String?
 
     /// Global setting values saved before a per-app profile temporarily overrode
@@ -477,6 +509,7 @@ class AppState: ObservableObject {
         liveChunkDuration = UserDefaults.standard.object(forKey: "liveChunkDuration") as? Double ?? 2.0
         pauseBasedLiveChunksEnabled = UserDefaults.standard.object(forKey: "pauseBasedLiveChunksEnabled") as? Bool ?? false
         transcriptionEngine = UserDefaults.standard.string(forKey: "transcriptionEngine") ?? "whisper"
+        whisperKitModel = UserDefaults.standard.string(forKey: "whisperKitModel") ?? "openai_whisper-small"
         if let savedBackend = UserDefaults.standard.string(forKey: "whisperBackend") {
             whisperBackend = savedBackend
         } else {
@@ -612,11 +645,13 @@ class AppState: ObservableObject {
         // setting. "whisperKit" is an experimental CoreML backend (pilot) that
         // conforms to the same FileTranscriptionEngine protocol, so all the
         // callback wiring below is identical regardless of which one is active.
-        whisperEngine = Self.makeFileEngine(for: transcriptionEngine, model: modelName)
+        whisperEngine = Self.makeFileEngine(for: transcriptionEngine, model: modelName, whisperKitModel: whisperKitModel)
         appleSpeechEngine = AppleSpeechEngine()
+        whisperKitStreamEngine = WhisperKitStreamingEngine(modelName: whisperKitModel)
         translationService = OpenAITranslationService()
 
         wireFileEngineCallbacks()
+        wireStreamingEngineCallbacks(whisperKitStreamEngine)
 
         audioRecorder = AudioRecorder()
         audioRecorder.autoGainEnabled = autoGainEnabled
@@ -648,32 +683,7 @@ class AppState: ObservableObject {
             }
         }
 
-        appleSpeechEngine.onPartial = { [weak self] text in
-            Task { @MainActor in
-                self?.handleAppleSpeechPartial(text)
-            }
-        }
-        appleSpeechEngine.onFinal = { [weak self] text in
-            Task { @MainActor in
-                self?.handleAppleSpeechFinal(text)
-            }
-        }
-        appleSpeechEngine.onError = { [weak self] message in
-            Task { @MainActor in
-                guard let self, self.isAppleSpeechSession else { return }
-                self.error = message
-                self.statusMessage = "Apple Speech Error"
-                self.isRecording = false
-                self.isTranscribing = false
-                self.isAppleSpeechSession = false
-                self.finishSessionUI()
-            }
-        }
-        appleSpeechEngine.onLevelChanged = { [weak self] level in
-            Task { @MainActor in
-                self?.audioLevel = level
-            }
-        }
+        wireStreamingEngineCallbacks(appleSpeechEngine)
 
         hotkeyMonitor = HotkeyMonitor()
         hotkeyMonitor.triggerMode = triggerMode
@@ -746,13 +756,44 @@ class AppState: ObservableObject {
         }
     }
 
+    /// Wire a streaming engine (Apple Speech or WhisperKit) to the shared session
+    /// handlers. Both backends drive the same live-preview/delta-paste path, so the
+    /// callbacks are identical — only the underlying recognizer differs.
+    private func wireStreamingEngineCallbacks(_ engine: StreamingTranscriptionEngine) {
+        engine.onPartial = { [weak self] text in
+            Task { @MainActor in self?.handleAppleSpeechPartial(text) }
+        }
+        engine.onFinal = { [weak self] text in
+            Task { @MainActor in self?.handleAppleSpeechFinal(text) }
+        }
+        engine.onError = { [weak self] message in
+            Task { @MainActor in
+                guard let self, self.isAppleSpeechSession else { return }
+                self.error = message
+                self.statusMessage = "Streaming Error"
+                self.isRecording = false
+                self.isTranscribing = false
+                self.isAppleSpeechSession = false
+                self.finishSessionUI()
+            }
+        }
+        engine.onLevelChanged = { [weak self] level in
+            Task { @MainActor in self?.audioLevel = level }
+        }
+    }
+
     /// Swap the file-transcription backend live (when the user changes the Engine
     /// setting). Tears down the old one, builds the new one, re-wires callbacks,
     /// and re-warms if appropriate. Safe to call only after initial wiring.
     private func rebuildFileEngine() {
         whisperEngine?.stopServer()
-        whisperEngine = Self.makeFileEngine(for: transcriptionEngine, model: modelName)
+        whisperEngine = Self.makeFileEngine(for: transcriptionEngine, model: modelName, whisperKitModel: whisperKitModel)
         wireFileEngineCallbacks()
+        // Rebuild the WhisperKit streaming engine too, so an engine or WhisperKit
+        // model change is reflected on the streaming path (it caches its own model).
+        whisperKitStreamEngine?.stop(cancel: true)
+        whisperKitStreamEngine = WhisperKitStreamingEngine(modelName: whisperKitModel)
+        wireStreamingEngineCallbacks(whisperKitStreamEngine)
         whisperWorkerStatus = "Not started"
         // `warmWhisperServerIfPossible()` is engine-aware: it warms WhisperKit's
         // CoreML model up front, warms whisper.cpp's server only for the serverAPI
@@ -779,11 +820,15 @@ class AppState: ObservableObject {
         // outputMode/language/AI-cleanup affects the whole session including the
         // streaming-vs-recording decision below. Restored when the session ends.
         applyProfileForFrontmostApp()
-        if transcriptionEngine == "appleSpeech" {
-            startAppleSpeech()
+        let liveMode = outputMode == "liveChunks" || outputMode == "preview"
+        // Streaming backends (Apple Speech always; WhisperKit when a live preview is
+        // wanted) run the real-time path. Both go through the shared streaming
+        // session starter; `activeStreamingEngine` picks the recognizer.
+        if transcriptionEngine == "appleSpeech" || (transcriptionEngine == "whisperKit" && liveMode) {
+            startStreamingSession()
             return
         }
-        if outputMode == "liveChunks" || outputMode == "preview" {
+        if liveMode {
             startStreaming()
         } else {
             startRecording()
@@ -818,7 +863,7 @@ class AppState: ObservableObject {
         resetLivePipeline()
         acceptingLiveChunks = false
         isAppleSpeechSession = false
-        appleSpeechEngine.stop(cancel: true)
+        activeStreamingEngine.stop(cancel: true)
         isStreamingSession = false
         isLiveChunkSession = false
         isPreviewSession = false
@@ -905,7 +950,10 @@ class AppState: ObservableObject {
         }
     }
 
-    func startAppleSpeech() {
+    /// Start a real-time streaming session with the active streaming engine (Apple
+    /// Speech or WhisperKit). Both share this path, the session flags, and the
+    /// live-preview handlers; only auth and the recognizer differ.
+    func startStreamingSession() {
         guard !isRecording, !isTranscribing else { return }
         guard !SecureFieldDetector.focusedFieldIsSecure() else {
             refuseDictationIntoSecureField()
@@ -913,12 +961,36 @@ class AppState: ObservableObject {
         }
         beginSession(streaming: false)
         isAppleSpeechSession = true
+        streamingUsesWhisperKit = transcriptionEngine == "whisperKit"
         appleLiveInsertedText = ""
         appleDidCompleteFinal = false
         // Keep the "Starting..." arming cue from beginSession until the recognizer
-        // is actually live (below). Apple Speech has the same startup gap as the
-        // whisper path: async mic + speech-auth grants, then engine start.
+        // is actually live. Both backends have a startup gap: async mic grant (plus
+        // Speech-auth for Apple), then engine start.
         let sessionID = activeSessionID
+        let usesWhisperKit = streamingUsesWhisperKit
+        let engine = activeStreamingEngine
+
+        // The actual engine start, after permissions are granted.
+        let launch: @MainActor () -> Void = {
+            // Abort if the hotkey was released or the session cancelled before grant.
+            guard sessionID == self.activeSessionID, !self.pendingStop else {
+                self.isAppleSpeechSession = false
+                self.abortSessionBeforeStart()
+                return
+            }
+            do {
+                try engine.start(language: self.language)
+                self.isArming = false
+                self.isRecording = true
+                self.statusMessage = "Listening..."
+            } catch {
+                self.error = error.localizedDescription
+                self.statusMessage = "Streaming Error"
+                self.isAppleSpeechSession = false
+                self.finishSessionUI()
+            }
+        }
 
         AVCaptureDevice.requestAccess(for: .audio) { granted in
             Task { @MainActor in
@@ -928,33 +1000,19 @@ class AppState: ObservableObject {
                     self.finishSessionUI()
                     return
                 }
-
-                AppleSpeechEngine.requestAuthorization { status in
-                    Task { @MainActor in
-                        guard status == .authorized else {
-                            self.error = "Speech recognition access denied. Check System Settings."
-                            self.isAppleSpeechSession = false
-                            self.finishSessionUI()
-                            return
-                        }
-
-                        // Abort if the hotkey was released or the session cancelled before grant.
-                        guard sessionID == self.activeSessionID, !self.pendingStop else {
-                            self.isAppleSpeechSession = false
-                            self.abortSessionBeforeStart()
-                            return
-                        }
-
-                        do {
-                            try self.appleSpeechEngine.start(language: self.language)
-                            self.isArming = false
-                            self.isRecording = true
-                            self.statusMessage = "Listening..."
-                        } catch {
-                            self.error = error.localizedDescription
-                            self.statusMessage = "Apple Speech Error"
-                            self.isAppleSpeechSession = false
-                            self.finishSessionUI()
+                // WhisperKit needs only the mic; Apple Speech also needs Speech auth.
+                if usesWhisperKit {
+                    launch()
+                } else {
+                    AppleSpeechEngine.requestAuthorization { status in
+                        Task { @MainActor in
+                            guard status == .authorized else {
+                                self.error = "Speech recognition access denied. Check System Settings."
+                                self.isAppleSpeechSession = false
+                                self.finishSessionUI()
+                                return
+                            }
+                            launch()
                         }
                     }
                 }
@@ -968,7 +1026,7 @@ class AppState: ObservableObject {
         isTranscribing = true
         statusMessage = "Finalizing..."
         hideOverlayNow()
-        appleSpeechEngine.stop(cancel: false)
+        activeStreamingEngine.stop(cancel: false)
 
         Task { @MainActor in
             try? await Task.sleep(nanoseconds: 900_000_000)

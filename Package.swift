@@ -38,7 +38,8 @@ let package = Package(
                 "ScriptPostProcessor.swift",
                 "WhisperTask.swift",
                 "VoiceAction.swift",
-                "WhisperKitBridge.swift"
+                "WhisperKitBridge.swift",
+                "WhisperKitModelCatalog.swift"
             ]
         ),
         .testTarget(
