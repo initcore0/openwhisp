@@ -33,6 +33,48 @@ struct SettingsView: View {
     // Built-in config packs (loaded from the app bundle on appear).
     @State private var configPacks: [ConfigPack] = []
 
+    // MARK: - Backend awareness
+    //
+    // The active transcription backend decides which settings are even meaningful.
+    // We HIDE irrelevant sections (state is preserved, so switching back restores
+    // it) rather than greying them out, to keep the UI honest and uncluttered.
+
+    private var isWhisperCpp: Bool { appState.transcriptionEngine == "whisper" }
+    private var isWhisperKit: Bool { appState.transcriptionEngine == "whisperKit" }
+    private var isAppleSpeech: Bool { appState.transcriptionEngine == "appleSpeech" }
+
+    /// whisper.cpp uses GGML models + its own server/CLI backend. WhisperKit and
+    /// Apple Speech do not.
+    private var usesWhisperModels: Bool { isWhisperCpp }
+
+    /// Output-mode options available for the active backend. WhisperKit streams via
+    /// its own pipeline, so it offers Preview / Paste-at-end but NOT "Type live".
+    private var outputModeOptions: [(tag: String, label: String)] {
+        var opts: [(String, String)] = [
+            ("preview", "Preview, then paste (recommended)"),
+            ("finalOnly", "Paste at end, no preview"),
+        ]
+        if !isWhisperKit {
+            opts.append(("liveChunks", "Type live as you speak"))
+        }
+        return opts
+    }
+
+    /// Help text under Output Mode, tailored to the active backend.
+    private var outputModeHelp: String {
+        var lines = [
+            "How your words reach the app while you hold the hotkey:",
+            "• Preview, then paste — text streams into the on‑screen overlay as you speak; nothing is inserted until you release, then it's pasted once (cleaned up, and rephrased if AI is on).",
+            "• Paste at end — like Preview, but without the live overlay text; inserts once on release.",
+        ]
+        if isWhisperKit {
+            lines.append("WhisperKit streams partials in real time with built-in silence skipping; “Type live” isn't used with it.")
+        } else {
+            lines.append("• Type live — each phrase is pasted into the app as you speak.")
+        }
+        return lines.joined(separator: "\n")
+    }
+
     private var isCustomOpenAIModel: Bool {
         openAIModelIsCustom || !SettingsView.presetOpenAIModels.contains(appState.openAIModel)
     }
@@ -76,7 +118,7 @@ struct SettingsView: View {
                 hotkeySection
                 microphoneSection
                 languageSection
-                qualitySection
+                qualitySection            // backend-aware (tiers / WhisperKit picker / info)
                 translationSection
                 outputSection
             }
@@ -93,13 +135,13 @@ struct SettingsView: View {
                 formattingSection
                 vocabularySection
                 engineSection
-                modelSection
-                liveChunkAdvancedSection
+                if usesWhisperModels { modelSection }          // GGML model + path (whisper.cpp)
+                if isWhisperCpp { liveChunkAdvancedSection }    // live-chunk tuning (whisper.cpp)
                 profilesSection
                 scriptSection
                 historySection
                 backupSection
-                whisperSection
+                if isWhisperCpp { whisperSection }              // CLI/server backend (whisper.cpp)
                 permissionsSection
                 statusSection
             }
@@ -185,7 +227,19 @@ struct SettingsView: View {
         return appState.isModelDownloading ? .orange : .secondary
     }
 
+    @ViewBuilder
     private var qualitySection: some View {
+        if isWhisperKit {
+            whisperKitModelSection
+        } else if isAppleSpeech {
+            appleSpeechModelSection
+        } else {
+            whisperCppQualitySection
+        }
+    }
+
+    /// whisper.cpp: friendly GGML quality tiers.
+    private var whisperCppQualitySection: some View {
         settingsSection("Quality") {
             Picker("Transcription Quality", selection: qualityPickerSelection) {
                 ForEach(Self.qualityTiers, id: \.model) { tier in
@@ -206,6 +260,44 @@ struct SettingsView: View {
         }
     }
 
+    /// WhisperKit: pick from the locally-staged CoreML models (only loadable ones).
+    private var whisperKitModelSection: some View {
+        settingsSection("Quality") {
+            let staged = WhisperKitModelCatalog.stagedModels()
+            if staged.isEmpty {
+                Text("No WhisperKit models are installed yet. Stage one under Application Support → OpenWhisp/whisperkit-models (see docs/WHISPERKIT_PILOT.md).")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            } else {
+                Picker("WhisperKit Model", selection: $appState.whisperKitModel) {
+                    ForEach(staged, id: \.self) { model in
+                        Text(WhisperKitModelCatalog.displayInfo(for: model).label).tag(model)
+                    }
+                }
+                .frame(maxWidth: 460, alignment: .leading)
+
+                if let hint = WhisperKitModelCatalog.displayInfo(for: appState.whisperKitModel).hint {
+                    Text(hint)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+            }
+
+            Text("WhisperKit runs Apple-native CoreML models on the GPU/Neural Engine. Models are stored locally; only installed models are shown. Russian needs a multilingual model (Small).")
+                .font(.caption)
+                .foregroundColor(.secondary)
+        }
+    }
+
+    /// Apple Speech: no model choice — it uses the system recognizer.
+    private var appleSpeechModelSection: some View {
+        settingsSection("Quality") {
+            Text("Apple Speech uses the built-in macOS dictation model for the selected language. There's no model to choose or download — accuracy and language support come from the system.")
+                .font(.caption)
+                .foregroundColor(.secondary)
+        }
+    }
+
     private var engineSection: some View {
         settingsSection("Engine") {
             Picker("Transcription Engine", selection: $appState.transcriptionEngine) {
@@ -214,7 +306,7 @@ struct SettingsView: View {
                 Text("Apple Speech Streaming").tag("appleSpeech")
             }
 
-            Text("Apple Speech gives native streaming partials. Whisper Local (whisper.cpp) is the default. WhisperKit is an experimental CoreML/ANE backend — it only works in a build made with WHISPERKIT=1 (see docs/WHISPERKIT_PILOT.md); otherwise selecting it reports that it isn't available.")
+            Text("Whisper Local (whisper.cpp) is the default. Apple Speech gives native streaming partials. WhisperKit is an experimental CoreML/ANE backend — in a live mode (Preview or Type-live) it streams partials in real time with built-in silence skipping; in Paste-at-end mode it transcribes the whole recording. It only works in a build made with WHISPERKIT=1 (see docs/WHISPERKIT_PILOT.md); otherwise selecting it reports that it isn't available.")
                 .font(.caption)
                 .foregroundColor(.secondary)
         }
@@ -544,9 +636,9 @@ struct SettingsView: View {
                 .foregroundColor(.secondary)
 
             Picker("Output Mode", selection: $appState.outputMode) {
-                Text("Preview, then paste (recommended)").tag("preview")
-                Text("Paste at end, no preview").tag("finalOnly")
-                Text("Type live as you speak").tag("liveChunks")
+                ForEach(outputModeOptions, id: \.tag) { opt in
+                    Text(opt.label).tag(opt.tag)
+                }
             }
 
             Toggle("Show overlay while recording", isOn: $appState.showOverlay)
@@ -554,12 +646,7 @@ struct SettingsView: View {
             Toggle("Restore clipboard after paste", isOn: $appState.restoreClipboard)
                 .disabled(appState.insertionMode == "directAX")
 
-            Text("""
-            How your words reach the app while you hold the hotkey:
-            • Preview, then paste — text streams into the on‑screen overlay as you speak; nothing is inserted until you release, then it's pasted once (cleaned up, and rephrased if AI is on).
-            • Paste at end — like Preview, but without the live overlay text; inserts once on release.
-            • Type live — each phrase is pasted into the app as you speak.
-            """)
+            Text(outputModeHelp)
                 .font(.caption)
                 .foregroundColor(.secondary)
 

@@ -1,11 +1,39 @@
 # WhisperKit Backend — Pilot
 
-> An **experimental** second file-transcription backend: [WhisperKit](https://github.com/argmaxinc/WhisperKit)
-> (Argmax, MIT) — a Swift-native CoreML/ANE Whisper runtime. It conforms to the
-> same `FileTranscriptionEngine` protocol as the whisper.cpp engine, so it slots
-> into the existing pipeline unchanged. This pilot does **file transcription only**
-> (WAV → text); true streaming partials are a later step. See the
-> [ASR alternatives study](ASR_ALTERNATIVES.md) for why WhisperKit was chosen.
+> An **experimental** second transcription backend: [WhisperKit](https://github.com/argmaxinc/WhisperKit)
+> (Argmax, MIT) — a Swift-native CoreML/ANE Whisper runtime. It supports both
+> **file transcription** (conforming to `FileTranscriptionEngine`) and **real-time
+> streaming** (conforming to `StreamingTranscriptionEngine`, the same seam Apple
+> Speech uses). In a live output mode (Preview / Paste-at-end) it streams partials
+> with built-in silence skipping; otherwise it transcribes the whole recording.
+> See the [ASR alternatives study](ASR_ALTERNATIVES.md) for why WhisperKit was chosen.
+
+## Streaming (real-time)
+
+`WhisperKitStreamingEngine` wraps WhisperKit's `AudioStreamTranscriber`, which owns
+the mic and runs its own energy VAD (silence is skipped, not transcribed). It plugs
+into the same session machinery as Apple Speech: live partials drive the overlay
+preview, and the full transcript is pasted on release. Key decode settings
+(`WhisperKitBridge.makeStreamHandle`):
+
+- `skipSpecialTokens: true` + `withoutTimestamps: true` — streaming segment text is
+  the raw token stream otherwise (`<|startoftranscript|>…`).
+- `detectLanguage: true` for the "auto" case — WhisperKit's prefill otherwise forces
+  English, so Russian came out translated. Explicit-language / translate skip this.
+
+The engine emits the FULL current transcript (confirmed + the revised tail) as the
+partial: WhisperKit only "confirms" segments after several accumulate, so a short
+utterance would otherwise show nothing until stop.
+
+## Settings are backend-aware
+
+The Settings UI hides options that don't apply to the active backend (state is
+preserved, so switching back restores it). whisper.cpp shows GGML quality tiers,
+the model path, the CLI/server backend, and live-chunk tuning; WhisperKit shows a
+picker of locally-staged CoreML models (`WhisperKitModelCatalog` lists only loadable
+ones) and omits the "Type live" output mode; Apple Speech shows neither model
+controls nor whisper.cpp plumbing. The selected WhisperKit model is persisted as
+`whisperKitModel` and changing it rebuilds the WhisperKit engines.
 
 ## Why it's opt-in at build time
 
