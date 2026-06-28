@@ -16,7 +16,6 @@ let package = Package(
             sources: [
                 "SmartFormatter.swift",
                 "Vocabulary.swift",
-                "VoiceCommandParser.swift",
                 "MetaInstructionStripper.swift",
                 "PostProcessor.swift",
                 "AppProfile.swift",
@@ -37,7 +36,7 @@ let package = Package(
                 "ConfigPack.swift",
                 "ScriptPostProcessor.swift",
                 "WhisperTask.swift",
-                "VoiceAction.swift",
+                "InstructionChain.swift",
                 "WhisperKitBridge.swift",
                 "WhisperKitModelCatalog.swift"
             ]

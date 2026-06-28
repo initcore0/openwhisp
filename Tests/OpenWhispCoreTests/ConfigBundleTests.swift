@@ -20,10 +20,7 @@ final class ConfigBundleTests: XCTestCase {
     func testFullRoundTrip() throws {
         let original = ConfigBundle(
             profiles: sampleProfiles(),
-            vocabulary: sampleVocab(),
-            actions: [VoiceAction(id: "tweet", displayName: "Tweet",
-                                  triggerPhrases: ["make a tweet"], prompt: "Make a tweet")],
-            prompts: .init(voiceCommandWakeWord: "computer")
+            vocabulary: sampleVocab()
         )
         let decoded = try ConfigBundle.decode(from: original.jsonData())
         XCTAssertEqual(decoded, original)
@@ -35,7 +32,6 @@ final class ConfigBundleTests: XCTestCase {
         XCTAssertEqual(decoded, original)
         XCTAssertNil(decoded.profiles)
         XCTAssertNil(decoded.vocabulary)
-        XCTAssertNil(decoded.prompts)
     }
 
     func testPartialBundleRoundTrips() throws {
@@ -46,7 +42,6 @@ final class ConfigBundleTests: XCTestCase {
         let original = ConfigBundle(vocabulary: vocab)
         let decoded = try ConfigBundle.decode(from: original.jsonData())
         XCTAssertNil(decoded.profiles)
-        XCTAssertNil(decoded.prompts)
         XCTAssertEqual(decoded.vocabulary, vocab)
     }
 
@@ -65,17 +60,11 @@ final class ConfigBundleTests: XCTestCase {
     }
 
     func testDecodeIgnoresUnknownForwardCompatibleKeys() throws {
-        // A field a future app added must not break an older importer.
-        let json = Data(#"{"schemaVersion": 1, "futureFeature": {"x": 1}, "prompts": {"voiceCommandWakeWord": "computer"}}"#.utf8)
+        // A field a future app added — or a legacy section we removed (actions,
+        // prompts) — must not break the importer; unknown keys are ignored.
+        let json = Data(#"{"schemaVersion": 1, "futureFeature": {"x": 1}, "actions": [{"id":"tweet"}], "prompts": {"voiceCommandWakeWord": "computer"}, "vocabulary": {"terms": ["Claude"], "substitutions": []}}"#.utf8)
         let bundle = try ConfigBundle.decode(from: json)
-        XCTAssertEqual(bundle.prompts?.voiceCommandWakeWord, "computer")
-    }
-
-    func testDecodesActions() throws {
-        let json = Data(#"{"schemaVersion": 1, "actions": [{"id":"tweet","displayName":"Tweet","triggerPhrases":["make a tweet"],"prompt":"p"}]}"#.utf8)
-        let bundle = try ConfigBundle.decode(from: json)
-        XCTAssertEqual(bundle.actions?.count, 1)
-        XCTAssertEqual(bundle.actions?.first?.id, "tweet")
+        XCTAssertEqual(bundle.vocabulary?.terms, ["Claude"])
     }
 
     // MARK: Version guard
@@ -89,9 +78,9 @@ final class ConfigBundleTests: XCTestCase {
     }
 
     func testAcceptsOlderSchemaVersion() throws {
-        let json = Data(#"{"schemaVersion": 0, "prompts": {"voiceCommandWakeWord": "hey"}}"#.utf8)
+        let json = Data(#"{"schemaVersion": 0, "vocabulary": {"terms": ["hey"], "substitutions": []}}"#.utf8)
         let bundle = try ConfigBundle.decode(from: json)
-        XCTAssertEqual(bundle.prompts?.voiceCommandWakeWord, "hey")
+        XCTAssertEqual(bundle.vocabulary?.terms, ["hey"])
     }
 
     // MARK: Malformed
@@ -107,39 +96,25 @@ final class ConfigBundleTests: XCTestCase {
 
     // MARK: Summary
 
-    private func sampleActions(_ n: Int) -> [VoiceAction] {
-        (0..<n).map { VoiceAction(id: "a\($0)", displayName: "a", triggerPhrases: ["p\($0)"], prompt: "x") }
-    }
-
     func testSummaryListsNonEmptySections() {
         let bundle = ConfigBundle(
             profiles: sampleProfiles(),                              // 2 profiles
-            vocabulary: sampleVocab(),                              // 2 terms, 1 sub
-            actions: sampleActions(2),                              // 2 voice actions
-            prompts: .init(voiceCommandWakeWord: "y")              // wake word
+            vocabulary: sampleVocab()                               // 2 terms, 1 sub
         )
-        XCTAssertEqual(bundle.summary, "2 app profiles, 2 vocab terms, 1 substitution, 2 voice actions, wake word")
+        XCTAssertEqual(bundle.summary, "2 app profiles, 2 vocab terms, 1 substitution")
     }
 
     func testSummarySingularGrammar() {
         let bundle = ConfigBundle(
             profiles: [sampleProfiles()[0]],
             vocabulary: Vocabulary(terms: ["one"],
-                                   substitutions: [Vocabulary.Substitution(from: "a", to: "b")]),
-            actions: sampleActions(1),
-            prompts: .init(voiceCommandWakeWord: nil)
+                                   substitutions: [Vocabulary.Substitution(from: "a", to: "b")])
         )
-        XCTAssertEqual(bundle.summary, "1 app profile, 1 vocab term, 1 substitution, 1 voice action")
+        XCTAssertEqual(bundle.summary, "1 app profile, 1 vocab term, 1 substitution")
     }
 
     func testSummaryOmitsEmptyAndWhitespaceSections() {
-        // Empty profiles list, empty vocab, empty actions, blank wake word -> "nothing".
-        let bundle = ConfigBundle(
-            profiles: [],
-            vocabulary: .empty,
-            actions: [],
-            prompts: .init(voiceCommandWakeWord: "")
-        )
+        let bundle = ConfigBundle(profiles: [], vocabulary: .empty)
         XCTAssertEqual(bundle.summary, "nothing")
     }
 

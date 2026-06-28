@@ -19,7 +19,7 @@ Transcription runs locally with [whisper.cpp](https://github.com/ggerganov/whisp
 - **Smart formatting (local, default‑on)** — capitalization, punctuation cleanup, filler‑word removal ("um/uh"), and spoken punctuation ("new line", "comma", "period").
 - **Custom vocabulary** — bias whisper toward your names/jargon, plus "heard → correct" substitutions (e.g. "clod code" → "Claude Code").
 - **AI post‑processing (optional)** — rephrase or improve translation with an LLM. Point it at a **local OpenAI‑compatible server** (llama.cpp `llama-server`, Ollama) to stay private, or at OpenAI.
-- **Voice commands** — end a dictation with an instruction ("…make this formal") and it's applied to the rest via the LLM.
+- **Refine with a follow-up** — dictate, then double-tap the hotkey and speak an instruction ("make it a Telegram post"); the AI rewrites your text accordingly.
 - **Per‑app modes** — auto‑apply language / output / AI‑cleanup overrides based on the app you're typing into.
 - **Transcription history** — local, searchable list of past dictations with copy/re‑use.
 - **Multiple models & languages** — tiny → large‑v3; 12 languages plus auto‑detect; optional whisper translate‑to‑English.
@@ -200,15 +200,15 @@ OpenWhisp can run a final LLM pass to rephrase your text or improve a translatio
 
 Use **Test Connection** / **Validate** in Settings to confirm reachability.
 
-### Voice commands
+### Refine with a follow-up instruction (double-tap)
 
-With voice commands enabled, ending a dictation with a recognized instruction applies it to the rest:
+Dictate, release, then quickly **double-tap** the hotkey (release and press again) and speak an instruction — the AI applies it to what you just said:
 
-> "Schedule the review for Monday. **Make this formal.**" → the instruction is stripped and the text is rewritten formally.
+> Dictate "hello team, I'm on vacation and all is great", **double-tap**, then say *"make it a Telegram post"* → only the rewritten Telegram post is inserted.
 
-Recognized leads include "make this/it…", "rewrite/rephrase this…", "translate this to…", "summarize this", plus an optional wake word. Works in **Final** and **Preview** modes and needs an AI provider configured. (Trailing translate/transcribe instructions are stripped from output even with voice commands off, so dictating in Russian and saying "translate this into English" won't leave that phrase in your text.)
+It's a deliberate gesture you can do by feel — no fixed phrases, just say what you want in plain language (any language). The double-tap is an explicit command, so it **overrides** the rephrase/translate setting for that dictation. Works in **Preview** and **Paste-at-end** modes and needs an AI provider configured. The overlay turns magenta while you speak the instruction and shows **"Refining…"** while the AI works. Toggle it in **Settings → AI Post‑processing**.
 
-**Named actions** are data-driven: each is an id + trigger phrases + an AI prompt. The built-in **"make a Telegram post"** (EN + RU) ships in the app; applying a config **pack** can retune its prompt or add brand-new actions (e.g. **"make a tweet"**). Settings → AI Post‑processing lists the **active voice actions** and their phrases, and Backup & Sharing ships example packs you can apply in one click.
+(Trailing translate/transcribe instructions are still stripped from output, so dictating in Russian and saying "translate this into English" won't leave that phrase in your text.)
 
 ### Script post‑processor (advanced)
 
