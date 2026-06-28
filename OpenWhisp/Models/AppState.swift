@@ -370,6 +370,9 @@ class AppState: ObservableObject {
     private var refineStep1Text: String?
     /// The spoken instruction, once step-2 resolves. nil until then.
     private var refineInstruction: String?
+    /// True when step-1 came from the user's SELECTION (not a dictation). The refined
+    /// result replaces the selection in place; nothing was dictated for step-1.
+    private var refineFromSelection = false
     /// Snapshot of whether this session uses live-chunk output, captured at
     /// beginSession(). The live-chunk drain pipeline must be gated on this rather
     /// than the live @Published outputMode, so a mid-session settings change can't
@@ -1641,13 +1644,22 @@ class AppState: ObservableObject {
         lastReleaseUptime = nil          // consume the double-tap
         refineArmed = true
         refineInstruction = nil
-        // Snapshot step-1's text from the current transcript buffer as the RESOLVED
-        // step-1 value (even if empty — empty means "nothing was dictated", which
-        // tryApplyRefine handles by finishing cleanly rather than waiting forever).
-        // Starting the instruction session below bumps activeSessionID, which would
-        // reject step-1's late final; the snapshot is authoritative for streaming
-        // (its transcript is already in streamingText now).
-        refineStep1Text = streamingText.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Step-1 text is either (a) what you just dictated, or (b) — if you didn't
+        // dictate — the text you have SELECTED in the focused app. Dictation wins; the
+        // selection is only read when the dictation snapshot is empty. The result is
+        // the RESOLVED step-1 value (even if empty — tryApplyRefine then finishes
+        // cleanly rather than waiting forever). Read the selection BEFORE starting the
+        // instruction session below (which bumps activeSessionID / shows the overlay).
+        let dictated = streamingText.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Privacy: never read a selection out of a focused password/secure field.
+        if dictated.isEmpty, !SecureFieldDetector.focusedFieldIsSecure(),
+           let selection = SelectionReader.readSelectedText() {
+            refineStep1Text = selection
+            refineFromSelection = true
+        } else {
+            refineStep1Text = dictated
+            refineFromSelection = false
+        }
         isInstructionSession = true
         let liveMode = outputMode == "liveChunks" || outputMode == "preview"
         if transcriptionEngine == "appleSpeech" || (transcriptionEngine == "whisperKit" && liveMode) {
@@ -1696,6 +1708,8 @@ class AppState: ObservableObject {
         isInstructionSession = false
         refineStep1Text = nil
         refineInstruction = nil
+        let fromSelection = refineFromSelection
+        refineFromSelection = false
         let cleanTarget = target.trimmingCharacters(in: .whitespacesAndNewlines)
         let cleanInstruction = instruction.trimmingCharacters(in: .whitespacesAndNewlines)
         // If step-1 produced nothing, there's nothing to refine — abandon quietly.
@@ -1705,11 +1719,17 @@ class AppState: ObservableObject {
             finishSessionUI()
             return
         }
-        // If no instruction was heard, just insert step-1's text unchanged.
+        // No instruction heard: for a dictation, insert step-1 unchanged; for a
+        // selection, leave the user's text exactly as it was (don't paste over it).
         guard !cleanInstruction.isEmpty else {
             isTranscribing = false
-            insertCompletedText(cleanTarget, originalText: cleanTarget)
-            statusMessage = "No instruction heard; inserted text"
+            if fromSelection {
+                statusMessage = "No instruction heard"
+                finishSessionUI()
+            } else {
+                insertCompletedText(cleanTarget, originalText: cleanTarget)
+                statusMessage = "No instruction heard; inserted text"
+            }
             return
         }
         applyInstruction(cleanInstruction, to: cleanTarget)
@@ -1721,6 +1741,7 @@ class AppState: ObservableObject {
         isInstructionSession = false
         refineStep1Text = nil
         refineInstruction = nil
+        refineFromSelection = false
         lastReleaseUptime = nil
     }
 

@@ -292,6 +292,13 @@ seam, plus optionally lifting more orchestration out of `AppState`.
   logic in `InstructionChain` (OpenWhispCore, unit-tested). Removed:
   `VoiceCommandParser`, `VoiceAction`/registry/editor, the Telegram/Tweet built-ins
   and packs, and the wake-word setting.
+- ✅ **Refine your selection** — the same double-tap gesture works on text
+  SELECTED in any app, with no dictation: highlight text, double-tap, speak an
+  instruction, and the selection is replaced in place with the LLM's result.
+  Selection is read via Accessibility (`SelectionReader`, `kAXSelectedTextAttribute`)
+  with a synthesized-⌘C clipboard fallback (previous clipboard restored). Dictation
+  takes priority; secure/password fields are never read. Reuses the entire refine
+  pipeline — the selection just becomes "step-1 text".
 - ✅ **JSON import/export** for profiles / vocab / prompts — versioned, tolerant
   `ConfigBundle` (OpenWhispCore, unit-tested); Settings → Backup & Sharing.
   Partial bundles supported (import touches only the sections present), which is

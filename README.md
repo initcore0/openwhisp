@@ -20,6 +20,7 @@ Transcription runs locally with [whisper.cpp](https://github.com/ggerganov/whisp
 - **Custom vocabulary** — bias whisper toward your names/jargon, plus "heard → correct" substitutions (e.g. "clod code" → "Claude Code").
 - **AI post‑processing (optional)** — rephrase or improve translation with an LLM. Point it at a **local OpenAI‑compatible server** (llama.cpp `llama-server`, Ollama) to stay private, or at OpenAI.
 - **Refine with a follow-up** — dictate, then double-tap the hotkey and speak an instruction ("make it a Telegram post"); the AI rewrites your text accordingly.
+- **Refine your selection** — highlight text in any app, double-tap the hotkey, and speak an instruction ("make it more formal", "translate to Russian"); the selected text is replaced in place with the AI's result. No dictation needed.
 - **Per‑app modes** — auto‑apply language / output / AI‑cleanup overrides based on the app you're typing into.
 - **Transcription history** — local, searchable list of past dictations with copy/re‑use.
 - **Multiple models & languages** — tiny → large‑v3; 12 languages plus auto‑detect; optional whisper translate‑to‑English.
@@ -210,6 +211,12 @@ It's a deliberate gesture you can do by feel — no fixed phrases, just say what
 
 (Trailing translate/transcribe instructions are still stripped from output, so dictating in Russian and saying "translate this into English" won't leave that phrase in your text.)
 
+**Refine selected text** — the same gesture works on text you've **selected** in any app, with no dictation. Highlight some text, double‑tap, and speak an instruction:
+
+> Select a paragraph, **double‑tap**, say *"make it more concise"* → the selection is replaced in place with the AI's rewrite.
+
+The selection is read via the Accessibility API (no clipboard touch); for apps that don't expose it, OpenWhisp falls back to a synthesized ⌘C and **restores your previous clipboard** afterward. Dictation takes priority — the selection is only used when you didn't dictate. Password/secure fields are never read.
+
 ### Script post‑processor (advanced)
 
 Settings → Advanced → **Script Post‑processor** lets you pipe the **final** transcript through any executable you choose: your text arrives on **stdin**, and whatever the script prints to **stdout** is inserted instead. Off by default. It runs only at the end of a dictation, with a **~2 second timeout**, and **fails open** — on any error, timeout, non‑zero exit, or empty output, your original transcript is used unchanged. It does run code you point it at, so only use a script you trust. Example (uppercase): a script that runs `tr '[:lower:]' '[:upper:]'`.
@@ -253,6 +260,8 @@ OpenWhisp/
 │   ├── WhisperKitEngine.swift       # WhisperKit file engine; WhisperKitStreamingEngine = streaming
 │   ├── WhisperKitModelCatalog.swift # staged CoreML model list/labels (build-independent)
 │   ├── TextInserter.swift           # Accessibility insert + Cmd+V paste fallback
+│   ├── SelectionReader.swift        # read selected text (AX, ⌘C fallback) for refine-selection
+│   ├── InstructionChain.swift       # pure rules for the double-tap refine flow
 │   ├── KeyboardSynthesizer.swift    # thin shim over TextInserter
 │   ├── HotkeyMonitor.swift          # CGEventTap (+ NSEvent fallback) push-to-talk
 │   ├── PostProcessor.swift          # protocol + chain for text post-processing
