@@ -282,12 +282,16 @@ seam, plus optionally lifting more orchestration out of `AppState`.
   only makes it *possible* without a rewrite.
 
 ### Phase 3 — Hackability *(the wedge)* — ✅ complete
-- ✅ **Named voice actions** — now a data-driven registry (`VoiceAction` =
-  {id, phrases, prompt}). Built-ins ship in code (Telegram post, EN + RU);
-  packs/import overlay by id (retune a prompt or add a NEW action). Demo packs:
-  "Punchy Telegram Posts" (overrides Telegram) and "Tweet Action" (adds "make a
-  tweet"). Settings shows a read-only **Active voice actions** overview. A full
-  in-app action editor (add/edit phrases+prompt in the UI) is the remaining piece.
+- ✅ **Refine with a follow-up instruction (double-tap)** — *replaces* the old
+  named-voice-actions system. Dictate, double-tap the hotkey, and speak a
+  natural-language instruction the LLM applies to the just-dictated text (e.g.
+  "make it a Telegram post"). No hardcoded phrases, wake words, or per-app prompt
+  config — the LLM interprets plain language in any language, which works far
+  better with the rephrase pipeline than the old phrase-matching. The double-tap is
+  an explicit command that bypasses the rephrase/translate setting. Pure decision
+  logic in `InstructionChain` (OpenWhispCore, unit-tested). Removed:
+  `VoiceCommandParser`, `VoiceAction`/registry/editor, the Telegram/Tweet built-ins
+  and packs, and the wake-word setting.
 - ✅ **JSON import/export** for profiles / vocab / prompts — versioned, tolerant
   `ConfigBundle` (OpenWhispCore, unit-tested); Settings → Backup & Sharing.
   Partial bundles supported (import touches only the sections present), which is

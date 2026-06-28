@@ -531,55 +531,27 @@ struct SettingsView: View {
 
             Divider()
 
-            Toggle("Voice commands (say an instruction at the end)", isOn: $appState.voiceCommandsEnabled)
+            Toggle("Refine with a follow-up instruction (double-tap)", isOn: $appState.instructionChainEnabled)
 
-            if appState.voiceCommandsEnabled {
-                TextField("Wake word (optional, e.g. \"voice note\")", text: $appState.voiceCommandWakeWord)
-                    .textFieldStyle(.roundedBorder)
-                Text("End a dictation with an instruction and it's applied to the rest: \"…ship it tomorrow. Make this formal.\" Recognized commands (make this/it…, rewrite/translate/summarize this…, make a Telegram post) are stripped and the text is transformed by the AI. Works in Final paste and Preview modes; needs an AI provider above.")
+            Text("""
+            Dictate, release, then quickly DOUBLE-TAP the hotkey (release and press \
+            again) and speak an instruction — the AI applies it to what you just said. \
+            For example: dictate "hello team, I'm on vacation and all is great", \
+            double-tap, then say "make it a Telegram post". It's a deliberate gesture \
+            you can do by feel; no need to watch the screen. The double-tap is an \
+            explicit command, so it overrides the rephrase/translate setting above. No \
+            fixed phrases — say what you want in plain language (any language). Needs an \
+            AI provider above; works in Preview and Paste-at-end modes.
+            """)
+                .font(.caption)
+                .foregroundColor(.secondary)
+
+            if appState.instructionChainEnabled && !appState.llmConfigured {
+                Text("Set up an AI provider above to use follow-up instructions.")
                     .font(.caption)
-                    .foregroundColor(.secondary)
-
-                // Voice-action editor — collapsed. Built-ins (Telegram) and any
-                // custom/pack actions, each editable; add new; reset/delete.
-                DisclosureGroup("Voice actions & prompts") {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text("Each action runs when you end a dictation with one of its phrases (the phrase is stripped and the rest is transformed by the AI). Built-in actions can be edited and reset; custom ones can be deleted.")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-
-                        ForEach(appState.activeVoiceActions) { action in
-                            VoiceActionEditorRow(
-                                action: action,
-                                isBuiltin: appState.isBuiltinVoiceAction(id: action.id),
-                                isModified: appState.hasCustomOverride(id: action.id),
-                                onSave: { appState.upsertVoiceAction($0) },
-                                onReset: { appState.resetVoiceAction(id: action.id) },
-                                onDelete: { appState.removeVoiceAction(id: action.id) }
-                            )
-                        }
-
-                        Button {
-                            appState.upsertVoiceAction(SettingsView.newDraftAction(existing: appState.activeVoiceActions))
-                        } label: {
-                            Label("Add action", systemImage: "plus.circle")
-                        }
-                        .padding(.top, 2)
-                    }
-                    .padding(.top, 4)
-                }
+                    .foregroundColor(.orange)
             }
         }
-    }
-
-    /// A fresh blank action with a unique id, for the "Add action" button.
-    static func newDraftAction(existing: [VoiceAction]) -> VoiceAction {
-        let base = "custom-action"
-        var id = base
-        var n = 1
-        let ids = Set(existing.map(\.id))
-        while ids.contains(id) { n += 1; id = "\(base)-\(n)" }
-        return VoiceAction(id: id, displayName: "New action", triggerPhrases: [], prompt: "")
     }
 
     private var translationStatusIsGood: Bool {

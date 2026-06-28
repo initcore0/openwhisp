@@ -119,7 +119,12 @@ struct OverlayView: View {
 
     /// Visual styling per overlay phase. The phase *decision* is the pure
     /// `OverlayPhase` (tested in OpenWhispCore); this only maps it to colors.
+    /// Refine mode tints everything magenta so the two stages are visually distinct
+    /// (the overlay stays up and just changes color between dictation and refine).
     private var accent: Color {
+        if appState.refineArmed {
+            return Color(red: 0.93, green: 0.42, blue: 0.86)                 // magenta: refining
+        }
         switch phase {
         case .arming:     return Color(red: 0.98, green: 0.74, blue: 0.30)   // amber: not capturing yet
         case .listening:  return Color(red: 0.80, green: 0.82, blue: 0.88)   // cool white
@@ -167,6 +172,13 @@ struct OverlayView: View {
                     .transition(.opacity)
             }
 
+            if appState.refineArmed {
+                Text("Refine — speak your instruction")
+                    .font(.system(size: 11, weight: .semibold, design: .rounded))
+                    .foregroundColor(Color(red: 0.66, green: 0.55, blue: 0.98))
+                    .transition(.opacity)
+            }
+
             if showTranscript {
                 transcriptPanel
                     .transition(.opacity.combined(with: .move(edge: .top)))
@@ -176,6 +188,7 @@ struct OverlayView: View {
         .padding(.top, 6)
         .animation(.easeInOut(duration: 0.18), value: showTranscript)
         .animation(.easeInOut(duration: 0.18), value: phase)
+        .animation(.easeInOut(duration: 0.18), value: appState.refineArmed)
     }
 
     // MARK: Pill

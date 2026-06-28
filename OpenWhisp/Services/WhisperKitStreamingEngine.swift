@@ -42,14 +42,28 @@ final class WhisperKitStreamingEngine: StreamingTranscriptionEngine {
     @MainActor private var lastConfirmedText: String = ""
     @MainActor private var didFinish: Bool = false
 
+    /// In-flight stop, so a quick start() (e.g. the double-tap instruction step)
+    /// waits for the previous stream's mic/AVAudioEngine to fully release before
+    /// grabbing it again — otherwise the new `installTap` races the old teardown and
+    /// throws (the "Streaming Error" on re-press).
+    private var stopTask: Task<Void, Never>?
+
     func start(language: String) throws {
         let task = WhisperKitTaskMapper.map(languageSetting: language)
         Task { @MainActor in
             self.lastConfirmedText = ""
             self.didFinish = false
         }
+        let priorStop = stopTask
         runTask = Task { [weak self] in
             guard let self else { return }
+            // Wait out any previous stop so the mic is free before we re-acquire it,
+            // plus a short settle so the old AVAudioEngine fully releases the input
+            // node (avoids the installTap race on a quick double-tap restart).
+            if priorStop != nil {
+                await priorStop?.value
+                try? await Task.sleep(nanoseconds: 150_000_000)
+            }
             do {
                 let kit = try await self.ensureLoaded()
                 let handle = try WhisperKitBridge.makeStreamHandle(
@@ -76,7 +90,7 @@ final class WhisperKitStreamingEngine: StreamingTranscriptionEngine {
         transcriber = nil
         runTask?.cancel()
         runTask = nil
-        Task { @MainActor in
+        let task = Task { @MainActor in
             self.didFinish = true
             await handle?.stop()
             if !cancel {
@@ -87,6 +101,7 @@ final class WhisperKitStreamingEngine: StreamingTranscriptionEngine {
                 self.onFinal?(final.trimmingCharacters(in: .whitespacesAndNewlines))
             }
         }
+        stopTask = task
     }
 
     /// Translate a WhisperKit stream state into our callbacks.

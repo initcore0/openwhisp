@@ -218,14 +218,12 @@ class AppState: ObservableObject {
     /// Detect a spoken instruction at the end of a dictation ("…make this
     /// formal") and apply it via the LLM. Off by default — it's the most "magic"
     /// feature and needs an LLM configured. Works in Final / Preview modes.
-    @Published var voiceCommandsEnabled: Bool {
-        didSet { UserDefaults.standard.set(voiceCommandsEnabled, forKey: "voiceCommandsEnabled") }
-    }
-
-    /// Optional wake lead-in for voice commands (e.g. "voice note"). Empty =
-    /// rely on imperative templates only.
-    @Published var voiceCommandWakeWord: String {
-        didSet { UserDefaults.standard.set(voiceCommandWakeWord, forKey: "voiceCommandWakeWord") }
+    /// Enable the two-utterance "refine with a follow-up instruction" flow: after
+    /// dictating, quickly re-press the hotkey within a short window and speak a
+    /// natural-language instruction ("make it a telegram post") that the LLM applies
+    /// to the just-dictated text. Requires an LLM provider. On by default.
+    @Published var instructionChainEnabled: Bool {
+        didSet { UserDefaults.standard.set(instructionChainEnabled, forKey: "instructionChainEnabled") }
     }
 
 
@@ -271,12 +269,6 @@ class AppState: ObservableObject {
         didSet { VocabularyStore.save(vocabulary) }
     }
 
-    /// User/pack-supplied voice actions, overlaid on the built-ins by id (a pack
-    /// can retune Telegram or add a new action like "make a tweet"). Persisted to
-    /// voice-actions.json.
-    @Published var customVoiceActions: [VoiceAction] {
-        didSet { VoiceActionStore.save(customVoiceActions) }
-    }
 
     // MARK: - Runtime State
 
@@ -360,6 +352,24 @@ class AppState: ObservableObject {
     /// Set when a stop arrives before the grant callback has started recording.
     private var pendingStop = false
     private var openAIEnhancementEnabledForSession = false
+
+    // MARK: Instruction chaining (explicit double-tap refine flow)
+    /// Monotonic time the hotkey was last released (for double-tap detection). nil
+    /// once consumed/expired.
+    private var lastReleaseUptime: TimeInterval?
+    /// True once a double-tap has armed refine mode. While armed, step-1's text is
+    /// held (never pasted) and the current utterance is captured as the instruction.
+    /// Published so the overlay can show a "refining" cue.
+    @Published private(set) var refineArmed = false
+    /// True while step-2 (the instruction utterance) is being dictated.
+    private var isInstructionSession = false
+    /// Step-1's text, once it resolves. nil while step-1 is still transcribing. When
+    /// refine is armed, step-1's completion writes HERE (instead of pasting), keyed on
+    /// `refineArmed` rather than session id so a late step-1 final isn't dropped after
+    /// the instruction session has started.
+    private var refineStep1Text: String?
+    /// The spoken instruction, once step-2 resolves. nil until then.
+    private var refineInstruction: String?
     /// Snapshot of whether this session uses live-chunk output, captured at
     /// beginSession(). The live-chunk drain pipeline must be gated on this rather
     /// than the live @Published outputMode, so a mid-session settings change can't
@@ -535,8 +545,7 @@ class AppState: ObservableObject {
         llmProvider = UserDefaults.standard.string(forKey: "llmProvider") ?? "openai"
         localLLMBaseURL = UserDefaults.standard.string(forKey: "localLLMBaseURL") ?? "http://localhost:8080/v1"
         localLLMModel = UserDefaults.standard.string(forKey: "localLLMModel") ?? ""
-        voiceCommandsEnabled = UserDefaults.standard.object(forKey: "voiceCommandsEnabled") as? Bool ?? false
-        voiceCommandWakeWord = UserDefaults.standard.string(forKey: "voiceCommandWakeWord") ?? ""
+        instructionChainEnabled = UserDefaults.standard.object(forKey: "instructionChainEnabled") as? Bool ?? true
         scriptPostProcessorEnabled = UserDefaults.standard.object(forKey: "scriptPostProcessorEnabled") as? Bool ?? false
         scriptPostProcessorPath = UserDefaults.standard.string(forKey: "scriptPostProcessorPath") ?? ""
         perAppModesEnabled = UserDefaults.standard.object(forKey: "perAppModesEnabled") as? Bool ?? false
@@ -545,13 +554,7 @@ class AppState: ObservableObject {
         history = TranscriptionHistoryStore.load()
         customVocabularyEnabled = UserDefaults.standard.object(forKey: "customVocabularyEnabled") as? Bool ?? true
         vocabulary = VocabularyStore.load()
-        customVoiceActions = VoiceActionStore.load()
         didCompleteOnboarding = UserDefaults.standard.bool(forKey: "didCompleteOnboarding")
-
-        // All stored properties are now initialized; safe to run migrations that
-        // read/mutate them. One-time: fold a legacy `telegramPostPrompt` (now
-        // unified into customVoiceActions) into a telegram-post override.
-        Self.migrateLegacyTelegramPrompt(into: &customVoiceActions)
 
         wireUpServices()
         overlayController = OverlayWindowController(appState: self)
@@ -805,6 +808,27 @@ class AppState: ObservableObject {
     // MARK: - Actions
 
     func startDictation() {
+        // Explicit double-tap to refine: if this press lands within the double-tap
+        // gap of the last release AND refine is available, ARM refine mode — decided
+        // by the gesture/timing alone, even if step-1 is still transcribing. We do
+        // NOT start a new content dictation; instead we either start capturing the
+        // instruction now (if step-1 already finished) or let step-1 finish and then
+        // capture it (handled in completeFinalText). Esc cancels.
+        if !refineArmed, !isInstructionSession,
+           InstructionChain.isAvailable(outputMode: outputMode, llmConfigured: llmConfigured, enabled: instructionChainEnabled),
+           InstructionChain.isDoubleTap(lastReleaseUptime: lastReleaseUptime,
+                                        pressUptime: ProcessInfo.processInfo.systemUptime) {
+            beginRefine()
+            return
+        }
+
+        // This press is a NORMAL dictation (not a double-tap). Clear any stale refine
+        // state so a half-finished refine from before can never leave us "stuck" so
+        // that the next press is wrongly treated as an instruction.
+        if refineArmed || isInstructionSession {
+            clearRefineState()
+        }
+
         guard !isRecording, !isTranscribing else { return }
         // Privacy guard: never dictate into a focused password/secure field. The
         // speech would otherwise be transcribed, typed in, copied to the clipboard
@@ -836,6 +860,12 @@ class AppState: ObservableObject {
     }
 
     func stopDictation() {
+        // Record the release time so a quick re-press is recognized as a double-tap
+        // (refine). Only meaningful for a normal content session, not the instruction
+        // capture itself.
+        if !isInstructionSession {
+            lastReleaseUptime = ProcessInfo.processInfo.systemUptime
+        }
         // The hotkey-up may arrive before the async permission-grant callback has flipped
         // isRecording true. In that case record the intent and let the grant callback abort.
         guard isRecording else {
@@ -854,10 +884,19 @@ class AppState: ObservableObject {
     }
 
     func cancelDictation() {
+        // Esc while refine is armed (waiting for step-1 to finish, or for the
+        // instruction): drop the held text and disarm without inserting anything.
+        if refineArmed && !isRecording && !isTranscribing && !sessionActive {
+            clearRefineState()
+            statusMessage = "Cancelled"
+            finishSessionUI()
+            return
+        }
         guard isRecording || isTranscribing || sessionActive else { return }
         activeSessionID = UUID()
         sessionActive = false
         pendingStop = false
+        clearRefineState()
         transcriptionRequests.removeAll()
         cleanupPendingLiveChunks()
         resetLivePipeline()
@@ -1025,7 +1064,9 @@ class AppState: ObservableObject {
         isRecording = false
         isTranscribing = true
         statusMessage = "Finalizing..."
-        hideOverlayNow()
+        // Keep the overlay up through finalize so a follow-up double-tap (refine)
+        // transitions by COLOR rather than a disappear/reappear flicker. It's hidden
+        // at the true end (insert / finishSessionUI).
         activeStreamingEngine.stop(cancel: false)
 
         Task { @MainActor in
@@ -1503,6 +1544,19 @@ class AppState: ObservableObject {
     private func completeFinalText(_ text: String) {
         let finalText = postProcess(text, isFinalTranscript: true)
 
+        // Step 2 of the chain: this utterance is the spoken INSTRUCTION. Stash it and
+        // try to apply (step-1's text may still be transcribing). Enhancement/translate
+        // from Settings is bypassed — the instruction wins.
+        if isInstructionSession {
+            // Keep isTranscribing TRUE so the overlay shows a working/finalizing cue
+            // (not an idle "waiting for input" state) while the LLM refines — that
+            // call can take several seconds. Cleared in applyInstruction's completion.
+            isTranscribing = true
+            refineInstruction = finalText
+            tryApplyRefine()
+            return
+        }
+
         guard !finalText.isEmpty else {
             isTranscribing = false
             statusMessage = "No speech detected"
@@ -1513,32 +1567,22 @@ class AppState: ObservableObject {
         lastTranscription = finalText
         streamingText = finalText
 
-        // Voice commands: if the user ended with a spoken instruction
-        // ("…make this formal" / "…make a telegram post"), strip it and transform
-        // the content via the LLM. Only in whole-text modes (the command is in the
-        // buffer at finalize).
-        if voiceCommandsEnabled,
-           outputMode == "finalOnly" || outputMode == "preview",
-           let command = VoiceCommandParser(wakeWord: voiceCommandWakeWord, actions: voiceActionRegistry).parse(finalText) {
-            if llmConfigured {
-                applyVoiceCommand(command)
-            } else {
-                // Command recognized but no LLM to run it: never type the command
-                // words. Insert the (stripped) content and tell the user why.
-                isTranscribing = false
-                insertCompletedText(command.content, originalText: command.content)
-                statusMessage = "Set up an AI provider in Settings to run voice commands"
-            }
+        // If refine was armed (double-tap), the user gave an EXPLICIT command — skip
+        // the Settings rephrase/translate pass entirely and go straight to capturing
+        // the instruction, which is the only transformation applied.
+        if refineArmed {
+            isTranscribing = false
+            outputOrOfferRefine(finalText)
             return
         }
 
         // Run a whole-text OpenAI pass for finalOnly OR preview mode when
-        // enhancement is enabled. Otherwise paste/insert the captured text once.
+        // enhancement is enabled. Otherwise insert once.
         let enhanceWholeText = shouldEnhanceCurrentSession
             && (outputMode == "finalOnly" || outputMode == "preview")
         guard enhanceWholeText else {
             isTranscribing = false
-            insertCompletedText(finalText, originalText: finalText)
+            outputOrOfferRefine(finalText)
             return
         }
 
@@ -1570,7 +1614,7 @@ class AppState: ObservableObject {
                         return
                     }
                     self.translationStatus = self.openAIEnhancementMode == "rephrase" ? "Rephrased" : "Improved"
-                    self.insertCompletedText(cleaned, originalText: finalText)
+                    self.outputOrOfferRefine(cleaned)
                 case .failure(let error):
                     self.error = "OpenAI post-processing failed: \(error.localizedDescription)"
                     self.translationStatus = "OpenAI failed"
@@ -1582,83 +1626,123 @@ class AppState: ObservableObject {
         }
     }
 
-    /// Transform the dictated content per a detected spoken command and insert it.
-    /// On LLM failure, falls back to inserting the (command-stripped) content so
-    /// the user never gets the literal command words typed.
-    /// Read-only view of the active voice actions, for the Settings overview/editor.
-    var activeVoiceActions: [VoiceAction] { voiceActionRegistry.actions }
+    // MARK: - Instruction chaining (explicit double-tap refine flow)
+    //
+    // Gesture: dictate (press-speak-release), then a quick re-press-AND-HOLD while
+    // speaking the instruction, then release. The re-press both (a) arms refine — by
+    // its timing after the release — and (b) IS the instruction capture (it's held
+    // while speaking). Step-1 and step-2 transcribe independently; whichever finishes
+    // last triggers the LLM apply via `tryApplyRefine`.
 
-    /// The voice actions in effect this session: the built-ins overlaid with the
-    /// user's custom actions (overrides built-ins by id, plus any brand-new ones).
-    /// `customVoiceActions` is the single source of overlays — the Settings editor,
-    /// imports, and packs all write here.
-    private var voiceActionRegistry: VoiceActionRegistry {
-        customVoiceActions.isEmpty
-            ? .builtins
-            : VoiceActionRegistry.builtins.merging(customVoiceActions)
-    }
-
-    // MARK: Voice-action editor support
-
-    /// Upsert an edited/added action into the custom overlay (override-or-append
-    /// by id). Used by the Settings editor.
-    func upsertVoiceAction(_ action: VoiceAction) {
-        customVoiceActions = VoiceActionRegistry(customVoiceActions).merging([action]).actions
-    }
-
-    /// Remove a custom action by id. Built-in ids can't be removed (use reset);
-    /// removing a custom override of a built-in just reverts it to the built-in.
-    func removeVoiceAction(id: String) {
-        customVoiceActions.removeAll { $0.id == id }
-    }
-
-    /// True if `id` is a built-in action (can be reset but not deleted).
-    func isBuiltinVoiceAction(id: String) -> Bool {
-        VoiceActionRegistry.builtins.action(id: id) != nil
-    }
-
-    /// True if `id` currently has a custom override (a built-in that's been edited,
-    /// or a user-added action).
-    func hasCustomOverride(id: String) -> Bool {
-        customVoiceActions.contains { $0.id == id }
-    }
-
-    /// Reset a built-in action to its shipped definition by dropping any override.
-    func resetVoiceAction(id: String) {
-        customVoiceActions.removeAll { $0.id == id }
-    }
-
-    /// One-time migration of the removed `telegramPostPrompt` setting into the
-    /// unified customVoiceActions overlay. No-op once migrated (key removed).
-    private static func migrateLegacyTelegramPrompt(into actions: inout [VoiceAction]) {
-        guard let legacy = UserDefaults.standard.string(forKey: "telegramPostPrompt") else { return }
-        let trimmed = legacy.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmed.isEmpty, trimmed != VoiceAction.defaultTelegramPostPrompt,
-           !actions.contains(where: { $0.id == VoiceAction.telegramPostID }) {
-            var telegram = VoiceAction.telegramPost
-            telegram.prompt = legacy
-            actions.append(telegram)
-            VoiceActionStore.save(actions)
-        }
-        UserDefaults.standard.removeObject(forKey: "telegramPostPrompt")
-    }
-
-    private func applyVoiceCommand(_ command: VoiceCommandParser.Result) {
-        streamingText = command.content
-        // Named actions use their curated prompt from the registry; free-form
-        // commands use the generic "apply this transformation" directive.
-        let directive: String
-        if let actionID = command.actionID, let action = voiceActionRegistry.action(id: actionID) {
-            directive = action.prompt
-            statusMessage = "Running \(action.displayName)..."
+    /// Double-tap detected: arm refine and IMMEDIATELY start capturing the instruction
+    /// (the user is holding the hotkey and about to speak it). Step-1's text arrives
+    /// separately into `refineStep1Text`.
+    private func beginRefine() {
+        lastReleaseUptime = nil          // consume the double-tap
+        refineArmed = true
+        refineInstruction = nil
+        // Snapshot step-1's text from the current transcript buffer. Starting the
+        // instruction session below bumps activeSessionID, which would reject step-1's
+        // late final — so we seed from what's already captured. A late final, if it
+        // still passes (whisper.cpp recording resolves before this), refines further
+        // via outputOrOfferRefine. Streaming has its transcript in streamingText now.
+        let snapshot = streamingText.trimmingCharacters(in: .whitespacesAndNewlines)
+        refineStep1Text = snapshot.isEmpty ? nil : snapshot
+        isInstructionSession = true
+        let liveMode = outputMode == "liveChunks" || outputMode == "preview"
+        if transcriptionEngine == "appleSpeech" || (transcriptionEngine == "whisperKit" && liveMode) {
+            startStreamingSession()
         } else {
-            directive = VoiceCommandParser.directive(for: command.instruction)
-            statusMessage = "Applying command..."
+            startRecording()
         }
+        statusMessage = "Refine: speak your instruction…"
+    }
+
+    /// Step-1's completed text. If refine is armed, HOLD it (don't paste) and try to
+    /// apply once the instruction is also in; otherwise insert normally — but first
+    /// defer briefly if a double-tap could still arrive (its press may land after
+    /// step-1's transcript resolves), so we never paste raw step-1 and THEN refine.
+    private func outputOrOfferRefine(_ text: String) {
+        if !refineArmed, instructionChainEnabled, llmConfigured,
+           outputMode == "preview" || outputMode == "finalOnly",
+           let release = lastReleaseUptime {
+            let elapsed = ProcessInfo.processInfo.systemUptime - release
+            let remaining = InstructionChain.repressGap - elapsed
+            if remaining > 0 {
+                // Hold step-1; if a double-tap arms refine during the wait, route to
+                // refine instead of pasting.
+                let pending = text
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: UInt64(remaining * 1_000_000_000))
+                    self.outputOrOfferRefine(pending)
+                }
+                return
+            }
+        }
+        guard refineArmed else {
+            lastReleaseUptime = nil
+            insertCompletedText(text, originalText: text)
+            return
+        }
+        refineStep1Text = text
+        tryApplyRefine()
+    }
+
+    /// Once BOTH step-1 text and the spoken instruction are available, run the LLM and
+    /// insert the result. No-op until both are present.
+    private func tryApplyRefine() {
+        guard let target = refineStep1Text, let instruction = refineInstruction else { return }
+        refineArmed = false
+        isInstructionSession = false
+        refineStep1Text = nil
+        refineInstruction = nil
+        let cleanTarget = target.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanInstruction = instruction.trimmingCharacters(in: .whitespacesAndNewlines)
+        // If step-1 produced nothing, there's nothing to refine — abandon quietly.
+        guard !cleanTarget.isEmpty else {
+            isTranscribing = false
+            statusMessage = "Nothing to refine"
+            finishSessionUI()
+            return
+        }
+        // If no instruction was heard, just insert step-1's text unchanged.
+        guard !cleanInstruction.isEmpty else {
+            isTranscribing = false
+            insertCompletedText(cleanTarget, originalText: cleanTarget)
+            statusMessage = "No instruction heard; inserted text"
+            return
+        }
+        applyInstruction(cleanInstruction, to: cleanTarget)
+    }
+
+    /// Drop any armed/held refine state without inserting (used on cancel).
+    private func clearRefineState() {
+        refineArmed = false
+        isInstructionSession = false
+        refineStep1Text = nil
+        refineInstruction = nil
+        lastReleaseUptime = nil
+    }
+
+    /// Apply the spoken `instruction` to `target` via the LLM and insert the result.
+    /// On failure, fall back to inserting the original target text.
+    private func applyInstruction(_ instruction: String, to target: String) {
+        // Show an explicit working state while the LLM runs (can take several
+        // seconds). isTranscribing drives the overlay's finalizing cue; isRecording
+        // false so it's clearly "processing", not "listening".
+        isRecording = false
+        isTranscribing = true
+        streamingText = target
+        statusMessage = "Refining…"
         translationStatus = statusMessage
+        if showOverlay, !overlayIsVisible {
+            overlayController?.show()
+            overlayIsVisible = true
+        }
         let sessionID = activeSessionID
+        let directive = InstructionChain.directive(forInstruction: instruction)
         translationService.processFinalText(
-            text: command.content,
+            text: target,
             mode: "rephrase",
             targetLanguage: translationTargetLanguage,
             endpoint: llmEndpoint,
@@ -1671,14 +1755,14 @@ class AppState: ObservableObject {
                 switch result {
                 case .success(let processedText):
                     let cleaned = self.postProcess(processedText)
-                    let textToInsert = cleaned.isEmpty ? command.content : cleaned
-                    self.translationStatus = "Command applied"
-                    self.insertCompletedText(textToInsert, originalText: command.content)
+                    let textToInsert = cleaned.isEmpty ? target : cleaned
+                    self.translationStatus = "Instruction applied"
+                    self.insertCompletedText(textToInsert, originalText: target)
                 case .failure(let error):
-                    self.error = "Voice command failed: \(error.localizedDescription)"
-                    self.translationStatus = "Command failed"
-                    self.insertCompletedText(command.content, originalText: command.content)
-                    self.statusMessage = "Command failed; inserted text"
+                    self.error = "Instruction failed: \(error.localizedDescription)"
+                    self.translationStatus = "Instruction failed"
+                    self.insertCompletedText(target, originalText: target)
+                    self.statusMessage = "Instruction failed; inserted text"
                 }
             }
         }
@@ -1739,6 +1823,11 @@ class AppState: ObservableObject {
             // paste queue and could clobber (or be clobbered by) a late chunk.
             textOutput.setClipboard(text)
         }
+
+        // The actually-inserted text is the canonical result — update lastTranscription
+        // so the tray "copy" and history match what was pasted (the refined / enhanced
+        // / script-processed text), not step-1's raw transcript.
+        lastTranscription = text
 
         recordHistory(text)
 
@@ -1990,16 +2079,12 @@ class AppState: ObservableObject {
 
     // MARK: - Config import / export
 
-    /// Snapshot the user-editable config (profiles, vocabulary, prompts) as a
-    /// portable bundle. History and secrets are intentionally excluded.
+    /// Snapshot the user-editable config (profiles, vocabulary) as a portable
+    /// bundle. History and secrets are intentionally excluded.
     func exportConfig() -> ConfigBundle {
         ConfigBundle(
             profiles: profiles,
-            vocabulary: vocabulary,
-            actions: customVoiceActions.isEmpty ? nil : customVoiceActions,
-            prompts: ConfigBundle.Prompts(
-                voiceCommandWakeWord: voiceCommandWakeWord
-            )
+            vocabulary: vocabulary
         )
     }
 
@@ -2014,16 +2099,6 @@ class AppState: ObservableObject {
         }
         if let importedVocab = bundle.vocabulary {
             vocabulary = importedVocab
-        }
-        if let importedActions = bundle.actions {
-            // Merge by id onto the existing custom actions (override or append),
-            // so importing a pack adds/updates actions without wiping others.
-            customVoiceActions = VoiceActionRegistry(customVoiceActions)
-                .merging(importedActions)
-                .actions
-        }
-        if let wake = bundle.prompts?.voiceCommandWakeWord {
-            voiceCommandWakeWord = wake
         }
         return bundle.summary
     }
