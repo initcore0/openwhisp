@@ -363,13 +363,16 @@ class AppState: ObservableObject {
     @Published private(set) var refineArmed = false
     /// True while step-2 (the instruction utterance) is being dictated.
     private var isInstructionSession = false
-    /// Step-1's text, once it resolves. nil while step-1 is still transcribing. When
-    /// refine is armed, step-1's completion writes HERE (instead of pasting), keyed on
-    /// `refineArmed` rather than session id so a late step-1 final isn't dropped after
-    /// the instruction session has started.
+    /// Step-1's text, once it resolves. nil while step-1 is still transcribing.
     private var refineStep1Text: String?
     /// The spoken instruction, once step-2 resolves. nil until then.
     private var refineInstruction: String?
+    /// True after a double-tap when step-1's transcript hasn't landed yet (e.g.
+    /// WhisperKit's streaming final lags ~1s after release). While set, the NEXT
+    /// completed transcript is step-1 (latched into refineStep1Text), NOT the
+    /// instruction — this is what prevents step-1's late final from being mistaken
+    /// for the instruction (the "refines the wrong text / pastes original" race).
+    private var awaitingStep1 = false
     /// True when step-1 came from the user's SELECTION (not a dictation). The refined
     /// result replaces the selection in place; nothing was dictated for step-1.
     private var refineFromSelection = false
@@ -1552,6 +1555,18 @@ class AppState: ObservableObject {
     private func completeFinalText(_ text: String) {
         let finalText = postProcess(text, isFinalTranscript: true)
 
+        // After a double-tap, step-1's transcript may still have been in flight. The
+        // FIRST completed transcript while awaiting it is step-1 (latch it, don't
+        // paste, don't treat it as the instruction). The instruction session is
+        // already running and its final will arrive next.
+        if awaitingStep1 {
+            awaitingStep1 = false
+            refineStep1Text = finalText
+            isTranscribing = true   // keep the working cue until the instruction lands
+            tryApplyRefine()        // no-op unless the instruction already arrived
+            return
+        }
+
         // Step 2 of the chain: this utterance is the spoken INSTRUCTION. Stash it and
         // try to apply (step-1's text may still be transcribing). Enhancement/translate
         // from Settings is bypassed — the instruction wins.
@@ -1655,14 +1670,29 @@ class AppState: ObservableObject {
         // the RESOLVED step-1 value (even if empty — tryApplyRefine then finishes
         // cleanly rather than waiting forever). Read the selection BEFORE starting the
         // instruction session below (which bumps activeSessionID / shows the overlay).
+        // Resolve step-1's text. Three cases, in order:
+        //  1. We already captured it (deferred-paste path latched refineStep1Text when
+        //     step-1 finalized just before the double-tap) — keep it.
+        //  2. Its transcript is already in streamingText (step-1 finalized, non-deferred)
+        //     — use that.
+        //  3. Neither — step-1 is still transcribing (WhisperKit's ~1s lag). Don't
+        //     snapshot a partial/empty value; mark awaitingStep1 so the NEXT completed
+        //     transcript is latched as step-1 (handled in completeFinalText) rather
+        //     than being mistaken for the instruction.
         let dictated = streamingText.trimmingCharacters(in: .whitespacesAndNewlines)
-        // Privacy: never read a selection out of a focused password/secure field.
-        if dictated.isEmpty, !SecureFieldDetector.focusedFieldIsSecure(),
-           let selection = SelectionReader.readSelectedText() {
+        if refineStep1Text != nil {
+            refineFromSelection = false
+        } else if !dictated.isEmpty {
+            refineStep1Text = dictated
+            refineFromSelection = false
+        } else if !SecureFieldDetector.focusedFieldIsSecure(),
+                  let selection = SelectionReader.readSelectedText() {
+            // No dictation at all → refine the user's SELECTION instead.
             refineStep1Text = selection
             refineFromSelection = true
         } else {
-            refineStep1Text = dictated
+            // Step-1 dictation is still finalizing — wait for it.
+            awaitingStep1 = true
             refineFromSelection = false
         }
         isInstructionSession = true
@@ -1744,6 +1774,7 @@ class AppState: ObservableObject {
     private func clearRefineState() {
         refineArmed = false
         isInstructionSession = false
+        awaitingStep1 = false
         refineStep1Text = nil
         refineInstruction = nil
         refineFromSelection = false
