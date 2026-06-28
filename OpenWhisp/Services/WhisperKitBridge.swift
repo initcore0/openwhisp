@@ -182,7 +182,9 @@ struct WhisperKitStreamState {
         let unconfirmed = state.unconfirmedSegments.map(\.text).joined(separator: " ")
         self.confirmedText = confirmed
         self.fullText = (confirmed + " " + unconfirmed)
-        self.peakEnergy = state.bufferEnergy.max()
+        // Normalize WhisperKit's relative buffer energy through the shared perceptual
+        // curve so the indicator feels the same across all engines.
+        self.peakEnergy = state.bufferEnergy.max().map { AudioLevel.fromRelativeEnergy($0) }
     }
 }
 

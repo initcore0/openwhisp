@@ -212,28 +212,34 @@ struct OverlayView: View {
         .padding(.horizontal, 22)
         .padding(.vertical, 13)
         .background {
-            ZStack {
-                if reduceTransparency {
-                    Capsule(style: .continuous)
-                        .fill(Color(red: 0.07, green: 0.07, blue: 0.08))
-                } else {
-                    VisualEffectView()
-                        .clipShape(Capsule(style: .continuous))
+            // The accent glow is a shadow cast by a CAPSULE (the pill's own shape),
+            // not by the rectangular container — otherwise the bloom is a rectangle
+            // around the bounding box (the old halo bug). A dedicated capsule behind
+            // the blur carries both the ambient drop shadow and the energy glow so
+            // both are pill-shaped.
+            Capsule(style: .continuous)
+                .fill(reduceTransparency ? Color(red: 0.07, green: 0.07, blue: 0.08) : Color.black.opacity(0.001))
+                .shadow(color: Color.black.opacity(0.32), radius: 18, x: 0, y: 8)
+                .shadow(
+                    color: accent.opacity(reduceMotion ? 0.18 : Double(min(0.55, max(0.0, appState.audioLevel))) * 0.6),
+                    radius: 14 + CGFloat(min(1.0, max(0.0, appState.audioLevel))) * 10,
+                    x: 0, y: 0
+                )
+                .overlay {
+                    if reduceTransparency {
+                        Capsule(style: .continuous).fill(Color(red: 0.07, green: 0.07, blue: 0.08))
+                    } else {
+                        VisualEffectView().clipShape(Capsule(style: .continuous))
+                    }
                 }
-            }
-            .overlay {
-                // Hairline edge.
-                Capsule(style: .continuous)
-                    .stroke(Color.white.opacity(0.10), lineWidth: 0.8)
-            }
-            // Single ambient shadow + an accent glow that blooms with energy.
-            .shadow(color: Color.black.opacity(0.32), radius: 18, x: 0, y: 8)
-            .shadow(
-                color: accent.opacity(reduceMotion ? 0.18 : Double(min(0.5, max(0.0, appState.audioLevel))) * 0.5),
-                radius: 16, x: 0, y: 0
-            )
+                .overlay {
+                    // Hairline edge.
+                    Capsule(style: .continuous)
+                        .stroke(Color.white.opacity(0.10), lineWidth: 0.8)
+                }
         }
-        .animation(.easeInOut(duration: 0.25), value: phase)
+        .animation(.easeInOut(duration: 0.18), value: phase)
+        .animation(.easeOut(duration: 0.08), value: appState.audioLevel)
     }
 
     // MARK: Transcript

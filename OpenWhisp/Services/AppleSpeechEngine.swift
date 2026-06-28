@@ -125,7 +125,7 @@ final class AppleSpeechEngine: StreamingTranscriptionEngine {
         
         let divisor = Float(max(1, channelCount * frameCount))
         let rms = sqrt(sum / divisor)
-        let normalized = max(0, min(1, rms * 8))
+        let normalized = AudioLevel.fromRMS(rms)
         DispatchQueue.main.async {
             self.onLevelChanged?(normalized)
         }
