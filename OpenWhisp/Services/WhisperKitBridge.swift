@@ -182,9 +182,11 @@ struct WhisperKitStreamState {
         let unconfirmed = state.unconfirmedSegments.map(\.text).joined(separator: " ")
         self.confirmedText = confirmed
         self.fullText = (confirmed + " " + unconfirmed)
-        // Normalize WhisperKit's relative buffer energy through the shared perceptual
-        // curve so the indicator feels the same across all engines.
-        self.peakEnergy = state.bufferEnergy.max().map { AudioLevel.fromRelativeEnergy($0) }
+        // `bufferEnergy` is the CUMULATIVE per-0.1s relative-energy history for the
+        // whole session. Deriving the live level from a short trailing window (rather
+        // than the all-time `.max()`) keeps the indicator tracking the live voice
+        // instead of freezing at the loudest moment. See AudioLevel.
+        self.peakEnergy = AudioLevel.fromCumulativeEnergyHistory(state.bufferEnergy)
     }
 }
 

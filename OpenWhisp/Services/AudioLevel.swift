@@ -37,4 +37,20 @@ enum AudioLevel {
     static func fromRelativeEnergy(_ energy: Float) -> Float {
         fromRMS(max(0, min(1, energy)))
     }
+
+    /// Buffers (~0.1s each) to consider when deriving the live level from a
+    /// cumulative energy history — a ~0.5s trailing window.
+    static let recentEnergyWindow = 5
+
+    /// Pick the indicator level from a CUMULATIVE per-buffer relative-energy history
+    /// (WhisperKit's `bufferEnergy`, which only ever grows over a session).
+    ///
+    /// Using `history.max()` over the whole array pins the indicator to the loudest
+    /// moment ever seen, so the bars react to the first sound and then freeze. Instead
+    /// take the max over a short trailing window so the level tracks the live voice and
+    /// relaxes toward silence between words. Returns nil for an empty history (no
+    /// update — hold the prior level).
+    static func fromCumulativeEnergyHistory(_ history: [Float]) -> Float? {
+        history.suffix(recentEnergyWindow).max().map(fromRelativeEnergy)
+    }
 }

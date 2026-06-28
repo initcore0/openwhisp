@@ -335,6 +335,14 @@ class AppState: ObservableObject {
 
     private var overlayController: OverlayWindowController?
     private var elapsedTimer: Timer?
+    /// Drives the overlay waveform from streaming-transcript growth on the WhisperKit
+    /// streaming path, whose native energy signal doesn't track the live voice. The
+    /// preview text reliably flows, so we pulse the bars from it. See
+    /// `TranscriptActivityMeter`; ticked by `waveformTimer`, fed by partials.
+    private var transcriptActivityMeter = TranscriptActivityMeter()
+    private var waveformTimer: Timer?
+    /// ~30 fps so the synthesized level decays smoothly.
+    private static let waveformTick: TimeInterval = 1.0 / 30.0
     private var recordingStartedAt: Date?
     private var targetApplication: NSRunningApplication?
     private var overlayIsVisible = false
@@ -798,7 +806,14 @@ class AppState: ObservableObject {
             }
         }
         engine.onLevelChanged = { [weak self] level in
-            Task { @MainActor in self?.audioLevel = level }
+            Task { @MainActor in
+                guard let self else { return }
+                // When the transcript-driven waveform is active (WhisperKit streaming),
+                // ignore the engine's native level — it doesn't track the live voice and
+                // would stomp the meter between partials.
+                guard self.waveformTimer == nil else { return }
+                self.audioLevel = level
+            }
         }
     }
 
@@ -1040,6 +1055,11 @@ class AppState: ObservableObject {
                 self.isArming = false
                 self.isRecording = true
                 self.statusMessage = "Listening..."
+                // WhisperKit's native energy doesn't track the live voice, so drive
+                // the waveform from the streaming transcript instead.
+                if usesWhisperKit {
+                    self.startTranscriptWaveform()
+                }
             } catch {
                 self.error = error.localizedDescription
                 self.statusMessage = "Streaming Error"
@@ -1099,6 +1119,14 @@ class AppState: ObservableObject {
         let text = postProcess(rawText)
         streamingText = text
         statusMessage = text.isEmpty ? "Listening..." : "Listening..."
+
+        // On the WhisperKit streaming path, pulse the waveform from transcript growth
+        // (its native energy signal is unusable). The meter raises the level here; the
+        // waveform timer decays it between words. `text` may be empty/revised — the
+        // meter only reacts to net growth.
+        if waveformTimer != nil {
+            audioLevel = transcriptActivityMeter.ingest(transcript: text)
+        }
 
         guard outputMode == "liveChunks", !text.isEmpty else { return }
         let delta = liveDelta(previous: appleLiveInsertedText, current: text)
@@ -1965,6 +1993,28 @@ class AppState: ObservableObject {
         }
     }
 
+    /// Start driving the overlay waveform from streaming-transcript growth. Used on
+    /// the WhisperKit streaming path only — Apple Speech and the recorder publish a
+    /// real per-buffer level via `onLevelChanged`. The timer decays the synthesized
+    /// level each tick; the streaming partial handler injects a kick as words arrive.
+    private func startTranscriptWaveform() {
+        transcriptActivityMeter.reset()
+        waveformTimer?.invalidate()
+        let dt = Float(Self.waveformTick)
+        waveformTimer = Timer.scheduledTimer(withTimeInterval: Self.waveformTick, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                guard let self else { return }
+                self.audioLevel = self.transcriptActivityMeter.decay(dt: dt)
+            }
+        }
+    }
+
+    private func stopTranscriptWaveform() {
+        waveformTimer?.invalidate()
+        waveformTimer = nil
+        transcriptActivityMeter.reset()
+    }
+
     private func finishSessionUI(delay: TimeInterval = 0) {
         sessionActive = false
         pendingStop = false
@@ -1982,6 +2032,7 @@ class AppState: ObservableObject {
         isStreamingSession = false
         elapsedTimer?.invalidate()
         elapsedTimer = nil
+        stopTranscriptWaveform()
         recordingStartedAt = nil
         targetApplication = nil
         audioLevel = 0

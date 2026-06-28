@@ -42,4 +42,39 @@ final class AudioLevelTests: XCTestCase {
         XCTAssertEqual(AudioLevel.fromRelativeEnergy(0.05), AudioLevel.fromRMS(0.05), accuracy: 0.0001)
         XCTAssertEqual(AudioLevel.fromRelativeEnergy(0), 0)
     }
+
+    // MARK: - Cumulative energy history (WhisperKit bufferEnergy)
+
+    func testEmptyHistoryYieldsNoUpdate() {
+        // No buffers yet → nil so the caller holds the prior level.
+        XCTAssertNil(AudioLevel.fromCumulativeEnergyHistory([]))
+    }
+
+    /// The regression: WhisperKit's `bufferEnergy` is a cumulative, ever-growing
+    /// history. A loud onset must NOT pin the indicator high once the speaker goes
+    /// quiet — the live level must follow the RECENT window, not the all-time max.
+    func testRecentWindowTracksDownAfterLoudOnset() {
+        // Loud onset early, then a long quiet tail (more than the trailing window).
+        let history: [Float] = [0.9, 0.8] + Array(repeating: 0.02, count: 10)
+        let level = AudioLevel.fromCumulativeEnergyHistory(history)!
+        // Whole-history `.max()` (the old bug) would map 0.9 → ~1.0 and freeze there.
+        XCTAssertLessThan(level, AudioLevel.fromRelativeEnergy(0.9))
+        // It should instead reflect the quiet recent buffers.
+        XCTAssertEqual(level, AudioLevel.fromRelativeEnergy(0.02), accuracy: 0.0001)
+    }
+
+    func testRecentWindowReflectsCurrentSpeech() {
+        // Quiet history, then a loud current window → indicator rises.
+        let history: [Float] = Array(repeating: 0.02, count: 20) + [0.5, 0.6]
+        let level = AudioLevel.fromCumulativeEnergyHistory(history)!
+        XCTAssertEqual(level, AudioLevel.fromRelativeEnergy(0.6), accuracy: 0.0001)
+    }
+
+    func testWindowSizeBoundsHowFarBackItLooks() {
+        // A loud buffer just outside the trailing window must not leak into the level.
+        let n = AudioLevel.recentEnergyWindow
+        let history: [Float] = [0.9] + Array(repeating: 0.03, count: n)
+        let level = AudioLevel.fromCumulativeEnergyHistory(history)!
+        XCTAssertEqual(level, AudioLevel.fromRelativeEnergy(0.03), accuracy: 0.0001)
+    }
 }
