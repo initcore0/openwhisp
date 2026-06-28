@@ -142,7 +142,9 @@ class AppState: ObservableObject {
     /// otherwise its stub reports unavailability); everything else uses whisper.cpp.
     private static func makeFileEngine(for engine: String, model: String) -> FileTranscriptionEngine {
         switch engine {
-        case "whisperKit": return WhisperKitEngine(modelName: model)
+        // WhisperKit uses its OWN model namespace (openai_whisper-*), not the
+        // whisper.cpp GGML model id, so it keeps its built-in default.
+        case "whisperKit": return WhisperKitEngine()
         default:           return WhisperEngine()
         }
     }
@@ -752,9 +754,11 @@ class AppState: ObservableObject {
         whisperEngine = Self.makeFileEngine(for: transcriptionEngine, model: modelName)
         wireFileEngineCallbacks()
         whisperWorkerStatus = "Not started"
-        if transcriptionEngine == "whisper" && whisperBackend == "serverAPI" {
-            warmWhisperServerIfPossible()
-        }
+        // `warmWhisperServerIfPossible()` is engine-aware: it warms WhisperKit's
+        // CoreML model up front, warms whisper.cpp's server only for the serverAPI
+        // backend, and no-ops for Apple Speech — so only the selected backend ever
+        // loads a model (no dual-engine residency).
+        warmWhisperServerIfPossible()
     }
 
     // MARK: - Actions
@@ -854,12 +858,33 @@ class AppState: ObservableObject {
     }
 
     func warmWhisperServerIfPossible() {
-        guard whisperBackend == "serverAPI" else { return }
-        guard !isModelDownloading else {
-            whisperWorkerStatus = "Waiting for model"
+        // Warm the CURRENTLY SELECTED file-transcription backend — and only that
+        // one. This must be engine-aware: `whisperEngine` is a WhisperKitEngine
+        // when transcriptionEngine == "whisperKit", so warming the wrong gate here
+        // is how we ended up with whisper.cpp's server AND WhisperKit both loading
+        // models at once (the dual-engine memory pressure behind the crash).
+        switch transcriptionEngine {
+        case "whisperKit":
+            // WhisperKit has no external server; warm = preload its CoreML model
+            // up front (with a visible status) so the slow first load doesn't block
+            // the first dictation. Doesn't depend on whisperBackend.
+            guard !isModelDownloading else {
+                whisperWorkerStatus = "Waiting for model"
+                return
+            }
+            whisperEngine?.warmServer(binaryPath: whisperBinaryPath, modelPath: modelPath)
+        case "appleSpeech":
+            // Apple Speech is a streaming engine; nothing to warm here.
             return
+        default:
+            // whisper.cpp: only the serverAPI backend keeps a warm server process.
+            guard whisperBackend == "serverAPI" else { return }
+            guard !isModelDownloading else {
+                whisperWorkerStatus = "Waiting for model"
+                return
+            }
+            whisperEngine?.warmServer(binaryPath: whisperBinaryPath, modelPath: modelPath)
         }
-        whisperEngine?.warmServer(binaryPath: whisperBinaryPath, modelPath: modelPath)
     }
 
     func validateOpenAIKey() {
@@ -1193,6 +1218,9 @@ class AppState: ObservableObject {
         sessionActive = true
         pendingStop = false
         activeSessionID = UUID()
+        // Let the file engine forget per-dictation state (e.g. WhisperKit's
+        // auto-detected language) so each session starts fresh.
+        whisperEngine?.resetSession()
         transcriptionRequests.removeAll()
         cleanupPendingLiveChunks()
         resetLivePipeline()

@@ -48,9 +48,18 @@ protocol FileTranscriptionEngine: AnyObject {
     func warmServer(binaryPath: String, modelPath: String)
     /// Tear down the persistent server.
     func stopServer()
+
+    /// Reset any per-dictation state (called at the start of each session). Default
+    /// is a no-op; WhisperKit uses it to forget the auto-detected language so each
+    /// new dictation re-detects rather than sticking to the previous one.
+    func resetSession()
 }
 
 extension FileTranscriptionEngine {
+    /// Default: most engines hold no per-session state.
+    func resetSession() {}
+
+
     /// Convenience matching the engine's own defaults, so call sites that don't
     /// care about `deleteWhenDone` can omit it when calling through the protocol.
     func transcribe(

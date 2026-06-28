@@ -12,7 +12,10 @@ let package = Package(
         .library(name: "WhisperKitDep", type: .static, targets: ["WhisperKitDep"])
     ],
     dependencies: [
-        .package(url: "https://github.com/argmaxinc/WhisperKit.git", from: "0.9.0")
+        // Pinned to the current 1.0.0 release. macOS 26 model loading is handled
+        // app-side via `modelFolder` + a GPU audio encoder (see docs/WHISPERKIT_PILOT.md),
+        // not by the WhisperKit version.
+        .package(url: "https://github.com/argmaxinc/WhisperKit.git", from: "1.0.0")
     ],
     targets: [
         .target(
