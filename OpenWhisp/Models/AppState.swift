@@ -1641,13 +1641,13 @@ class AppState: ObservableObject {
         lastReleaseUptime = nil          // consume the double-tap
         refineArmed = true
         refineInstruction = nil
-        // Snapshot step-1's text from the current transcript buffer. Starting the
-        // instruction session below bumps activeSessionID, which would reject step-1's
-        // late final — so we seed from what's already captured. A late final, if it
-        // still passes (whisper.cpp recording resolves before this), refines further
-        // via outputOrOfferRefine. Streaming has its transcript in streamingText now.
-        let snapshot = streamingText.trimmingCharacters(in: .whitespacesAndNewlines)
-        refineStep1Text = snapshot.isEmpty ? nil : snapshot
+        // Snapshot step-1's text from the current transcript buffer as the RESOLVED
+        // step-1 value (even if empty — empty means "nothing was dictated", which
+        // tryApplyRefine handles by finishing cleanly rather than waiting forever).
+        // Starting the instruction session below bumps activeSessionID, which would
+        // reject step-1's late final; the snapshot is authoritative for streaming
+        // (its transcript is already in streamingText now).
+        refineStep1Text = streamingText.trimmingCharacters(in: .whitespacesAndNewlines)
         isInstructionSession = true
         let liveMode = outputMode == "liveChunks" || outputMode == "preview"
         if transcriptionEngine == "appleSpeech" || (transcriptionEngine == "whisperKit" && liveMode) {
