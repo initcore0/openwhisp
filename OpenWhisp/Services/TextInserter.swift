@@ -25,22 +25,28 @@ final class TextInserter: TextOutput {
     /// sets stay strictly FIFO-ordered (prevents the paste/clobber races).
     private let queue = DispatchQueue(label: "com.openwhisp.app.insert")
 
-    /// Insert `text` into the focused app. Fire-and-forget; runs off the main thread.
-    func insert(_ text: String, mode: InsertionMode, restoreClipboard: Bool) {
+    /// Insert `text` into the focused app. Runs off the main thread; `completion`
+    /// (if given) reports on the main thread whether the insert was confirmed or fell
+    /// back to leaving the text on the clipboard.
+    func insert(_ text: String, mode: InsertionMode, restoreClipboard: Bool,
+                completion: ((InsertionOutcome) -> Void)?) {
         guard !text.isEmpty else { return }
         queue.async {
+            let outcome: InsertionOutcome
             switch mode {
-            case .directAX:
-                if !Self.insertViaAccessibility(text) {
-                    // Even in AX-only mode, fall back rather than silently dropping text.
-                    Self.pasteSynchronously(text, restoreClipboard: restoreClipboard)
-                }
             case .paste:
-                Self.pasteSynchronously(text, restoreClipboard: restoreClipboard)
-            case .auto:
-                if !Self.insertViaAccessibility(text) {
-                    Self.pasteSynchronously(text, restoreClipboard: restoreClipboard)
+                outcome = Self.pasteWithSafetyNet(text, restoreClipboard: restoreClipboard)
+            case .directAX, .auto:
+                // Try verified AX first; fall back to paste (with its own safety net)
+                // when AX is unsupported or its result can't be confirmed.
+                if Self.insertViaAccessibility(text) {
+                    outcome = .inserted
+                } else {
+                    outcome = Self.pasteWithSafetyNet(text, restoreClipboard: restoreClipboard)
                 }
+            }
+            if let completion {
+                DispatchQueue.main.async { completion(outcome) }
             }
         }
     }
@@ -56,8 +62,11 @@ final class TextInserter: TextOutput {
 
     // MARK: - Accessibility insertion
 
-    /// Attempt to insert `text` at the caret of the focused element via AX.
-    /// Returns false if AX isn't permitted or the element doesn't support it.
+    /// Attempt to insert `text` at the caret of the focused element via AX, and
+    /// VERIFY it took where the element exposes a readable value. Returns false if
+    /// AX is unpermitted, unsupported, or the set succeeded by status but the
+    /// re-read value contradicts it (the "AX silently lied" case in some Electron /
+    /// web views) — so the caller falls back to paste rather than dropping text.
     private static func insertViaAccessibility(_ text: String) -> Bool {
         guard AXIsProcessTrusted() else { return false }
 
@@ -90,14 +99,38 @@ final class TextInserter: TextOutput {
             kAXSelectedTextAttribute as CFString,
             text as CFString
         )
-        return setErr == .success
+        guard setErr == .success else { return false }
+
+        // Best-effort verification: re-read the element's whole value (if exposed)
+        // and confirm our text is present. If the value is readable but doesn't
+        // reflect the insert, AX lied → report failure so we fall back to paste.
+        // If the value isn't readable, we can't verify → trust the status code.
+        let readBack = copyStringAttribute(element, kAXValueAttribute)
+        switch InsertVerifier.axInsertReflected(expected: text, current: readBack) {
+        case .some(false): return false   // contradicted → fall back
+        default:           return true    // verified, or unverifiable (trust setErr)
+        }
     }
 
-    // MARK: - Paste fallback
+    // MARK: - AX read helper
 
-    /// Synchronous paste (already on `queue`): snapshot all clipboard item types,
-    /// set our text, Cmd+V, restore.
-    private static func pasteSynchronously(_ text: String, restoreClipboard: Bool) {
+    /// Copy a string-valued AX attribute, nil on any error or non-string value.
+    private static func copyStringAttribute(_ element: AXUIElement, _ attribute: String) -> String? {
+        var value: CFTypeRef?
+        let err = AXUIElementCopyAttributeValue(element, attribute as CFString, &value)
+        guard err == .success, let value else { return nil }
+        return value as? String
+    }
+
+    // MARK: - Paste fallback (with safety net)
+
+    /// Synchronous paste (already on `queue`) with verification: snapshot the
+    /// clipboard, set our text and CONFIRM the write, then — only if a focused app
+    /// can receive ⌘V — synthesize it. If preconditions can't be met (clipboard
+    /// write failed, or no other app is frontmost to paste into), we DON'T restore
+    /// the clipboard and report `.copiedToClipboard` so the text is never lost and
+    /// the user can paste it manually.
+    private static func pasteWithSafetyNet(_ text: String, restoreClipboard: Bool) -> InsertionOutcome {
         let pb = NSPasteboard.general
 
         var savedItems: [NSPasteboardItem] = []
@@ -118,6 +151,20 @@ final class TextInserter: TextOutput {
         pb.clearContents()
         pb.setString(text, forType: .string)
 
+        // Confirm our text actually made it onto the clipboard before we rely on ⌘V.
+        guard pb.string(forType: .string) == text else {
+            // Couldn't even write the clipboard — nothing more we can do; report so
+            // the UI can tell the user. (Don't restore: our text is the best we have.)
+            return .copiedToClipboard
+        }
+
+        // Is there a foreground app (other than us) that can receive the paste? The
+        // overlay is a non-activating panel, so the target app should stay frontmost.
+        // If not, leave the text on the clipboard rather than firing ⌘V into nothing.
+        guard Self.hasPasteTarget() else {
+            return .copiedToClipboard
+        }
+
         Thread.sleep(forTimeInterval: 0.05)
         postCommandV()
         Thread.sleep(forTimeInterval: 0.15)
@@ -126,6 +173,15 @@ final class TextInserter: TextOutput {
             pb.clearContents()
             pb.writeObjects(savedItems)
         }
+        return .inserted
+    }
+
+    /// True if some application other than OpenWhisp is frontmost (i.e. there's a
+    /// real target for the synthesized ⌘V). Conservatively returns true if we can't
+    /// determine frontmost, so we never block a paste that would have worked.
+    private static func hasPasteTarget() -> Bool {
+        guard let front = NSWorkspace.shared.frontmostApplication else { return true }
+        return front.bundleIdentifier != Bundle.main.bundleIdentifier
     }
 
     private static func postCommandV() {

@@ -179,6 +179,13 @@ struct OverlayView: View {
                     .transition(.opacity)
             }
 
+            if appState.clipboardFallbackActive {
+                Text("Couldn't insert — copied, press ⌘V")
+                    .font(.system(size: 11, weight: .semibold, design: .rounded))
+                    .foregroundColor(Color(red: 0.98, green: 0.74, blue: 0.30))
+                    .transition(.opacity)
+            }
+
             if showTranscript {
                 transcriptPanel
                     .transition(.opacity.combined(with: .move(edge: .top)))
@@ -189,6 +196,7 @@ struct OverlayView: View {
         .animation(.easeInOut(duration: 0.18), value: showTranscript)
         .animation(.easeInOut(duration: 0.18), value: phase)
         .animation(.easeInOut(duration: 0.18), value: appState.refineArmed)
+        .animation(.easeInOut(duration: 0.18), value: appState.clipboardFallbackActive)
     }
 
     // MARK: Pill

@@ -15,8 +15,10 @@ final class SpyTextOutput: TextOutput {
     private(set) var insertions: [Insertion] = []
     private(set) var clipboardWrites: [String] = []
 
-    func insert(_ text: String, mode: InsertionMode, restoreClipboard: Bool) {
+    func insert(_ text: String, mode: InsertionMode, restoreClipboard: Bool,
+                completion: ((InsertionOutcome) -> Void)?) {
         insertions.append(.init(text: text, mode: mode, restoreClipboard: restoreClipboard))
+        completion?(.inserted)
     }
     func setClipboard(_ text: String) {
         clipboardWrites.append(text)
@@ -49,5 +51,31 @@ final class TextOutputTests: XCTestCase {
             .init(text: " world", mode: .paste, restoreClipboard: false)
         ])
         XCTAssertEqual(recorder.clipboardWrites, ["final"])
+    }
+
+    // MARK: InsertVerifier (AX read-back decision)
+
+    func testVerifyReflectedWhenValueContainsText() {
+        XCTAssertEqual(
+            InsertVerifier.axInsertReflected(expected: "hello", current: "say hello there"),
+            true
+        )
+    }
+
+    func testVerifyContradictedWhenValueLacksText() {
+        // Readable value that doesn't contain our text → AX silently failed.
+        XCTAssertEqual(
+            InsertVerifier.axInsertReflected(expected: "hello", current: "unchanged"),
+            false
+        )
+    }
+
+    func testVerifyUnverifiableWhenNoReadableValue() {
+        // nil read-back → can't verify → trust the AX status (nil result).
+        XCTAssertNil(InsertVerifier.axInsertReflected(expected: "hello", current: nil))
+    }
+
+    func testVerifyEmptyExpectedIsUnverifiable() {
+        XCTAssertNil(InsertVerifier.axInsertReflected(expected: "   ", current: "anything"))
     }
 }

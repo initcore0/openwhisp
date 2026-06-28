@@ -165,6 +165,8 @@ You can re‑open it any time from the menu bar → **Setup Guide…**.
 - **Automatic** *(default)* — insert directly into the focused field via Accessibility (your clipboard is left untouched), falling back to paste when an app doesn't support it.
 - **Direct insert only** / **Paste (Cmd+V)**.
 
+Whichever mode you pick, insertion is **verified** — if it can't be confirmed, your text is kept on the clipboard with a "copied, press ⌘V" cue, never silently dropped.
+
 ---
 
 ## Settings overview
@@ -296,7 +298,7 @@ scripts/bundle-whisper-runtime.sh  # copy whisper binaries + dylibs into the .ap
 - **Transcription backends** — `whisper-cli` per request, or a warm `whisper-server` kept loaded for lower latency (Advanced → whisper.cpp backend). The app bundles both (built from the `third_party/whisper.cpp` submodule); falls back to `~/whisper.cpp/build/bin/` if a bundled binary isn't present.
 - **WhisperKit backend (experimental, opt‑in)** — a Swift‑native CoreML/ANE Whisper runtime ([Argmax](https://github.com/argmaxinc/WhisperKit)), selectable as a third engine. It does both file transcription and **real‑time streaming** (built‑in VAD skips silence) and shares the streaming session path with Apple Speech. It's **opt‑in at build time** (`WHISPERKIT=1 ./build.sh`) — the default build links a stub, so the distributed app is unaffected. Two macOS‑26 gotchas worth knowing: models are loaded from a locally‑staged folder of compiled `.mlmodelc` (the published prebuilts don't load on Tahoe), and the audio encoder is pinned to the **GPU** because ANE specialization of a non‑tiny encoder can stall indefinitely. Settings become backend‑aware (only the relevant options show per engine). Full technical write‑up: [docs/WHISPERKIT_PILOT.md](docs/WHISPERKIT_PILOT.md).
 - **Audio** — capture is resampled to whisper's required 16 kHz mono 16‑bit PCM; live mode supports timer‑based or pause‑based (VAD) chunking.
-- **Insertion** — Accessibility direct‑insert avoids clobbering the clipboard; paste is the universal fallback. All insertion is serialized so live chunks stay in order.
+- **Insertion** — Accessibility direct‑insert avoids clobbering the clipboard; paste is the universal fallback. All insertion is serialized so live chunks stay in order. **Verified, never‑lose‑text:** an AX insert is read back where the field exposes a value (so a silently‑ignored insert in some Electron/web views falls through to paste), the paste path confirms the clipboard write and a frontmost target before firing ⌘V, and if nothing can be confirmed the text is **left on the clipboard** with a "Couldn't insert — copied, press ⌘V" cue rather than vanishing.
 - **Concurrency** — `AppState` is `@MainActor`; service callbacks hop back via `Task { @MainActor }`. Long‑running work (whisper subprocess/server, LLM calls, paste timing) runs off the main actor.
 
 ---

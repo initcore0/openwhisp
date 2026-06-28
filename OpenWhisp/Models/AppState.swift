@@ -373,6 +373,11 @@ class AppState: ObservableObject {
     /// True when step-1 came from the user's SELECTION (not a dictation). The refined
     /// result replaces the selection in place; nothing was dictated for step-1.
     private var refineFromSelection = false
+
+    /// Set briefly when an insert couldn't be confirmed and the text was left on the
+    /// clipboard instead — drives a "copied, press ⌘V" cue in the overlay so the
+    /// result is never silently lost.
+    @Published private(set) var clipboardFallbackActive = false
     /// Snapshot of whether this session uses live-chunk output, captured at
     /// beginSession(). The live-chunk drain pipeline must be gated on this rather
     /// than the live @Published outputMode, so a mid-session settings change can't
@@ -1827,7 +1832,13 @@ class AppState: ObservableObject {
                 insertion,
                 mode: currentInsertionMode,
                 restoreClipboard: restoreClipboard
-            )
+            ) { [weak self] outcome in
+                // If the insert couldn't be confirmed, the text was left on the
+                // clipboard — tell the user so it isn't silently lost. (Arrives after
+                // the success status below; overrides it only on fallback.)
+                guard let self, outcome == .copiedToClipboard else { return }
+                self.showClipboardFallbackNotice()
+            }
         } else {
             // liveChunks: the text was already pasted incrementally (no trailing space).
             // Type the single conditional trailing space now, honoring addTrailingSpace.
@@ -1861,6 +1872,31 @@ class AppState: ObservableObject {
     }
 
     /// Local transcript cleanup. Delegates to TranscriptCleaner (in OpenWhispCore)
+    /// Surface the "couldn't insert — text is on the clipboard" fallback: set the
+    /// status, keep/show the overlay with the cue, and auto-clear after a few seconds.
+    private func showClipboardFallbackNotice() {
+        statusMessage = "Couldn't insert — copied, press ⌘V"
+        clipboardFallbackActive = true
+        if showOverlay {
+            if !overlayIsVisible {
+                overlayController?.show()
+                overlayIsVisible = true
+            }
+        }
+        let token = UUID()
+        clipboardFallbackToken = token
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            // Only clear if a newer notice/session hasn't superseded this one.
+            guard self.clipboardFallbackToken == token else { return }
+            self.clipboardFallbackActive = false
+            if !self.isRecording && !self.isTranscribing {
+                self.hideOverlayNow()
+            }
+        }
+    }
+    private var clipboardFallbackToken: UUID?
+
     /// — the OS-independent post-processing pipeline — built from current settings.
     /// `isFinalTranscript` enables the trailing meta-instruction strip (only on the
     /// whole final utterance, never per chunk or on already-LLM-processed output).
