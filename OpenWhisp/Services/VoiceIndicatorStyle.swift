@@ -36,9 +36,12 @@ enum VoiceIndicatorStyle: String, CaseIterable, Identifiable {
         }
     }
 
+    /// The default style for a fresh install.
+    static let defaultStyle: VoiceIndicatorStyle = .bars
+
     /// Parse a stored raw value, defaulting safely.
     static func from(_ raw: String?) -> VoiceIndicatorStyle {
-        guard let raw, let style = VoiceIndicatorStyle(rawValue: raw) else { return .waveform }
+        guard let raw, let style = VoiceIndicatorStyle(rawValue: raw) else { return defaultStyle }
         return style
     }
 }

@@ -9,10 +9,11 @@ final class VoiceIndicatorStyleTests: XCTestCase {
         }
     }
 
-    func testFromDefaultsToWaveform() {
-        XCTAssertEqual(VoiceIndicatorStyle.from(nil), .waveform)
-        XCTAssertEqual(VoiceIndicatorStyle.from("nonsense"), .waveform)
-        XCTAssertEqual(VoiceIndicatorStyle.from(""), .waveform)
+    func testFromDefaultsToDefaultStyle() {
+        XCTAssertEqual(VoiceIndicatorStyle.from(nil), .defaultStyle)
+        XCTAssertEqual(VoiceIndicatorStyle.from("nonsense"), .defaultStyle)
+        XCTAssertEqual(VoiceIndicatorStyle.from(""), .defaultStyle)
+        XCTAssertEqual(VoiceIndicatorStyle.defaultStyle, .bars)
     }
 
     func testFromValidRawValue() {

@@ -628,8 +628,8 @@ struct SettingsView: View {
         }
     }
 
-    /// Styles available to pick this build. Grows as later phases land (bars, orb).
-    private var availableIndicatorStyles: [VoiceIndicatorStyle] { [.waveform] }
+    /// Styles available to pick this build. Grows as later phases land (orb).
+    private var availableIndicatorStyles: [VoiceIndicatorStyle] { [.bars, .waveform] }
 
     private var appearanceSection: some View {
         settingsSection("Appearance") {

@@ -205,7 +205,14 @@ struct OverlayView: View {
     /// phase; anything not yet implemented falls back to the waveform.
     @ViewBuilder private var indicatorContent: some View {
         switch appState.voiceIndicatorStyle {
-        default:
+        case .bars:
+            SpectralBars(
+                level: appState.audioLevel,
+                accent: accent,
+                isFinalizing: appState.isTranscribing,
+                reduceMotion: reduceMotion
+            )
+        default:   // .waveform (and .orb until phase 4)
             QuietWaveform(
                 level: appState.audioLevel,
                 accent: accent,
@@ -373,6 +380,75 @@ struct QuietWaveform: View {
             let target = max(0.06, min(1.0, Double(newValue)))
             // Attack fast (snap up), release slow (decay down) — meter feel.
             let factor = target > displayLevel ? 0.5 : 0.18
+            withAnimation(.linear(duration: 0.05)) {
+                displayLevel = displayLevel + (target - displayLevel) * factor
+            }
+        }
+    }
+}
+
+// MARK: - Spectral bars
+
+/// Reactive frequency-style bars (SwiftUI Canvas). Driven by the perceptual mic
+/// level: a fixed set of bars, each with a stable center-weighted envelope and its
+/// own time-varying motion, so the row "dances" with loudness. (A true FFT spectrum
+/// is a possible later upgrade for engines that expose raw audio; this level-driven
+/// version works identically on every backend, including WhisperKit.) Honors Reduce
+/// Motion with a static level-driven envelope.
+struct SpectralBars: View {
+    let level: Float
+    let accent: Color
+    let isFinalizing: Bool
+    let reduceMotion: Bool
+
+    @State private var displayLevel: Double = 0.06
+
+    private let barCount = 21
+
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1.0 / 60.0)) { timeline in
+            Canvas { context, size in
+                let now = timeline.date.timeIntervalSinceReferenceDate
+                let baseline = max(displayLevel, 0.05)
+                let slot = size.width / CGFloat(barCount)
+                let gap = slot * 0.42
+                let barW = slot - gap
+                let midY = size.height / 2
+
+                let finalizingPulse = (isFinalizing && !reduceMotion)
+                    ? 0.78 + 0.22 * sin(now * 6.0)
+                    : 1.0
+
+                for i in 0..<barCount {
+                    let t = (Double(i) + 0.5) / Double(barCount)
+                    // Center bars taller than edges (a natural spectrum-ish shape).
+                    let centerEnv = pow(sin(t * .pi), 0.55)
+                    // Each bar wiggles on its own phase so the row looks alive.
+                    let motion: Double
+                    if reduceMotion {
+                        motion = 1.0
+                    } else {
+                        let phase = Double(i) * 0.7
+                        motion = 0.45 + (sin(now * 6.0 + phase) * 0.5 + 0.5) * 0.85
+                    }
+                    let mag = baseline * centerEnv * motion * finalizingPulse
+                    let h = max(2.0, mag * Double(size.height))
+                    let x = CGFloat(i) * slot + gap / 2
+                    let rect = CGRect(x: x, y: midY - CGFloat(h) / 2, width: barW, height: CGFloat(h))
+                    let shape = Path(roundedRect: rect, cornerRadius: barW / 2)
+
+                    let shading = GraphicsContext.Shading.linearGradient(
+                        Gradient(colors: [accent.opacity(0.95), accent.opacity(0.55)]),
+                        startPoint: CGPoint(x: 0, y: rect.minY),
+                        endPoint: CGPoint(x: 0, y: rect.maxY)
+                    )
+                    context.fill(shape, with: shading)
+                }
+            }
+        }
+        .onChange(of: level) { _, newValue in
+            let target = max(0.05, min(1.0, Double(newValue)))
+            let factor = target > displayLevel ? 0.5 : 0.16   // attack fast, release slow
             withAnimation(.linear(duration: 0.05)) {
                 displayLevel = displayLevel + (target - displayLevel) * factor
             }
