@@ -128,7 +128,25 @@ class AppState: ObservableObject {
     }
 
     @Published var transcriptionEngine: String {
-        didSet { UserDefaults.standard.set(transcriptionEngine, forKey: "transcriptionEngine") }
+        didSet {
+            guard transcriptionEngine != oldValue else { return }
+            UserDefaults.standard.set(transcriptionEngine, forKey: "transcriptionEngine")
+            // Rebuild + rewire the file engine so switching backends takes effect
+            // without an app restart (the Whisper-family path uses `whisperEngine`).
+            rebuildFileEngine()
+        }
+    }
+
+    /// Build the file-transcription engine for the given setting. "whisperKit" is
+    /// the experimental CoreML backend (only functional in a WHISPERKIT build —
+    /// otherwise its stub reports unavailability); everything else uses whisper.cpp.
+    private static func makeFileEngine(for engine: String, model: String) -> FileTranscriptionEngine {
+        switch engine {
+        // WhisperKit uses its OWN model namespace (openai_whisper-*), not the
+        // whisper.cpp GGML model id, so it keeps its built-in default.
+        case "whisperKit": return WhisperKitEngine()
+        default:           return WhisperEngine()
+        }
     }
 
     @Published var whisperBackend: String {
@@ -590,50 +608,15 @@ class AppState: ObservableObject {
     }
 
     private func wireUpServices() {
-        whisperEngine = WhisperEngine()
+        // The file-transcription engine is chosen by the `transcriptionEngine`
+        // setting. "whisperKit" is an experimental CoreML backend (pilot) that
+        // conforms to the same FileTranscriptionEngine protocol, so all the
+        // callback wiring below is identical regardless of which one is active.
+        whisperEngine = Self.makeFileEngine(for: transcriptionEngine, model: modelName)
         appleSpeechEngine = AppleSpeechEngine()
         translationService = OpenAITranslationService()
 
-        whisperEngine.onTranscriptionComplete = { [weak self] requestID, text in
-            Task { @MainActor in
-                self?.handleTranscription(text, requestID: requestID)
-            }
-        }
-
-        whisperEngine.onTranscriptionError = { [weak self] requestID, msg in
-            Task { @MainActor in
-                guard let self else { return }
-                guard let request = self.consumeRequest(requestID), request.sessionID == self.activeSessionID else { return }
-                if request.kind == .liveChunk {
-                    if let sequence = request.sequence {
-                        self.livePipeline.complete(sequence, text: "")
-                    }
-                    self.processNextLiveChunk()
-                    self.flushOrderedLiveResults()
-                    if self.isTranscribing && self.livePipelineIsDrained {
-                        self.completeFinalText(self.currentSessionText)
-                    }
-                    self.statusMessage = self.isTranscribing ? "Finalizing..." : "Listening..."
-                    return
-                }
-                self.error = msg
-                self.statusMessage = "Error"
-                self.isTranscribing = false
-                self.finishSessionUI()
-            }
-        }
-
-        whisperEngine.onProgress = { [weak self] pct in
-            Task { @MainActor in
-                guard let self else { return }
-                self.statusMessage = "Transcribing... \(pct)%"
-            }
-        }
-        whisperEngine.onWorkerStatus = { [weak self] status in
-            Task { @MainActor in
-                self?.whisperWorkerStatus = status
-            }
-        }
+        wireFileEngineCallbacks()
 
         audioRecorder = AudioRecorder()
         audioRecorder.autoGainEnabled = autoGainEnabled
@@ -717,6 +700,65 @@ class AppState: ObservableObject {
                 self?.cancelDictation()
             }
         }
+    }
+
+    /// Attach AppState's callbacks to the current `whisperEngine`. Shared by
+    /// initial wiring and by `rebuildFileEngine()` so a backend switch re-wires
+    /// identically (the callbacks only depend on the FileTranscriptionEngine
+    /// protocol, not on which concrete engine is active).
+    private func wireFileEngineCallbacks() {
+        whisperEngine.onTranscriptionComplete = { [weak self] requestID, text in
+            Task { @MainActor in
+                self?.handleTranscription(text, requestID: requestID)
+            }
+        }
+        whisperEngine.onTranscriptionError = { [weak self] requestID, msg in
+            Task { @MainActor in
+                guard let self else { return }
+                guard let request = self.consumeRequest(requestID), request.sessionID == self.activeSessionID else { return }
+                if request.kind == .liveChunk {
+                    if let sequence = request.sequence {
+                        self.livePipeline.complete(sequence, text: "")
+                    }
+                    self.processNextLiveChunk()
+                    self.flushOrderedLiveResults()
+                    if self.isTranscribing && self.livePipelineIsDrained {
+                        self.completeFinalText(self.currentSessionText)
+                    }
+                    self.statusMessage = self.isTranscribing ? "Finalizing..." : "Listening..."
+                    return
+                }
+                self.error = msg
+                self.statusMessage = "Error"
+                self.isTranscribing = false
+                self.finishSessionUI()
+            }
+        }
+        whisperEngine.onProgress = { [weak self] pct in
+            Task { @MainActor in
+                self?.statusMessage = "Transcribing... \(pct)%"
+            }
+        }
+        whisperEngine.onWorkerStatus = { [weak self] status in
+            Task { @MainActor in
+                self?.whisperWorkerStatus = status
+            }
+        }
+    }
+
+    /// Swap the file-transcription backend live (when the user changes the Engine
+    /// setting). Tears down the old one, builds the new one, re-wires callbacks,
+    /// and re-warms if appropriate. Safe to call only after initial wiring.
+    private func rebuildFileEngine() {
+        whisperEngine?.stopServer()
+        whisperEngine = Self.makeFileEngine(for: transcriptionEngine, model: modelName)
+        wireFileEngineCallbacks()
+        whisperWorkerStatus = "Not started"
+        // `warmWhisperServerIfPossible()` is engine-aware: it warms WhisperKit's
+        // CoreML model up front, warms whisper.cpp's server only for the serverAPI
+        // backend, and no-ops for Apple Speech — so only the selected backend ever
+        // loads a model (no dual-engine residency).
+        warmWhisperServerIfPossible()
     }
 
     // MARK: - Actions
@@ -816,12 +858,33 @@ class AppState: ObservableObject {
     }
 
     func warmWhisperServerIfPossible() {
-        guard whisperBackend == "serverAPI" else { return }
-        guard !isModelDownloading else {
-            whisperWorkerStatus = "Waiting for model"
+        // Warm the CURRENTLY SELECTED file-transcription backend — and only that
+        // one. This must be engine-aware: `whisperEngine` is a WhisperKitEngine
+        // when transcriptionEngine == "whisperKit", so warming the wrong gate here
+        // is how we ended up with whisper.cpp's server AND WhisperKit both loading
+        // models at once (the dual-engine memory pressure behind the crash).
+        switch transcriptionEngine {
+        case "whisperKit":
+            // WhisperKit has no external server; warm = preload its CoreML model
+            // up front (with a visible status) so the slow first load doesn't block
+            // the first dictation. Doesn't depend on whisperBackend.
+            guard !isModelDownloading else {
+                whisperWorkerStatus = "Waiting for model"
+                return
+            }
+            whisperEngine?.warmServer(binaryPath: whisperBinaryPath, modelPath: modelPath)
+        case "appleSpeech":
+            // Apple Speech is a streaming engine; nothing to warm here.
             return
+        default:
+            // whisper.cpp: only the serverAPI backend keeps a warm server process.
+            guard whisperBackend == "serverAPI" else { return }
+            guard !isModelDownloading else {
+                whisperWorkerStatus = "Waiting for model"
+                return
+            }
+            whisperEngine?.warmServer(binaryPath: whisperBinaryPath, modelPath: modelPath)
         }
-        whisperEngine?.warmServer(binaryPath: whisperBinaryPath, modelPath: modelPath)
     }
 
     func validateOpenAIKey() {
@@ -1155,6 +1218,9 @@ class AppState: ObservableObject {
         sessionActive = true
         pendingStop = false
         activeSessionID = UUID()
+        // Let the file engine forget per-dictation state (e.g. WhisperKit's
+        // auto-detected language) so each session starts fresh.
+        whisperEngine?.resetSession()
         transcriptionRequests.removeAll()
         cleanupPendingLiveChunks()
         resetLivePipeline()

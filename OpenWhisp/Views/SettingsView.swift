@@ -209,11 +209,12 @@ struct SettingsView: View {
     private var engineSection: some View {
         settingsSection("Engine") {
             Picker("Transcription Engine", selection: $appState.transcriptionEngine) {
-                Text("Whisper Local").tag("whisper")
+                Text("Whisper Local (whisper.cpp)").tag("whisper")
+                Text("WhisperKit (CoreML, experimental)").tag("whisperKit")
                 Text("Apple Speech Streaming").tag("appleSpeech")
             }
-            
-            Text("Apple Speech gives native streaming partials. Whisper remains available for local file-based transcription and higher-quality model control.")
+
+            Text("Apple Speech gives native streaming partials. Whisper Local (whisper.cpp) is the default. WhisperKit is an experimental CoreML/ANE backend — it only works in a build made with WHISPERKIT=1 (see docs/WHISPERKIT_PILOT.md); otherwise selecting it reports that it isn't available.")
                 .font(.caption)
                 .foregroundColor(.secondary)
         }
