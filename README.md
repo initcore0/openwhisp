@@ -184,7 +184,7 @@ Settings has a **Basic** and an **Advanced** tab.
 
 - **Smart Formatting** — clean‑up on/off, spoken punctuation, filler removal (defaults are fine for most; here if you need to turn them off, e.g. for verbatim/code).
 - **Custom Vocabulary** — bias terms + "heard → correct" replacements.
-- Engine (Whisper vs Apple Speech), raw model picker + paths, live‑chunk tuning, whisper.cpp backend (CLI vs warm server), per‑app modes, history, permissions, diagnostics.
+- Engine (Whisper · Apple Speech · WhisperKit), raw model picker + paths, live‑chunk tuning, whisper.cpp backend (CLI vs warm server), per‑app modes, history, permissions, diagnostics. The settings shown adapt to the selected engine.
 - **Backup & Sharing** — export your per‑app profiles, vocabulary, and command prompts to a JSON file you can back up, hand‑edit, or share; import replaces only the sections present in the file (so a vocab‑only file touches just your vocabulary). Also includes one‑click **config packs** (e.g. a developer vocabulary) — small bundled config files; the same JSON format works for your own.
 
 ---
@@ -249,6 +249,9 @@ OpenWhisp/
 │   │                                # 16 kHz mono resampling, chunking, VAD
 │   ├── WhisperEngine.swift          # whisper-cli subprocess + warm whisper-server (HTTP)
 │   ├── AppleSpeechEngine.swift      # optional SFSpeechRecognizer engine
+│   ├── WhisperKitBridge.swift       # WhisperKit (CoreML) file + streaming bridge (#if WHISPERKIT)
+│   ├── WhisperKitEngine.swift       # WhisperKit file engine; WhisperKitStreamingEngine = streaming
+│   ├── WhisperKitModelCatalog.swift # staged CoreML model list/labels (build-independent)
 │   ├── TextInserter.swift           # Accessibility insert + Cmd+V paste fallback
 │   ├── KeyboardSynthesizer.swift    # thin shim over TextInserter
 │   ├── HotkeyMonitor.swift          # CGEventTap (+ NSEvent fallback) push-to-talk
@@ -282,6 +285,7 @@ scripts/bundle-whisper-runtime.sh  # copy whisper binaries + dylibs into the .ap
 ### Notable design points
 
 - **Transcription backends** — `whisper-cli` per request, or a warm `whisper-server` kept loaded for lower latency (Advanced → whisper.cpp backend). The app bundles both (built from the `third_party/whisper.cpp` submodule); falls back to `~/whisper.cpp/build/bin/` if a bundled binary isn't present.
+- **WhisperKit backend (experimental, opt‑in)** — a Swift‑native CoreML/ANE Whisper runtime ([Argmax](https://github.com/argmaxinc/WhisperKit)), selectable as a third engine. It does both file transcription and **real‑time streaming** (built‑in VAD skips silence) and shares the streaming session path with Apple Speech. It's **opt‑in at build time** (`WHISPERKIT=1 ./build.sh`) — the default build links a stub, so the distributed app is unaffected. Two macOS‑26 gotchas worth knowing: models are loaded from a locally‑staged folder of compiled `.mlmodelc` (the published prebuilts don't load on Tahoe), and the audio encoder is pinned to the **GPU** because ANE specialization of a non‑tiny encoder can stall indefinitely. Settings become backend‑aware (only the relevant options show per engine). Full technical write‑up: [docs/WHISPERKIT_PILOT.md](docs/WHISPERKIT_PILOT.md).
 - **Audio** — capture is resampled to whisper's required 16 kHz mono 16‑bit PCM; live mode supports timer‑based or pause‑based (VAD) chunking.
 - **Insertion** — Accessibility direct‑insert avoids clobbering the clipboard; paste is the universal fallback. All insertion is serialized so live chunks stay in order.
 - **Concurrency** — `AppState` is `@MainActor`; service callbacks hop back via `Task { @MainActor }`. Long‑running work (whisper subprocess/server, LLM calls, paste timing) runs off the main actor.
