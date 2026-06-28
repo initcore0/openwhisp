@@ -201,13 +201,22 @@ struct OverlayView: View {
 
     // MARK: Pill
 
+    /// The selected indicator style, rendered inside the pill. Styles are added per
+    /// phase; anything not yet implemented falls back to the waveform.
+    @ViewBuilder private var indicatorContent: some View {
+        switch appState.voiceIndicatorStyle {
+        default:
+            QuietWaveform(
+                level: appState.audioLevel,
+                accent: accent,
+                isFinalizing: appState.isTranscribing,
+                reduceMotion: reduceMotion
+            )
+        }
+    }
+
     private var waveformPill: some View {
-        QuietWaveform(
-            level: appState.audioLevel,
-            accent: accent,
-            isFinalizing: appState.isTranscribing,
-            reduceMotion: reduceMotion
-        )
+        indicatorContent
         .frame(width: 220, height: 26)
         .padding(.horizontal, 22)
         .padding(.vertical, 13)

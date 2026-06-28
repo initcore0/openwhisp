@@ -63,6 +63,11 @@ class AppState: ObservableObject {
         didSet { UserDefaults.standard.set(showOverlay, forKey: "showOverlay") }
     }
 
+    /// Visual style of the overlay's voice indicator (Settings → Appearance).
+    @Published var voiceIndicatorStyle: VoiceIndicatorStyle {
+        didSet { UserDefaults.standard.set(voiceIndicatorStyle.rawValue, forKey: "voiceIndicatorStyle") }
+    }
+
     /// Launch the app automatically after login/reboot. Source of truth is the
     /// system (SMAppService), so this is initialized from and written through to
     /// the real login-item status rather than UserDefaults.
@@ -519,6 +524,7 @@ class AppState: ObservableObject {
         triggerMode = UserDefaults.standard.string(forKey: "triggerMode") ?? "fn"
         outputMode = UserDefaults.standard.string(forKey: "outputMode") ?? "preview"
         showOverlay = UserDefaults.standard.object(forKey: "showOverlay") as? Bool ?? true
+        voiceIndicatorStyle = VoiceIndicatorStyle.from(UserDefaults.standard.string(forKey: "voiceIndicatorStyle"))
         launchAtLogin = launchAtLoginService.isEnabled
         restoreClipboard = UserDefaults.standard.object(forKey: "restoreClipboard") as? Bool ?? false
         insertionMode = UserDefaults.standard.string(forKey: "insertionMode") ?? "auto"
