@@ -38,7 +38,6 @@ let package = Package(
                 "WhisperTask.swift",
                 "InstructionChain.swift",
                 "AudioLevel.swift",
-                "TranscriptActivityMeter.swift",
                 "VoiceIndicatorStyle.swift",
                 "WhisperKitBridge.swift",
                 "WhisperKitModelCatalog.swift"

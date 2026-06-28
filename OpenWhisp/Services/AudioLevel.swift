@@ -31,26 +31,37 @@ enum AudioLevel {
         return powf(max(0, min(1, t)), gamma)
     }
 
-    /// Map an already-0…1 relative energy (e.g. WhisperKit's `bufferEnergy`) onto the
-    /// same perceptual curve so all engines feel consistent. Treats the input as a
-    /// linear amplitude.
+    /// Map WhisperKit's `bufferEnergy` value to a normalized indicator level.
+    ///
+    /// IMPORTANT: WhisperKit's relative energy is ALREADY a 0…1 perceptual value
+    /// (`calculateRelativeEnergy` normalizes the buffer RMS in dB against a rolling
+    /// silence reference and clamps to 0…1). It is NOT a tiny linear RMS amplitude.
+    /// Pushing it through `fromRMS` (which expects ~0.01–0.1 linear RMS and maps a
+    /// −52…−12 dB window) double-compresses it: ~0.02 already reads ~0.57 and
+    /// anything ≳0.3 pins to 1.0, so the bars sit near full and barely move — the
+    /// "doesn't react to voice" bug.
+    ///
+    /// Instead use the value directly, with a mild gamma to lift quiet speech into a
+    /// livelier range without slamming to the ceiling. Identity at 0 and 1.
+    static let relativeEnergyGamma: Float = 0.65
     static func fromRelativeEnergy(_ energy: Float) -> Float {
-        fromRMS(max(0, min(1, energy)))
+        let e = max(0, min(1, energy))
+        return powf(e, relativeEnergyGamma)
     }
 
-    /// Buffers (~0.1s each) to consider when deriving the live level from a
-    /// cumulative energy history — a ~0.5s trailing window.
-    static let recentEnergyWindow = 5
+    /// Buffers (~0.1s each) to consider for the live level. A tiny trailing window
+    /// smooths single-buffer flicker without lagging the voice.
+    static let liveEnergyWindow = 3
 
-    /// Pick the indicator level from a CUMULATIVE per-buffer relative-energy history
-    /// (WhisperKit's `bufferEnergy`, which only ever grows over a session).
+    /// Derive the live indicator level from WhisperKit's `bufferEnergy` — a
+    /// CUMULATIVE per-0.1s relative-energy history (it grows all session).
     ///
-    /// Using `history.max()` over the whole array pins the indicator to the loudest
-    /// moment ever seen, so the bars react to the first sound and then freeze. Instead
-    /// take the max over a short trailing window so the level tracks the live voice and
-    /// relaxes toward silence between words. Returns nil for an empty history (no
-    /// update — hold the prior level).
-    static func fromCumulativeEnergyHistory(_ history: [Float]) -> Float? {
-        history.suffix(recentEnergyWindow).max().map(fromRelativeEnergy)
+    /// Use the RECENT window, not `history.max()` over the whole array: the all-time
+    /// max only ever rises, so it pins the indicator at the loudest moment ever and
+    /// the bars freeze after the first sound. The trailing-window max tracks the live
+    /// voice and relaxes toward silence between words. Returns nil for empty history
+    /// (no update — hold the prior level).
+    static func liveLevel(fromEnergyHistory history: [Float]) -> Float? {
+        history.suffix(liveEnergyWindow).max().map(fromRelativeEnergy)
     }
 }

@@ -182,11 +182,11 @@ struct WhisperKitStreamState {
         let unconfirmed = state.unconfirmedSegments.map(\.text).joined(separator: " ")
         self.confirmedText = confirmed
         self.fullText = (confirmed + " " + unconfirmed)
-        // `bufferEnergy` is the CUMULATIVE per-0.1s relative-energy history for the
-        // whole session. Deriving the live level from a short trailing window (rather
-        // than the all-time `.max()`) keeps the indicator tracking the live voice
-        // instead of freezing at the loudest moment. See AudioLevel.
-        self.peakEnergy = AudioLevel.fromCumulativeEnergyHistory(state.bufferEnergy)
+        // `bufferEnergy` is the cumulative per-buffer relative-energy history,
+        // refreshed every ~0.1s. Read the RECENT window (not the all-time max, which
+        // freezes the bars) and map it with the relative-energy curve (NOT fromRMS,
+        // which double-compresses the already-0…1 value). See AudioLevel.
+        self.peakEnergy = AudioLevel.liveLevel(fromEnergyHistory: state.bufferEnergy)
     }
 }
 

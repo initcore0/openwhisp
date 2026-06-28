@@ -37,44 +37,64 @@ final class AudioLevelTests: XCTestCase {
         }
     }
 
-    func testRelativeEnergyMatchesRMSMapping() {
-        // fromRelativeEnergy treats its input as a linear amplitude → same curve.
-        XCTAssertEqual(AudioLevel.fromRelativeEnergy(0.05), AudioLevel.fromRMS(0.05), accuracy: 0.0001)
-        XCTAssertEqual(AudioLevel.fromRelativeEnergy(0), 0)
+    // MARK: - WhisperKit relative energy (already 0…1, NOT linear RMS)
+
+    func testRelativeEnergyEndpointsAreIdentity() {
+        XCTAssertEqual(AudioLevel.fromRelativeEnergy(0), 0, accuracy: 0.0001)
+        XCTAssertEqual(AudioLevel.fromRelativeEnergy(1), 1, accuracy: 0.0001)
     }
 
-    // MARK: - Cumulative energy history (WhisperKit bufferEnergy)
-
-    func testEmptyHistoryYieldsNoUpdate() {
-        // No buffers yet → nil so the caller holds the prior level.
-        XCTAssertNil(AudioLevel.fromCumulativeEnergyHistory([]))
+    /// The regression: WhisperKit's relative energy is already a perceptual 0…1
+    /// value. It must NOT be pushed through `fromRMS` (which expects a tiny linear
+    /// RMS and would map ~0.02 to ~0.57 and pin anything ≳0.3 to 1.0 — the bars sit
+    /// near full and stop reacting). The direct curve must keep quiet input low.
+    func testRelativeEnergyDoesNotDoubleCompress() {
+        // Quiet relative energy stays clearly low (was ~0.57 under the fromRMS bug).
+        XCTAssertLessThan(AudioLevel.fromRelativeEnergy(0.02), 0.2)
+        // Normal speech lands mid-range, not pinned to 1.0 (was 1.0 under the bug).
+        let speech = AudioLevel.fromRelativeEnergy(0.3)
+        XCTAssertGreaterThan(speech, 0.25)
+        XCTAssertLessThan(speech, 0.75)
+        // It is genuinely below what the old fromRMS mapping produced.
+        XCTAssertLessThan(AudioLevel.fromRelativeEnergy(0.3), AudioLevel.fromRMS(0.3))
     }
 
-    /// The regression: WhisperKit's `bufferEnergy` is a cumulative, ever-growing
-    /// history. A loud onset must NOT pin the indicator high once the speaker goes
-    /// quiet — the live level must follow the RECENT window, not the all-time max.
-    func testRecentWindowTracksDownAfterLoudOnset() {
-        // Loud onset early, then a long quiet tail (more than the trailing window).
-        let history: [Float] = [0.9, 0.8] + Array(repeating: 0.02, count: 10)
-        let level = AudioLevel.fromCumulativeEnergyHistory(history)!
-        // Whole-history `.max()` (the old bug) would map 0.9 → ~1.0 and freeze there.
+    func testRelativeEnergyMonotonic() {
+        var last: Float = -1
+        for e in stride(from: Float(0), through: 1, by: 0.1) {
+            let v = AudioLevel.fromRelativeEnergy(e)
+            XCTAssertGreaterThanOrEqual(v, last)
+            last = v
+        }
+    }
+
+    // MARK: - Live level from cumulative energy history
+
+    func testLiveLevelEmptyHistoryYieldsNoUpdate() {
+        XCTAssertNil(AudioLevel.liveLevel(fromEnergyHistory: []))
+    }
+
+    /// The freeze regression: history only grows, so the all-time `.max()` would pin
+    /// the level at the loudest moment. The recent window must track DOWN once the
+    /// speaker goes quiet.
+    func testLiveLevelTracksDownAfterLoudOnset() {
+        let history: [Float] = [0.9, 0.8] + Array(repeating: 0.03, count: 10)
+        let level = AudioLevel.liveLevel(fromEnergyHistory: history)!
         XCTAssertLessThan(level, AudioLevel.fromRelativeEnergy(0.9))
-        // It should instead reflect the quiet recent buffers.
-        XCTAssertEqual(level, AudioLevel.fromRelativeEnergy(0.02), accuracy: 0.0001)
+        XCTAssertEqual(level, AudioLevel.fromRelativeEnergy(0.03), accuracy: 0.0001)
     }
 
-    func testRecentWindowReflectsCurrentSpeech() {
-        // Quiet history, then a loud current window → indicator rises.
-        let history: [Float] = Array(repeating: 0.02, count: 20) + [0.5, 0.6]
-        let level = AudioLevel.fromCumulativeEnergyHistory(history)!
+    func testLiveLevelReflectsCurrentSpeech() {
+        let history: [Float] = Array(repeating: 0.03, count: 20) + [0.5, 0.6]
+        let level = AudioLevel.liveLevel(fromEnergyHistory: history)!
         XCTAssertEqual(level, AudioLevel.fromRelativeEnergy(0.6), accuracy: 0.0001)
     }
 
-    func testWindowSizeBoundsHowFarBackItLooks() {
-        // A loud buffer just outside the trailing window must not leak into the level.
-        let n = AudioLevel.recentEnergyWindow
-        let history: [Float] = [0.9] + Array(repeating: 0.03, count: n)
-        let level = AudioLevel.fromCumulativeEnergyHistory(history)!
-        XCTAssertEqual(level, AudioLevel.fromRelativeEnergy(0.03), accuracy: 0.0001)
+    func testLiveLevelWindowBoundsLookback() {
+        // A loud buffer older than the window must not leak into the live level.
+        let n = AudioLevel.liveEnergyWindow
+        let history: [Float] = [0.9] + Array(repeating: 0.04, count: n)
+        let level = AudioLevel.liveLevel(fromEnergyHistory: history)!
+        XCTAssertEqual(level, AudioLevel.fromRelativeEnergy(0.04), accuracy: 0.0001)
     }
 }
