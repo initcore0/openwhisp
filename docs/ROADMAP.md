@@ -96,7 +96,7 @@ Found by reading the code during research, confirmed, and **all three now fixed*
 | **Voice editing / undo** ("scratch that", edit-before-commit in the overlay) | differentiator | L | `VoiceCommandParser` only does trailing LLM transforms today. |
 | **Whisper streaming partials** | table-stakes | L | Only Apple Speech emits live partials; whisper preview shows chunked text at finalize. whisper.cpp supports streaming. |
 | **Hotkey remap + toggle / hands-free mode** | table-stakes | M | Hardcoded to Fn / Control+Space, hold-only. No remap, no toggle for long dictation. |
-| **Insert verification + secure-field** | table-stakes | M | AX→Cmd+V fails silently in terminals/VNC/Electron/web fields; no verify, no secure-field guard (see §4). |
+| **Insert verification + secure-field** | table-stakes | M | ✅ Both done — secure-field guard (§4) and insert verification + clipboard safety net (Phase 4): AX read-back, paste preconditions, and never-lose-text fallback. |
 | **Richer formatting + deeper vocab** | nice-to-have | L | No lists/markdown/code/number formatting; casing English-only; vocab is exact-match subs and can overflow whisper's ~224-token prompt. |
 
 ---
@@ -314,9 +314,16 @@ seam, plus optionally lifting more orchestration out of `AppState`.
   tested; the `Process`/timeout glue (`ScriptRunner`) verified end-to-end.
 
 ### Phase 4 — Output & ergonomics
+- ✅ **Insert verification + clipboard safety net** — every final insert is verified:
+  an AX insert is read back where the field exposes a value (a silently-ignored
+  insert in some Electron/web views falls through to paste), the paste path confirms
+  the clipboard write + a frontmost target before ⌘V, and if nothing can be confirmed
+  the text is left on the clipboard with a "copied, press ⌘V" overlay cue — never
+  silently lost. Pure `InsertVerifier` + `InsertionOutcome` (OpenWhispCore, tested);
+  logic in `TextInserter`. Fixed the "couldn't paste into some apps" reports.
 - `OutputTarget` protocol: file / webhook / Notion / Things / Shortcuts.
 - LLM backend **presets** on `LLMEndpoint` (Ollama / llama-server / OpenAI).
-- Insert-verification; remappable hotkey + toggle mode.
+- Remappable hotkey + toggle mode.
 
 ### Phase 5 — Bigger bets *(valuable, large)*
 - Whisper streaming partials. See the [ASR alternatives study](ASR_ALTERNATIVES.md)
