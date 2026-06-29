@@ -1196,7 +1196,11 @@ class AppState: ObservableObject {
         isStreamingSession = false
         isTranscribing = true
         statusMessage = "Finalizing..."
-        hideOverlayNow()
+        // Keep the overlay up through transcription (it shows the violet "finalizing"
+        // pulse + a status caption) so the user gets feedback during the load+decode
+        // window — which can be seconds, or much longer on a cold WhisperKit model
+        // load. It's hidden at the true end (insertCompletedText → finishSessionUI,
+        // or the error path). Previously hidden here, which made WhisperKit look hung.
 
         let sessionID = activeSessionID
         audioRecorder.stop { [weak self] wavPath in

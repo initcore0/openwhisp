@@ -161,12 +161,33 @@ struct OverlayView: View {
         phase == .arming ? "Starting — wait to speak" : nil
     }
 
+    /// During finalization (recording stopped, transcribing), show a status caption
+    /// so paste-at-end mode isn't a silent overlay — and surface a cold WhisperKit
+    /// model load as "Loading model…" so the wait doesn't look like a hang. Suppressed
+    /// when a transcript panel is already showing the same status.
+    private var finalizingCaption: String? {
+        guard !showTranscript else { return nil }
+        return FinalizingCaption.resolve(
+            isTranscribing: appState.isTranscribing,
+            statusMessage: appState.statusMessage,
+            workerStatus: appState.whisperWorkerStatus,
+            usesWhisperKit: appState.transcriptionEngine == "whisperKit"
+        )
+    }
+
     var body: some View {
         VStack(spacing: 10) {
             waveformPill
 
             if let armingCaption {
                 Text(armingCaption)
+                    .font(.system(size: 11, weight: .semibold, design: .rounded))
+                    .foregroundColor(accent.opacity(0.95))
+                    .transition(.opacity)
+            }
+
+            if let finalizingCaption {
+                Text(finalizingCaption)
                     .font(.system(size: 11, weight: .semibold, design: .rounded))
                     .foregroundColor(accent.opacity(0.95))
                     .transition(.opacity)
@@ -197,6 +218,7 @@ struct OverlayView: View {
         .animation(.easeInOut(duration: 0.18), value: phase)
         .animation(.easeInOut(duration: 0.18), value: appState.refineArmed)
         .animation(.easeInOut(duration: 0.18), value: appState.clipboardFallbackActive)
+        .animation(.easeInOut(duration: 0.18), value: appState.isTranscribing)
     }
 
     // MARK: Pill
