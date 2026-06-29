@@ -126,9 +126,21 @@ final class WhisperKitStreamingEngine: StreamingTranscriptionEngine {
     private func ensureLoaded() async throws -> WhisperKitHandle {
         if let kit = loadedKit { return kit }
         let task = await loadTaskOnMain()
-        let kit = try await task.value
-        loadedKit = kit
-        return kit
+        do {
+            let kit = try await task.value
+            loadedKit = kit
+            return kit
+        } catch {
+            // Failed (e.g. timed-out cold start): clear the cached Task so the next
+            // attempt retries from scratch rather than re-awaiting the same failure.
+            await clearFailedLoad(task)
+            throw error
+        }
+    }
+
+    @MainActor
+    private func clearFailedLoad(_ failed: Task<WhisperKitHandle, Error>) {
+        if inFlightLoad == failed { inFlightLoad = nil }
     }
 
     @MainActor
