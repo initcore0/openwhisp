@@ -121,6 +121,7 @@ struct SettingsView: View {
                 qualitySection            // backend-aware (tiers / WhisperKit picker / info)
                 translationSection
                 outputSection
+                appearanceSection
             }
             .padding(24)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -613,7 +614,6 @@ struct SettingsView: View {
                 }
             }
 
-            Toggle("Show overlay while recording", isOn: $appState.showOverlay)
             Toggle("Add trailing space after paste", isOn: $appState.addTrailingSpace)
             Toggle("Restore clipboard after paste", isOn: $appState.restoreClipboard)
                 .disabled(appState.insertionMode == "directAX")
@@ -625,6 +625,28 @@ struct SettingsView: View {
             Text("Clipboard restore only applies to the paste method — and reads your clipboard, which may trigger macOS privacy prompts. With Automatic or Direct insert, your clipboard is left untouched.")
                 .font(.caption)
                 .foregroundColor(.secondary)
+        }
+    }
+
+    /// Styles available to pick this build. Grows as later phases land (orb).
+    private var availableIndicatorStyles: [VoiceIndicatorStyle] { [.bars, .waveform] }
+
+    private var appearanceSection: some View {
+        settingsSection("Appearance") {
+            Toggle("Show overlay while recording", isOn: $appState.showOverlay)
+
+            if appState.showOverlay {
+                Picker("Voice indicator", selection: $appState.voiceIndicatorStyle) {
+                    ForEach(availableIndicatorStyles) { style in
+                        Text(style.displayName).tag(style)
+                    }
+                }
+                .frame(maxWidth: 360, alignment: .leading)
+
+                Text(appState.voiceIndicatorStyle.detail)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
         }
     }
 

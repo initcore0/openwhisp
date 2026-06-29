@@ -182,7 +182,11 @@ struct WhisperKitStreamState {
         let unconfirmed = state.unconfirmedSegments.map(\.text).joined(separator: " ")
         self.confirmedText = confirmed
         self.fullText = (confirmed + " " + unconfirmed)
-        self.peakEnergy = state.bufferEnergy.max()
+        // `bufferEnergy` is the cumulative per-buffer relative-energy history,
+        // refreshed every ~0.1s. Read the RECENT window (not the all-time max, which
+        // freezes the bars) and map it with the relative-energy curve (NOT fromRMS,
+        // which double-compresses the already-0…1 value). See AudioLevel.
+        self.peakEnergy = AudioLevel.liveLevel(fromEnergyHistory: state.bufferEnergy)
     }
 }
 

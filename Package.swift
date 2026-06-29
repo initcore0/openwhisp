@@ -37,6 +37,8 @@ let package = Package(
                 "ScriptPostProcessor.swift",
                 "WhisperTask.swift",
                 "InstructionChain.swift",
+                "AudioLevel.swift",
+                "VoiceIndicatorStyle.swift",
                 "WhisperKitBridge.swift",
                 "WhisperKitModelCatalog.swift"
             ]

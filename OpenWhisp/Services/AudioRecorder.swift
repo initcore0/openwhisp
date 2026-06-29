@@ -573,8 +573,7 @@ class AudioRecorder: NSObject, AVAudioRecorderDelegate, AudioCapture {
             guard let self, let recorder = self.recorder else { return }
             recorder.updateMeters()
             let power = recorder.averagePower(forChannel: 0)
-            let normalized = max(0.0, min(1.0, (power + 60.0) / 60.0))
-            self.onLevelChanged?(normalized)
+            self.onLevelChanged?(AudioLevel.fromDB(power))
         }
     }
     
@@ -597,8 +596,7 @@ class AudioRecorder: NSObject, AVAudioRecorderDelegate, AudioCapture {
     }
     
     private func publishLevel(from buffer: AVAudioPCMBuffer) {
-        let rms = Self.rmsLevel(from: buffer)
-        let normalized = max(0, min(1, rms * 8))
+        let normalized = AudioLevel.fromRMS(Self.rmsLevel(from: buffer))
         DispatchQueue.main.async {
             self.onLevelChanged?(normalized)
         }
