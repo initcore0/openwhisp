@@ -126,9 +126,25 @@ final class WhisperKitEngine: FileTranscriptionEngine {
         // Coalesce concurrent loads into ONE shared Task, created/observed on the
         // main actor so the check-and-create is atomic (prevents the load stampede).
         let task = await loadTaskOnMain()
-        let kit = try await task.value
-        loadedKit = kit
-        return kit
+        do {
+            let kit = try await task.value
+            loadedKit = kit
+            return kit
+        } catch {
+            // The shared load failed (e.g. timed-out cold start). Clear the cached
+            // Task so the NEXT attempt starts a fresh load instead of re-awaiting
+            // the same failure forever — this is the retry path. Only clear if it's
+            // still THIS task (a concurrent retry may have already replaced it).
+            await clearFailedLoad(task)
+            throw error
+        }
+    }
+
+    /// Drop the cached load Task if it's the one that just failed, so a later
+    /// `ensureLoaded()` retries from scratch.
+    @MainActor
+    private func clearFailedLoad(_ failed: Task<WhisperKitHandle, Error>) {
+        if inFlightLoad == failed { inFlightLoad = nil }
     }
 
     /// Returns the single in-flight load Task, creating it on first call. All the

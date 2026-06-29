@@ -67,14 +67,26 @@ enum WhisperKitBridge {
     /// the "WhisperKit gets stuck" hang. We pin the audio encoder to the GPU
     /// (`.cpuAndGPU`) instead: it loads in seconds and sidesteps the wedged ANE
     /// compile. The (small) text decoder keeps its ANE default, which is fine.
+    /// Timeout for loading an ALREADY-STAGED compiled model (no network). Generous
+    /// vs. a normal few-second load, but bounded so the documented ANE/CoreML stall
+    /// surfaces a retryable error instead of wedging the app forever.
+    static let stagedLoadTimeout: Double = 120
+    /// Timeout for the auto-download path, which also fetches the model over the
+    /// network on first use — so it's allowed much longer before we call it stuck.
+    static let downloadLoadTimeout: Double = 600
+
     static func load(model: String) async throws -> WhisperKit {
         let compute = ModelComputeOptions(audioEncoderCompute: .cpuAndGPU)
         if let folder = WhisperKitModelInstaller.compiledModelFolder(for: model) {
-            let config = WhisperKitConfig(modelFolder: folder.path, computeOptions: compute)
+            return try await withTimeout(seconds: stagedLoadTimeout, operation: "Loading model") {
+                let config = WhisperKitConfig(modelFolder: folder.path, computeOptions: compute)
+                return try await WhisperKit(config)
+            }
+        }
+        return try await withTimeout(seconds: downloadLoadTimeout, operation: "Downloading model") {
+            let config = WhisperKitConfig(model: model, computeOptions: compute)
             return try await WhisperKit(config)
         }
-        let config = WhisperKitConfig(model: model, computeOptions: compute)
-        return try await WhisperKit(config)
     }
 
     /// Detect the spoken language of a WAV file (Whisper language code, e.g. "ru").

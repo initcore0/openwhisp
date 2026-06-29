@@ -143,6 +143,18 @@ class AppState: ObservableObject {
         didSet { UserDefaults.standard.set(pauseBasedLiveChunksEnabled, forKey: "pauseBasedLiveChunksEnabled") }
     }
 
+    /// Default transcription engine for a fresh install. WhisperKit is the preferred
+    /// default, but only when it's actually compiled in (`WHISPERKIT` build flag) —
+    /// a lean `WHISPERKIT=0` build would otherwise default to an engine that errors,
+    /// so it falls back to whisper.cpp there.
+    static var defaultTranscriptionEngine: String {
+        #if WHISPERKIT
+        return "whisperKit"
+        #else
+        return "whisper"
+        #endif
+    }
+
     @Published var transcriptionEngine: String {
         didSet {
             guard transcriptionEngine != oldValue else { return }
@@ -535,7 +547,7 @@ class AppState: ObservableObject {
         fillerRemovalEnabled = UserDefaults.standard.object(forKey: "fillerRemovalEnabled") as? Bool ?? true
         liveChunkDuration = UserDefaults.standard.object(forKey: "liveChunkDuration") as? Double ?? 2.0
         pauseBasedLiveChunksEnabled = UserDefaults.standard.object(forKey: "pauseBasedLiveChunksEnabled") as? Bool ?? false
-        transcriptionEngine = UserDefaults.standard.string(forKey: "transcriptionEngine") ?? "whisper"
+        transcriptionEngine = UserDefaults.standard.string(forKey: "transcriptionEngine") ?? Self.defaultTranscriptionEngine
         whisperKitModel = UserDefaults.standard.string(forKey: "whisperKitModel") ?? "openai_whisper-small"
         if let savedBackend = UserDefaults.standard.string(forKey: "whisperBackend") {
             whisperBackend = savedBackend
