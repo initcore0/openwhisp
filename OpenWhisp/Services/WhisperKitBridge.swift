@@ -89,6 +89,55 @@ enum WhisperKitBridge {
         }
     }
 
+    /// Download `model` from the WhisperKit CoreML repo and STAGE it where the
+    /// catalog expects (`baseDir/<model>`), reporting 0…1 progress via `onProgress`.
+    ///
+    /// WhisperKit's `download(downloadBase:)` lays the model under a nested HF cache
+    /// path (`<base>/models/argmaxinc/whisperkit-coreml/<model>`), so we download into
+    /// a temp base and then move the finished model folder to `baseDir/<model>` — the
+    /// flat layout `WhisperKitModelInstaller.compiledModelFolder` looks for. The
+    /// move is atomic-ish (remove any partial, then move), and the catalog's
+    /// three-`.mlmodelc` check is the post-download integrity gate.
+    static func downloadModel(
+        _ model: String,
+        onProgress: @escaping (Double) -> Void
+    ) async throws {
+        let fm = FileManager.default
+        let baseDir = WhisperKitModelCatalog.baseDir
+        try fm.createDirectory(at: baseDir, withIntermediateDirectories: true)
+
+        // Download into a temp base so a failed/partial download never pollutes the
+        // staging dir (and a half-written folder can't read as "staged").
+        let tempBase = fm.temporaryDirectory
+            .appendingPathComponent("openwhisp-wk-download-\(model)", isDirectory: true)
+        try? fm.removeItem(at: tempBase)
+        try fm.createDirectory(at: tempBase, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: tempBase) }
+
+        let downloaded = try await WhisperKit.download(
+            variant: model,
+            downloadBase: tempBase
+        ) { progress in
+            let total = progress.totalUnitCount
+            let fraction = total > 0 ? Double(progress.completedUnitCount) / Double(total) : 0
+            onProgress(max(0, min(1, fraction)))
+        }
+
+        // Validate the download produced the three compiled sub-models before staging.
+        let ok = WhisperKitModelCatalog.requiredSubmodels.allSatisfy {
+            fm.fileExists(atPath: downloaded.appendingPathComponent($0).path)
+        }
+        guard ok else {
+            throw WhisperKitBridgeError.incompleteDownload(model)
+        }
+
+        // Move into the flat staging location the catalog/installer use.
+        let dest = baseDir.appendingPathComponent(model, isDirectory: true)
+        try? fm.removeItem(at: dest)
+        try fm.moveItem(at: downloaded, to: dest)
+        onProgress(1)
+    }
+
     /// Detect the spoken language of a WAV file (Whisper language code, e.g. "ru").
     /// Used for the "auto" setting so we can detect ONCE and then pin the language
     /// for the rest of the session — per-2s-chunk auto-detection is unreliable and
@@ -226,10 +275,13 @@ final class WhisperKitStreamHandle {
 
 enum WhisperKitBridgeError: Error, LocalizedError {
     case tokenizerUnavailable
+    case incompleteDownload(String)
     var errorDescription: String? {
         switch self {
         case .tokenizerUnavailable:
             return "WhisperKit tokenizer not loaded (model may still be loading)."
+        case .incompleteDownload(let model):
+            return "Downloaded model \"\(model)\" is missing required files."
         }
     }
 }

@@ -124,11 +124,13 @@ a 16 GB Mac — `small` is the default for that reason.
 - **Custom vocabulary prompt is not wired** for WhisperKit. WhisperKit biases via
   `promptTokens: [Int]?` (token IDs), not a plain string, so the vocabulary
   feature only affects the whisper.cpp backend in this pilot.
-- **A WhisperKit build is not signed/distributable as-is via CI** — the release
-  workflow builds the default (whisper.cpp) app. This is a local experiment.
-- **The model is staged manually** under Application Support (see above). An
-  automated download+stage step is a follow-up; for now the staged folder is set
-  up locally from a WhisperKit-compatible CoreML conversion of the model.
+- **Models download in-app.** Settings → (WhisperKit) Quality lists the selectable
+  models with a **Download** button each; downloads come from Argmax's
+  `argmaxinc/whisperkit-coreml` repo via WhisperKit's own `download(…)` API, staged
+  into `~/Library/Application Support/OpenWhisp/whisperkit-models/<model>` (the flat
+  layout the catalog/installer expect). A download is validated (the three required
+  `.mlmodelc` are present) before it's moved into place. Manual staging still works
+  for models not in the curated list.
 - **Audio encoder runs on the GPU, not the ANE** (see above) to avoid the macOS 26
   ANE-specialization stall. This is a deliberate trade-off, not a perf bug.
 

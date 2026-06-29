@@ -40,6 +40,24 @@ enum WhisperKitModelCatalog {
         return names.filter { isStaged($0) }.sorted(by: orderedBefore)
     }
 
+    /// Curated WhisperKit model ids OpenWhisp offers for in-app download, in display
+    /// order. These map to folders in the `argmaxinc/whisperkit-coreml` HF repo. The
+    /// download UI shows this list and marks which are already staged.
+    static let downloadableModels = [
+        "openai_whisper-small",
+        "openai_whisper-tiny.en",
+        "openai_whisper-large-v3-turbo",
+    ]
+
+    /// All models to surface in the picker/download UI: the curated downloadable set
+    /// unioned with anything already staged on disk (so a manually-staged or
+    /// previously-downloaded model isn't hidden), in preferred display order.
+    static func selectableModels() -> [String] {
+        var seen = Set<String>()
+        let merged = downloadableModels + stagedModels()
+        return merged.filter { seen.insert($0).inserted }.sorted(by: orderedBefore)
+    }
+
     // MARK: - Display
 
     /// A human label + one-line hint for a WhisperKit model id. Pure string logic so

@@ -261,33 +261,81 @@ struct SettingsView: View {
         }
     }
 
-    /// WhisperKit: pick from the locally-staged CoreML models (only loadable ones).
+    /// WhisperKit: an in-app model manager — pick the active model, download missing
+    /// ones with progress, and open the staging folder. Staged models are loadable;
+    /// un-staged ones offer a Download button.
     private var whisperKitModelSection: some View {
         settingsSection("Quality") {
-            let staged = WhisperKitModelCatalog.stagedModels()
-            if staged.isEmpty {
-                Text("No WhisperKit models are installed yet. Stage one under Application Support → OpenWhisp/whisperkit-models (see docs/WHISPERKIT_PILOT.md).")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-            } else {
-                Picker("WhisperKit Model", selection: $appState.whisperKitModel) {
-                    ForEach(staged, id: \.self) { model in
-                        Text(WhisperKitModelCatalog.displayInfo(for: model).label).tag(model)
-                    }
-                }
-                .frame(maxWidth: 460, alignment: .leading)
+            let staged = Set(appState.whisperKitStagedModels)
+            let models = WhisperKitModelCatalog.selectableModels()
 
-                if let hint = WhisperKitModelCatalog.displayInfo(for: appState.whisperKitModel).hint {
-                    Text(hint)
-                        .font(.caption)
-                        .foregroundColor(.secondary)
+            Picker("Active Model", selection: $appState.whisperKitModel) {
+                ForEach(models, id: \.self) { model in
+                    let installed = staged.contains(model)
+                    Text(WhisperKitModelCatalog.displayInfo(for: model).label
+                        + (installed ? "" : " — not installed")).tag(model)
                 }
             }
+            .frame(maxWidth: 460, alignment: .leading)
 
-            Text("WhisperKit runs Apple-native CoreML models on the GPU/Neural Engine. Models are stored locally; only installed models are shown. Russian needs a multilingual model (Small).")
+            if let hint = WhisperKitModelCatalog.displayInfo(for: appState.whisperKitModel).hint {
+                Text(hint).font(.caption).foregroundColor(.secondary)
+            }
+
+            Divider().padding(.vertical, 2)
+
+            ForEach(models, id: \.self) { model in
+                whisperKitModelRow(model, installed: staged.contains(model))
+            }
+
+            if !appState.whisperKitDownloadStatus.isEmpty {
+                Text(appState.whisperKitDownloadStatus)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+
+            HStack {
+                Button("Open Models Folder") {
+                    NSWorkspace.shared.open(WhisperKitModelCatalog.baseDir)
+                }
+                .font(.caption)
+                Spacer()
+            }
+            .padding(.top, 2)
+
+            Text("WhisperKit runs Apple-native CoreML models on the GPU/Neural Engine, downloaded from Argmax's repo and stored locally. Russian needs a multilingual model (Small or Turbo).")
                 .font(.caption)
                 .foregroundColor(.secondary)
         }
+        .onAppear { appState.refreshWhisperKitStagedModels() }
+    }
+
+    /// One row in the WhisperKit model manager: name + state, and a Download button
+    /// (or progress / "Installed").
+    @ViewBuilder
+    private func whisperKitModelRow(_ model: String, installed: Bool) -> some View {
+        let info = WhisperKitModelCatalog.displayInfo(for: model)
+        let isDownloading = appState.whisperKitDownloadingModel == model
+        HStack(spacing: 10) {
+            VStack(alignment: .leading, spacing: 1) {
+                Text(info.label).font(.system(size: 12, weight: .medium))
+                if let hint = info.hint {
+                    Text(hint).font(.caption2).foregroundColor(.secondary)
+                }
+            }
+            Spacer()
+            if installed {
+                Label("Installed", systemImage: "checkmark.circle.fill")
+                    .font(.caption).foregroundColor(.green)
+            } else if isDownloading {
+                ProgressView(value: appState.whisperKitDownloadProgress)
+                    .frame(width: 120)
+            } else {
+                Button("Download") { appState.downloadWhisperKitModel(model) }
+                    .disabled(appState.whisperKitDownloadingModel != nil)
+            }
+        }
+        .padding(.vertical, 1)
     }
 
     /// Apple Speech: no model choice — it uses the system recognizer.
