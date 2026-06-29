@@ -70,6 +70,33 @@ The first WhisperKit dependency build takes ~1 minute (compiles WhisperKit +
 swift-transformers + crypto + collections, etc.). Subsequent builds are
 incremental.
 
+## Measuring load time (developer instrumentation)
+
+Timing instrumentation is **off in consumer builds** and gated behind a build flag,
+so the shipped app contains none of it. To measure where startup/first-dictation
+latency goes (chiefly the CoreML specialization of the audio encoder):
+
+```bash
+INSTRUMENTATION=1 ./build.sh && ./package.sh --install
+```
+
+This defines `OPENWHISP_INSTRUMENTATION`, compiling in `Instrumentation` (see
+`OpenWhisp/Services/Instrumentation.swift`). It emits, per measured span:
+- an **`os_signpost` interval** under subsystem `com.openwhisp.app`, category
+  `instrumentation` — view in **Console.app** (filter the subsystem) or
+  **Instruments → os_signpost**; and
+- a console line `[instr] <label>: <ms>ms` (read via Console.app or by launching the
+  binary from Terminal).
+
+Spans today: `whisperkit.warm` (warm start → model ready), `whisperkit.load.staged`
+and `whisperkit.load.download` (the WhisperKit constructor / specialization cost).
+To answer "is the slow load a one-time specialization or every launch?": compare
+`whisperkit.load.staged` on the **first launch after install** vs a **second launch**
+(a respecialization makes the first much larger; OS CoreML caching should make the
+second small).
+
+Build without the flag (the default) and the instrumentation compiles to no-ops.
+
 ## A/B testing the two backends
 
 1. Launch OpenWhisp (a default build includes WhisperKit).

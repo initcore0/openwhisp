@@ -35,6 +35,12 @@ SWIFT_FILES=$(find "$PROJECT_DIR/OpenWhisp" -name "*.swift" | tr '\n' ' ')
 source "$PROJECT_DIR/scripts/whisperkit-link-args.sh"
 resolve_whisperkit_args
 
+# Developer instrumentation (timing signposts + console logs). OFF by default;
+# INSTRUMENTATION=1 ./build.sh defines OPENWHISP_INSTRUMENTATION. Shared with build-dmg.sh.
+# shellcheck source=scripts/instrumentation-args.sh
+source "$PROJECT_DIR/scripts/instrumentation-args.sh"
+resolve_instrumentation_args
+
 xcrun swiftc \
     -target arm64-apple-macosx14.0 \
     -sdk "$(xcrun --show-sdk-path --sdk macosx)" \
@@ -50,6 +56,7 @@ xcrun swiftc \
     -framework CoreAudio \
     -framework CoreGraphics \
     "${WHISPERKIT_ARGS[@]}" \
+    "${INSTRUMENTATION_ARGS[@]+"${INSTRUMENTATION_ARGS[@]}"}" \
     $SWIFT_FILES \
     -o "$BUILD_DIR/OpenWhisp" \
     2>&1

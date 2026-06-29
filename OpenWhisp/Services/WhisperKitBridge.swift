@@ -78,14 +78,20 @@ enum WhisperKitBridge {
     static func load(model: String) async throws -> WhisperKit {
         let compute = ModelComputeOptions(audioEncoderCompute: .cpuAndGPU)
         if let folder = WhisperKitModelInstaller.compiledModelFolder(for: model) {
-            return try await withTimeout(seconds: stagedLoadTimeout, operation: "Loading model") {
-                let config = WhisperKitConfig(modelFolder: folder.path, computeOptions: compute)
-                return try await WhisperKit(config)
+            // Timed span (instrumentation builds only): this is where the CoreML
+            // specialization/warm-up cost shows up — the cold-vs-warm-launch number.
+            return try await Instrumentation.measure("whisperkit.load.staged") {
+                try await withTimeout(seconds: stagedLoadTimeout, operation: "Loading model") {
+                    let config = WhisperKitConfig(modelFolder: folder.path, computeOptions: compute)
+                    return try await WhisperKit(config)
+                }
             }
         }
-        return try await withTimeout(seconds: downloadLoadTimeout, operation: "Downloading model") {
-            let config = WhisperKitConfig(model: model, computeOptions: compute)
-            return try await WhisperKit(config)
+        return try await Instrumentation.measure("whisperkit.load.download") {
+            try await withTimeout(seconds: downloadLoadTimeout, operation: "Downloading model") {
+                let config = WhisperKitConfig(model: model, computeOptions: compute)
+                return try await WhisperKit(config)
+            }
         }
     }
 
