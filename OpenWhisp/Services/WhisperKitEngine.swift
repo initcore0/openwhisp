@@ -64,6 +64,12 @@ final class WhisperKitEngine: FileTranscriptionEngine {
     @MainActor private var stickyLanguage: String?
     @MainActor private var inFlightDetect: Task<String, Error>?
 
+    /// Download + stage a WhisperKit model for the in-app model manager, reporting
+    /// 0…1 progress. Available only in a WhisperKit build; the stub (below) throws.
+    static func downloadModel(_ model: String, onProgress: @escaping (Double) -> Void) async throws {
+        try await WhisperKitBridge.downloadModel(model, onProgress: onProgress)
+    }
+
     func warmServer(binaryPath: String, modelPath: String) {
         // WhisperKit has no separate server; warm = preload the model (best-effort).
         // Doing this when the engine is selected turns the slow first-load into a
@@ -202,6 +208,14 @@ final class WhisperKitEngine: FileTranscriptionEngine {
     // Stub implementation for the default (no-WhisperKit) build. Conforms to the
     // protocol so the app compiles; any attempt to use it reports unavailability
     // instead of silently failing.
+    struct WhisperKitUnavailable: Error, LocalizedError {
+        var errorDescription: String? { "WhisperKit isn't available in this build (WHISPERKIT=0)." }
+    }
+
+    static func downloadModel(_ model: String, onProgress: @escaping (Double) -> Void) async throws {
+        throw WhisperKitUnavailable()
+    }
+
     func warmServer(binaryPath: String, modelPath: String) {
         onWorkerStatus?("WhisperKit not built in (rebuild with WHISPERKIT=1)")
     }

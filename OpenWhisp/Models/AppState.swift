@@ -311,6 +311,17 @@ class AppState: ObservableObject {
     /// Set when the most recent model download failed, so the UI can offer a
     /// retry action. Cleared when a (re)download starts or succeeds.
     @Published var modelDownloadFailed = false
+
+    // WhisperKit model manager (separate from the GGML download state above).
+    /// Model id currently downloading, or nil when idle (only one at a time).
+    @Published var whisperKitDownloadingModel: String? = nil
+    /// 0…1 progress for the in-flight WhisperKit model download.
+    @Published var whisperKitDownloadProgress: Double = 0
+    /// Human-readable status/error for the WhisperKit model manager.
+    @Published var whisperKitDownloadStatus: String = ""
+    /// Staged WhisperKit model ids (refreshed after a download / on open).
+    @Published var whisperKitStagedModels: [String] = []
+
     @Published var audioLevel: Float = 0
     @Published var recordingElapsed: TimeInterval = 0
     @Published var inputMonitoringPermissionLabel: String = "Unknown"
@@ -968,6 +979,47 @@ class AppState: ObservableObject {
 
     func stopWhisperServer() {
         whisperEngine.stopServer()
+    }
+
+    /// Refresh the list of staged WhisperKit models (call when opening the manager).
+    func refreshWhisperKitStagedModels() {
+        whisperKitStagedModels = WhisperKitModelCatalog.stagedModels()
+    }
+
+    /// Download + stage a WhisperKit model from the model manager. Single-flight:
+    /// ignores a request while another download is in progress.
+    func downloadWhisperKitModel(_ model: String) {
+        guard whisperKitDownloadingModel == nil else { return }
+        whisperKitDownloadingModel = model
+        whisperKitDownloadProgress = 0
+        let label = WhisperKitModelCatalog.displayInfo(for: model).label
+        whisperKitDownloadStatus = "Downloading \(label)…"
+
+        Task { @MainActor in
+            do {
+                try await WhisperKitEngine.downloadModel(model) { fraction in
+                    Task { @MainActor in
+                        // Only reflect progress for the active download (guards a late
+                        // callback after cancel/replace).
+                        guard self.whisperKitDownloadingModel == model else { return }
+                        self.whisperKitDownloadProgress = fraction
+                        self.whisperKitDownloadStatus =
+                            "Downloading \(label)… \(Int(fraction * 100))%"
+                    }
+                }
+                self.whisperKitDownloadStatus = "\(label) installed"
+                self.refreshWhisperKitStagedModels()
+                // If the just-downloaded model is the selected one, warm it now that
+                // it's staged (turns the next dictation's load into a no-op).
+                if self.transcriptionEngine == "whisperKit", self.whisperKitModel == model {
+                    self.warmWhisperServerIfPossible()
+                }
+            } catch {
+                self.whisperKitDownloadStatus = "Download failed: \(error.localizedDescription)"
+            }
+            self.whisperKitDownloadingModel = nil
+            self.whisperKitDownloadProgress = 0
+        }
     }
 
     func warmWhisperServerIfPossible() {
