@@ -74,7 +74,13 @@ final class WhisperKitEngine: FileTranscriptionEngine {
         // WhisperKit has no separate server; warm = preload the model (best-effort).
         // Doing this when the engine is selected turns the slow first-load into a
         // background warm-up instead of blocking the first dictation.
-        Task { try? await ensureLoaded() }
+        // Timed (instrumentation builds): start of warm → model ready. This is the
+        // "how long until the first dictation can run" number.
+        Task {
+            try? await Instrumentation.measure("whisperkit.warm") {
+                try await self.ensureLoaded()
+            }
+        }
     }
 
     func stopServer() {
