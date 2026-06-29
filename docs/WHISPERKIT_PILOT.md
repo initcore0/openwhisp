@@ -35,27 +35,35 @@ ones) and omits the "Type live" output mode; Apple Speech shows neither model
 controls nor whisper.cpp plumbing. The selected WhisperKit model is persisted as
 `whisperKitModel` and changing it rebuilds the WhisperKit engines.
 
-## Why it's opt-in at build time
+## Build flag (on by default)
 
-The app is compiled by `build.sh` with a raw `swiftc` glob (no SwiftPM dependency
-resolution for the app — SwiftPM can't produce a signed `.app`). WhisperKit is a
-SwiftPM package, so it's linked **only when you ask for it**:
+The app is compiled by `build.sh`/`build-dmg.sh` with a raw `swiftc` glob (no
+SwiftPM dependency resolution for the app — SwiftPM can't produce a signed
+`.app`). WhisperKit is a SwiftPM package, linked via the `WHISPERKIT` build flag.
+WhisperKit is now the **default transcription engine**, so the flag is **ON by
+default** — both compile paths share the same link logic (`scripts/whisperkit-link-args.sh`):
 
-- **Default build** (`./build.sh`): WhisperKit is *not* linked. `WhisperKitEngine`
-  compiles to a stub that reports "not available" if selected. Zero impact.
-- **WhisperKit build** (`WHISPERKIT=1 ./build.sh`): builds WhisperKit (and its
-  whole dependency tree) into a single static lib, links it, and defines the
-  `WHISPERKIT` compile flag that activates the real engine.
+- **Default build** (`./build.sh`, `./build-dmg.sh`): builds WhisperKit (and its
+  whole dependency tree) into a single static lib, links it, defines the
+  `WHISPERKIT` compile flag that activates the real engine, and the app defaults
+  `transcriptionEngine` to `whisperKit`.
+- **Lean build** (`WHISPERKIT=0 ./build.sh`): WhisperKit is *not* linked.
+  `WhisperKitEngine` compiles to a stub that reports "not available" if selected,
+  and the default engine falls back to whisper.cpp (compile-time
+  `AppState.defaultTranscriptionEngine`). Use this to avoid the CoreML dependency.
 
-## Build & run with WhisperKit
+## Build & run
 
 ```bash
 # One-time (or after changing the WhisperKit version): builds the dependency.
 # build.sh calls this automatically, but you can run it standalone to pre-warm:
 ./scripts/build-whisperkit.sh >/dev/null
 
-# Build the app WITH the WhisperKit backend, then package + install:
-WHISPERKIT=1 ./build.sh && ./package.sh --install
+# Standard build + package + install (WhisperKit is included by default):
+./build.sh && ./package.sh --install
+
+# Lean build without WhisperKit:
+WHISPERKIT=0 ./build.sh && ./package.sh --install
 ```
 
 The first WhisperKit dependency build takes ~1 minute (compiles WhisperKit +
@@ -64,10 +72,10 @@ incremental.
 
 ## A/B testing the two backends
 
-1. Launch OpenWhisp (built with `WHISPERKIT=1`).
+1. Launch OpenWhisp (a default build includes WhisperKit).
 2. **Settings → Advanced → Engine → Transcription Engine.** You'll see:
-   - **Whisper Local (whisper.cpp)** — the default, unchanged.
-   - **WhisperKit (CoreML, experimental)** — the pilot.
+   - **WhisperKit (CoreML)** — the default.
+   - **Whisper Local (whisper.cpp)** — the original local engine.
    - **Apple Speech Streaming** — the existing native option.
 3. Switch between **Whisper Local** and **WhisperKit** and dictate the same phrases.
    Switching rebuilds the engine live (no app restart) and warms **only** the

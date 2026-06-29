@@ -40,6 +40,13 @@ echo ""
 echo "Step 1: Compiling Swift app..."
 SWIFT_FILES=$(find "$PROJECT_DIR/OpenWhisp" -name "*.swift" | tr '\n' ' ')
 
+# WhisperKit backend (ON BY DEFAULT; WHISPERKIT=0 for a lean build). Shared with
+# build.sh via the same helper so the released DMG includes WhisperKit exactly the
+# way a local build does.
+# shellcheck source=scripts/whisperkit-link-args.sh
+source "$PROJECT_DIR/scripts/whisperkit-link-args.sh"
+resolve_whisperkit_args
+
 xcrun swiftc \
     -target arm64-apple-macosx14.0 \
     -sdk "$(xcrun --show-sdk-path --sdk macosx)" \
@@ -54,6 +61,7 @@ xcrun swiftc \
     -framework Security \
     -framework CoreAudio \
     -framework CoreGraphics \
+    "${WHISPERKIT_ARGS[@]+"${WHISPERKIT_ARGS[@]}"}" \
     $SWIFT_FILES \
     -o "$BUILD_DIR/OpenWhisp"
 
