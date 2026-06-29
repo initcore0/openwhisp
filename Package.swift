@@ -40,6 +40,7 @@ let package = Package(
                 "AudioLevel.swift",
                 "FinalizingCaption.swift",
                 "AsyncTimeout.swift",
+                "SerialTaskChain.swift",
                 "VoiceIndicatorStyle.swift",
                 "WhisperKitBridge.swift",
                 "WhisperKitModelCatalog.swift"

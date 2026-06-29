@@ -31,10 +31,9 @@ final class WhisperKitStreamingEngine: StreamingTranscriptionEngine {
     private var loadedKit: WhisperKitHandle?
     @MainActor private var inFlightLoad: Task<WhisperKitHandle, Error>?
 
-    // The running stream + its lifecycle. `runTask` is the start pipeline; the
-    // transcriber drives the mic and pushes state diffs to `handleState`.
-    private var transcriber: WhisperKitStreamHandle?
-    private var runTask: Task<Void, Never>?
+    // The running stream. The transcriber drives the mic and pushes state diffs to
+    // `handleState`. Touched only on the main actor (via the serialized chain).
+    @MainActor private var transcriber: WhisperKitStreamHandle?
 
     // Last confirmed transcript we emitted as a partial — used so we only forward
     // forward-progress (monotonic confirmed text), avoiding paste churn from the
@@ -42,66 +41,78 @@ final class WhisperKitStreamingEngine: StreamingTranscriptionEngine {
     @MainActor private var lastConfirmedText: String = ""
     @MainActor private var didFinish: Bool = false
 
-    /// In-flight stop, so a quick start() (e.g. the double-tap instruction step)
-    /// waits for the previous stream's mic/AVAudioEngine to fully release before
-    /// grabbing it again — otherwise the new `installTap` races the old teardown and
-    /// throws (the "Streaming Error" on re-press).
-    private var stopTask: Task<Void, Never>?
+    /// Serialized lifecycle: every start/stop is appended to this chain, so a stop's
+    /// mic/AVAudioEngine teardown ALWAYS completes before the next start's
+    /// `installTap` runs. Replaces the old fire-and-forget stopTask + 150ms magic
+    /// sleep, which raced on a quick double-tap restart (the "Streaming Error" on
+    /// re-press). See `SerialTaskChain`.
+    @MainActor private let lifecycle = SerialTaskChain()
 
     func start(language: String) throws {
         let task = WhisperKitTaskMapper.map(languageSetting: language)
-        Task { @MainActor in
+        // Enqueue SYNCHRONOUSLY on the main actor so call order == enqueue order
+        // (a stop() immediately followed by start() must serialize in that order).
+        // All callers are @MainActor (AppState); an outer Task hop here would let two
+        // rapid calls reorder. assumeIsolated documents and enforces that invariant.
+        MainActor.assumeIsolated {
             self.lastConfirmedText = ""
             self.didFinish = false
-        }
-        let priorStop = stopTask
-        runTask = Task { [weak self] in
-            guard let self else { return }
-            // Wait out any previous stop so the mic is free before we re-acquire it,
-            // plus a short settle so the old AVAudioEngine fully releases the input
-            // node (avoids the installTap race on a quick double-tap restart).
-            if priorStop != nil {
-                await priorStop?.value
-                try? await Task.sleep(nanoseconds: 150_000_000)
-            }
-            do {
-                let kit = try await self.ensureLoaded()
-                let handle = try WhisperKitBridge.makeStreamHandle(
-                    kit: kit,
-                    task: task,
-                    languageOverride: nil
-                ) { [weak self] newState in
-                    Task { @MainActor in self?.handleState(newState) }
-                }
-                self.transcriber = handle
-                try await handle.start()
-            } catch {
-                NSLog("[WhisperKitStream] start error: %@", error.localizedDescription)
-                await MainActor.run {
-                    guard !self.didFinish else { return }
-                    self.onError?("WhisperKit streaming failed: \(error.localizedDescription)")
-                }
+            self.lifecycle.enqueue { [weak self] in
+                await self?.runStart(task: task)
             }
         }
     }
 
+    /// The start pipeline, run inside the serialized lifecycle chain (so any prior
+    /// stop's teardown has already completed — no installTap race, no sleep needed).
+    @MainActor
+    private func runStart(task: WhisperKitTaskMapper.Resolved) async {
+        do {
+            let kit = try await ensureLoaded()
+            let handle = try WhisperKitBridge.makeStreamHandle(
+                kit: kit,
+                task: task,
+                languageOverride: nil
+            ) { [weak self] newState in
+                Task { @MainActor in self?.handleState(newState) }
+            }
+            transcriber = handle
+            // `start()` runs the realtime loop until stopped; it returns when the
+            // stream ends. Don't block the chain on it (a stop must be able to run),
+            // so drive it in a detached child whose lifetime the stop tears down.
+            Task { try? await handle.start() }
+        } catch {
+            NSLog("[WhisperKitStream] start error: %@", error.localizedDescription)
+            guard !didFinish else { return }
+            onError?("WhisperKit streaming failed: \(error.localizedDescription)")
+        }
+    }
+
     func stop(cancel: Bool) {
-        let handle = transcriber
-        transcriber = nil
-        runTask?.cancel()
-        runTask = nil
-        let task = Task { @MainActor in
-            self.didFinish = true
-            await handle?.stop()
-            if !cancel {
-                // Final = the full assembled transcript (confirmed + any trailing
-                // unconfirmed text), so the last words aren't lost.
-                let full = handle?.fullText() ?? ""
-                let final = full.isEmpty ? self.lastConfirmedText : full
-                self.onFinal?(final.trimmingCharacters(in: .whitespacesAndNewlines))
+        // Synchronous main-actor enqueue (see start) so stop→start order is preserved.
+        MainActor.assumeIsolated {
+            self.lifecycle.enqueue { [weak self] in
+                await self?.runStop(cancel: cancel)
             }
         }
-        stopTask = task
+    }
+
+    /// The stop pipeline, run inside the serialized lifecycle chain. Awaiting the
+    /// transcriber's `stop()` here is what guarantees the mic/input node is released
+    /// before any queued start proceeds.
+    @MainActor
+    private func runStop(cancel: Bool) async {
+        let handle = transcriber
+        transcriber = nil
+        didFinish = true
+        await handle?.stop()
+        if !cancel {
+            // Final = the full assembled transcript (confirmed + any trailing
+            // unconfirmed text), so the last words aren't lost.
+            let full = handle?.fullText() ?? ""
+            let final = full.isEmpty ? lastConfirmedText : full
+            onFinal?(final.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
     }
 
     /// Translate a WhisperKit stream state into our callbacks.
