@@ -290,7 +290,17 @@ class AppState: ObservableObject {
     // MARK: - Runtime State
 
     @Published var isRecording = false
-    @Published var isTranscribing = false
+    @Published var isTranscribing = false {
+        didSet {
+            // Stamp the moment finalize begins (recording stopped → transcribing) so
+            // stats can measure transcription latency, regardless of which stop path
+            // ran. Only the first true-transition per session is recorded; cleared in
+            // beginSession. Stats-only — see recordStats.
+            if isTranscribing, !oldValue, transcriptionStartedAt == nil {
+                transcriptionStartedAt = Date()
+            }
+        }
+    }
     /// True from `beginSession()` until audio capture actually goes live
     /// (`.recording`) or the session tears down. During this window the overlay
     /// is visible but the microphone is NOT capturing yet — speaking here loses
@@ -359,6 +369,11 @@ class AppState: ObservableObject {
     private var overlayController: OverlayWindowController?
     private var elapsedTimer: Timer?
     private var recordingStartedAt: Date?
+    /// When the current session entered the transcribing/finalize phase (set via the
+    /// isTranscribing didSet, cleared per session). Used only to measure stats latency.
+    private var transcriptionStartedAt: Date?
+    /// Local-only, metadata-only dictation stats (collected, not surfaced in UI).
+    private var dictationStats = DictationStatsStore.load()
     private var targetApplication: NSRunningApplication?
     private var overlayIsVisible = false
     private var activeSessionID = UUID()
@@ -1418,6 +1433,7 @@ class AppState: ObservableObject {
         audioLevel = 0
         recordingElapsed = 0
         recordingStartedAt = Date()
+        transcriptionStartedAt = nil
         targetApplication = currentTextTargetApplication()
         isStreamingSession = streaming
         isTranscribing = false
@@ -1967,6 +1983,7 @@ class AppState: ObservableObject {
         lastTranscription = text
 
         recordHistory(text)
+        recordStats(text)
 
         let finalWasEnhanced = shouldEnhanceCurrentSession
             && (!isLiveChunkSession || isPreviewSession)
@@ -2233,6 +2250,37 @@ class AppState: ObservableObject {
     func clearHistory() {
         history = []
         TranscriptionHistoryStore.save(history)
+    }
+
+    /// Fold a completed dictation into the local-only stats aggregates. METADATA
+    /// ONLY — no transcript text is stored, only counts/durations/identifiers — and
+    /// the file never leaves the device. Independent of `historyEnabled` (this is
+    /// privacy-safe metadata), but still skips secure-field sessions, fully-empty
+    /// transcripts, and sessions with no known start time.
+    private func recordStats(_ text: String) {
+        guard !SecureFieldDetector.focusedFieldIsSecure() else { return }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        guard let startedAt = recordingStartedAt else { return }
+
+        let now = Date()
+        let model: String? = transcriptionEngine == "whisperKit" ? whisperKitModel
+            : (transcriptionEngine == "appleSpeech" ? nil : modelName)
+        let latency = transcriptionStartedAt.map { now.timeIntervalSince($0) }
+
+        let event = DictationEvent(
+            date: now,
+            wordCount: DictationEvent.words(in: trimmed),
+            charCount: trimmed.count,
+            durationSeconds: now.timeIntervalSince(startedAt),
+            engine: transcriptionEngine,
+            model: model,
+            outputMode: outputMode,
+            appBundleID: targetApplication?.bundleIdentifier,
+            transcriptionLatencySeconds: latency
+        )
+        dictationStats.record(event)
+        DictationStatsStore.save(dictationStats)
     }
 
     func copyHistoryEntry(_ entry: TranscriptionEntry) {

@@ -41,6 +41,7 @@ let package = Package(
                 "FinalizingCaption.swift",
                 "AsyncTimeout.swift",
                 "SerialTaskChain.swift",
+                "DictationStats.swift",
                 "VoiceIndicatorStyle.swift",
                 "WhisperKitBridge.swift",
                 "WhisperKitModelCatalog.swift"
