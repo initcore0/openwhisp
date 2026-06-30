@@ -31,11 +31,15 @@ echo "=== Building llama.cpp ($(cd "$LLAMA_DIR" && git describe --tags --always 
 # the binary so there is no stray .metallib to bundle. LLAMA_CURL=OFF so the
 # server does not link a Homebrew libcurl that would dyld-fail on user machines
 # (we download weights ourselves via ModelDownloader).
+# LLAMA_OPENSSL=OFF: the server only ever serves plain HTTP on loopback, so it
+# does not need HTTPS — and leaving it ON links Homebrew's OpenSSL, which would
+# dyld-fail on user machines without Homebrew.
 cmake -S "$LLAMA_DIR" -B "$LLAMA_DIR/build" \
     -DCMAKE_BUILD_TYPE=Release \
     -DBUILD_SHARED_LIBS=ON \
     -DLLAMA_BUILD_SERVER=ON \
     -DLLAMA_CURL=OFF \
+    -DLLAMA_OPENSSL=OFF \
     -DGGML_METAL=ON \
     -DGGML_METAL_EMBED_LIBRARY=ON
 cmake --build "$LLAMA_DIR/build" -j --config Release --target llama-server
@@ -52,6 +56,15 @@ if otool -L "$SERVER_BIN" | grep -i curl | grep -qv '^[[:space:]]*/usr/lib/'; th
     echo "ERROR: llama-server links a non-system libcurl:"
     otool -L "$SERVER_BIN" | grep -i curl
     echo "Rebuild with -DLLAMA_CURL=OFF (already set; check the cmake cache)."
+    exit 1
+fi
+
+# Assertion: no non-system OpenSSL link (Homebrew libssl/libcrypto would
+# dyld-fail on user machines). Built with LLAMA_OPENSSL=OFF.
+if otool -L "$SERVER_BIN" | grep -iE 'ssl|crypto' | grep -qv '^[[:space:]]*/usr/lib/'; then
+    echo "ERROR: llama-server links a non-system OpenSSL:"
+    otool -L "$SERVER_BIN" | grep -iE 'ssl|crypto'
+    echo "Rebuild with -DLLAMA_OPENSSL=OFF (clear the cmake cache first)."
     exit 1
 fi
 

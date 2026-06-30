@@ -1096,6 +1096,13 @@ class AppState: ObservableObject {
         FileManager.default.fileExists(atPath: bundledModelPath(id))
     }
 
+    /// True when the built-in LLM would coexist with a resident whisper.cpp
+    /// server — surfaced in Settings so the user can pick a lighter pairing on a
+    /// small-RAM Mac. (Public mirror of the private dual-engine check.)
+    var bundledLLMHasMemoryCaution: Bool {
+        llmProvider == "bundled" && whisperServerResident
+    }
+
     /// Whether a download is currently in flight for the given model id.
     func isLLMModelDownloadingForLab(_ id: String) -> Bool {
         isLLMModelDownloading && downloadingLLMModelPath == bundledModelPath(id)
@@ -1116,14 +1123,24 @@ class AppState: ObservableObject {
         return try? JSONDecoder().decode([ModelManifestEntry].self, from: data)
     }
 
+    /// True when a resident whisper.cpp server is held in memory at the same time
+    /// the built-in LLM would run. Both load a model, so on small-RAM Macs they
+    /// can race for memory. (WhisperKit/AppleSpeech keep no resident server.)
+    private var whisperServerResident: Bool {
+        transcriptionEngine == "whisper" && whisperBackend == "serverAPI"
+    }
+
     /// Start the bundled llama-server if the built-in provider is the active,
     /// enabled, downloaded one. Idempotent (the engine no-ops if already healthy).
     func warmLlamaServerIfPossible() {
         guard llmProvider == "bundled",
               openAIEnhancementEnabled,
               bundledLLMModelInstalled else { return }
-        let path = selectedLLMModelPath()
-        ensureLlamaEngine().ensureRunning(modelPath: path) { _ in }
+        let engine = ensureLlamaEngine()
+        // Shorter idle teardown when a whisper-server is also resident, to relieve
+        // dual-engine memory pressure sooner.
+        engine.idleTimeout = whisperServerResident ? 30 : 90
+        engine.ensureRunning(modelPath: selectedLLMModelPath()) { _ in }
     }
 
     /// Gate a refinement call behind the bundled server being healthy. For the
@@ -1134,6 +1151,7 @@ class AppState: ObservableObject {
     /// in-flight counter so idle teardown can't kill a live generation.
     private func ensureBundledLLMReady(
         statusWhileLoading: String = "Loading local model…",
+        quiesceWhisper: Bool = false,
         work: @escaping () -> Void,
         fallback: @escaping () -> Void
     ) {
@@ -1148,7 +1166,16 @@ class AppState: ObservableObject {
             return
         }
 
+        // Dual-engine memory relief: when a whisper-server is resident and the
+        // caller is post-transcription (whole-text refinement), stop it before
+        // loading the LLM so they don't both hold a model at once. It re-warms on
+        // the next dictation via warmWhisperServerIfPossible().
+        if quiesceWhisper, whisperServerResident {
+            stopWhisperServer()
+        }
+
         let engine = ensureLlamaEngine()
+        engine.idleTimeout = whisperServerResident ? 30 : 90
         let sessionID = activeSessionID
         statusMessage = statusWhileLoading
         engine.requestStarted()
@@ -1980,7 +2007,7 @@ class AppState: ObservableObject {
         // it would paste/clobber the clipboard after the session was cancelled.
         let sessionID = activeSessionID
 
-        ensureBundledLLMReady(work: { [weak self] in
+        ensureBundledLLMReady(quiesceWhisper: true, work: { [weak self] in
             guard let self else { return }
             self.translationService.processFinalText(
                 text: finalText,
@@ -2173,7 +2200,7 @@ class AppState: ObservableObject {
         let sessionID = activeSessionID
         let directive = InstructionChain.directive(forInstruction: instruction)
 
-        ensureBundledLLMReady(statusWhileLoading: "Refining…", work: { [weak self] in
+        ensureBundledLLMReady(statusWhileLoading: "Refining…", quiesceWhisper: true, work: { [weak self] in
             guard let self else { return }
             self.translationService.processFinalText(
                 text: target,

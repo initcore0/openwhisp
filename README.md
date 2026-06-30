@@ -18,7 +18,7 @@ Transcription runs locally with [whisper.cpp](https://github.com/ggerganov/whisp
 - **Hold‑to‑talk** — hold a hotkey (Fn or Control+Space), release to insert, Esc to cancel.
 - **Smart formatting (local, default‑on)** — capitalization, punctuation cleanup, filler‑word removal ("um/uh"), and spoken punctuation ("new line", "comma", "period").
 - **Custom vocabulary** — bias whisper toward your names/jargon, plus "heard → correct" substitutions (e.g. "clod code" → "Claude Code").
-- **AI post‑processing (optional)** — rephrase or improve translation with an LLM. Point it at a **local OpenAI‑compatible server** (llama.cpp `llama-server`, Ollama) to stay private, or at OpenAI.
+- **AI post‑processing (optional)** — rephrase or improve translation with an LLM. Choose **Built‑in (offline)** to run a small model fully on‑device with no setup (downloads once, then never phones home), point it at a **local OpenAI‑compatible server** (llama.cpp `llama-server`, Ollama), or at OpenAI.
 - **Refine with a follow-up** — dictate, then double-tap the hotkey and speak an instruction ("make it a Telegram post"); the AI rewrites your text accordingly.
 - **Refine your selection** — highlight text in any app, double-tap the hotkey, and speak an instruction ("make it more formal", "translate to Russian"); the selected text is replaced in place with the AI's result. No dictation needed.
 - **Per‑app modes** — auto‑apply language / output / AI‑cleanup overrides based on the app you're typing into.
@@ -72,6 +72,14 @@ cd openwhisp
 ```
 
 This builds `third_party/whisper.cpp` and produces `whisper-cli` + `whisper-server` under `third_party/whisper.cpp/build/bin/`, which the packaging step bundles into the app.
+
+### 2b. (Optional) Build the built‑in LLM runtime
+
+```bash
+./scripts/build-llama.sh
+```
+
+This builds the `third_party/llama.cpp` submodule into `llama-server`, bundled under `Resources/llama/` (with its **own** ggml dylibs, isolated from whisper's). It powers the **Built‑in (offline)** AI post‑processing provider — on‑device text refinement with no Ollama / external server. It's **opt‑in**: skip this step and the app still builds and runs (the built‑in provider just won't have a runtime). The refinement model itself (e.g. Qwen2.5 0.5B) downloads once on first use, like whisper models — it is never bundled in the `.app`.
 
 ### 3. Build & package OpenWhisp
 
@@ -196,6 +204,7 @@ Settings has a **Basic** and an **Advanced** tab.
 
 OpenWhisp can run a final LLM pass to rephrase your text or improve a translation. It speaks the standard **OpenAI chat‑completions API**, so you can keep it fully local:
 
+- **Built‑in (offline)** — the zero‑setup option. A small model (default **Qwen2.5 0.5B**, Apache‑2.0) runs in a bundled `llama-server` entirely on your Mac — no Ollama, no server to start, nothing leaves the machine. The model downloads once into Application Support on first use. Swap models (0.5B / 1.5B / SmolLM2) from the picker to trade speed for quality. Requires the optional `./scripts/build-llama.sh` step at build time. Pairs best with the **Apple Speech** or **WhisperKit** transcription engine to keep memory low.
 - **Local (private)** — point it at any OpenAI‑compatible server. Default URL `http://localhost:8080/v1`.
   - **llama.cpp**: `llama-server -m your-model.gguf --host 0.0.0.0 --port 8080`
   - **Ollama**: runs an OpenAI‑compatible API at `http://localhost:11434/v1`

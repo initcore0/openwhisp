@@ -677,6 +677,15 @@ struct SettingsView: View {
                 .foregroundColor(.green)
         } else {
             Button("Download model") { appState.ensureLLMModelExists() }
+            Text("The model downloads once (one-time), then runs fully offline.")
+                .font(.caption)
+                .foregroundColor(.secondary)
+        }
+
+        if appState.bundledLLMHasMemoryCaution {
+            Text("Tip: you're running whisper.cpp's server engine and the built-in LLM together. On an 8 GB Mac that's tight — the Apple Speech or WhisperKit engine pairs more lightly with built-in refinement.")
+                .font(.caption)
+                .foregroundColor(.orange)
         }
     }
     
