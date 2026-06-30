@@ -347,6 +347,29 @@ New files: `scripts/llm-bench.sh`, `scripts/bench/refinement-cases.json`,
 
 ---
 
+### M6 — User-facing polish (shipped after the MVP landed)
+
+Once the built-in LLM was working, these went in on top of M1–M5:
+
+1. **Menu-bar AI submenu** (`main.swift`) — an "AI: <provider>" submenu lets users
+   switch provider (Built-in / OpenAI / Local) and, for Built-in, **switch between
+   bundled models** (0.5B / 1.5B / SmolLM2) between dictations. Un-downloaded
+   models are marked and fetch on use. Replaces the old "Clean up with AI (OpenAI)"
+   label — the on/off item is now provider-agnostic ("Refine text with AI").
+2. **Onboarding AI step** (`OnboardingView.swift`) — a new `.ai` step (after
+   Hotkey) lets first-run users enable AI refinement, pick a provider, and
+   download a built-in model right from setup. README "First run" updated.
+3. **Dev tooling** (gated `OPENWHISP_INSTRUMENTATION`): a Settings "Runtime (debug)"
+   row showing selected-vs-loaded model; an overlay **debug HUD** (engine/state,
+   app + llama-server RSS/CPU, last-session timings); and a menu **"Debug overlay
+   (dev)"** checkbox to toggle it.
+4. **Bug fix:** switching the built-in model in Settings/menu now stops the old
+   server and downloads/warms the new one (previously a no-op if the new model
+   wasn't downloaded). **Build fix:** `-DLLAMA_OPENSSL=OFF` (Homebrew OpenSSL
+   would dyld-fail on user Macs).
+
+---
+
 ## The model-comparison workflow (Qwen 0.5B vs 1.5B vs SmolLM2)
 
 1. Build instrumented: `INSTRUMENTATION=1 ./build.sh && ./package.sh` (after

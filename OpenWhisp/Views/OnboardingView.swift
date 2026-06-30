@@ -11,7 +11,7 @@ struct OnboardingView: View {
     var onClose: () -> Void
 
     enum Step: Int, CaseIterable {
-        case welcome, microphone, accessibility, model, hotkey, tryIt
+        case welcome, microphone, accessibility, model, hotkey, ai, tryIt
     }
 
     @State private var step: Step = .welcome
@@ -46,6 +46,7 @@ struct OnboardingView: View {
         case .accessibility: accessibilityStep
         case .model:         modelStep
         case .hotkey:        hotkeyStep
+        case .ai:            aiStep
         case .tryIt:         tryItStep
         }
     }
@@ -188,6 +189,82 @@ struct OnboardingView: View {
                     .foregroundColor(.secondary)
             }
         }
+    }
+
+    private var aiStep: some View {
+        stepLayout(
+            icon: "wand.and.stars",
+            iconColor: .accentColor,
+            title: "Polish your words with AI (optional)",
+            subtitle: "After transcribing, AI can fix punctuation, capitalization, and filler words — and you can double-tap to give a spoken instruction like “make it a Telegram post.” The built-in option runs fully on your Mac; nothing leaves your machine."
+        ) {
+            VStack(alignment: .leading, spacing: 14) {
+                Toggle("Refine my text with AI", isOn: $appState.openAIEnhancementEnabled)
+
+                if appState.openAIEnhancementEnabled {
+                    Picker("", selection: $appState.llmProvider) {
+                        Text("Built-in — offline, no setup").tag("bundled")
+                        Text("OpenAI — cloud, needs API key").tag("openai")
+                        Text("Local server — your own").tag("local")
+                    }
+                    .pickerStyle(.radioGroup)
+                    .labelsHidden()
+
+                    if appState.llmProvider == "bundled" {
+                        bundledModelControls
+                    } else if appState.llmProvider == "openai" {
+                        Text("Add your OpenAI API key in Settings → AI Post-processing. Your text is sent to OpenAI for cleanup.")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    } else {
+                        Text("Point OpenWhisp at your OpenAI-compatible server in Settings → AI Post-processing.")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                } else {
+                    Text("You can turn this on anytime from the menu bar or Settings.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+            }
+            .frame(maxWidth: 380)
+        }
+    }
+
+    @ViewBuilder private var bundledModelControls: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Picker("Model", selection: $appState.bundledLLMModel) {
+                ForEach(appState.bundledLLMModelsList(), id: \.id) { model in
+                    Text("\(model.label) · \(model.size)").tag(model.id)
+                }
+            }
+            .pickerStyle(.menu)
+
+            if appState.isLLMModelDownloading {
+                VStack(alignment: .leading, spacing: 4) {
+                    ProgressView(value: appState.llmModelDownloadProgress ?? 0).frame(maxWidth: 280)
+                    Text(appState.llmModelDownloadStatus).font(.caption).foregroundColor(.secondary)
+                }
+            } else if appState.llmModelDownloadFailed {
+                HStack {
+                    Text("Download failed").font(.caption).foregroundColor(.orange)
+                    Button("Retry") { appState.retryLLMModelDownload() }
+                }
+            } else if appState.bundledLLMModelInstalled {
+                Label("Ready — runs offline", systemImage: "checkmark.circle.fill")
+                    .font(.caption)
+                    .foregroundColor(.green)
+            } else {
+                Button("Download model") { appState.ensureLLMModelExists() }
+                Text("One-time download (\(selectedBundledModelSize)); then it runs entirely on your Mac.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+        }
+    }
+
+    private var selectedBundledModelSize: String {
+        appState.bundledLLMModelsList().first(where: { $0.id == appState.bundledLLMModel })?.size ?? "~0.5 GB"
     }
 
     private var tryItStep: some View {

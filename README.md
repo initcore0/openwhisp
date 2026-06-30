@@ -137,9 +137,18 @@ A short guided setup walks you through:
 2. **Accessibility** permission (needed to type into other apps and to detect the hotkey)
 3. **Model download** (the chosen Whisper model downloads automatically on first use)
 4. **Hotkey** choice (Fn or Control+Space)
-5. A live **test**
+5. **AI refinement** (optional) — turn it on and pick a provider; choose **Built-in (offline)** to download a small on-device model right from setup
+6. A live **test**
 
 You can re‑open it any time from the menu bar → **Setup Guide…**.
+
+### Switching AI models on the fly
+
+The menu-bar menu has an **AI** submenu where you can flip the provider
+(Built-in / OpenAI / Local) and, for the built-in provider, **switch between
+bundled models** (Qwen2.5 0.5B / 1.5B, SmolLM2) without opening Settings — handy
+for comparing speed and quality. Un-downloaded models are marked and fetch
+automatically the first time you use them.
 
 ### Permissions
 

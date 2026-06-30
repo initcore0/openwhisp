@@ -191,16 +191,54 @@ class OpenWhispApp: NSObject, NSApplicationDelegate {
         languageItem.submenu = languageMenu
         menu.addItem(languageItem)
 
-        // Reflect the active backend so the label is accurate whether the user
-        // is on a local LLM or OpenAI.
-        let aiProvider = appState.llmProvider == "local" ? "Local" : "OpenAI"
+        // AI refinement: a clear on/off plus a provider/model submenu so users can
+        // switch the AI backend — and experiment with built-in models — between
+        // dictations without opening Settings.
         let aiCleanup = NSMenuItem(
-            title: "Clean up with AI (\(aiProvider))",
+            title: "Refine text with AI",
             action: #selector(toggleAICleanup),
             keyEquivalent: ""
         )
         aiCleanup.state = appState.openAIEnhancementEnabled ? .on : .off
         menu.addItem(aiCleanup)
+
+        let aiMenu = NSMenu()
+
+        // Provider chooser.
+        for provider in aiProviderOptions {
+            let item = NSMenuItem(title: provider.title, action: #selector(selectAIProvider), keyEquivalent: "")
+            item.representedObject = provider.id
+            item.state = appState.llmProvider == provider.id ? .on : .off
+            aiMenu.addItem(item)
+        }
+
+        // Built-in model chooser (only relevant for the bundled provider). Shows
+        // each swappable model with its size + a download/active marker so users
+        // can compare models on the fly.
+        let bundledModels = appState.bundledLLMModelsList()
+        if !bundledModels.isEmpty {
+            aiMenu.addItem(.separator())
+            let header = NSMenuItem(title: "Built-in model", action: nil, keyEquivalent: "")
+            header.isEnabled = false
+            aiMenu.addItem(header)
+            for model in bundledModels {
+                let installed = appState.isBundledModelInstalled(model.id)
+                let suffix = installed ? "" : "  ⤓ downloads on use"
+                let item = NSMenuItem(
+                    title: "  \(model.label) · \(model.size)\(suffix)",
+                    action: #selector(selectBundledModel),
+                    keyEquivalent: ""
+                )
+                item.representedObject = model.id
+                // Check the active built-in model only while the bundled provider is on.
+                item.state = (appState.llmProvider == "bundled" && appState.bundledLLMModel == model.id) ? .on : .off
+                aiMenu.addItem(item)
+            }
+        }
+
+        let aiMenuItem = NSMenuItem(title: "AI: \(aiProviderLabel)", action: nil, keyEquivalent: "")
+        aiMenuItem.submenu = aiMenu
+        menu.addItem(aiMenuItem)
 
         #if OPENWHISP_INSTRUMENTATION
         // Dev-only: toggle the debug HUD on the recording overlay.
@@ -255,12 +293,40 @@ class OpenWhispApp: NSObject, NSApplicationDelegate {
     @objc private func toggleAICleanup() {
         appState.openAIEnhancementEnabled.toggle()
     }
+    @objc private func selectAIProvider(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String else { return }
+        appState.llmProvider = id
+    }
+    @objc private func selectBundledModel(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String else { return }
+        // Picking a built-in model implies the built-in provider; switch to it so
+        // the choice takes effect immediately (and downloads if needed).
+        if appState.llmProvider != "bundled" { appState.llmProvider = "bundled" }
+        appState.bundledLLMModel = id
+    }
     #if OPENWHISP_INSTRUMENTATION
     @objc private func toggleDebugOverlay() {
         appState.debugOverlayEnabled.toggle()
     }
     #endif
     @objc private func terminate()      { NSApp.terminate(nil) }
+
+    private var aiProviderOptions: [(id: String, title: String)] {
+        [
+            ("bundled", "Built-in (offline)"),
+            ("openai", "OpenAI (cloud)"),
+            ("local", "Local server")
+        ]
+    }
+
+    /// Short label for the AI submenu title reflecting the active provider.
+    private var aiProviderLabel: String {
+        switch appState.llmProvider {
+        case "bundled": return "Built-in"
+        case "local":   return "Local server"
+        default:        return "OpenAI"
+        }
+    }
 
     private var languageOptions: [(code: String, title: String)] {
         [
