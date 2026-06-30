@@ -202,6 +202,17 @@ class OpenWhispApp: NSObject, NSApplicationDelegate {
         aiCleanup.state = appState.openAIEnhancementEnabled ? .on : .off
         menu.addItem(aiCleanup)
 
+        #if OPENWHISP_INSTRUMENTATION
+        // Dev-only: toggle the debug HUD on the recording overlay.
+        let debugOverlay = NSMenuItem(
+            title: "Debug overlay (dev)",
+            action: #selector(toggleDebugOverlay),
+            keyEquivalent: ""
+        )
+        debugOverlay.state = appState.debugOverlayEnabled ? .on : .off
+        menu.addItem(debugOverlay)
+        #endif
+
         menu.addItem(.separator())
 
         // Settings
@@ -244,6 +255,11 @@ class OpenWhispApp: NSObject, NSApplicationDelegate {
     @objc private func toggleAICleanup() {
         appState.openAIEnhancementEnabled.toggle()
     }
+    #if OPENWHISP_INSTRUMENTATION
+    @objc private func toggleDebugOverlay() {
+        appState.debugOverlayEnabled.toggle()
+    }
+    #endif
     @objc private func terminate()      { NSApp.terminate(nil) }
 
     private var languageOptions: [(code: String, title: String)] {

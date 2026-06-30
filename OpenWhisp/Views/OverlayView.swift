@@ -225,7 +225,9 @@ struct OverlayView: View {
             }
 
             #if OPENWHISP_INSTRUMENTATION
-            debugHUD
+            if appState.debugOverlayEnabled {
+                debugHUD
+            }
             #endif
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
@@ -236,8 +238,8 @@ struct OverlayView: View {
         .animation(.easeInOut(duration: 0.18), value: appState.clipboardFallbackActive)
         .animation(.easeInOut(duration: 0.18), value: appState.isTranscribing)
         #if OPENWHISP_INSTRUMENTATION
-        .onAppear { debugSnapshot = appState.debugHUDSnapshot() }
-        .onReceive(debugTimer) { _ in debugSnapshot = appState.debugHUDSnapshot() }
+        .onAppear { if appState.debugOverlayEnabled { debugSnapshot = appState.debugHUDSnapshot() } }
+        .onReceive(debugTimer) { _ in if appState.debugOverlayEnabled { debugSnapshot = appState.debugHUDSnapshot() } }
         #endif
     }
 

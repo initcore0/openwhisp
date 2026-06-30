@@ -267,6 +267,14 @@ class AppState: ObservableObject {
         }
     }
 
+    #if OPENWHISP_INSTRUMENTATION
+    /// Dev-only: show the debug HUD on the recording overlay. Toggled from the
+    /// menu-bar checkbox; persisted. Only exists in instrumented builds.
+    @Published var debugOverlayEnabled: Bool = UserDefaults.standard.object(forKey: "debugOverlayEnabled") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(debugOverlayEnabled, forKey: "debugOverlayEnabled") }
+    }
+    #endif
+
     // Built-in LLM model download UI state (mirrors the whisper modelDownload* set).
     @Published var isLLMModelDownloading = false
     @Published var llmModelDownloadProgress: Double?
