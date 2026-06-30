@@ -250,8 +250,20 @@ class AppState: ObservableObject {
     /// llm-manifest.json. Used when `llmProvider == "bundled"`.
     @Published var bundledLLMModel: String {
         didSet {
+            guard bundledLLMModel != oldValue else { return }
             UserDefaults.standard.set(bundledLLMModel, forKey: "bundledLLMModel")
-            warmLlamaServerIfPossible()
+            // The selected model changed. Stop the server now so a stale model
+            // isn't reused, then either download the new model (if missing) or
+            // warm it. ensureRunning relaunches on the new -m path anyway, but
+            // stopping here makes the switch explicit and frees the old model's RAM.
+            if llmProvider == "bundled" {
+                llamaEngine?.stopServer()
+                if bundledLLMModelInstalled {
+                    warmLlamaServerIfPossible()
+                } else {
+                    ensureLLMModelExists()
+                }
+            }
         }
     }
 
@@ -1101,6 +1113,20 @@ class AppState: ObservableObject {
     /// small-RAM Mac. (Public mirror of the private dual-engine check.)
     var bundledLLMHasMemoryCaution: Bool {
         llmProvider == "bundled" && whisperServerResident
+    }
+
+    /// Dev diagnostic: the live status of the built-in LLM server — which model is
+    /// SELECTED vs. which is actually LOADED in the running llama-server (they can
+    /// differ briefly during a switch, or the server may be torn down when idle).
+    /// Only meaningful for the bundled provider.
+    var bundledLLMRuntimeStatus: String {
+        let selected = bundledLLMModel
+        guard let path = llamaEngine?.runningModelPath else {
+            return "selected: \(selected) · server: stopped (starts on next refine)"
+        }
+        let loaded = URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent
+        let match = path == selectedLLMModelPath()
+        return "selected: \(selected) · loaded: \(loaded)\(match ? "" : "  ⚠︎ MISMATCH") · port \(llamaEngine?.port ?? 0)"
     }
 
     /// Whether a download is currently in flight for the given model id.

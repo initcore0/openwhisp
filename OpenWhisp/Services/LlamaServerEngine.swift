@@ -83,6 +83,15 @@ final class LlamaServerEngine {
     var baseURL: String { "http://127.0.0.1:\(serverPort)/v1" }
     var port: Int { serverPort }
 
+    /// Path of the model the server is currently loaded with, or nil if no server
+    /// is running. Used by the dev status indicator to show what's actually live
+    /// (which can differ briefly from the selected model during a switch/teardown).
+    var runningModelPath: String? {
+        serverLock.lock()
+        defer { serverLock.unlock() }
+        return (serverProcess?.isRunning == true) ? serverModelPath : nil
+    }
+
     // MARK: - Lazy start
 
     /// Ensure a healthy llama-server is running for `modelPath`. Lazy: starts the

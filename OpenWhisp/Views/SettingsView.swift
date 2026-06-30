@@ -33,6 +33,11 @@ struct SettingsView: View {
     // Built-in config packs (loaded from the app bundle on appear).
     @State private var configPacks: [ConfigPack] = []
 
+    #if OPENWHISP_INSTRUMENTATION
+    // Forces the dev built-in-LLM runtime status to re-read on demand.
+    @State private var debugRefreshTick: Int = 0
+    #endif
+
     // MARK: - Backend awareness
     //
     // The active transcription backend decides which settings are even meaningful.
@@ -687,7 +692,43 @@ struct SettingsView: View {
                 .font(.caption)
                 .foregroundColor(.orange)
         }
+
+        #if OPENWHISP_INSTRUMENTATION
+        bundledLLMDebugStatus
+        #endif
     }
+
+    #if OPENWHISP_INSTRUMENTATION
+    /// Dev-only: shows which built-in model is selected vs. actually loaded in the
+    /// running llama-server. `refreshTick` forces a re-read since the status is a
+    /// plain computed value, not an @Published one.
+    @ViewBuilder private var bundledLLMDebugStatus: some View {
+        Divider()
+        HStack(alignment: .top, spacing: 6) {
+            Image(systemName: "ladybug")
+                .foregroundColor(.secondary)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Runtime (debug)")
+                    .font(.caption.bold())
+                    .foregroundColor(.secondary)
+                Text(appState.bundledLLMRuntimeStatus)
+                    .font(.caption.monospaced())
+                    .foregroundColor(.secondary)
+                    .id(debugRefreshTick)
+                    .textSelection(.enabled)
+            }
+            Spacer()
+            Button {
+                debugRefreshTick &+= 1
+            } label: {
+                Image(systemName: "arrow.clockwise")
+            }
+            .buttonStyle(.borderless)
+            .help("Refresh runtime status")
+        }
+        .onAppear { debugRefreshTick &+= 1 }
+    }
+    #endif
     
     private var hotkeySection: some View {
         settingsSection("Hotkey") {
