@@ -5,6 +5,7 @@
 #
 # Optional:
 #   WHISPER_BIN_DIR=/path/to/whisper.cpp/build/bin ./build-dmg.sh
+#   LLAMA_BIN_DIR=/path/to/llama.cpp/build/bin ./build-dmg.sh   # bundles the optional built-in LLM
 
 set -euo pipefail
 
@@ -18,6 +19,7 @@ STAGE_DIR="$BUILD_DIR/dmg-stage"
 DMG_PATH="$DIST_DIR/OpenWhisp.dmg"
 VOL_NAME="OpenWhisp"
 WHISPER_BIN_DIR="${WHISPER_BIN_DIR:-$PROJECT_DIR/third_party/whisper.cpp/build/bin}"
+LLAMA_BIN_DIR="${LLAMA_BIN_DIR:-$PROJECT_DIR/third_party/llama.cpp/build/bin}"
 
 echo "=== OpenWhisp Full DMG Build ==="
 echo "Config: $CONFIG"
@@ -77,6 +79,7 @@ echo "Step 2: Creating app bundle..."
 rm -rf "$APP_DIR"
 mkdir -p "$APP_DIR/Contents/MacOS"
 mkdir -p "$APP_DIR/Contents/Resources/whisper"
+mkdir -p "$APP_DIR/Contents/Resources/llama"
 mkdir -p "$APP_DIR/Contents/Resources/models"
 
 cp "$BUILD_DIR/OpenWhisp" "$APP_DIR/Contents/MacOS/"
@@ -93,6 +96,18 @@ fi
 echo ""
 echo "Step 3: Bundling whisper.cpp runtime..."
 "$PROJECT_DIR/scripts/bundle-whisper-runtime.sh" "$APP_DIR" "$WHISPER_BIN_DIR"
+
+# Bundle the optional built-in LLM runtime when it has been built. Guarded so a
+# whisper-only release still builds.
+rm -rf "$APP_DIR/Contents/Resources/llama"
+mkdir -p "$APP_DIR/Contents/Resources/llama"
+if [ -x "$LLAMA_BIN_DIR/llama-server" ]; then
+    echo ""
+    echo "Step 3b: Bundling llama.cpp runtime (built-in LLM)..."
+    "$PROJECT_DIR/scripts/bundle-llama-runtime.sh" "$APP_DIR" "$LLAMA_BIN_DIR"
+else
+    echo "(skipping llama runtime: no llama-server at $LLAMA_BIN_DIR — run scripts/build-llama.sh to include the bundled LLM)"
+fi
 
 echo ""
 echo "Step 4: Signing app bundle..."

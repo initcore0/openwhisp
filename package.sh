@@ -33,6 +33,7 @@ rm -rf "$APP_DIR"
 mkdir -p "$APP_DIR/Contents/MacOS"
 mkdir -p "$APP_DIR/Contents/Resources"
 mkdir -p "$APP_DIR/Contents/Resources/whisper"
+mkdir -p "$APP_DIR/Contents/Resources/llama"
 mkdir -p "$APP_DIR/Contents/Resources/models"
 
 # Copy binary
@@ -49,6 +50,19 @@ fi
 # Bundle whisper.cpp runtime binaries and dylibs when available.
 WHISPER_BIN_DIR="${WHISPER_BIN_DIR:-$PROJECT_DIR/third_party/whisper.cpp/build/bin}"
 "$PROJECT_DIR/scripts/bundle-whisper-runtime.sh" "$APP_DIR" "$WHISPER_BIN_DIR"
+
+# Bundle the optional llama.cpp runtime (the built-in refinement LLM) when it has
+# been built. Guarded so a whisper-only / CI build (no llama submodule or no
+# llama build) still packages successfully. The rm -rf clears any stale partial
+# bundle from a previous run.
+rm -rf "$APP_DIR/Contents/Resources/llama"
+mkdir -p "$APP_DIR/Contents/Resources/llama"
+LLAMA_BIN_DIR="${LLAMA_BIN_DIR:-$PROJECT_DIR/third_party/llama.cpp/build/bin}"
+if [ -x "$LLAMA_BIN_DIR/llama-server" ]; then
+    "$PROJECT_DIR/scripts/bundle-llama-runtime.sh" "$APP_DIR" "$LLAMA_BIN_DIR"
+else
+    echo "(skipping llama runtime: no llama-server at $LLAMA_BIN_DIR — run scripts/build-llama.sh to include the bundled LLM)"
+fi
 
 # Copy entitlements
 if [ -f "$PROJECT_DIR/OpenWhisp/OpenWhisp.entitlements" ]; then
@@ -87,6 +101,9 @@ echo ""
 echo "Packaged whisper runtime:"
 ls -1 "$APP_DIR/Contents/Resources/whisper" 2>/dev/null || true
 echo ""
+echo "Packaged llama runtime (built-in LLM, optional):"
+ls -1 "$APP_DIR/Contents/Resources/llama" 2>/dev/null || true
+echo ""
 echo "Before first use:"
 echo "  1. Grant microphone/accessibility/input monitoring permissions"
 echo "  2. Let OpenWhisp download the selected model into Application Support"
@@ -102,6 +119,7 @@ if [ "$INSTALL" = "1" ]; then
     sleep 1
     pkill -f "$INSTALLED/Contents/MacOS/OpenWhisp" 2>/dev/null || true
     pkill -f "$INSTALLED/Contents/Resources/whisper/whisper-server" 2>/dev/null || true
+    pkill -f "$INSTALLED/Contents/Resources/llama/llama-server" 2>/dev/null || true
     sleep 1
     rm -rf "$INSTALLED"
     # ditto preserves the bundle's signature/attributes (unlike a plain cp -R).
