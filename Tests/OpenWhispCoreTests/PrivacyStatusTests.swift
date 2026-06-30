@@ -25,4 +25,11 @@ final class PrivacyStatusTests: XCTestCase {
         // Provider set to openai but cleanup off → nothing is sent.
         XCTAssertFalse(PrivacyStatus.sendsTextToCloud(enhancementEnabled: false, provider: "openai"))
     }
+
+    func testBundledProviderNeverCloud() {
+        // The built-in (bundled) LLM runs fully on-device.
+        XCTAssertFalse(PrivacyStatus.sendsTextToCloud(enhancementEnabled: true, provider: "bundled"))
+        XCTAssertEqual(PrivacyStatus.statusText(enhancementEnabled: true, provider: "bundled"),
+                       "Fully on-device — built-in AI, nothing leaves your Mac")
+    }
 }

@@ -535,13 +535,12 @@ struct SettingsView: View {
             Toggle("Clean up text with AI after transcription", isOn: $appState.openAIEnhancementEnabled)
 
             Picker("Provider", selection: $appState.llmProvider) {
+                Text("Built-in (offline)").tag("bundled")
                 Text("OpenAI (cloud)").tag("openai")
                 Text("Local server (private)").tag("local")
             }
 
-            Text(appState.llmProvider == "local"
-                 ? "Local server keeps everything on your machine / LAN — no data leaves to the cloud. Any OpenAI-compatible server works (llama.cpp llama-server, Ollama). Only edits final text, never live chunks."
-                 : "Whisper handles default translation locally through the language picker. OpenAI is optional and only edits final text, never live chunks.")
+            Text(providerDescription)
                 .font(.caption)
                 .foregroundColor(.secondary)
 
@@ -560,14 +559,14 @@ struct SettingsView: View {
                         }
                     }
 
-                    if appState.llmProvider == "local" {
-                        localLLMFields
-                    } else {
-                        openAIFields
+                    switch appState.llmProvider {
+                    case "bundled": bundledLLMFields
+                    case "local":   localLLMFields
+                    default:        openAIFields
                     }
 
                     HStack {
-                        Button(appState.llmProvider == "local" ? "Test Connection" : "Validate OpenAI Key") {
+                        Button(testButtonLabel) {
                             appState.validateOpenAIKey()
                         }
                         Spacer()
@@ -607,6 +606,25 @@ struct SettingsView: View {
         ["OpenAI key valid", "Local LLM reachable", "Rephrased", "Improved"].contains(appState.translationStatus)
     }
 
+    private var providerDescription: String {
+        switch appState.llmProvider {
+        case "bundled":
+            return "Built-in AI runs a small model fully on-device — nothing leaves your Mac, no setup or server needed. The model downloads once. Best paired with the WhisperKit or Apple Speech engine to keep memory low. Only edits final text, never live chunks."
+        case "local":
+            return "Local server keeps everything on your machine / LAN — no data leaves to the cloud. Any OpenAI-compatible server works (llama.cpp llama-server, Ollama). Only edits final text, never live chunks."
+        default:
+            return "Whisper handles default translation locally through the language picker. OpenAI is optional and only edits final text, never live chunks."
+        }
+    }
+
+    private var testButtonLabel: String {
+        switch appState.llmProvider {
+        case "bundled": return "Test built-in model"
+        case "local":   return "Test Connection"
+        default:        return "Validate OpenAI Key"
+        }
+    }
+
     @ViewBuilder private var openAIFields: some View {
         Picker("OpenAI Model", selection: openAIModelPickerSelection) {
             Text("GPT-4o mini").tag("gpt-4o-mini")
@@ -629,6 +647,34 @@ struct SettingsView: View {
             .textFieldStyle(.roundedBorder)
         TextField("Model (leave blank to use the server default)", text: $appState.localLLMModel)
             .textFieldStyle(.roundedBorder)
+    }
+
+    @ViewBuilder private var bundledLLMFields: some View {
+        Picker("Built-in model", selection: $appState.bundledLLMModel) {
+            ForEach(appState.bundledLLMModelsList(), id: \.id) { model in
+                Text("\(model.label) · \(model.size)").tag(model.id)
+            }
+        }
+
+        if appState.isLLMModelDownloading {
+            ProgressView(value: appState.llmModelDownloadProgress ?? 0)
+            Text(appState.llmModelDownloadStatus)
+                .font(.caption)
+                .foregroundColor(.secondary)
+        } else if appState.llmModelDownloadFailed {
+            HStack {
+                Text("Download failed")
+                    .font(.caption)
+                    .foregroundColor(.orange)
+                Button("Retry") { appState.retryLLMModelDownload() }
+            }
+        } else if appState.bundledLLMModelInstalled {
+            Text("Active — ready (offline)")
+                .font(.caption)
+                .foregroundColor(.green)
+        } else {
+            Button("Download model") { appState.ensureLLMModelExists() }
+        }
     }
     
     private var hotkeySection: some View {
