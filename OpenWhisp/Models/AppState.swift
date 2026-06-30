@@ -1081,6 +1081,26 @@ class AppState: ObservableObject {
         FileManager.default.fileExists(atPath: selectedLLMModelPath())
     }
 
+    /// Application Support path of an arbitrary built-in model id (for the LLM Lab,
+    /// which can target a model other than the active `bundledLLMModel`).
+    func bundledModelPath(_ id: String) -> String {
+        let fileName = Self.bundledLLMManifest()?
+            .first(where: { $0.id == id })?.file
+            ?? "\(id).gguf"
+        return Self.applicationSupportModelsDirectory()
+            .appendingPathComponent(fileName)
+            .path
+    }
+
+    func isBundledModelInstalled(_ id: String) -> Bool {
+        FileManager.default.fileExists(atPath: bundledModelPath(id))
+    }
+
+    /// Whether a download is currently in flight for the given model id.
+    func isLLMModelDownloadingForLab(_ id: String) -> Bool {
+        isLLMModelDownloading && downloadingLLMModelPath == bundledModelPath(id)
+    }
+
     /// The list of swappable built-in models for the Settings picker.
     func bundledLLMModelsList() -> [(id: String, label: String, size: String, license: String)] {
         (Self.bundledLLMManifest() ?? []).map {

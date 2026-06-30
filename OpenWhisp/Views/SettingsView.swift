@@ -143,6 +143,9 @@ struct SettingsView: View {
                 historySection
                 backupSection
                 if isWhisperCpp { whisperSection }              // CLI/server backend (whisper.cpp)
+                #if OPENWHISP_INSTRUMENTATION
+                settingsSection("LLM Lab") { LLMLabView(appState: appState) }
+                #endif
                 permissionsSection
                 statusSection
             }
