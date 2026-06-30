@@ -425,6 +425,10 @@ class AppState: ObservableObject {
     private var transcriptionStartedAt: Date?
     /// Local-only, metadata-only dictation stats (collected, not surfaced in UI).
     private var dictationStats = DictationStatsStore.load()
+    #if OPENWHISP_INSTRUMENTATION
+    /// Most recent completed dictation event, for the dev debug HUD only.
+    private var lastDictationEvent: DictationEvent?
+    #endif
     private var targetApplication: NSRunningApplication?
     private var overlayIsVisible = false
     private var activeSessionID = UUID()
@@ -1128,6 +1132,62 @@ class AppState: ObservableObject {
         let match = path == selectedLLMModelPath()
         return "selected: \(selected) · loaded: \(loaded)\(match ? "" : "  ⚠︎ MISMATCH") · port \(llamaEngine?.port ?? 0)"
     }
+
+    #if OPENWHISP_INSTRUMENTATION
+    /// Snapshot of debugging info for the overlay HUD (dev builds only). Sampled
+    /// each time the HUD's poll timer fires.
+    struct DebugHUDSnapshot {
+        var engineLine: String       // transcription engine · backend · output mode
+        var stateLine: String        // recording/transcribing/arming flags
+        var llmLine: String          // built-in model selected/loaded
+        var appMemCPU: String        // OpenWhisp process RSS + CPU
+        var llamaMemCPU: String      // llama-server process RSS + CPU (or stopped)
+        var timingLine: String       // last session duration + transcription latency
+    }
+
+    func debugHUDSnapshot() -> DebugHUDSnapshot {
+        let appRSS = DebugStats.selfResidentMB()
+        let appCPU = DebugStats.selfCPUPercent()
+        let appMemCPU = "app: \(appRSS) MB · \(String(format: "%.0f", appCPU))% cpu"
+
+        let llamaMemCPU: String
+        if let pid = llamaEngine?.runningPID, let s = DebugStats.sample(pid: pid) {
+            llamaMemCPU = "llama: \(s.rssMB) MB · \(String(format: "%.0f", s.cpuPercent))% cpu (pid \(pid))"
+        } else {
+            llamaMemCPU = "llama: not loaded"
+        }
+
+        let backend = transcriptionEngine == "whisper" ? "whisper.cpp/\(whisperBackend)" : transcriptionEngine
+        let engineLine = "\(backend) · out: \(outputMode) · provider: \(llmProvider)"
+
+        var flags: [String] = []
+        if isRecording { flags.append("REC") }
+        if isTranscribing { flags.append("TRANSCRIBING") }
+        if isArming { flags.append("ARMING") }
+        if refineArmed { flags.append("REFINE-ARMED") }
+        if isInstructionSession { flags.append("INSTR-SESSION") }
+        let stateLine = "state: " + (flags.isEmpty ? "idle" : flags.joined(separator: " "))
+
+        let llmLine = llmProvider == "bundled" ? bundledLLMRuntimeStatus : "provider: \(llmProvider) (not built-in)"
+
+        let timingLine: String
+        if let e = lastDictationEvent {
+            let lat = e.transcriptionLatencySeconds.map { String(format: "%.2fs", $0) } ?? "—"
+            timingLine = String(format: "last: %.2fs total · %@ asr · %d words", e.durationSeconds, lat, e.wordCount)
+        } else {
+            timingLine = "last: (no session yet)"
+        }
+
+        return DebugHUDSnapshot(
+            engineLine: engineLine,
+            stateLine: stateLine,
+            llmLine: llmLine,
+            appMemCPU: appMemCPU,
+            llamaMemCPU: llamaMemCPU,
+            timingLine: timingLine
+        )
+    }
+    #endif
 
     /// Whether a download is currently in flight for the given model id.
     func isLLMModelDownloadingForLab(_ id: String) -> Bool {
@@ -2627,6 +2687,9 @@ class AppState: ObservableObject {
         )
         dictationStats.record(event)
         DictationStatsStore.save(dictationStats)
+        #if OPENWHISP_INSTRUMENTATION
+        lastDictationEvent = event
+        #endif
     }
 
     func copyHistoryEntry(_ entry: TranscriptionEntry) {

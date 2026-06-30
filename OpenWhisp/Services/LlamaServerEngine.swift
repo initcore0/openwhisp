@@ -92,6 +92,15 @@ final class LlamaServerEngine {
         return (serverProcess?.isRunning == true) ? serverModelPath : nil
     }
 
+    /// PID of the running llama-server, or nil if stopped. For the dev HUD's
+    /// per-process memory/CPU sampling.
+    var runningPID: Int32? {
+        serverLock.lock()
+        defer { serverLock.unlock() }
+        guard let p = serverProcess, p.isRunning else { return nil }
+        return p.processIdentifier
+    }
+
     // MARK: - Lazy start
 
     /// Ensure a healthy llama-server is running for `modelPath`. Lazy: starts the
