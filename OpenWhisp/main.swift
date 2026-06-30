@@ -182,74 +182,18 @@ class OpenWhispApp: NSObject, NSApplicationDelegate {
             item.state = appState.language == option.code ? .on : .off
             languageMenu.addItem(item)
         }
-        languageMenu.addItem(.separator())
-        let hint = NSMenuItem(title: "Choose English to translate to English with Whisper", action: nil, keyEquivalent: "")
-        hint.isEnabled = false
-        languageMenu.addItem(hint)
 
         let languageItem = NSMenuItem(title: "Language: \(appState.languageDisplayName)", action: nil, keyEquivalent: "")
         languageItem.submenu = languageMenu
         menu.addItem(languageItem)
 
-        // AI refinement: a clear on/off plus a provider/model submenu so users can
-        // switch the AI backend — and experiment with built-in models — between
-        // dictations without opening Settings.
-        let aiCleanup = NSMenuItem(
-            title: "Refine text with AI",
-            action: #selector(toggleAICleanup),
-            keyEquivalent: ""
-        )
-        aiCleanup.state = appState.openAIEnhancementEnabled ? .on : .off
-        menu.addItem(aiCleanup)
-
-        let aiMenu = NSMenu()
-
-        // Provider chooser.
-        for provider in aiProviderOptions {
-            let item = NSMenuItem(title: provider.title, action: #selector(selectAIProvider), keyEquivalent: "")
-            item.representedObject = provider.id
-            item.state = appState.llmProvider == provider.id ? .on : .off
-            aiMenu.addItem(item)
-        }
-
-        // Built-in model chooser (only relevant for the bundled provider). Shows
-        // each swappable model with its size + a download/active marker so users
-        // can compare models on the fly.
-        let bundledModels = appState.bundledLLMModelsList()
-        if !bundledModels.isEmpty {
-            aiMenu.addItem(.separator())
-            let header = NSMenuItem(title: "Built-in model", action: nil, keyEquivalent: "")
-            header.isEnabled = false
-            aiMenu.addItem(header)
-            for model in bundledModels {
-                let installed = appState.isBundledModelInstalled(model.id)
-                let suffix = installed ? "" : "  ⤓ downloads on use"
-                let item = NSMenuItem(
-                    title: "  \(model.label) · \(model.size)\(suffix)",
-                    action: #selector(selectBundledModel),
-                    keyEquivalent: ""
-                )
-                item.representedObject = model.id
-                // Check the active built-in model only while the bundled provider is on.
-                item.state = (appState.llmProvider == "bundled" && appState.bundledLLMModel == model.id) ? .on : .off
-                aiMenu.addItem(item)
-            }
-        }
-
-        let aiMenuItem = NSMenuItem(title: "AI: \(aiProviderLabel)", action: nil, keyEquivalent: "")
-        aiMenuItem.submenu = aiMenu
-        menu.addItem(aiMenuItem)
-
-        #if OPENWHISP_INSTRUMENTATION
-        // Dev-only: toggle the debug HUD on the recording overlay.
-        let debugOverlay = NSMenuItem(
-            title: "Debug overlay (dev)",
-            action: #selector(toggleDebugOverlay),
-            keyEquivalent: ""
-        )
-        debugOverlay.state = appState.debugOverlayEnabled ? .on : .off
-        menu.addItem(debugOverlay)
-        #endif
+        // AI refinement: ONE self-describing row that shows the live state
+        // (on/off + which engine) and opens a small submenu. Model selection is
+        // deliberately NOT here — it's a configure-once choice that lives in
+        // Settings, reachable via "AI Settings…" below.
+        let aiItem = NSMenuItem(title: aiMenuTitle, action: nil, keyEquivalent: "")
+        aiItem.submenu = makeAIMenu()
+        menu.addItem(aiItem)
 
         menu.addItem(.separator())
 
@@ -297,13 +241,6 @@ class OpenWhispApp: NSObject, NSApplicationDelegate {
         guard let id = sender.representedObject as? String else { return }
         appState.llmProvider = id
     }
-    @objc private func selectBundledModel(_ sender: NSMenuItem) {
-        guard let id = sender.representedObject as? String else { return }
-        // Picking a built-in model implies the built-in provider; switch to it so
-        // the choice takes effect immediately (and downloads if needed).
-        if appState.llmProvider != "bundled" { appState.llmProvider = "bundled" }
-        appState.bundledLLMModel = id
-    }
     #if OPENWHISP_INSTRUMENTATION
     @objc private func toggleDebugOverlay() {
         appState.debugOverlayEnabled.toggle()
@@ -311,21 +248,68 @@ class OpenWhispApp: NSObject, NSApplicationDelegate {
     #endif
     @objc private func terminate()      { NSApp.terminate(nil) }
 
+    // AI providers framed by OUTCOME / privacy posture rather than engine jargon,
+    // so the choice is meaningful to non-technical users (and sells the privacy
+    // story). The id values are unchanged (bundled/openai/local).
     private var aiProviderOptions: [(id: String, title: String)] {
         [
-            ("bundled", "Built-in (offline)"),
-            ("openai", "OpenAI (cloud)"),
-            ("local", "Local server")
+            ("bundled", "On-device (private)"),
+            ("openai",  "OpenAI (leaves your Mac)"),
+            ("local",   "Custom server (advanced)")
         ]
     }
 
-    /// Short label for the AI submenu title reflecting the active provider.
+    /// Short label for the active provider, used in the top-level AI row.
     private var aiProviderLabel: String {
         switch appState.llmProvider {
-        case "bundled": return "Built-in"
-        case "local":   return "Local server"
+        case "bundled": return "On-device"
+        case "local":   return "Custom server"
         default:        return "OpenAI"
         }
+    }
+
+    /// Self-describing top-level row: tells the user, at a glance, whether their
+    /// next dictation gets cleaned up and by which engine.
+    private var aiMenuTitle: String {
+        guard let appState else { return "Refine with AI" }
+        return appState.openAIEnhancementEnabled
+            ? "Refine with AI: On — \(aiProviderLabel)"
+            : "Refine with AI: Off"
+    }
+
+    /// The AI submenu: a single on/off toggle, the engine radio group framed by
+    /// outcome, and a deep link to Settings for model/key/server config.
+    private func makeAIMenu() -> NSMenu {
+        let aiMenu = NSMenu()
+        guard let appState else { return aiMenu }
+
+        let toggle = NSMenuItem(title: "Refine my dictation", action: #selector(toggleAICleanup), keyEquivalent: "")
+        toggle.state = appState.openAIEnhancementEnabled ? .on : .off
+        aiMenu.addItem(toggle)
+
+        aiMenu.addItem(.separator())
+        for provider in aiProviderOptions {
+            let item = NSMenuItem(title: provider.title, action: #selector(selectAIProvider), keyEquivalent: "")
+            item.representedObject = provider.id
+            item.state = appState.llmProvider == provider.id ? .on : .off
+            // Engine choice is meaningless while refinement is off; show it but
+            // disable it so the relationship (and the "off" state) is unambiguous.
+            item.isEnabled = appState.openAIEnhancementEnabled
+            aiMenu.addItem(item)
+        }
+
+        aiMenu.addItem(.separator())
+        let aiSettings = NSMenuItem(title: "AI Settings…", action: #selector(openSettings), keyEquivalent: "")
+        aiMenu.addItem(aiSettings)
+
+        #if OPENWHISP_INSTRUMENTATION
+        aiMenu.addItem(.separator())
+        let debugOverlay = NSMenuItem(title: "Debug overlay (dev)", action: #selector(toggleDebugOverlay), keyEquivalent: "")
+        debugOverlay.state = appState.debugOverlayEnabled ? .on : .off
+        aiMenu.addItem(debugOverlay)
+        #endif
+
+        return aiMenu
     }
 
     private var languageOptions: [(code: String, title: String)] {
