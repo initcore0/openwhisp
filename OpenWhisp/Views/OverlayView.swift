@@ -351,6 +351,16 @@ struct OverlayView: View {
 
     // MARK: Transcript
 
+    // Live transcript sizing. A FIXED three-line height keeps the panel from
+    // relayouting on every streaming partial — the root cause of the shimmer. The
+    // newest words stay visible via a bottom-anchored scroll (not head truncation,
+    // which re-wraps every partial and jitters).
+    private static let transcriptLineHeight: CGFloat = 18   // ~13pt rounded line box
+    private static let transcriptVisibleLines: CGFloat = 3
+    private var transcriptBoxHeight: CGFloat {
+        Self.transcriptLineHeight * Self.transcriptVisibleLines
+    }
+
     private var transcriptPanel: some View {
         VStack(alignment: .leading, spacing: 6) {
             if let caption = phaseCaption {
@@ -359,13 +369,38 @@ struct OverlayView: View {
                     .foregroundColor(accent.opacity(0.9))
                     .textCase(.uppercase)
             }
-            Text(transcriptText)
-                .font(.system(size: 13, weight: .regular, design: .rounded))
-                .foregroundColor(.white.opacity(0.88))
-                .lineLimit(3)
-                .truncationMode(.head)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .multilineTextAlignment(.leading)
+            ScrollViewReader { proxy in
+                ScrollView(.vertical, showsIndicators: false) {
+                    Text(transcriptText)
+                        .font(.system(size: 13, weight: .regular, design: .rounded))
+                        .foregroundColor(.white.opacity(0.88))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .multilineTextAlignment(.leading)
+                        // Static anchor — never .id(transcriptText), which would
+                        // recreate the Text (and flash) on every partial.
+                        .id("transcriptTail")
+                }
+                .frame(height: transcriptBoxHeight, alignment: .bottom)
+                .scrollDisabled(true)
+                // Fade the top edge so text scrolling out reads as a soft reveal,
+                // not an abrupt clip.
+                .mask(
+                    LinearGradient(
+                        colors: [.clear, .black, .black],
+                        startPoint: .top, endPoint: .bottom
+                    )
+                )
+                .onChange(of: transcriptText) { _ in
+                    // Keep the newest line pinned to the bottom, without animating
+                    // (animating the scroll on every partial is itself jittery).
+                    var t = Transaction()
+                    t.disablesAnimations = true
+                    withTransaction(t) { proxy.scrollTo("transcriptTail", anchor: .bottom) }
+                }
+            }
+            // Belt-and-braces: no ancestor implicit animation may animate the
+            // rapidly-changing transcript content.
+            .transaction { $0.animation = nil }
         }
         .padding(.horizontal, 18)
         .padding(.vertical, 12)
