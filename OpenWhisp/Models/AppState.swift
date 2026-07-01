@@ -482,6 +482,11 @@ class AppState: ObservableObject {
     /// True when step-1 came from the user's SELECTION (not a dictation). The refined
     /// result replaces the selection in place; nothing was dictated for step-1.
     private var refineFromSelection = false
+    /// Failsafe: while refine is armed, if nothing progresses (no step-1 transcript,
+    /// no instruction) within this window — e.g. a too-fast double-tap that captured
+    /// no speech — disarm and clear the overlay so it can never get stuck.
+    private var refineWatchdog: DispatchWorkItem?
+    private let refineWatchdogTimeout: TimeInterval = 8
 
     /// Set briefly when an insert couldn't be confirmed and the text was left on the
     /// clipboard instead — drives a "copied, press ⌘V" cue in the overlay so the
@@ -1804,6 +1809,12 @@ class AppState: ObservableObject {
         isAppleSpeechSession = false
         isRecording = false
         isTranscribing = false
+        // Also drop any armed/awaiting refine state. Without this, aborting the
+        // instruction-capture session of a too-fast double-tap left refineArmed /
+        // awaitingStep1 / isInstructionSession set with no active session — a late
+        // transcript would then re-enter completeFinalText's refine branches, hold
+        // isTranscribing true, and leave the overlay stuck until app restart.
+        clearRefineState()
         currentSessionText = ""
         streamingText = ""
         statusMessage = "Ready"
@@ -2222,6 +2233,35 @@ class AppState: ObservableObject {
             startRecording()
         }
         statusMessage = "Refine: speak your instruction…"
+        armRefineWatchdog()
+    }
+
+    /// Arm the failsafe that recovers from a refine that never progresses (e.g. a
+    /// too-fast double-tap that captured no speech). If, after the timeout, refine
+    /// is still armed and no LLM call is in flight (not transcribing) and no
+    /// session is live, disarm and clear the overlay.
+    private func armRefineWatchdog() {
+        refineWatchdog?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            guard self.refineArmed || self.isInstructionSession else { return }
+            // Still armed but nothing is actively running → it's wedged. Recover.
+            guard !self.isRecording, !self.isTranscribing, !self.sessionActive else { return }
+            self.refineDebug("refineWatchdog FIRED — recovering stuck refine/overlay")
+            self.clearRefineState()
+            self.isTranscribing = false
+            self.streamingText = ""
+            self.currentSessionText = ""
+            self.statusMessage = "Ready"
+            self.finishSessionUI()
+        }
+        refineWatchdog = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + refineWatchdogTimeout, execute: work)
+    }
+
+    private func cancelRefineWatchdog() {
+        refineWatchdog?.cancel()
+        refineWatchdog = nil
     }
 
     /// Step-1's completed text. If refine is armed, HOLD it (don't paste) and try to
@@ -2259,6 +2299,7 @@ class AppState: ObservableObject {
     private func tryApplyRefine() {
         refineDebug("tryApplyRefine: step1=\(refineStep1Text != nil ? "\"\(refineStep1Text!.prefix(20))\"" : "nil") instruction=\(refineInstruction != nil ? "\"\(refineInstruction!.prefix(20))\"" : "nil")")
         guard let target = refineStep1Text, let instruction = refineInstruction else { return }
+        cancelRefineWatchdog()   // both pieces are in; we're progressing to the LLM
         refineArmed = false
         isInstructionSession = false
         refineStep1Text = nil
@@ -2292,6 +2333,7 @@ class AppState: ObservableObject {
 
     /// Drop any armed/held refine state without inserting (used on cancel).
     private func clearRefineState() {
+        cancelRefineWatchdog()
         refineArmed = false
         isInstructionSession = false
         awaitingStep1 = false
