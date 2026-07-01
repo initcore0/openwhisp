@@ -31,29 +31,6 @@ final class InstructionChainTests: XCTestCase {
             outputMode: "liveChunks", llmConfigured: true, enabled: true))
     }
 
-    // MARK: isDoubleTap
-
-    func testDoubleTapWithinGap() {
-        XCTAssertTrue(InstructionChain.isDoubleTap(
-            lastReleaseUptime: 100.0, pressUptime: 100.3, gap: 0.5))
-        XCTAssertTrue(InstructionChain.isDoubleTap(
-            lastReleaseUptime: 100.0, pressUptime: 100.0, gap: 0.5))   // instant
-    }
-
-    func testNotDoubleTapBeyondGap() {
-        XCTAssertFalse(InstructionChain.isDoubleTap(
-            lastReleaseUptime: 100.0, pressUptime: 100.6, gap: 0.5))   // too slow
-    }
-
-    func testNotDoubleTapWithoutPriorRelease() {
-        XCTAssertFalse(InstructionChain.isDoubleTap(
-            lastReleaseUptime: nil, pressUptime: 100.0, gap: 0.5))
-    }
-
-    func testNotDoubleTapForNegativeDelta() {
-        XCTAssertFalse(InstructionChain.isDoubleTap(
-            lastReleaseUptime: 100.0, pressUptime: 99.9, gap: 0.5))    // clock weirdness
-    }
 
     // MARK: shouldEngageRefine (forgiving re-press trigger)
 

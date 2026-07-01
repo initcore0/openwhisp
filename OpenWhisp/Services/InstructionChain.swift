@@ -49,18 +49,6 @@ enum InstructionChain {
         return outputMode == "preview" || outputMode == "finalOnly"
     }
 
-    /// Decide whether a fresh Fn-down at `pressUptime` is a double-tap re-press of a
-    /// release at `lastReleaseUptime` (nil = no prior release this cycle).
-    static func isDoubleTap(
-        lastReleaseUptime: TimeInterval?,
-        pressUptime: TimeInterval,
-        gap: TimeInterval = repressGap
-    ) -> Bool {
-        guard let release = lastReleaseUptime else { return false }
-        let delta = pressUptime - release
-        return delta >= 0 && delta <= gap
-    }
-
     /// System prompt for the refine flow. It must be robust for TINY on-device
     /// models: the biggest failure mode is a model treating the TEXT as something
     /// to answer/obey (e.g. step-1 is "what is the capital of Egypt?" → the model
@@ -88,12 +76,5 @@ enum InstructionChain {
         let i = instruction.trimmingCharacters(in: .whitespacesAndNewlines)
         let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
         return "INSTRUCTION: \(i)\n\nTEXT:\n\(t)"
-    }
-
-    /// Backward-compatible shim (kept for any older call site / tests): the full
-    /// system directive with the instruction inlined. Prefer `systemDirective` +
-    /// `userPayload`.
-    static func directive(forInstruction instruction: String) -> String {
-        systemDirective
     }
 }
