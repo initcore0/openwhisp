@@ -33,6 +33,11 @@ struct SettingsView: View {
     // Built-in config packs (loaded from the app bundle on appear).
     @State private var configPacks: [ConfigPack] = []
 
+    #if OPENWHISP_INSTRUMENTATION
+    // Forces the dev built-in-LLM runtime status to re-read on demand.
+    @State private var debugRefreshTick: Int = 0
+    #endif
+
     // MARK: - Backend awareness
     //
     // The active transcription backend decides which settings are even meaningful.
@@ -143,6 +148,9 @@ struct SettingsView: View {
                 historySection
                 backupSection
                 if isWhisperCpp { whisperSection }              // CLI/server backend (whisper.cpp)
+                #if OPENWHISP_INSTRUMENTATION
+                settingsSection("LLM Lab") { LLMLabView(appState: appState) }
+                #endif
                 permissionsSection
                 statusSection
             }
@@ -535,13 +543,12 @@ struct SettingsView: View {
             Toggle("Clean up text with AI after transcription", isOn: $appState.openAIEnhancementEnabled)
 
             Picker("Provider", selection: $appState.llmProvider) {
+                Text("Built-in (offline)").tag("bundled")
                 Text("OpenAI (cloud)").tag("openai")
                 Text("Local server (private)").tag("local")
             }
 
-            Text(appState.llmProvider == "local"
-                 ? "Local server keeps everything on your machine / LAN — no data leaves to the cloud. Any OpenAI-compatible server works (llama.cpp llama-server, Ollama). Only edits final text, never live chunks."
-                 : "Whisper handles default translation locally through the language picker. OpenAI is optional and only edits final text, never live chunks.")
+            Text(providerDescription)
                 .font(.caption)
                 .foregroundColor(.secondary)
 
@@ -560,14 +567,14 @@ struct SettingsView: View {
                         }
                     }
 
-                    if appState.llmProvider == "local" {
-                        localLLMFields
-                    } else {
-                        openAIFields
+                    switch appState.llmProvider {
+                    case "bundled": bundledLLMFields
+                    case "local":   localLLMFields
+                    default:        openAIFields
                     }
 
                     HStack {
-                        Button(appState.llmProvider == "local" ? "Test Connection" : "Validate OpenAI Key") {
+                        Button(testButtonLabel) {
                             appState.validateOpenAIKey()
                         }
                         Spacer()
@@ -607,6 +614,25 @@ struct SettingsView: View {
         ["OpenAI key valid", "Local LLM reachable", "Rephrased", "Improved"].contains(appState.translationStatus)
     }
 
+    private var providerDescription: String {
+        switch appState.llmProvider {
+        case "bundled":
+            return "Built-in AI runs a small model fully on-device — nothing leaves your Mac, no setup or server needed. The model downloads once. Best paired with the WhisperKit or Apple Speech engine to keep memory low. Only edits final text, never live chunks."
+        case "local":
+            return "Local server keeps everything on your machine / LAN — no data leaves to the cloud. Any OpenAI-compatible server works (llama.cpp llama-server, Ollama). Only edits final text, never live chunks."
+        default:
+            return "Whisper handles default translation locally through the language picker. OpenAI is optional and only edits final text, never live chunks."
+        }
+    }
+
+    private var testButtonLabel: String {
+        switch appState.llmProvider {
+        case "bundled": return "Test built-in model"
+        case "local":   return "Test Connection"
+        default:        return "Validate OpenAI Key"
+        }
+    }
+
     @ViewBuilder private var openAIFields: some View {
         Picker("OpenAI Model", selection: openAIModelPickerSelection) {
             Text("GPT-4o mini").tag("gpt-4o-mini")
@@ -630,6 +656,79 @@ struct SettingsView: View {
         TextField("Model (leave blank to use the server default)", text: $appState.localLLMModel)
             .textFieldStyle(.roundedBorder)
     }
+
+    @ViewBuilder private var bundledLLMFields: some View {
+        Picker("Built-in model", selection: $appState.bundledLLMModel) {
+            ForEach(appState.bundledLLMModelsList(), id: \.id) { model in
+                Text("\(model.label) · \(model.size)").tag(model.id)
+            }
+        }
+
+        if appState.isLLMModelDownloading {
+            ProgressView(value: appState.llmModelDownloadProgress ?? 0)
+            Text(appState.llmModelDownloadStatus)
+                .font(.caption)
+                .foregroundColor(.secondary)
+        } else if appState.llmModelDownloadFailed {
+            HStack {
+                Text("Download failed")
+                    .font(.caption)
+                    .foregroundColor(.orange)
+                Button("Retry") { appState.retryLLMModelDownload() }
+            }
+        } else if appState.bundledLLMModelInstalled {
+            Text("Active — ready (offline)")
+                .font(.caption)
+                .foregroundColor(.green)
+        } else {
+            Button("Download model") { appState.ensureLLMModelExists() }
+            Text("The model downloads once (one-time), then runs fully offline.")
+                .font(.caption)
+                .foregroundColor(.secondary)
+        }
+
+        if appState.bundledLLMHasMemoryCaution {
+            Text("Tip: you're running whisper.cpp's server engine and the built-in LLM together. On an 8 GB Mac that's tight — the Apple Speech or WhisperKit engine pairs more lightly with built-in refinement.")
+                .font(.caption)
+                .foregroundColor(.orange)
+        }
+
+        #if OPENWHISP_INSTRUMENTATION
+        bundledLLMDebugStatus
+        #endif
+    }
+
+    #if OPENWHISP_INSTRUMENTATION
+    /// Dev-only: shows which built-in model is selected vs. actually loaded in the
+    /// running llama-server. `refreshTick` forces a re-read since the status is a
+    /// plain computed value, not an @Published one.
+    @ViewBuilder private var bundledLLMDebugStatus: some View {
+        Divider()
+        HStack(alignment: .top, spacing: 6) {
+            Image(systemName: "ladybug")
+                .foregroundColor(.secondary)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Runtime (debug)")
+                    .font(.caption.bold())
+                    .foregroundColor(.secondary)
+                Text(appState.bundledLLMRuntimeStatus)
+                    .font(.caption.monospaced())
+                    .foregroundColor(.secondary)
+                    .id(debugRefreshTick)
+                    .textSelection(.enabled)
+            }
+            Spacer()
+            Button {
+                debugRefreshTick &+= 1
+            } label: {
+                Image(systemName: "arrow.clockwise")
+            }
+            .buttonStyle(.borderless)
+            .help("Refresh runtime status")
+        }
+        .onAppear { debugRefreshTick &+= 1 }
+    }
+    #endif
     
     private var hotkeySection: some View {
         settingsSection("Hotkey") {

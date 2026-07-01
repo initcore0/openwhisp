@@ -22,8 +22,13 @@ final class OverlayWindowController {
             let host = NSHostingController(rootView: view)
             // Fixed, generous panel; content self-sizes within it and is
             // bottom-anchored so an empty transcript shows just the pill. No
-            // per-update window resizing (which would flicker).
+            // per-update window resizing (which would flicker). Instrumented
+            // builds get extra height for the debug HUD.
+            #if OPENWHISP_INSTRUMENTATION
+            let size = NSSize(width: 440, height: 320)
+            #else
             let size = NSSize(width: 440, height: 180)
+            #endif
             let panel = NSPanel(
                 contentRect: NSRect(origin: .zero, size: size),
                 styleMask: [.borderless, .nonactivatingPanel],
@@ -116,6 +121,13 @@ struct OverlayView: View {
     @ObservedObject var appState: AppState
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
+    #if OPENWHISP_INSTRUMENTATION
+    @State private var debugSnapshot: AppState.DebugHUDSnapshot?
+    /// Polls process stats ~2×/sec while the overlay is up. Sampling is cheap
+    /// (Mach task_info + one `ps`), and only runs in instrumented builds.
+    private let debugTimer = Timer.publish(every: 0.5, on: .main, in: .common).autoconnect()
+    #endif
 
     /// Visual styling per overlay phase. The phase *decision* is the pure
     /// `OverlayPhase` (tested in OpenWhispCore); this only maps it to colors.
@@ -211,6 +223,12 @@ struct OverlayView: View {
                 transcriptPanel
                     .transition(.opacity.combined(with: .move(edge: .top)))
             }
+
+            #if OPENWHISP_INSTRUMENTATION
+            if appState.debugOverlayEnabled {
+                debugHUD
+            }
+            #endif
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .padding(.top, 6)
@@ -219,7 +237,58 @@ struct OverlayView: View {
         .animation(.easeInOut(duration: 0.18), value: appState.refineArmed)
         .animation(.easeInOut(duration: 0.18), value: appState.clipboardFallbackActive)
         .animation(.easeInOut(duration: 0.18), value: appState.isTranscribing)
+        #if OPENWHISP_INSTRUMENTATION
+        .onAppear { if appState.debugOverlayEnabled { debugSnapshot = appState.debugHUDSnapshot() } }
+        .onReceive(debugTimer) { _ in if appState.debugOverlayEnabled { debugSnapshot = appState.debugHUDSnapshot() } }
+        #endif
     }
+
+    #if OPENWHISP_INSTRUMENTATION
+    // MARK: Debug HUD (dev builds only)
+
+    /// A square diagnostic panel rendered above/below the waveform showing the
+    /// active model, app + llama-server memory/CPU, engine/session state, and the
+    /// last session's timings. Monospaced, dim, deliberately utilitarian.
+    @ViewBuilder private var debugHUD: some View {
+        if let s = debugSnapshot {
+            VStack(alignment: .leading, spacing: 3) {
+                Text("DEBUG")
+                    .font(.system(size: 9, weight: .bold, design: .monospaced))
+                    .foregroundColor(.white.opacity(0.5))
+                debugRow("eng", s.engineLine)
+                debugRow("st ", s.stateLine)
+                debugRow("llm", s.llmLine)
+                debugRow("mem", s.appMemCPU)
+                debugRow("   ", s.llamaMemCPU)
+                debugRow("t  ", s.timingLine)
+            }
+            .padding(8)
+            .frame(width: 320, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(Color.black.opacity(0.55))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8)
+                            .strokeBorder(Color.white.opacity(0.12), lineWidth: 1)
+                    )
+            )
+            .transition(.opacity)
+        }
+    }
+
+    private func debugRow(_ tag: String, _ value: String) -> some View {
+        HStack(alignment: .top, spacing: 6) {
+            Text(tag)
+                .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                .foregroundColor(.white.opacity(0.4))
+            Text(value)
+                .font(.system(size: 9, weight: .regular, design: .monospaced))
+                .foregroundColor(.white.opacity(0.8))
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+    #endif
 
     // MARK: Pill
 

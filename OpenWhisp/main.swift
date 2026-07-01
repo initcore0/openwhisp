@@ -182,25 +182,18 @@ class OpenWhispApp: NSObject, NSApplicationDelegate {
             item.state = appState.language == option.code ? .on : .off
             languageMenu.addItem(item)
         }
-        languageMenu.addItem(.separator())
-        let hint = NSMenuItem(title: "Choose English to translate to English with Whisper", action: nil, keyEquivalent: "")
-        hint.isEnabled = false
-        languageMenu.addItem(hint)
 
         let languageItem = NSMenuItem(title: "Language: \(appState.languageDisplayName)", action: nil, keyEquivalent: "")
         languageItem.submenu = languageMenu
         menu.addItem(languageItem)
 
-        // Reflect the active backend so the label is accurate whether the user
-        // is on a local LLM or OpenAI.
-        let aiProvider = appState.llmProvider == "local" ? "Local" : "OpenAI"
-        let aiCleanup = NSMenuItem(
-            title: "Clean up with AI (\(aiProvider))",
-            action: #selector(toggleAICleanup),
-            keyEquivalent: ""
-        )
-        aiCleanup.state = appState.openAIEnhancementEnabled ? .on : .off
-        menu.addItem(aiCleanup)
+        // AI refinement: ONE self-describing row that shows the live state
+        // (on/off + which engine) and opens a small submenu. Model selection is
+        // deliberately NOT here — it's a configure-once choice that lives in
+        // Settings, reachable via "AI Settings…" below.
+        let aiItem = NSMenuItem(title: aiMenuTitle, action: nil, keyEquivalent: "")
+        aiItem.submenu = makeAIMenu()
+        menu.addItem(aiItem)
 
         menu.addItem(.separator())
 
@@ -244,7 +237,80 @@ class OpenWhispApp: NSObject, NSApplicationDelegate {
     @objc private func toggleAICleanup() {
         appState.openAIEnhancementEnabled.toggle()
     }
+    @objc private func selectAIProvider(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String else { return }
+        appState.llmProvider = id
+    }
+    #if OPENWHISP_INSTRUMENTATION
+    @objc private func toggleDebugOverlay() {
+        appState.debugOverlayEnabled.toggle()
+    }
+    #endif
     @objc private func terminate()      { NSApp.terminate(nil) }
+
+    // AI providers framed by OUTCOME / privacy posture rather than engine jargon,
+    // so the choice is meaningful to non-technical users (and sells the privacy
+    // story). The id values are unchanged (bundled/openai/local).
+    private var aiProviderOptions: [(id: String, title: String)] {
+        [
+            ("bundled", "On-device (private)"),
+            ("openai",  "OpenAI (leaves your Mac)"),
+            ("local",   "Custom server (advanced)")
+        ]
+    }
+
+    /// Short label for the active provider, used in the top-level AI row.
+    private var aiProviderLabel: String {
+        switch appState.llmProvider {
+        case "bundled": return "On-device"
+        case "local":   return "Custom server"
+        default:        return "OpenAI"
+        }
+    }
+
+    /// Self-describing top-level row: tells the user, at a glance, whether their
+    /// next dictation gets cleaned up and by which engine.
+    private var aiMenuTitle: String {
+        guard let appState else { return "Refine with AI" }
+        return appState.openAIEnhancementEnabled
+            ? "Refine with AI: On — \(aiProviderLabel)"
+            : "Refine with AI: Off"
+    }
+
+    /// The AI submenu: a single on/off toggle, the engine radio group framed by
+    /// outcome, and a deep link to Settings for model/key/server config.
+    private func makeAIMenu() -> NSMenu {
+        let aiMenu = NSMenu()
+        guard let appState else { return aiMenu }
+
+        let toggle = NSMenuItem(title: "Refine my dictation", action: #selector(toggleAICleanup), keyEquivalent: "")
+        toggle.state = appState.openAIEnhancementEnabled ? .on : .off
+        aiMenu.addItem(toggle)
+
+        aiMenu.addItem(.separator())
+        for provider in aiProviderOptions {
+            let item = NSMenuItem(title: provider.title, action: #selector(selectAIProvider), keyEquivalent: "")
+            item.representedObject = provider.id
+            item.state = appState.llmProvider == provider.id ? .on : .off
+            // Engine choice is meaningless while refinement is off; show it but
+            // disable it so the relationship (and the "off" state) is unambiguous.
+            item.isEnabled = appState.openAIEnhancementEnabled
+            aiMenu.addItem(item)
+        }
+
+        aiMenu.addItem(.separator())
+        let aiSettings = NSMenuItem(title: "AI Settings…", action: #selector(openSettings), keyEquivalent: "")
+        aiMenu.addItem(aiSettings)
+
+        #if OPENWHISP_INSTRUMENTATION
+        aiMenu.addItem(.separator())
+        let debugOverlay = NSMenuItem(title: "Debug overlay (dev)", action: #selector(toggleDebugOverlay), keyEquivalent: "")
+        debugOverlay.state = appState.debugOverlayEnabled ? .on : .off
+        aiMenu.addItem(debugOverlay)
+        #endif
+
+        return aiMenu
+    }
 
     private var languageOptions: [(code: String, title: String)] {
         [

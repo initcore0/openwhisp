@@ -18,6 +18,9 @@ enum PrivacyStatus {
         if sendsTextToCloud(enhancementEnabled: enhancementEnabled, provider: provider) {
             return "Sends final text to OpenAI for cleanup"
         }
+        if enhancementEnabled && provider == "bundled" {
+            return "Fully on-device — built-in AI, nothing leaves your Mac"
+        }
         if enhancementEnabled && provider == "local" {
             return "On-device + your local LLM — nothing goes to the cloud"
         }

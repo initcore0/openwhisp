@@ -196,7 +196,11 @@ class AppState: ObservableObject {
     }
 
     @Published var openAIEnhancementEnabled: Bool {
-        didSet { persist(openAIEnhancementEnabled, "openAIEnhancementEnabled") }
+        didSet {
+            persist(openAIEnhancementEnabled, "openAIEnhancementEnabled")
+            if openAIEnhancementEnabled { warmLlamaServerIfPossible() }
+            else { llamaEngine?.stopServer() }
+        }
     }
 
     @Published var openAIEnhancementMode: String {
@@ -219,7 +223,17 @@ class AppState: ObservableObject {
     /// "local" (an OpenAI-compatible local server — llama.cpp/Ollama). Local
     /// keeps everything on-device/on-LAN, preserving the privacy story.
     @Published var llmProvider: String {
-        didSet { UserDefaults.standard.set(llmProvider, forKey: "llmProvider") }
+        didSet {
+            UserDefaults.standard.set(llmProvider, forKey: "llmProvider")
+            if llmProvider == "bundled" {
+                ensureLLMModelExists()
+                warmLlamaServerIfPossible()
+            } else {
+                // Free the ~0.7-1.5 GB the built-in LLM holds when it's not the
+                // active provider.
+                llamaEngine?.stopServer()
+            }
+        }
     }
 
     /// Base URL (through /v1) of the local OpenAI-compatible server.
@@ -230,6 +244,51 @@ class AppState: ObservableObject {
     /// Model name to request from the local server.
     @Published var localLLMModel: String {
         didSet { UserDefaults.standard.set(localLLMModel, forKey: "localLLMModel") }
+    }
+
+    /// Selected built-in (bundled llama.cpp) refinement model id, from
+    /// llm-manifest.json. Used when `llmProvider == "bundled"`.
+    @Published var bundledLLMModel: String {
+        didSet {
+            guard bundledLLMModel != oldValue else { return }
+            UserDefaults.standard.set(bundledLLMModel, forKey: "bundledLLMModel")
+            // The selected model changed. Stop the server now so a stale model
+            // isn't reused, then either download the new model (if missing) or
+            // warm it. ensureRunning relaunches on the new -m path anyway, but
+            // stopping here makes the switch explicit and frees the old model's RAM.
+            if llmProvider == "bundled" {
+                llamaEngine?.stopServer()
+                if bundledLLMModelInstalled {
+                    warmLlamaServerIfPossible()
+                } else {
+                    ensureLLMModelExists()
+                }
+            }
+        }
+    }
+
+    #if OPENWHISP_INSTRUMENTATION
+    /// Dev-only: show the debug HUD on the recording overlay. Toggled from the
+    /// menu-bar checkbox; persisted. Only exists in instrumented builds.
+    @Published var debugOverlayEnabled: Bool = UserDefaults.standard.object(forKey: "debugOverlayEnabled") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(debugOverlayEnabled, forKey: "debugOverlayEnabled") }
+    }
+    #endif
+
+    // Built-in LLM model download UI state (mirrors the whisper modelDownload* set).
+    @Published var isLLMModelDownloading = false
+    @Published var llmModelDownloadProgress: Double?
+    @Published var llmModelDownloadStatus = ""
+    @Published var llmModelDownloadFailed = false
+    private var downloadingLLMModelPath: String?
+
+    /// Lazily-created engine that manages the bundled llama-server subprocess.
+    private var llamaEngine: LlamaServerEngine?
+    private func ensureLlamaEngine() -> LlamaServerEngine {
+        if let engine = llamaEngine { return engine }
+        let engine = LlamaServerEngine()
+        llamaEngine = engine
+        return engine
     }
 
     /// Detect a spoken instruction at the end of a dictation ("…make this
@@ -374,6 +433,10 @@ class AppState: ObservableObject {
     private var transcriptionStartedAt: Date?
     /// Local-only, metadata-only dictation stats (collected, not surfaced in UI).
     private var dictationStats = DictationStatsStore.load()
+    #if OPENWHISP_INSTRUMENTATION
+    /// Most recent completed dictation event, for the dev debug HUD only.
+    private var lastDictationEvent: DictationEvent?
+    #endif
     private var targetApplication: NSRunningApplication?
     private var overlayIsVisible = false
     private var activeSessionID = UUID()
@@ -490,6 +553,16 @@ class AppState: ObservableObject {
 
     /// The active LLM endpoint for post-processing, derived from the provider setting.
     var llmEndpoint: LLMEndpoint {
+        if llmProvider == "bundled" {
+            // Loopback to the bundled llama-server. The engine must already be
+            // running (callers gate refinement behind `ensureBundledLLMReady`),
+            // so its dynamic port is live here.
+            return LLMEndpoint(
+                baseURL: ensureLlamaEngine().baseURL,
+                apiKey: "",
+                requiresKey: false
+            )
+        }
         if llmProvider == "local" {
             return LLMEndpoint(
                 baseURL: localLLMBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -505,15 +578,32 @@ class AppState: ObservableObject {
 
     /// The model name to request, per provider.
     var llmModel: String {
-        llmProvider == "local" ? localLLMModel : openAIModel
+        switch llmProvider {
+        case "bundled": return bundledLLMModel
+        case "local":   return localLLMModel
+        default:        return openAIModel
+        }
+    }
+
+    /// Map a refinement `mode` to the bundled-LLM variant when the built-in
+    /// provider is active, so tiny on-device models get the terser, stricter
+    /// system prompt (see OpenAITranslationService.instructionForMode).
+    private func refinementMode(_ mode: String) -> String {
+        guard llmProvider == "bundled" else { return mode }
+        return mode == "rephrase" ? "bundled-rephrase" : "bundled-improve"
     }
 
     /// Whether the active LLM provider is configured enough to call.
     var llmConfigured: Bool {
-        if llmProvider == "local" {
+        switch llmProvider {
+        case "bundled":
+            // Configured only once the selected model is actually on disk.
+            return FileManager.default.fileExists(atPath: selectedLLMModelPath())
+        case "local":
             return !localLLMBaseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        default:
+            return !openAIAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         }
-        return !openAIAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     var hotkeyHelpText: String {
@@ -600,6 +690,7 @@ class AppState: ObservableObject {
         llmProvider = UserDefaults.standard.string(forKey: "llmProvider") ?? "openai"
         localLLMBaseURL = UserDefaults.standard.string(forKey: "localLLMBaseURL") ?? "http://localhost:8080/v1"
         localLLMModel = UserDefaults.standard.string(forKey: "localLLMModel") ?? ""
+        bundledLLMModel = UserDefaults.standard.string(forKey: "bundledLLMModel") ?? "qwen2.5-0.5b-instruct"
         instructionChainEnabled = UserDefaults.standard.object(forKey: "instructionChainEnabled") as? Bool ?? true
         scriptPostProcessorEnabled = UserDefaults.standard.object(forKey: "scriptPostProcessorEnabled") as? Bool ?? false
         scriptPostProcessorPath = UserDefaults.standard.string(forKey: "scriptPostProcessorPath") ?? ""
@@ -989,11 +1080,297 @@ class AppState: ObservableObject {
     func shutdown() {
         cancelDictation()
         whisperEngine.stopServer()
+        llamaEngine?.stopServer()
         hotkeyMonitor.stop()
     }
 
     func stopWhisperServer() {
         whisperEngine.stopServer()
+    }
+
+    // MARK: - Built-in (bundled) LLM
+
+    /// Application Support path of the selected built-in LLM GGUF.
+    func selectedLLMModelPath() -> String {
+        let fileName = Self.bundledLLMManifest()?
+            .first(where: { $0.id == bundledLLMModel })?.file
+            ?? "\(bundledLLMModel).gguf"
+        return Self.applicationSupportModelsDirectory()
+            .appendingPathComponent(fileName)
+            .path
+    }
+
+    /// True when the selected built-in model is downloaded.
+    var bundledLLMModelInstalled: Bool {
+        FileManager.default.fileExists(atPath: selectedLLMModelPath())
+    }
+
+    /// Application Support path of an arbitrary built-in model id (for the LLM Lab,
+    /// which can target a model other than the active `bundledLLMModel`).
+    func bundledModelPath(_ id: String) -> String {
+        let fileName = Self.bundledLLMManifest()?
+            .first(where: { $0.id == id })?.file
+            ?? "\(id).gguf"
+        return Self.applicationSupportModelsDirectory()
+            .appendingPathComponent(fileName)
+            .path
+    }
+
+    func isBundledModelInstalled(_ id: String) -> Bool {
+        FileManager.default.fileExists(atPath: bundledModelPath(id))
+    }
+
+    /// True when the built-in LLM would coexist with a resident whisper.cpp
+    /// server — surfaced in Settings so the user can pick a lighter pairing on a
+    /// small-RAM Mac. (Public mirror of the private dual-engine check.)
+    var bundledLLMHasMemoryCaution: Bool {
+        llmProvider == "bundled" && whisperServerResident
+    }
+
+    /// Dev diagnostic: the live status of the built-in LLM server — which model is
+    /// SELECTED vs. which is actually LOADED in the running llama-server (they can
+    /// differ briefly during a switch, or the server may be torn down when idle).
+    /// Only meaningful for the bundled provider.
+    var bundledLLMRuntimeStatus: String {
+        let selected = bundledLLMModel
+        guard let path = llamaEngine?.runningModelPath else {
+            return "selected: \(selected) · server: stopped (starts on next refine)"
+        }
+        let loaded = URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent
+        let match = path == selectedLLMModelPath()
+        return "selected: \(selected) · loaded: \(loaded)\(match ? "" : "  ⚠︎ MISMATCH") · port \(llamaEngine?.port ?? 0)"
+    }
+
+    #if OPENWHISP_INSTRUMENTATION
+    /// Snapshot of debugging info for the overlay HUD (dev builds only). Sampled
+    /// each time the HUD's poll timer fires.
+    struct DebugHUDSnapshot {
+        var engineLine: String       // transcription engine · backend · output mode
+        var stateLine: String        // recording/transcribing/arming flags
+        var llmLine: String          // built-in model selected/loaded
+        var appMemCPU: String        // OpenWhisp process RSS + CPU
+        var llamaMemCPU: String      // llama-server process RSS + CPU (or stopped)
+        var timingLine: String       // last session duration + transcription latency
+    }
+
+    func debugHUDSnapshot() -> DebugHUDSnapshot {
+        let appRSS = DebugStats.selfResidentMB()
+        let appCPU = DebugStats.selfCPUPercent()
+        let appMemCPU = "app: \(appRSS) MB · \(String(format: "%.0f", appCPU))% cpu"
+
+        let llamaMemCPU: String
+        if let pid = llamaEngine?.runningPID, let s = DebugStats.sample(pid: pid) {
+            llamaMemCPU = "llama: \(s.rssMB) MB · \(String(format: "%.0f", s.cpuPercent))% cpu (pid \(pid))"
+        } else {
+            llamaMemCPU = "llama: not loaded"
+        }
+
+        let backend = transcriptionEngine == "whisper" ? "whisper.cpp/\(whisperBackend)" : transcriptionEngine
+        let engineLine = "\(backend) · out: \(outputMode) · provider: \(llmProvider)"
+
+        var flags: [String] = []
+        if isRecording { flags.append("REC") }
+        if isTranscribing { flags.append("TRANSCRIBING") }
+        if isArming { flags.append("ARMING") }
+        if refineArmed { flags.append("REFINE-ARMED") }
+        if isInstructionSession { flags.append("INSTR-SESSION") }
+        let stateLine = "state: " + (flags.isEmpty ? "idle" : flags.joined(separator: " "))
+
+        let llmLine = llmProvider == "bundled" ? bundledLLMRuntimeStatus : "provider: \(llmProvider) (not built-in)"
+
+        let timingLine: String
+        if let e = lastDictationEvent {
+            let lat = e.transcriptionLatencySeconds.map { String(format: "%.2fs", $0) } ?? "—"
+            timingLine = String(format: "last: %.2fs total · %@ asr · %d words", e.durationSeconds, lat, e.wordCount)
+        } else {
+            timingLine = "last: (no session yet)"
+        }
+
+        return DebugHUDSnapshot(
+            engineLine: engineLine,
+            stateLine: stateLine,
+            llmLine: llmLine,
+            appMemCPU: appMemCPU,
+            llamaMemCPU: llamaMemCPU,
+            timingLine: timingLine
+        )
+    }
+    #endif
+
+    /// Whether a download is currently in flight for the given model id.
+    func isLLMModelDownloadingForLab(_ id: String) -> Bool {
+        isLLMModelDownloading && downloadingLLMModelPath == bundledModelPath(id)
+    }
+
+    /// The list of swappable built-in models for the Settings picker.
+    func bundledLLMModelsList() -> [(id: String, label: String, size: String, license: String)] {
+        (Self.bundledLLMManifest() ?? []).map {
+            (id: $0.id, label: $0.label, size: $0.size, license: $0.license ?? "")
+        }
+    }
+
+    private static func bundledLLMManifest() -> [ModelManifestEntry]? {
+        guard let url = Bundle.main.resourceURL?.appendingPathComponent("models/llm-manifest.json"),
+              let data = try? Data(contentsOf: url) else {
+            return nil
+        }
+        return try? JSONDecoder().decode([ModelManifestEntry].self, from: data)
+    }
+
+    /// True when a resident whisper.cpp server is held in memory at the same time
+    /// the built-in LLM would run. Both load a model, so on small-RAM Macs they
+    /// can race for memory. (WhisperKit/AppleSpeech keep no resident server.)
+    private var whisperServerResident: Bool {
+        transcriptionEngine == "whisper" && whisperBackend == "serverAPI"
+    }
+
+    /// Start the bundled llama-server if the built-in provider is the active,
+    /// enabled, downloaded one. Idempotent (the engine no-ops if already healthy).
+    func warmLlamaServerIfPossible() {
+        guard llmProvider == "bundled",
+              openAIEnhancementEnabled,
+              bundledLLMModelInstalled else { return }
+        let engine = ensureLlamaEngine()
+        // Shorter idle teardown when a whisper-server is also resident, to relieve
+        // dual-engine memory pressure sooner.
+        engine.idleTimeout = whisperServerResident ? 30 : 90
+        engine.ensureRunning(modelPath: selectedLLMModelPath()) { _ in }
+    }
+
+    /// Gate a refinement call behind the bundled server being healthy. For the
+    /// bundled provider it lazily starts llama-server, then runs `work` on
+    /// success, or `fallback` (insert the raw local text — never drop it) on
+    /// failure. For every other provider it runs `work` immediately. `work` must
+    /// itself call `processFinalText`; we bracket the request with the engine's
+    /// in-flight counter so idle teardown can't kill a live generation.
+    private func ensureBundledLLMReady(
+        statusWhileLoading: String = "Loading local model…",
+        quiesceWhisper: Bool = false,
+        work: @escaping () -> Void,
+        fallback: @escaping () -> Void
+    ) {
+        guard llmProvider == "bundled" else {
+            work()
+            return
+        }
+
+        guard bundledLLMModelInstalled else {
+            translationStatus = "Built-in model not downloaded"
+            fallback()
+            return
+        }
+
+        // Dual-engine memory relief: when a whisper-server is resident and the
+        // caller is post-transcription (whole-text refinement), stop it before
+        // loading the LLM so they don't both hold a model at once. It re-warms on
+        // the next dictation via warmWhisperServerIfPossible().
+        if quiesceWhisper, whisperServerResident {
+            stopWhisperServer()
+        }
+
+        let engine = ensureLlamaEngine()
+        engine.idleTimeout = whisperServerResident ? 30 : 90
+        let sessionID = activeSessionID
+        statusMessage = statusWhileLoading
+        engine.requestStarted()
+        engine.ensureRunning(modelPath: selectedLLMModelPath()) { [weak self] result in
+            Task { @MainActor in
+                guard let self else { engine.requestFinished(); return }
+                guard sessionID == self.activeSessionID else {
+                    engine.requestFinished()
+                    return
+                }
+                switch result {
+                case .success:
+                    // requestFinished is called by the refinement completion path
+                    // once processFinalText returns; keep the request open through it.
+                    work()
+                    engine.requestFinished()
+                case .failure:
+                    engine.requestFinished()
+                    self.translationStatus = "Local model unavailable"
+                    fallback()
+                }
+            }
+        }
+    }
+
+    func ensureLLMModelExists() {
+        let path = selectedLLMModelPath()
+        guard !FileManager.default.fileExists(atPath: path) else {
+            llmModelDownloadStatus = "Installed: \(URL(fileURLWithPath: path).lastPathComponent)"
+            isLLMModelDownloading = false
+            llmModelDownloadFailed = false
+            llmModelDownloadProgress = nil
+            warmLlamaServerIfPossible()
+            return
+        }
+
+        guard downloadingLLMModelPath != path else { return }
+        guard let entry = Self.bundledLLMManifest()?.first(where: { $0.id == bundledLLMModel }),
+              let url = URL(string: entry.url) else {
+            llmModelDownloadFailed = true
+            llmModelDownloadStatus = "No download URL for \(bundledLLMModel)"
+            return
+        }
+
+        let fileName = entry.file
+        downloadingLLMModelPath = path
+        isLLMModelDownloading = true
+        llmModelDownloadFailed = false
+        llmModelDownloadProgress = nil
+        llmModelDownloadStatus = "Downloading \(fileName)..."
+
+        Task {
+            do {
+                let dest = URL(fileURLWithPath: path)
+                try dest.deletingLastPathComponent().createDirectories()
+                try await downloadLLMModelWithProgress(from: url, to: dest, fileName: fileName)
+                await MainActor.run {
+                    self.isLLMModelDownloading = false
+                    self.downloadingLLMModelPath = nil
+                    self.llmModelDownloadProgress = 1.0
+                    self.llmModelDownloadFailed = false
+                    self.llmModelDownloadStatus = "Installed: \(fileName)"
+                    self.warmLlamaServerIfPossible()
+                }
+            } catch {
+                await MainActor.run {
+                    self.isLLMModelDownloading = false
+                    self.downloadingLLMModelPath = nil
+                    self.llmModelDownloadProgress = nil
+                    self.llmModelDownloadFailed = true
+                    self.llmModelDownloadStatus = "Download failed: \(fileName)"
+                    self.error = "Built-in model download failed: \(error.localizedDescription)"
+                }
+            }
+        }
+    }
+
+    func retryLLMModelDownload() {
+        guard !isLLMModelDownloading else { return }
+        downloadingLLMModelPath = nil
+        llmModelDownloadFailed = false
+        error = nil
+        ensureLLMModelExists()
+    }
+
+    private func downloadLLMModelWithProgress(from url: URL, to destination: URL, fileName: String) async throws {
+        let tempURL = destination
+            .deletingLastPathComponent()
+            .appendingPathComponent(".\(destination.lastPathComponent).download")
+        try? FileManager.default.removeItem(at: tempURL)
+        let downloadedURL = try await ModelDownloader.download(from: url) { [weak self] written, totalExpected in
+            Task { @MainActor in
+                guard let self, self.isLLMModelDownloading else { return }
+                let progress = DownloadProgressFormatter.make(written: written, totalExpected: totalExpected)
+                self.llmModelDownloadProgress = progress.fraction
+                self.llmModelDownloadStatus = progress.label
+            }
+        }
+        try? FileManager.default.removeItem(at: destination)
+        try FileManager.default.moveItem(at: downloadedURL, to: tempURL)
+        try FileManager.default.moveItem(at: tempURL, to: destination)
     }
 
     /// Refresh the list of staged WhisperKit models (call when opening the manager).
@@ -1574,35 +1951,53 @@ class AppState: ObservableObject {
 
         statusMessage = "Rephrasing chunk..."
         let sessionID = activeSessionID
-        translationService.processFinalText(
-            text: item,
-            mode: "rephrase",
-            targetLanguage: translationTargetLanguage,
-            endpoint: llmEndpoint,
-            model: llmModel
-        ) { [weak self] result in
-            Task { @MainActor in
-                guard let self, sessionID == self.activeSessionID else { return }
-                let textToInsert: String
-                switch result {
-                case .success(let processedText):
-                    let cleaned = self.postProcess(processedText)
-                    textToInsert = cleaned.isEmpty ? item : cleaned
-                    self.translationStatus = cleaned.isEmpty ? "OpenAI returned empty chunk" : "Rephrased"
-                case .failure(let error):
-                    textToInsert = item
-                    self.translationStatus = "OpenAI failed"
-                    self.error = "OpenAI chunk rephrase failed: \(error.localizedDescription)"
-                }
 
-                self.insertLiveChunk(textToInsert)
-                self.livePipeline.finishInsertion()
-                self.processNextLiveInsertion()
-                if self.isTranscribing && self.livePipelineIsDrained {
-                    self.completeFinalText(self.currentSessionText)
-                }
+        // Insert the raw chunk and advance the pipeline — used as the fallback
+        // when the bundled LLM can't start, so a chunk is never dropped.
+        func insertRawAndAdvance() {
+            self.insertLiveChunk(item)
+            self.livePipeline.finishInsertion()
+            self.processNextLiveInsertion()
+            if self.isTranscribing && self.livePipelineIsDrained {
+                self.completeFinalText(self.currentSessionText)
             }
         }
+
+        ensureBundledLLMReady(work: { [weak self] in
+            guard let self else { return }
+            self.translationService.processFinalText(
+                text: item,
+                mode: self.refinementMode("rephrase"),
+                targetLanguage: self.translationTargetLanguage,
+                endpoint: self.llmEndpoint,
+                model: self.llmModel
+            ) { [weak self] result in
+                Task { @MainActor in
+                    guard let self, sessionID == self.activeSessionID else { return }
+                    let textToInsert: String
+                    switch result {
+                    case .success(let processedText):
+                        let cleaned = self.postProcess(processedText)
+                        textToInsert = cleaned.isEmpty ? item : cleaned
+                        self.translationStatus = cleaned.isEmpty ? "LLM returned empty chunk" : "Rephrased"
+                    case .failure(let error):
+                        textToInsert = item
+                        self.translationStatus = "Rephrase failed"
+                        self.error = "Chunk rephrase failed: \(error.localizedDescription)"
+                    }
+
+                    self.insertLiveChunk(textToInsert)
+                    self.livePipeline.finishInsertion()
+                    self.processNextLiveInsertion()
+                    if self.isTranscribing && self.livePipelineIsDrained {
+                        self.completeFinalText(self.currentSessionText)
+                    }
+                }
+            }
+        }, fallback: { [weak self] in
+            guard let self, sessionID == self.activeSessionID else { return }
+            insertRawAndAdvance()
+        })
     }
 
     private func insertLiveChunk(_ text: String) {
@@ -1702,41 +2097,51 @@ class AppState: ObservableObject {
         statusMessage = openAIEnhancementMode == "rephrase" ? "Polishing..." : "Improving..."
         translationStatus = statusMessage
         // Capture the session so a cancel (Esc) or new session started while the
-        // OpenAI call is in flight causes this callback to be ignored — otherwise
+        // LLM call is in flight causes this callback to be ignored — otherwise
         // it would paste/clobber the clipboard after the session was cancelled.
         let sessionID = activeSessionID
-        translationService.processFinalText(
-            text: finalText,
-            mode: openAIEnhancementMode,
-            targetLanguage: translationTargetLanguage,
-            endpoint: llmEndpoint,
-            model: llmModel
-        ) { [weak self] result in
-            Task { @MainActor in
-                guard let self, sessionID == self.activeSessionID else { return }
-                self.isTranscribing = false
-                switch result {
-                case .success(let processedText):
-                    let cleaned = self.postProcess(processedText)
-                    guard !cleaned.isEmpty else {
-                        self.error = "OpenAI returned empty text."
-                        self.translationStatus = "OpenAI failed"
+
+        ensureBundledLLMReady(quiesceWhisper: true, work: { [weak self] in
+            guard let self else { return }
+            self.translationService.processFinalText(
+                text: finalText,
+                mode: self.refinementMode(self.openAIEnhancementMode),
+                targetLanguage: self.translationTargetLanguage,
+                endpoint: self.llmEndpoint,
+                model: self.llmModel
+            ) { [weak self] result in
+                Task { @MainActor in
+                    guard let self, sessionID == self.activeSessionID else { return }
+                    self.isTranscribing = false
+                    switch result {
+                    case .success(let processedText):
+                        let cleaned = self.postProcess(processedText)
+                        guard !cleaned.isEmpty else {
+                            self.error = "The LLM returned empty text."
+                            self.translationStatus = "Refinement failed"
+                            self.openAIEnhancementEnabledForSession = false
+                            self.insertCompletedText(finalText, originalText: finalText)
+                            self.statusMessage = "Refinement failed; inserted local text"
+                            return
+                        }
+                        self.translationStatus = self.openAIEnhancementMode == "rephrase" ? "Rephrased" : "Improved"
+                        self.outputOrOfferRefine(cleaned)
+                    case .failure(let error):
+                        self.error = "Post-processing failed: \(error.localizedDescription)"
+                        self.translationStatus = "Refinement failed"
                         self.openAIEnhancementEnabledForSession = false
                         self.insertCompletedText(finalText, originalText: finalText)
-                        self.statusMessage = "OpenAI failed; inserted local text"
-                        return
+                        self.statusMessage = "Refinement failed; inserted local text"
                     }
-                    self.translationStatus = self.openAIEnhancementMode == "rephrase" ? "Rephrased" : "Improved"
-                    self.outputOrOfferRefine(cleaned)
-                case .failure(let error):
-                    self.error = "OpenAI post-processing failed: \(error.localizedDescription)"
-                    self.translationStatus = "OpenAI failed"
-                    self.openAIEnhancementEnabledForSession = false
-                    self.insertCompletedText(finalText, originalText: finalText)
-                    self.statusMessage = "OpenAI failed; inserted local text"
                 }
             }
-        }
+        }, fallback: { [weak self] in
+            guard let self, sessionID == self.activeSessionID else { return }
+            self.isTranscribing = false
+            self.openAIEnhancementEnabledForSession = false
+            self.insertCompletedText(finalText, originalText: finalText)
+            self.statusMessage = "Built-in model unavailable; inserted local text"
+        })
     }
 
     // MARK: - Instruction chaining (explicit double-tap refine flow)
@@ -1888,31 +2293,40 @@ class AppState: ObservableObject {
         }
         let sessionID = activeSessionID
         let directive = InstructionChain.directive(forInstruction: instruction)
-        translationService.processFinalText(
-            text: target,
-            mode: "rephrase",
-            targetLanguage: translationTargetLanguage,
-            endpoint: llmEndpoint,
-            model: llmModel,
-            customInstruction: directive
-        ) { [weak self] result in
-            Task { @MainActor in
-                guard let self, sessionID == self.activeSessionID else { return }
-                self.isTranscribing = false
-                switch result {
-                case .success(let processedText):
-                    let cleaned = self.postProcess(processedText)
-                    let textToInsert = cleaned.isEmpty ? target : cleaned
-                    self.translationStatus = "Instruction applied"
-                    self.insertCompletedText(textToInsert, originalText: target)
-                case .failure(let error):
-                    self.error = "Instruction failed: \(error.localizedDescription)"
-                    self.translationStatus = "Instruction failed"
-                    self.insertCompletedText(target, originalText: target)
-                    self.statusMessage = "Instruction failed; inserted text"
+
+        ensureBundledLLMReady(statusWhileLoading: "Refining…", quiesceWhisper: true, work: { [weak self] in
+            guard let self else { return }
+            self.translationService.processFinalText(
+                text: target,
+                mode: "rephrase",
+                targetLanguage: self.translationTargetLanguage,
+                endpoint: self.llmEndpoint,
+                model: self.llmModel,
+                customInstruction: directive
+            ) { [weak self] result in
+                Task { @MainActor in
+                    guard let self, sessionID == self.activeSessionID else { return }
+                    self.isTranscribing = false
+                    switch result {
+                    case .success(let processedText):
+                        let cleaned = self.postProcess(processedText)
+                        let textToInsert = cleaned.isEmpty ? target : cleaned
+                        self.translationStatus = "Instruction applied"
+                        self.insertCompletedText(textToInsert, originalText: target)
+                    case .failure(let error):
+                        self.error = "Instruction failed: \(error.localizedDescription)"
+                        self.translationStatus = "Instruction failed"
+                        self.insertCompletedText(target, originalText: target)
+                        self.statusMessage = "Instruction failed; inserted text"
+                    }
                 }
             }
-        }
+        }, fallback: { [weak self] in
+            guard let self, sessionID == self.activeSessionID else { return }
+            self.isTranscribing = false
+            self.insertCompletedText(target, originalText: target)
+            self.statusMessage = "Built-in model unavailable; inserted text"
+        })
     }
 
     private func insertCompletedText(_ text: String, originalText: String) {
@@ -2281,6 +2695,9 @@ class AppState: ObservableObject {
         )
         dictationStats.record(event)
         DictationStatsStore.save(dictationStats)
+        #if OPENWHISP_INSTRUMENTATION
+        lastDictationEvent = event
+        #endif
     }
 
     func copyHistoryEntry(_ entry: TranscriptionEntry) {
@@ -2512,6 +2929,8 @@ struct ModelManifestEntry: Decodable {
     let label: String
     let size: String
     let url: String
+    /// Present in the LLM manifest (llm-manifest.json); absent in the whisper one.
+    let license: String?
 }
 
 final class ModelDownloader: NSObject, URLSessionDownloadDelegate {
