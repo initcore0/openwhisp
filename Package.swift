@@ -38,6 +38,7 @@ let package = Package(
                 "WhisperTask.swift",
                 "InstructionChain.swift",
                 "RefineFlow.swift",
+                "RefineKey.swift",
                 "AudioLevel.swift",
                 "FinalizingCaption.swift",
                 "AsyncTimeout.swift",

@@ -587,15 +587,15 @@ struct SettingsView: View {
 
             Divider()
 
-            Toggle("Refine with a spoken instruction (Fn + Control)", isOn: $appState.instructionChainEnabled)
+            Toggle("Refine with a spoken instruction", isOn: $appState.instructionChainEnabled)
 
             Text("""
-            Hold Fn + Control and speak an instruction — the AI applies it to your \
-            SELECTED text, or, if nothing is selected, to the last thing you dictated. \
-            For example: select some text (or dictate it), then hold Fn + Control and \
-            say "make it a Telegram post". No fixed phrases — say what you want in plain \
-            language (any language). Needs an AI provider above; works in Preview and \
-            Paste-at-end modes.
+            Hold your Refine key (set it under Settings › Hotkey) and speak an \
+            instruction — the AI applies it to your SELECTED text, or, if nothing is \
+            selected, to the last thing you dictated. For example: select some text (or \
+            dictate it), hold the Refine key and say "make it a Telegram post". No fixed \
+            phrases — say what you want in plain language (any language). Needs an AI \
+            provider above; works in Preview and Paste-at-end modes.
             """)
                 .font(.caption)
                 .foregroundColor(.secondary)
@@ -741,9 +741,14 @@ struct SettingsView: View {
 
             Divider()
 
-            Label("Refine: hold Fn + Control", systemImage: "wand.and.stars")
+            Picker("Refine key", selection: $appState.refineKey) {
+                ForEach(RefineKey.allCases, id: \.rawValue) { key in
+                    Text(key.label).tag(key.rawValue)
+                }
+            }
+            Label("Refine with a spoken instruction", systemImage: "wand.and.stars")
                 .font(.caption.bold())
-            Text("Hold Fn + Control and speak an instruction (\u{201C}make it a Telegram post\u{201D}, \u{201C}more formal\u{201D}) to rewrite your selected text — or, if nothing is selected, the last thing you dictated. Requires an AI provider under AI Post-processing.")
+            Text("Hold your Refine key and speak an instruction (\u{201C}make it a Telegram post\u{201D}, \u{201C}more formal\u{201D}) to rewrite your selected text — or, if nothing is selected, the last thing you dictated. Right-hand modifier keys work best. Requires an AI provider under AI Post-processing.")
                 .font(.caption)
                 .foregroundColor(.secondary)
         }

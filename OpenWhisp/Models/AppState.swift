@@ -55,6 +55,14 @@ class AppState: ObservableObject {
         }
     }
 
+    /// Selected refine key (RefineKey id, e.g. "rightOption"; "off" disables it).
+    @Published var refineKey: String {
+        didSet {
+            UserDefaults.standard.set(refineKey, forKey: "refineKey")
+            hotkeyMonitor?.refineKey = refineKey
+        }
+    }
+
     @Published var outputMode: String {
         didSet { persist(outputMode, "outputMode") }
     }
@@ -658,6 +666,7 @@ class AppState: ObservableObject {
         microphoneID = UserDefaults.standard.string(forKey: "microphoneID") ?? ""
         language = UserDefaults.standard.string(forKey: "language") ?? "auto"
         triggerMode = UserDefaults.standard.string(forKey: "triggerMode") ?? "fn"
+        refineKey = UserDefaults.standard.string(forKey: "refineKey") ?? "rightOption"
         outputMode = UserDefaults.standard.string(forKey: "outputMode") ?? "preview"
         showOverlay = UserDefaults.standard.object(forKey: "showOverlay") as? Bool ?? true
         voiceIndicatorStyle = VoiceIndicatorStyle.from(UserDefaults.standard.string(forKey: "voiceIndicatorStyle"))
@@ -844,6 +853,7 @@ class AppState: ObservableObject {
 
         hotkeyMonitor = HotkeyMonitor()
         hotkeyMonitor.triggerMode = triggerMode
+        hotkeyMonitor.refineKey = refineKey
         hotkeyMonitor.onPermissionStateChanged = { [weak self] isGranted in
             Task { @MainActor in
                 self?.inputMonitoringPermissionLabel = isGranted ? "Granted" : "Needs permission"

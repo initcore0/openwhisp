@@ -196,7 +196,7 @@ struct OnboardingView: View {
             icon: "wand.and.stars",
             iconColor: .accentColor,
             title: "Polish your words with AI (optional)",
-            subtitle: "After transcribing, AI can fix punctuation, capitalization, and filler words — and you can hold Fn + Control to give a spoken instruction like “make it a Telegram post.” The built-in option runs fully on your Mac; nothing leaves your machine."
+            subtitle: "After transcribing, AI can fix punctuation, capitalization, and filler words — and you can hold your Refine key (set it under Settings › Hotkey) to give a spoken instruction like “make it a Telegram post.” The built-in option runs fully on your Mac; nothing leaves your machine."
         ) {
             VStack(alignment: .leading, spacing: 14) {
                 Toggle("Refine my text with AI", isOn: $appState.openAIEnhancementEnabled)

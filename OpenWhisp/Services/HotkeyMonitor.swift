@@ -30,10 +30,12 @@ final class HotkeyMonitor: HotkeyControlling {
     private var localMonitor: Any?
     private var isRunning = false
     private var isPressed = false
-    /// Debounced held-state for the refine chord (Fn+Ctrl), tracked independently
-    /// of the dictation trigger.
+    /// Debounced held-state for the refine key, tracked independently of the
+    /// dictation trigger.
     private var isRefinePressed = false
     var triggerMode: String = "controlSpace"
+    /// Selected refine key id (see RefineKey). "off" disables it.
+    var refineKey: String = "rightOption"
 
     init() {}
 
@@ -146,14 +148,37 @@ final class HotkeyMonitor: HotkeyControlling {
         }
     }
 
-    /// The refine chord is active while BOTH Fn (function) and Control are held.
-    /// Guard against colliding with the Control+Space dictation trigger: refine
-    /// requires Fn, which Control+Space never uses, so they're disjoint. (When the
-    /// dictation trigger is "fn", plain Fn starts dictation; Fn+Ctrl is still a
-    /// distinct chord — the refine check requires Control too, and the Fn-dictation
-    /// path ignores Control.)
-    private func handleRefineModifiers(fnActive: Bool, controlActive: Bool) {
-        applyRefine(HotkeyGesture.resolve(isActive: fnActive && controlActive, wasPressed: isRefinePressed))
+    /// The refine key is a SINGLE modifier key, detected by its keycode in a
+    /// flagsChanged event. A modifier keyDown/keyUp both arrive as flagsChanged
+    /// carrying that key's keycode; we infer down vs. up from whether the key's
+    /// own modifier flag is now set. This is stable under the event tap (unlike a
+    /// Fn-based chord, whose flags oscillate while held).
+    private func handleRefineKey(keyCode: Int64, flagActive: Bool) {
+        guard let target = RefineKey.from(id: refineKey).keyCode, refineKey != "off" else { return }
+        guard keyCode == target else { return }
+        applyRefine(HotkeyGesture.resolve(isActive: flagActive, wasPressed: isRefinePressed))
+    }
+
+    /// Whether the modifier FLAG corresponding to a given modifier keycode is set
+    /// in `flags` — i.e. "is this key currently held". Maps the right-hand modifier
+    /// keycodes to their device-independent flag.
+    private static func modifierFlagActive(forKeyCode keyCode: Int64, cgFlags: CGEventFlags) -> Bool {
+        switch keyCode {
+        case 0x3D: return cgFlags.contains(.maskAlternate)  // Right Option
+        case 0x36: return cgFlags.contains(.maskCommand)    // Right Command
+        case 0x3E: return cgFlags.contains(.maskControl)    // Right Control
+        case 0x3C: return cgFlags.contains(.maskShift)      // Right Shift
+        default:   return false
+        }
+    }
+    private static func modifierFlagActive(forKeyCode keyCode: Int64, nsFlags: NSEvent.ModifierFlags) -> Bool {
+        switch keyCode {
+        case 0x3D: return nsFlags.contains(.option)
+        case 0x36: return nsFlags.contains(.command)
+        case 0x3E: return nsFlags.contains(.control)
+        case 0x3C: return nsFlags.contains(.shift)
+        default:   return false
+        }
     }
 
     private func handleEvent(type: CGEventType, event: CGEvent) {
@@ -172,11 +197,11 @@ final class HotkeyMonitor: HotkeyControlling {
             handleControlSpace(type: type, keyCode: keyCode, event: event)
         }
 
-        // Refine chord (Fn+Ctrl) — track on modifier changes.
+        // Refine key (a single selectable modifier) — track by its keycode.
         if type == .flagsChanged {
-            handleRefineModifiers(
-                fnActive: event.flags.contains(.maskSecondaryFn),
-                controlActive: event.flags.contains(.maskControl)
+            handleRefineKey(
+                keyCode: keyCode,
+                flagActive: Self.modifierFlagActive(forKeyCode: keyCode, cgFlags: event.flags)
             )
         }
 
@@ -193,9 +218,9 @@ final class HotkeyMonitor: HotkeyControlling {
         }
 
         if event.type == .flagsChanged {
-            handleRefineModifiers(
-                fnActive: event.modifierFlags.contains(.function),
-                controlActive: event.modifierFlags.contains(.control)
+            handleRefineKey(
+                keyCode: Int64(event.keyCode),
+                flagActive: Self.modifierFlagActive(forKeyCode: Int64(event.keyCode), nsFlags: event.modifierFlags)
             )
         }
 

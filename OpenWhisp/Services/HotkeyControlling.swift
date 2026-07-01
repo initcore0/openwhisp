@@ -9,6 +9,9 @@ import Foundation
 protocol HotkeyControlling: AnyObject {
     /// Which gesture triggers dictation: "fn" or "controlSpace".
     var triggerMode: String { get set }
+    /// Which single key triggers refine (held-to-talk). One of the ids in
+    /// `RefineKey` (e.g. "rightOption"); "off" disables the refine key.
+    var refineKey: String { get set }
     /// Push-to-talk pressed (begin dictation).
     var onHotkeyDown: (() -> Void)? { get set }
     /// Push-to-talk released (end dictation).
