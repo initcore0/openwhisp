@@ -37,6 +37,7 @@ let package = Package(
                 "ScriptPostProcessor.swift",
                 "WhisperTask.swift",
                 "InstructionChain.swift",
+                "RefineFlow.swift",
                 "AudioLevel.swift",
                 "FinalizingCaption.swift",
                 "AsyncTimeout.swift",

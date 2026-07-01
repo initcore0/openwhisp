@@ -459,29 +459,31 @@ class AppState: ObservableObject {
     private var pendingStop = false
     private var openAIEnhancementEnabledForSession = false
 
-    // MARK: Instruction chaining (explicit double-tap refine flow)
-    /// Monotonic time the hotkey was last released (for double-tap detection). nil
+    // MARK: Instruction chaining (re-press-to-refine flow)
+    //
+    // The whole lifecycle lives in the pure `RefineFlow` state machine (see
+    // RefineFlow.swift), which is unit-tested. AppState feeds it events (engage,
+    // step1Finalized, instructionFinalized, llmSucceeded/Failed, abort) and
+    // executes the effects it returns. This replaces the old cluster of implicit
+    // flags that produced every stuck-overlay / wrong-text bug.
+    private var refineFlow = RefineFlow()
+    /// Monotonic time the hotkey was last released (for the re-press window). nil
     /// once consumed/expired.
     private var lastReleaseUptime: TimeInterval?
-    /// True once a double-tap has armed refine mode. While armed, step-1's text is
-    /// held (never pasted) and the current utterance is captured as the instruction.
-    /// Published so the overlay can show a "refining" cue.
+    /// Overlay cue: true whenever a refine is engaged. Published so OverlayView can
+    /// show the "refining" tint. Kept in sync with the state machine via `syncRefineUI`.
     @Published private(set) var refineArmed = false
-    /// True while step-2 (the instruction utterance) is being dictated.
-    private var isInstructionSession = false
-    /// Step-1's text, once it resolves. nil while step-1 is still transcribing.
-    private var refineStep1Text: String?
-    /// The spoken instruction, once step-2 resolves. nil until then.
-    private var refineInstruction: String?
-    /// True after a double-tap when step-1's transcript hasn't landed yet (e.g.
-    /// WhisperKit's streaming final lags ~1s after release). While set, the NEXT
-    /// completed transcript is step-1 (latched into refineStep1Text), NOT the
-    /// instruction — this is what prevents step-1's late final from being mistaken
-    /// for the instruction (the "refines the wrong text / pastes original" race).
-    private var awaitingStep1 = false
-    /// True when step-1 came from the user's SELECTION (not a dictation). The refined
-    /// result replaces the selection in place; nothing was dictated for step-1.
-    private var refineFromSelection = false
+    /// Failsafe: if a refine engages but nothing progresses (no speech captured),
+    /// recover after this timeout so the overlay can never get permanently stuck.
+    private var refineWatchdog: DispatchWorkItem?
+    private let refineWatchdogTimeout: TimeInterval = 4
+    /// A just-finished dictation's paste, deferred for the re-press window so that
+    /// a re-press-to-refine can cancel it and paste the refined text instead (no
+    /// raw+refined duplicate). Fires the paste if no re-press arrives in time.
+    private var pendingStep1Paste: DispatchWorkItem?
+    /// The text of the deferred paste, handed to the machine as step-1 if a
+    /// re-press engages refine before the paste fires.
+    private var pendingStep1Text: String?
 
     /// Set briefly when an insert couldn't be confirmed and the text was left on the
     /// clipboard instead — drives a "copied, press ⌘V" cue in the overlay so the
@@ -954,25 +956,48 @@ class AppState: ObservableObject {
     // MARK: - Actions
 
     func startDictation() {
-        // Explicit double-tap to refine: if this press lands within the double-tap
-        // gap of the last release AND refine is available, ARM refine mode — decided
-        // by the gesture/timing alone, even if step-1 is still transcribing. We do
-        // NOT start a new content dictation; instead we either start capturing the
-        // instruction now (if step-1 already finished) or let step-1 finish and then
-        // capture it (handled in completeFinalText). Esc cancels.
-        if !refineArmed, !isInstructionSession,
-           InstructionChain.isAvailable(outputMode: outputMode, llmConfigured: llmConfigured, enabled: instructionChainEnabled),
-           InstructionChain.isDoubleTap(lastReleaseUptime: lastReleaseUptime,
-                                        pressUptime: ProcessInfo.processInfo.systemUptime) {
-            beginRefine()
-            return
+        // Forgiving "re-press to refine" gesture: after you dictate, simply press
+        // again (and hold + speak the instruction) — no hard-to-hit fast double-tap.
+        // A re-press engages refine when (a) refine is available, (b) it lands
+        // within the generous re-engage window of the last dictation OR step-1 is
+        // still finalizing, AND (c) there's something to refine (recent dictation
+        // result, or selected text). Otherwise it's a normal dictation.
+        let refineAvailable = InstructionChain.isAvailable(outputMode: outputMode, llmConfigured: llmConfigured, enabled: instructionChainEnabled)
+        if !refineFlow.isActive, refineAvailable, !isRecording {
+            let now = ProcessInfo.processInfo.systemUptime
+            // Forgiving trigger: a re-press within the window after your last
+            // dictation engages "refine what I just said" — no hard double-tap.
+            // step-1 may still be transcribing; engage with nil and the machine
+            // waits for step1Finalized.
+            let reEngage = InstructionChain.shouldEngageRefine(lastReleaseUptime: lastReleaseUptime, pressUptime: now)
+            // Otherwise, if you have text SELECTED (and didn't just dictate), a
+            // press engages "refine my selection".
+            let selection: String? = (!reEngage && !SecureFieldDetector.focusedFieldIsSecure())
+                ? SelectionReader.readSelectedText()?.trimmingCharacters(in: .whitespacesAndNewlines)
+                : nil
+            if reEngage || (selection?.isEmpty == false) {
+                refineDebug("startDictation: ENGAGE REFINE (reEngage=\(reEngage) selection=\(selection?.isEmpty == false))")
+                engageRefine(step1: reEngage ? refineFlowPendingStep1() : selection,
+                             fromSelection: !reEngage)
+                return
+            }
         }
 
-        // This press is a NORMAL dictation (not a double-tap). Clear any stale refine
-        // state so a half-finished refine from before can never leave us "stuck" so
-        // that the next press is wrongly treated as an instruction.
-        if refineArmed || isInstructionSession {
-            clearRefineState()
+        // This press is a NORMAL dictation. Abort any lingering refine so a
+        // half-finished flow can never leave us "stuck".
+        if refineFlow.isActive {
+            executeRefineEffects(refineFlow.handle(.abort))
+        }
+        // Flush a deferred step-1 paste from the previous dictation NOW: the user
+        // chose to dictate again rather than refine, so paste that text before the
+        // new session (its closure captured its own text, so this is safe).
+        if let work = pendingStep1Paste {
+            work.cancel()
+            pendingStep1Paste = nil
+            if let text = pendingStep1Text {
+                pendingStep1Text = nil
+                insertCompletedText(text, originalText: text)
+            }
         }
 
         guard !isRecording, !isTranscribing else { return }
@@ -1006,10 +1031,10 @@ class AppState: ObservableObject {
     }
 
     func stopDictation() {
-        // Record the release time so a quick re-press is recognized as a double-tap
-        // (refine). Only meaningful for a normal content session, not the instruction
-        // capture itself.
-        if !isInstructionSession {
+        // Record the release time so a quick re-press is recognized as refine.
+        // Only meaningful for a normal content session, not the instruction
+        // capture itself (the machine is already active during that).
+        if !refineFlow.isActive {
             lastReleaseUptime = ProcessInfo.processInfo.systemUptime
         }
         // The hotkey-up may arrive before the async permission-grant callback has flipped
@@ -1030,10 +1055,12 @@ class AppState: ObservableObject {
     }
 
     func cancelDictation() {
-        // Esc while refine is armed (waiting for step-1 to finish, or for the
-        // instruction): drop the held text and disarm without inserting anything.
-        if refineArmed && !isRecording && !isTranscribing && !sessionActive {
-            clearRefineState()
+        // Esc while a refine is engaged (waiting for step-1 or the instruction):
+        // abort the flow without inserting anything.
+        if refineFlow.isActive && !isRecording && !isTranscribing && !sessionActive {
+            cancelRefineWatchdog()
+            refineFlow.reset()
+            syncRefineUI()
             statusMessage = "Cancelled"
             finishSessionUI()
             return
@@ -1042,7 +1069,11 @@ class AppState: ObservableObject {
         activeSessionID = UUID()
         sessionActive = false
         pendingStop = false
-        clearRefineState()
+        cancelRefineWatchdog()
+        cancelPendingStep1Paste()
+        pendingStep1Text = nil
+        refineFlow.reset()
+        syncRefineUI()
         transcriptionRequests.removeAll()
         cleanupPendingLiveChunks()
         resetLivePipeline()
@@ -1172,8 +1203,15 @@ class AppState: ObservableObject {
         if isRecording { flags.append("REC") }
         if isTranscribing { flags.append("TRANSCRIBING") }
         if isArming { flags.append("ARMING") }
-        if refineArmed { flags.append("REFINE-ARMED") }
-        if isInstructionSession { flags.append("INSTR-SESSION") }
+        if refineFlow.isActive {
+            let label: String
+            switch refineFlow.state {
+            case .inactive: label = "inactive"
+            case .capturing(let s, _): label = s == nil ? "capturing(await-step1)" : "capturing(instr)"
+            case .applying: label = "applying"
+            }
+            flags.append("REFINE:\(label)")
+        }
         let stateLine = "state: " + (flags.isEmpty ? "idle" : flags.joined(separator: " "))
 
         let llmLine = llmProvider == "bundled" ? bundledLLMRuntimeStatus : "provider: \(llmProvider) (not built-in)"
@@ -1243,13 +1281,34 @@ class AppState: ObservableObject {
     /// failure. For every other provider it runs `work` immediately. `work` must
     /// itself call `processFinalText`; we bracket the request with the engine's
     /// in-flight counter so idle teardown can't kill a live generation.
+    /// Diagnostic logger for the refine/instruction-chain flow. Writes to
+    /// ~/Library/Caches/com.openwhisp.app/refine-debug.log. Dev-only: a NO-OP in
+    /// consumer builds (this flow has been a recurring source of subtle bugs, so
+    /// the trace is worth keeping in instrumented builds).
+    func refineDebug(_ message: String) {
+        #if OPENWHISP_INSTRUMENTATION
+        let url = URL(fileURLWithPath: NSHomeDirectory())
+            .appendingPathComponent("Library/Caches/com.openwhisp.app/refine-debug.log")
+        let line = "[\(ISO8601DateFormatter().string(from: Date()))] \(message)\n"
+        try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        if let h = try? FileHandle(forWritingTo: url) {
+            defer { try? h.close() }
+            try? h.seekToEnd(); h.write(Data(line.utf8))
+        } else {
+            try? line.write(to: url, atomically: true, encoding: .utf8)
+        }
+        #endif
+    }
+
     private func ensureBundledLLMReady(
         statusWhileLoading: String = "Loading local model…",
         quiesceWhisper: Bool = false,
         work: @escaping () -> Void,
         fallback: @escaping () -> Void
     ) {
+        refineDebug("ensureBundledLLMReady ENTER provider=\(llmProvider) sessionID=\(activeSessionID.uuidString.prefix(8))")
         guard llmProvider == "bundled" else {
+            refineDebug("ensureBundledLLMReady: non-bundled -> work() immediately")
             work()
             return
         }
@@ -1783,6 +1842,13 @@ class AppState: ObservableObject {
         isAppleSpeechSession = false
         isRecording = false
         isTranscribing = false
+        // Also drop any engaged refine. Without this, aborting the instruction-
+        // capture session of a too-fast re-press left the flow active with no live
+        // session — a late transcript would re-enter the refine path and wedge the
+        // overlay. reset() (not .abort) because we're already tearing the UI down.
+        cancelRefineWatchdog()
+        refineFlow.reset()
+        syncRefineUI()
         currentSessionText = ""
         streamingText = ""
         statusMessage = "Ready"
@@ -2040,28 +2106,21 @@ class AppState: ObservableObject {
     private func completeFinalText(_ text: String) {
         let finalText = postProcess(text, isFinalTranscript: true)
 
-        // After a double-tap, step-1's transcript may still have been in flight. The
-        // FIRST completed transcript while awaiting it is step-1 (latch it, don't
-        // paste, don't treat it as the instruction). The instruction session is
-        // already running and its final will arrive next.
-        if awaitingStep1 {
-            awaitingStep1 = false
-            refineStep1Text = finalText
-            isTranscribing = true   // keep the working cue until the instruction lands
-            tryApplyRefine()        // no-op unless the instruction already arrived
-            return
-        }
-
-        // Step 2 of the chain: this utterance is the spoken INSTRUCTION. Stash it and
-        // try to apply (step-1's text may still be transcribing). Enhancement/translate
-        // from Settings is bypassed — the instruction wins.
-        if isInstructionSession {
-            // Keep isTranscribing TRUE so the overlay shows a working/finalizing cue
-            // (not an idle "waiting for input" state) while the LLM refines — that
-            // call can take several seconds. Cleared in applyInstruction's completion.
-            isTranscribing = true
-            refineInstruction = finalText
-            tryApplyRefine()
+        // If a refine is engaged, this finished session's transcript is EITHER the
+        // late step-1 dictation (machine still awaiting step-1) OR the spoken
+        // instruction (step-1 already resolved). Feed the right event; the machine
+        // owns all the empty/wedge/ordering decisions (see RefineFlow).
+        if refineFlow.isActive {
+            if refineExpectsStep1 {
+                refineDebug("completeFinalText -> step1Finalized \"\(finalText.prefix(20))\"")
+                // Keep the working cue up while we still wait for the instruction.
+                isTranscribing = true
+                feedRefineTranscript(finalText, isInstruction: false)
+            } else {
+                refineDebug("completeFinalText -> instructionFinalized \"\(finalText.prefix(20))\"")
+                isTranscribing = true
+                feedRefineTranscript(finalText, isInstruction: true)
+            }
             return
         }
 
@@ -2075,22 +2134,16 @@ class AppState: ObservableObject {
         lastTranscription = finalText
         streamingText = finalText
 
-        // If refine was armed (double-tap), the user gave an EXPLICIT command — skip
-        // the Settings rephrase/translate pass entirely and go straight to capturing
-        // the instruction, which is the only transformation applied.
-        if refineArmed {
-            isTranscribing = false
-            outputOrOfferRefine(finalText)
-            return
-        }
-
         // Run a whole-text OpenAI pass for finalOnly OR preview mode when
         // enhancement is enabled. Otherwise insert once.
         let enhanceWholeText = shouldEnhanceCurrentSession
             && (outputMode == "finalOnly" || outputMode == "preview")
         guard enhanceWholeText else {
             isTranscribing = false
-            outputOrOfferRefine(finalText)
+            // If refine is available, DEFER this paste briefly: a re-press within
+            // the window engages refine on THIS text, and refine will paste the
+            // refined version instead. Pasting now would duplicate (raw + refined).
+            insertOrDeferForRefine(finalText)
             return
         }
 
@@ -2125,7 +2178,7 @@ class AppState: ObservableObject {
                             return
                         }
                         self.translationStatus = self.openAIEnhancementMode == "rephrase" ? "Rephrased" : "Improved"
-                        self.outputOrOfferRefine(cleaned)
+                        self.insertCompletedText(cleaned, originalText: finalText)
                     case .failure(let error):
                         self.error = "Post-processing failed: \(error.localizedDescription)"
                         self.translationStatus = "Refinement failed"
@@ -2144,144 +2197,168 @@ class AppState: ObservableObject {
         })
     }
 
-    // MARK: - Instruction chaining (explicit double-tap refine flow)
+    // MARK: - Instruction chaining (re-press-to-refine flow)
     //
-    // Gesture: dictate (press-speak-release), then a quick re-press-AND-HOLD while
-    // speaking the instruction, then release. The re-press both (a) arms refine — by
-    // its timing after the release — and (b) IS the instruction capture (it's held
-    // while speaking). Step-1 and step-2 transcribe independently; whichever finishes
-    // last triggers the LLM apply via `tryApplyRefine`.
+    // Gesture: dictate (press-speak-release), then simply PRESS-AND-HOLD again
+    // within a few seconds and speak the instruction, then release. Step-1 is the
+    // just-dictated result (or a text selection when there's no recent dictation);
+    // the instruction transcribes separately.
+    //
+    // The lifecycle is driven by the pure `RefineFlow` state machine. These methods
+    // only (a) feed it events and (b) execute the effects it returns.
 
-    /// Double-tap detected: arm refine and IMMEDIATELY start capturing the instruction
-    /// (the user is holding the hotkey and about to speak it). Step-1's text arrives
-    /// separately into `refineStep1Text`.
-    private func beginRefine() {
-        lastReleaseUptime = nil          // consume the double-tap
-        refineArmed = true
-        refineInstruction = nil
-        // Step-1 text is either (a) what you just dictated, or (b) — if you didn't
-        // dictate — the text you have SELECTED in the focused app. Dictation wins; the
-        // selection is only read when the dictation snapshot is empty. The result is
-        // the RESOLVED step-1 value (even if empty — tryApplyRefine then finishes
-        // cleanly rather than waiting forever). Read the selection BEFORE starting the
-        // instruction session below (which bumps activeSessionID / shows the overlay).
-        // Resolve step-1's text. Three cases, in order:
-        //  1. We already captured it (deferred-paste path latched refineStep1Text when
-        //     step-1 finalized just before the double-tap) — keep it.
-        //  2. Its transcript is already in streamingText (step-1 finalized, non-deferred)
-        //     — use that.
-        //  3. Neither — step-1 is still transcribing (WhisperKit's ~1s lag). Don't
-        //     snapshot a partial/empty value; mark awaitingStep1 so the NEXT completed
-        //     transcript is latched as step-1 (handled in completeFinalText) rather
-        //     than being mistaken for the instruction.
-        let dictated = streamingText.trimmingCharacters(in: .whitespacesAndNewlines)
-        if refineStep1Text != nil {
-            refineFromSelection = false
-        } else if !dictated.isEmpty {
-            refineStep1Text = dictated
-            refineFromSelection = false
-        } else if !SecureFieldDetector.focusedFieldIsSecure(),
-                  let selection = SelectionReader.readSelectedText() {
-            // No dictation at all → refine the user's SELECTION instead.
-            refineStep1Text = selection
-            refineFromSelection = true
-        } else {
-            // Step-1 dictation is still finalizing — wait for it.
-            awaitingStep1 = true
-            refineFromSelection = false
-        }
-        isInstructionSession = true
-        let liveMode = outputMode == "liveChunks" || outputMode == "preview"
-        if transcriptionEngine == "appleSpeech" || (transcriptionEngine == "whisperKit" && liveMode) {
-            startStreamingSession()
-        } else {
-            startRecording()
-        }
-        statusMessage = "Refine: speak your instruction…"
-    }
-
-    /// Step-1's completed text. If refine is armed, HOLD it (don't paste) and try to
-    /// apply once the instruction is also in; otherwise insert normally — but first
-    /// defer briefly if a double-tap could still arrive (its press may land after
-    /// step-1's transcript resolves), so we never paste raw step-1 and THEN refine.
-    private func outputOrOfferRefine(_ text: String) {
-        if !refineArmed, instructionChainEnabled, llmConfigured,
-           outputMode == "preview" || outputMode == "finalOnly",
-           let release = lastReleaseUptime {
-            let elapsed = ProcessInfo.processInfo.systemUptime - release
-            let remaining = InstructionChain.repressGap - elapsed
-            if remaining > 0 {
-                // Hold step-1; if a double-tap arms refine during the wait, route to
-                // refine instead of pasting.
-                let pending = text
-                Task { @MainActor in
-                    try? await Task.sleep(nanoseconds: UInt64(remaining * 1_000_000_000))
-                    self.outputOrOfferRefine(pending)
-                }
-                return
-            }
-        }
-        guard refineArmed else {
-            lastReleaseUptime = nil
+    /// Insert a finished dictation now, UNLESS refine is available — then defer the
+    /// paste for the re-press window. If the user re-presses in time, refine takes
+    /// over this text (cancelling the paste) and pastes the refined version instead,
+    /// so we never paste raw-then-refined (the duplication bug). If no re-press
+    /// arrives, the paste fires. Non-refine configs paste immediately.
+    private func insertOrDeferForRefine(_ text: String) {
+        let refineAvailable = InstructionChain.isAvailable(outputMode: outputMode, llmConfigured: llmConfigured, enabled: instructionChainEnabled)
+        guard refineAvailable, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             insertCompletedText(text, originalText: text)
             return
         }
-        refineStep1Text = text
-        tryApplyRefine()
+        cancelPendingStep1Paste()
+        pendingStep1Text = text
+        // Keep the overlay's "finalizing" cue up during the brief hold so it doesn't
+        // flash "done" then reopen for refine.
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.pendingStep1Paste = nil
+            self.pendingStep1Text = nil
+            // A refine may have engaged after this was scheduled — don't double-paste.
+            guard !self.refineFlow.isActive else { return }
+            self.insertCompletedText(text, originalText: text)
+        }
+        pendingStep1Paste = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + InstructionChain.repressGap, execute: work)
     }
 
-    /// Once BOTH step-1 text and the spoken instruction are available, run the LLM and
-    /// insert the result. No-op until both are present.
-    private func tryApplyRefine() {
-        guard let target = refineStep1Text, let instruction = refineInstruction else { return }
-        refineArmed = false
-        isInstructionSession = false
-        refineStep1Text = nil
-        refineInstruction = nil
-        let fromSelection = refineFromSelection
-        refineFromSelection = false
-        let cleanTarget = target.trimmingCharacters(in: .whitespacesAndNewlines)
-        let cleanInstruction = instruction.trimmingCharacters(in: .whitespacesAndNewlines)
-        // If step-1 produced nothing, there's nothing to refine — abandon quietly.
-        guard !cleanTarget.isEmpty else {
-            isTranscribing = false
-            statusMessage = "Nothing to refine"
-            finishSessionUI()
-            return
-        }
-        // No instruction heard: for a dictation, insert step-1 unchanged; for a
-        // selection, leave the user's text exactly as it was (don't paste over it).
-        guard !cleanInstruction.isEmpty else {
-            isTranscribing = false
-            if fromSelection {
-                statusMessage = "No instruction heard"
-                finishSessionUI()
-            } else {
-                insertCompletedText(cleanTarget, originalText: cleanTarget)
-                statusMessage = "No instruction heard; inserted text"
-            }
-            return
-        }
-        applyInstruction(cleanInstruction, to: cleanTarget)
+    private func cancelPendingStep1Paste() {
+        pendingStep1Paste?.cancel()
+        pendingStep1Paste = nil
     }
 
-    /// Drop any armed/held refine state without inserting (used on cancel).
-    private func clearRefineState() {
-        refineArmed = false
-        isInstructionSession = false
-        awaitingStep1 = false
-        refineStep1Text = nil
-        refineInstruction = nil
-        refineFromSelection = false
+    /// Snapshot of step-1's just-dictated text when a re-press engages refine
+    /// during/just-after a dictation. Prefers the still-deferred paste (so refine
+    /// takes over the exact un-pasted text); falls back to streamingText; nil means
+    /// step-1 is still transcribing and the machine will await `step1Finalized`.
+    private func refineFlowPendingStep1() -> String? {
+        if let pending = pendingStep1Text?.trimmingCharacters(in: .whitespacesAndNewlines), !pending.isEmpty {
+            return pending
+        }
+        let t = streamingText.trimmingCharacters(in: .whitespacesAndNewlines)
+        return t.isEmpty ? nil : t
+    }
+
+    /// Engage refine and start capturing the instruction utterance.
+    private func engageRefine(step1: String?, fromSelection: Bool) {
+        refineDebug("engageRefine step1=\(step1 != nil) fromSelection=\(fromSelection)")
         lastReleaseUptime = nil
+        // Refine takes over step-1; cancel its deferred paste so we don't paste
+        // raw step-1 in addition to the refined result.
+        cancelPendingStep1Paste()
+        pendingStep1Text = nil
+        executeRefineEffects(refineFlow.handle(.engage(step1: step1, fromSelection: fromSelection)))
     }
 
-    /// Apply the spoken `instruction` to `target` via the LLM and insert the result.
-    /// On failure, fall back to inserting the original target text.
-    private func applyInstruction(_ instruction: String, to target: String) {
-        // Show an explicit working state while the LLM runs (can take several
-        // seconds). isTranscribing drives the overlay's finalizing cue; isRecording
-        // false so it's clearly "processing", not "listening".
+    /// Feed a completed transcript into the refine machine. `isInstruction` picks
+    /// which event: the instruction utterance vs. a late step-1 dictation final.
+    private func feedRefineTranscript(_ text: String, isInstruction: Bool) {
+        let event: RefineFlow.Event = isInstruction ? .instructionFinalized(text) : .step1Finalized(text)
+        executeRefineEffects(refineFlow.handle(event))
+    }
+
+    /// Whether the currently-finishing session is the refine INSTRUCTION capture.
+    /// True while the machine is capturing and step-1 is already resolved — the
+    /// next final is the instruction. If step-1 is still nil, the next final is
+    /// step-1 itself.
+    private var refineExpectsInstruction: Bool {
+        if case .capturing(let step1, _) = refineFlow.state { return step1 != nil }
+        return false
+    }
+    private var refineExpectsStep1: Bool {
+        if case .capturing(let step1, _) = refineFlow.state { return step1 == nil }
+        return false
+    }
+
+    /// Perform the state machine's effects. This is the ONLY place refine side
+    /// effects happen, so the sequencing is in one auditable spot.
+    private func executeRefineEffects(_ effects: [RefineFlow.Effect]) {
+        syncRefineUI()
+        for effect in effects {
+            switch effect {
+            case .startInstructionCapture:
+                refineDebug("effect: startInstructionCapture")
+                isRecording = false
+                streamingText = ""
+                statusMessage = "Refine: speak your instruction…"
+                let liveMode = outputMode == "liveChunks" || outputMode == "preview"
+                if transcriptionEngine == "appleSpeech" || (transcriptionEngine == "whisperKit" && liveMode) {
+                    startStreamingSession()
+                } else {
+                    startRecording()
+                }
+                armRefineWatchdog()
+
+            case let .runLLM(step1, instruction):
+                refineDebug("effect: runLLM step1=\"\(step1.prefix(20))\" instr=\"\(instruction.prefix(20))\"")
+                cancelRefineWatchdog()
+                applyRefineLLM(instruction: instruction, to: step1)
+
+            case let .insert(text, replacingSelection):
+                refineDebug("effect: insert replacingSelection=\(replacingSelection)")
+                cancelRefineWatchdog()
+                isTranscribing = false
+                insertCompletedText(text, originalText: text)
+
+            case let .finishQuietly(status):
+                refineDebug("effect: finishQuietly \(status)")
+                cancelRefineWatchdog()
+                isTranscribing = false
+                streamingText = ""
+                currentSessionText = ""
+                statusMessage = status
+                finishSessionUI()
+
+            case let .status(message):
+                translationStatus = message
+                statusMessage = message
+            }
+        }
+        syncRefineUI()
+    }
+
+    /// Keep the published overlay cue in sync with the machine.
+    private func syncRefineUI() {
+        refineArmed = refineFlow.isActive
+    }
+
+    /// Failsafe: if a refine engages but nothing progresses (no speech captured),
+    /// recover after a timeout so the overlay can never get permanently stuck. The
+    /// machine's `isApplying` distinguishes a genuine in-flight LLM call from a
+    /// wedge; we also leave it alone while the user is still recording.
+    private func armRefineWatchdog() {
+        refineWatchdog?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            guard self.refineFlow.isActive, !self.refineFlow.isApplying, !self.isRecording else { return }
+            self.refineDebug("refineWatchdog FIRED — recovering stuck refine/overlay")
+            self.executeRefineEffects(self.refineFlow.handle(.abort))
+        }
+        refineWatchdog = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + refineWatchdogTimeout, execute: work)
+    }
+
+    private func cancelRefineWatchdog() {
+        refineWatchdog?.cancel()
+        refineWatchdog = nil
+    }
+
+    /// Run the refine LLM (apply `instruction` to `target`) and feed the result
+    /// back into the machine. The machine already transitioned to `.applying`.
+    private func applyRefineLLM(instruction: String, to target: String) {
+        // Working cue while the LLM runs (can take seconds).
         isRecording = false
         isTranscribing = true
         streamingText = target
@@ -2292,40 +2369,51 @@ class AppState: ObservableObject {
             overlayIsVisible = true
         }
         let sessionID = activeSessionID
-        let directive = InstructionChain.directive(forInstruction: instruction)
+        // Instruction + text labeled together in ONE user message with a
+        // transform-only system prompt — keeps tiny models from answering/obeying
+        // the text instead of rewriting it. See InstructionChain.
+        let systemDirective = InstructionChain.systemDirective
+        let userPayload = InstructionChain.userPayload(instruction: instruction, text: target)
+        refineDebug("applyRefineLLM provider=\(llmProvider) sessionID=\(sessionID.uuidString.prefix(8))")
 
         ensureBundledLLMReady(statusWhileLoading: "Refining…", quiesceWhisper: true, work: { [weak self] in
             guard let self else { return }
+            self.refineDebug("applyRefineLLM POST to \(self.llmEndpoint.baseURL) model=\"\(self.llmModel)\"")
             self.translationService.processFinalText(
-                text: target,
+                text: userPayload,
                 mode: "rephrase",
                 targetLanguage: self.translationTargetLanguage,
                 endpoint: self.llmEndpoint,
                 model: self.llmModel,
-                customInstruction: directive
+                customInstruction: systemDirective
             ) { [weak self] result in
                 Task { @MainActor in
-                    guard let self, sessionID == self.activeSessionID else { return }
-                    self.isTranscribing = false
+                    guard let self else { return }
+                    guard sessionID == self.activeSessionID else {
+                        self.refineDebug("applyRefineLLM RESULT DROPPED: session changed")
+                        // Don't leave the machine stuck in .applying — abort it.
+                        self.executeRefineEffects(self.refineFlow.handle(.abort))
+                        return
+                    }
                     switch result {
                     case .success(let processedText):
+                        self.refineDebug("applyRefineLLM SUCCESS raw=\"\(processedText.prefix(50))\"")
                         let cleaned = self.postProcess(processedText)
-                        let textToInsert = cleaned.isEmpty ? target : cleaned
-                        self.translationStatus = "Instruction applied"
-                        self.insertCompletedText(textToInsert, originalText: target)
+                        self.executeRefineEffects(self.refineFlow.handle(.llmSucceeded(cleaned)))
                     case .failure(let error):
-                        self.error = "Instruction failed: \(error.localizedDescription)"
-                        self.translationStatus = "Instruction failed"
-                        self.insertCompletedText(target, originalText: target)
-                        self.statusMessage = "Instruction failed; inserted text"
+                        self.refineDebug("applyRefineLLM FAILURE: \(error.localizedDescription)")
+                        self.executeRefineEffects(self.refineFlow.handle(.llmFailed(error.localizedDescription)))
                     }
                 }
             }
         }, fallback: { [weak self] in
-            guard let self, sessionID == self.activeSessionID else { return }
-            self.isTranscribing = false
-            self.insertCompletedText(target, originalText: target)
-            self.statusMessage = "Built-in model unavailable; inserted text"
+            guard let self else { return }
+            guard sessionID == self.activeSessionID else {
+                self.executeRefineEffects(self.refineFlow.handle(.abort))
+                return
+            }
+            // Built-in model unavailable: treat as a failed refine (inserts step-1).
+            self.executeRefineEffects(self.refineFlow.handle(.llmFailed("built-in model unavailable")))
         })
     }
 
