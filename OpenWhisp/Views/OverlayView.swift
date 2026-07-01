@@ -382,14 +382,12 @@ struct OverlayView: View {
                 }
                 .frame(height: transcriptBoxHeight, alignment: .bottom)
                 .scrollDisabled(true)
-                // Fade the top edge so text scrolling out reads as a soft reveal,
-                // not an abrupt clip.
-                .mask(
-                    LinearGradient(
-                        colors: [.clear, .black, .black],
-                        startPoint: .top, endPoint: .bottom
-                    )
-                )
+                // No top-fade mask: a gradient mask dimmed the top of the first
+                // line even when the transcript was short (it sits at the bottom of
+                // the fixed box, but the mask faded the whole top band). The
+                // fixed-height bottom-anchored scroll already keeps the newest text
+                // visible; overflow clips cleanly at the top with no dimming.
+                .clipped()
                 .onChange(of: transcriptText) { _ in
                     // Keep the newest line pinned to the bottom, without animating
                     // (animating the scroll on every partial is itself jittery).
