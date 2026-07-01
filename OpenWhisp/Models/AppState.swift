@@ -478,6 +478,18 @@ class AppState: ObservableObject {
     /// recover after this timeout so the overlay can never get permanently stuck.
     private var refineWatchdog: DispatchWorkItem?
     private let refineWatchdogTimeout: TimeInterval = 4
+    /// True while an instruction-capture session is active (distinguishes the refine
+    /// recording from a normal dictation in the shared start/stop plumbing).
+    private var isRefineSession = false
+    /// The user released the refine chord before the recognizer went live. The
+    /// launch path honors this to stop cleanly once live, giving a short hold a
+    /// chance to capture instead of aborting empty (the "nothing happens" bug).
+    private var refineStopRequested = false
+    /// Minimum time the instruction recognizer stays live before a release actually
+    /// stops it, so a quick chord tap still captures a word or two despite the
+    /// recognizer's ~1s startup latency.
+    private let refineMinListen: TimeInterval = 0.6
+    private var refineListenStartedAt: TimeInterval?
 
     /// Set briefly when an insert couldn't be confirmed and the text was left on the
     /// clipboard instead — drives a "copied, press ⌘V" cue in the overlay so the
@@ -1505,8 +1517,17 @@ class AppState: ObservableObject {
 
         // The actual engine start, after permissions are granted.
         let launch: @MainActor () -> Void = {
-            // Abort if the hotkey was released or the session cancelled before grant.
-            guard sessionID == self.activeSessionID, !self.pendingStop else {
+            guard sessionID == self.activeSessionID else {
+                self.isAppleSpeechSession = false
+                self.abortSessionBeforeStart()
+                return
+            }
+            // For a REFINE instruction session, a release before we went live must
+            // NOT abort (that lost the instruction — the "nothing happens" bug):
+            // start anyway, then stop cleanly after the minimum listen window so a
+            // quick chord tap still captures. For normal dictation, pendingStop
+            // still aborts (user changed their mind before it started).
+            if self.pendingStop && !self.isRefineSession {
                 self.isAppleSpeechSession = false
                 self.abortSessionBeforeStart()
                 return
@@ -1515,7 +1536,19 @@ class AppState: ObservableObject {
                 try engine.start(language: self.language)
                 self.isArming = false
                 self.isRecording = true
-                self.statusMessage = "Listening..."
+                self.statusMessage = self.isRefineSession ? "Refine: speak your instruction…" : "Listening..."
+                if self.isRefineSession {
+                    self.refineListenStartedAt = ProcessInfo.processInfo.systemUptime
+                    // If the chord was already released, stop after the min window.
+                    if self.pendingStop || self.refineStopRequested {
+                        self.pendingStop = false
+                        self.refineStopRequested = true
+                        DispatchQueue.main.asyncAfter(deadline: .now() + self.refineMinListen) { [weak self] in
+                            guard let self, self.refineStopRequested, self.isRefineSession else { return }
+                            self.performRefineStop()
+                        }
+                    }
+                }
             } catch {
                 self.error = error.localizedDescription
                 self.statusMessage = "Streaming Error"
@@ -2201,19 +2234,44 @@ class AppState: ObservableObject {
             return
         }
         refineDebug("startRefine step1=\"\(step1!.prefix(20))\" fromSelection=\(fromSelection)")
+        isRefineSession = true
+        refineStopRequested = false
+        refineListenStartedAt = nil
         executeRefineEffects(refineFlow.handle(.engage(step1: step1, fromSelection: fromSelection)))
     }
 
     /// Refine key RELEASED — stop capturing the instruction. Its final transcript
-    /// arrives via the streaming/recording finalize and is fed to the machine as
-    /// `instructionFinalized` (see completeFinalText).
+    /// is fed to the machine as `instructionFinalized` (see completeFinalText).
+    /// Guards the two races that made refine feel broken:
+    ///  - released before the recognizer went live → defer the stop (refineStopRequested)
+    ///    so the launch path stops it cleanly once live instead of losing the utterance;
+    ///  - released within refineMinListen of going live → hold on until the window
+    ///    elapses, so a quick tap still captures a word or two.
     func stopRefine() {
-        refineDebug("stopRefine (isRecording=\(isRecording))")
-        // Same stop path as dictation — the active session is the instruction capture.
-        guard isRecording else {
-            if sessionActive { pendingStop = true }
+        refineDebug("stopRefine (isRecording=\(isRecording) live=\(refineListenStartedAt != nil))")
+        guard isRefineSession else { return }
+
+        // Not live yet — remember the release; the launch path will honor it.
+        guard isRecording, let liveAt = refineListenStartedAt else {
+            refineStopRequested = true
             return
         }
+        let listened = ProcessInfo.processInfo.systemUptime - liveAt
+        if listened < refineMinListen {
+            // Give a quick tap a minimum listen window before actually stopping.
+            refineStopRequested = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + (refineMinListen - listened)) { [weak self] in
+                guard let self, self.refineStopRequested, self.isRefineSession else { return }
+                self.performRefineStop()
+            }
+            return
+        }
+        performRefineStop()
+    }
+
+    private func performRefineStop() {
+        refineStopRequested = false
+        guard isRecording else { return }
         if isAppleSpeechSession { stopAppleSpeech(); return }
         if isStreamingSession { stopStreaming() } else { stopRecording() }
     }
@@ -2285,9 +2343,16 @@ class AppState: ObservableObject {
         syncRefineUI()
     }
 
-    /// Keep the published overlay cue in sync with the machine.
+    /// Keep the published overlay cue in sync with the machine, and tidy the
+    /// instruction-session flags once the flow goes inactive so a later normal
+    /// dictation is never misclassified as a refine capture.
     private func syncRefineUI() {
         refineArmed = refineFlow.isActive
+        if !refineFlow.isActive {
+            isRefineSession = false
+            refineStopRequested = false
+            refineListenStartedAt = nil
+        }
     }
 
     /// Failsafe: if a refine engages but nothing progresses (no speech captured),
