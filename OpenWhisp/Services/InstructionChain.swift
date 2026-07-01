@@ -1,45 +1,15 @@
 import Foundation
 
-/// Pure decision logic for the two-utterance "refine with a follow-up instruction"
-/// flow, kept Foundation-only so it lives in OpenWhispCore and is unit-tested
-/// without AppState/AppKit.
+/// Pure decision logic + prompt construction for the "refine with a spoken
+/// instruction" flow, kept Foundation-only so it lives in OpenWhispCore and is
+/// unit-tested without AppState/AppKit.
 ///
-/// The gesture is an explicit DOUBLE-TAP, decided by feel (eyes closed):
-///   1. Press → speak content → release.
-///   2. Re-press WITHIN `repressGap` of the release → "refine". This is decided at
-///      re-press time from the inter-tap gap, NOT by reacting to anything on screen,
-///      and works even if step-1 is still transcribing.
-///   3. The next utterance is a natural-language instruction the LLM applies to
-///      step-1's text. Step-1's raw text is never pasted; only the refined result.
-///
-/// When refine is triggered this way it's an explicit command, so any rephrase/
-/// translate enhancement from Settings is bypassed — the spoken instruction is the
-/// only transformation applied.
+/// Refine is triggered by a DEDICATED hotkey (Fn+Ctrl by default), held while
+/// speaking the instruction. It applies the instruction to the current selection,
+/// or to the last dictation. The trigger/timing lives in the hotkey layer and the
+/// lifecycle in `RefineFlow`; this type only decides availability and builds the
+/// LLM prompt.
 enum InstructionChain {
-    /// How long after releasing the hotkey a re-press still means "refine what I
-    /// just dictated." This is BOTH the refine-trigger window and how long step-1's
-    /// paste is deferred while we wait to see that re-press (so we never paste raw
-    /// step-1 and then refine it — no duplication). Trade-off: too short and refine
-    /// is hard to trigger (the old 250ms); too long and every normal dictation's
-    /// paste feels laggy. ~0.8s is a comfortable middle — clearly hittable by feel,
-    /// while the paste delay stays subtle.
-    static let repressGap: TimeInterval = 0.8
-
-    /// Whether a re-press at `pressUptime` should engage refine, given the last
-    /// hotkey release (`lastReleaseUptime`, nil if none this cycle). The trigger is
-    /// simply "you released, then pressed again within the window" — no hard double
-    /// tap. Caller additionally requires refine to be available + something to
-    /// refine (recent dictation or a selection).
-    static func shouldEngageRefine(
-        lastReleaseUptime: TimeInterval?,
-        pressUptime: TimeInterval,
-        window: TimeInterval = repressGap
-    ) -> Bool {
-        guard let release = lastReleaseUptime else { return false }
-        let delta = pressUptime - release
-        return delta >= 0 && delta <= window
-    }
-
     /// Whether the refine flow is available at all for this configuration. Chaining
     /// only applies to whole-text output modes (preview / paste-at-end): in "type
     /// live" the text is already pasted incrementally, so there's nothing to hold

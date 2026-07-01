@@ -14,6 +14,8 @@ final class HotkeyMonitor: HotkeyControlling {
 
     var onHotkeyDown: (() -> Void)?
     var onHotkeyUp: (() -> Void)?
+    var onRefineDown: (() -> Void)?
+    var onRefineUp: (() -> Void)?
     var onCancel: (() -> Void)?
     var onPermissionStateChanged: ((Bool) -> Void)?
 
@@ -28,6 +30,9 @@ final class HotkeyMonitor: HotkeyControlling {
     private var localMonitor: Any?
     private var isRunning = false
     private var isPressed = false
+    /// Debounced held-state for the refine chord (Fn+Ctrl), tracked independently
+    /// of the dictation trigger.
+    private var isRefinePressed = false
     var triggerMode: String = "controlSpace"
 
     init() {}
@@ -126,6 +131,31 @@ final class HotkeyMonitor: HotkeyControlling {
         }
     }
 
+    /// Refine chord edge dispatch (Fn+Ctrl held together). Independent of the
+    /// dictation trigger so the two never interfere.
+    private func applyRefine(_ gesture: HotkeyGesture) {
+        switch gesture {
+        case .down:
+            isRefinePressed = true
+            Task { @MainActor in self.onRefineDown?() }
+        case .up:
+            isRefinePressed = false
+            Task { @MainActor in self.onRefineUp?() }
+        case .none:
+            break
+        }
+    }
+
+    /// The refine chord is active while BOTH Fn (function) and Control are held.
+    /// Guard against colliding with the Control+Space dictation trigger: refine
+    /// requires Fn, which Control+Space never uses, so they're disjoint. (When the
+    /// dictation trigger is "fn", plain Fn starts dictation; Fn+Ctrl is still a
+    /// distinct chord — the refine check requires Control too, and the Fn-dictation
+    /// path ignores Control.)
+    private func handleRefineModifiers(fnActive: Bool, controlActive: Bool) {
+        applyRefine(HotkeyGesture.resolve(isActive: fnActive && controlActive, wasPressed: isRefinePressed))
+    }
+
     private func handleEvent(type: CGEventType, event: CGEvent) {
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
             if let eventTap {
@@ -142,6 +172,14 @@ final class HotkeyMonitor: HotkeyControlling {
             handleControlSpace(type: type, keyCode: keyCode, event: event)
         }
 
+        // Refine chord (Fn+Ctrl) — track on modifier changes.
+        if type == .flagsChanged {
+            handleRefineModifiers(
+                fnActive: event.flags.contains(.maskSecondaryFn),
+                controlActive: event.flags.contains(.maskControl)
+            )
+        }
+
         if type == .keyDown, keyCode == Self.escapeKeyCode {
             Task { @MainActor in self.onCancel?() }
         }
@@ -152,6 +190,13 @@ final class HotkeyMonitor: HotkeyControlling {
             handleFnEvent(event)
         } else {
             handleControlSpaceEvent(event)
+        }
+
+        if event.type == .flagsChanged {
+            handleRefineModifiers(
+                fnActive: event.modifierFlags.contains(.function),
+                controlActive: event.modifierFlags.contains(.control)
+            )
         }
 
         if event.type == .keyDown, Int64(event.keyCode) == Self.escapeKeyCode {
