@@ -16,11 +16,29 @@ import Foundation
 /// translate enhancement from Settings is bypassed — the spoken instruction is the
 /// only transformation applied.
 enum InstructionChain {
-    /// Max gap between releasing the hotkey and pressing it again to count as a
-    /// deliberate double-tap (→ refine). A tight inter-tap gap: a quick re-press
-    /// means "refine", while a normal next dictation (a beat later) does not. Also
-    /// bounds how long step-1's paste is deferred while waiting to see a double-tap.
-    static let repressGap: TimeInterval = 0.25
+    /// How long after releasing the hotkey a re-press still means "refine what I
+    /// just dictated." This is BOTH the refine-trigger window and how long step-1's
+    /// paste is deferred while we wait to see that re-press (so we never paste raw
+    /// step-1 and then refine it — no duplication). Trade-off: too short and refine
+    /// is hard to trigger (the old 250ms); too long and every normal dictation's
+    /// paste feels laggy. ~0.8s is a comfortable middle — clearly hittable by feel,
+    /// while the paste delay stays subtle.
+    static let repressGap: TimeInterval = 0.8
+
+    /// Whether a re-press at `pressUptime` should engage refine, given the last
+    /// hotkey release (`lastReleaseUptime`, nil if none this cycle). The trigger is
+    /// simply "you released, then pressed again within the window" — no hard double
+    /// tap. Caller additionally requires refine to be available + something to
+    /// refine (recent dictation or a selection).
+    static func shouldEngageRefine(
+        lastReleaseUptime: TimeInterval?,
+        pressUptime: TimeInterval,
+        window: TimeInterval = repressGap
+    ) -> Bool {
+        guard let release = lastReleaseUptime else { return false }
+        let delta = pressUptime - release
+        return delta >= 0 && delta <= window
+    }
 
     /// Whether the refine flow is available at all for this configuration. Chaining
     /// only applies to whole-text output modes (preview / paste-at-end): in "type

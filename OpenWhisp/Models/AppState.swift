@@ -959,23 +959,32 @@ class AppState: ObservableObject {
     // MARK: - Actions
 
     func startDictation() {
-        // Explicit double-tap to refine: if this press lands within the double-tap
-        // gap of the last release AND refine is available, ARM refine mode — decided
-        // by the gesture/timing alone, even if step-1 is still transcribing. We do
-        // NOT start a new content dictation; instead we either start capturing the
-        // instruction now (if step-1 already finished) or let step-1 finish and then
-        // capture it (handled in completeFinalText). Esc cancels.
-        let dtAvail = InstructionChain.isAvailable(outputMode: outputMode, llmConfigured: llmConfigured, enabled: instructionChainEnabled)
-        let dtDouble = InstructionChain.isDoubleTap(lastReleaseUptime: lastReleaseUptime, pressUptime: ProcessInfo.processInfo.systemUptime)
-        refineDebug("startDictation: provider=\(llmProvider) armed=\(refineArmed) instr=\(isInstructionSession) available=\(dtAvail) isDoubleTap=\(dtDouble) llmConfigured=\(llmConfigured) outputMode=\(outputMode)")
-        if !refineArmed, !isInstructionSession, dtAvail, dtDouble {
-            beginRefine()
-            return
+        // Forgiving "re-press to refine" gesture: after you dictate, simply press
+        // again (and hold + speak the instruction) — no hard-to-hit fast double-tap.
+        // A re-press engages refine when (a) refine is available, (b) it lands
+        // within the generous re-engage window of the last dictation OR step-1 is
+        // still finalizing, AND (c) there's something to refine (recent dictation
+        // result, or selected text). Otherwise it's a normal dictation.
+        let refineAvailable = InstructionChain.isAvailable(outputMode: outputMode, llmConfigured: llmConfigured, enabled: instructionChainEnabled)
+        if !refineArmed, !isInstructionSession, refineAvailable, !isRecording {
+            let now = ProcessInfo.processInfo.systemUptime
+            // Forgiving trigger: a re-press within the window after your last
+            // dictation engages "refine what I just said" — no hard double-tap.
+            let reEngage = InstructionChain.shouldEngageRefine(lastReleaseUptime: lastReleaseUptime, pressUptime: now)
+            // Otherwise, if you have text SELECTED (and didn't just dictate), a
+            // press engages "refine my selection".
+            let selection: String? = (!reEngage && !SecureFieldDetector.focusedFieldIsSecure())
+                ? SelectionReader.readSelectedText()?.trimmingCharacters(in: .whitespacesAndNewlines)
+                : nil
+            if reEngage || (selection?.isEmpty == false) {
+                refineDebug("startDictation: ENGAGE REFINE (reEngage=\(reEngage) selection=\(selection?.isEmpty == false))")
+                beginRefine(pendingSelection: selection)
+                return
+            }
         }
 
-        // This press is a NORMAL dictation (not a double-tap). Clear any stale refine
-        // state so a half-finished refine from before can never leave us "stuck" so
-        // that the next press is wrongly treated as an instruction.
+        // This press is a NORMAL dictation. Clear any stale refine state so a
+        // half-finished refine from before can never leave us "stuck".
         if refineArmed || isInstructionSession {
             clearRefineState()
         }
@@ -2177,50 +2186,38 @@ class AppState: ObservableObject {
         })
     }
 
-    // MARK: - Instruction chaining (explicit double-tap refine flow)
+    // MARK: - Instruction chaining (re-press-to-refine flow)
     //
-    // Gesture: dictate (press-speak-release), then a quick re-press-AND-HOLD while
-    // speaking the instruction, then release. The re-press both (a) arms refine — by
-    // its timing after the release — and (b) IS the instruction capture (it's held
-    // while speaking). Step-1 and step-2 transcribe independently; whichever finishes
-    // last triggers the LLM apply via `tryApplyRefine`.
+    // Gesture: dictate (press-speak-release), then simply PRESS-AND-HOLD again
+    // within a few seconds and speak the instruction, then release. The re-press
+    // (a) arms refine and (b) IS the instruction capture (held while speaking).
+    // Step-1 is the just-dictated result (or a text selection when there's no
+    // recent dictation); the instruction transcribes separately; `tryApplyRefine`
+    // runs the LLM once both are in.
 
-    /// Double-tap detected: arm refine and IMMEDIATELY start capturing the instruction
-    /// (the user is holding the hotkey and about to speak it). Step-1's text arrives
-    /// separately into `refineStep1Text`.
-    private func beginRefine() {
-        refineDebug("beginRefine ENTER streamingText=\"\(streamingText.prefix(30))\" refineStep1=\(refineStep1Text != nil)")
-        lastReleaseUptime = nil          // consume the double-tap
+    /// Arm refine and start capturing the instruction. `pendingSelection`, when
+    /// non-nil, is the already-resolved selection to refine (read by the caller).
+    private func beginRefine(pendingSelection: String? = nil) {
+        refineDebug("beginRefine ENTER streamingText=\"\(streamingText.prefix(20))\" refineStep1=\(refineStep1Text != nil) selection=\(pendingSelection?.isEmpty == false)")
+        lastReleaseUptime = nil
         refineArmed = true
         refineInstruction = nil
-        // Step-1 text is either (a) what you just dictated, or (b) — if you didn't
-        // dictate — the text you have SELECTED in the focused app. Dictation wins; the
-        // selection is only read when the dictation snapshot is empty. The result is
-        // the RESOLVED step-1 value (even if empty — tryApplyRefine then finishes
-        // cleanly rather than waiting forever). Read the selection BEFORE starting the
-        // instruction session below (which bumps activeSessionID / shows the overlay).
-        // Resolve step-1's text. Three cases, in order:
-        //  1. We already captured it (deferred-paste path latched refineStep1Text when
-        //     step-1 finalized just before the double-tap) — keep it.
-        //  2. Its transcript is already in streamingText (step-1 finalized, non-deferred)
-        //     — use that.
-        //  3. Neither — step-1 is still transcribing (WhisperKit's ~1s lag). Don't
-        //     snapshot a partial/empty value; mark awaitingStep1 so the NEXT completed
-        //     transcript is latched as step-1 (handled in completeFinalText) rather
-        //     than being mistaken for the instruction.
+        // Resolve step-1's text, in priority order:
+        //  1. Already latched (deferred-paste path caught it just before this) — keep.
+        //  2. Its transcript is already in streamingText (finalized, not deferred).
+        //  3. A selection resolved by the caller (no recent dictation) — use it.
+        //  4. Nothing yet — step-1 is still transcribing; await its final. Its
+        //     deferred paste is on hold and will latch here via completeFinalText.
         let dictated = streamingText.trimmingCharacters(in: .whitespacesAndNewlines)
         if refineStep1Text != nil {
             refineFromSelection = false
         } else if !dictated.isEmpty {
             refineStep1Text = dictated
             refineFromSelection = false
-        } else if !SecureFieldDetector.focusedFieldIsSecure(),
-                  let selection = SelectionReader.readSelectedText() {
-            // No dictation at all → refine the user's SELECTION instead.
-            refineStep1Text = selection
+        } else if let sel = pendingSelection, !sel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            refineStep1Text = sel
             refineFromSelection = true
         } else {
-            // Step-1 dictation is still finalizing — wait for it.
             awaitingStep1 = true
             refineFromSelection = false
         }
