@@ -486,7 +486,11 @@ class AppState: ObservableObject {
     /// no instruction) within this window — e.g. a too-fast double-tap that captured
     /// no speech — disarm and clear the overlay so it can never get stuck.
     private var refineWatchdog: DispatchWorkItem?
-    private let refineWatchdogTimeout: TimeInterval = 8
+    private let refineWatchdogTimeout: TimeInterval = 4
+    /// True only while the refine LLM request is actually in flight. Distinct from
+    /// isTranscribing (which the instruction session holds true even when wedged),
+    /// so the watchdog can tell "genuinely working" from "stuck".
+    private var refineLLMInFlight = false
 
     /// Set briefly when an insert couldn't be confirmed and the text was left on the
     /// clipboard instead — drives a "copied, press ⌘V" cue in the overlay so the
@@ -2088,6 +2092,20 @@ class AppState: ObservableObject {
         // already running and its final will arrive next.
         if awaitingStep1 {
             awaitingStep1 = false
+            let trimmed = finalText.trimmingCharacters(in: .whitespacesAndNewlines)
+            // Empty step-1 means there's nothing to refine (e.g. a rapid/aborted
+            // re-press captured no speech). Abandon refine cleanly instead of
+            // latching an empty target and waiting forever for an instruction.
+            guard !trimmed.isEmpty else {
+                refineDebug("completeFinalText: awaitingStep1 got EMPTY -> abandon refine")
+                clearRefineState()
+                isTranscribing = false
+                streamingText = ""
+                currentSessionText = ""
+                statusMessage = "Nothing to refine"
+                finishSessionUI()
+                return
+            }
             refineStep1Text = finalText
             isTranscribing = true   // keep the working cue until the instruction lands
             tryApplyRefine()        // no-op unless the instruction already arrived
@@ -2098,6 +2116,25 @@ class AppState: ObservableObject {
         // try to apply (step-1's text may still be transcribing). Enhancement/translate
         // from Settings is bypassed — the instruction wins.
         if isInstructionSession {
+            let trimmed = finalText.trimmingCharacters(in: .whitespacesAndNewlines)
+            // Empty instruction (rapid re-press with no speech): don't wedge. If we
+            // have step-1 text, insert it unchanged; otherwise abandon cleanly.
+            guard !trimmed.isEmpty else {
+                refineDebug("completeFinalText: instruction EMPTY -> finish without refine")
+                let step1 = refineStep1Text
+                clearRefineState()
+                isTranscribing = false
+                if let step1, !step1.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !refineFromSelection {
+                    insertCompletedText(step1, originalText: step1)
+                    statusMessage = "No instruction heard; inserted text"
+                } else {
+                    streamingText = ""
+                    currentSessionText = ""
+                    statusMessage = "Nothing to refine"
+                    finishSessionUI()
+                }
+                return
+            }
             // Keep isTranscribing TRUE so the overlay shows a working/finalizing cue
             // (not an idle "waiting for input" state) while the LLM refines — that
             // call can take several seconds. Cleared in applyInstruction's completion.
@@ -2242,8 +2279,11 @@ class AppState: ObservableObject {
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
             guard self.refineArmed || self.isInstructionSession else { return }
-            // Still armed but nothing is actively running → it's wedged. Recover.
-            guard !self.isRecording, !self.isTranscribing, !self.sessionActive else { return }
+            // If the refine LLM call is genuinely in flight, or the user is still
+            // actively recording the instruction, it's not stuck — leave it alone.
+            // (We do NOT gate on isTranscribing: the instruction session keeps that
+            // true even when wedged, which is exactly the state we must recover.)
+            guard !self.refineLLMInFlight, !self.isRecording else { return }
             self.refineDebug("refineWatchdog FIRED — recovering stuck refine/overlay")
             self.clearRefineState()
             self.isTranscribing = false
@@ -2337,6 +2377,7 @@ class AppState: ObservableObject {
         refineStep1Text = nil
         refineInstruction = nil
         refineFromSelection = false
+        refineLLMInFlight = false
         lastReleaseUptime = nil
     }
 
@@ -2364,6 +2405,7 @@ class AppState: ObservableObject {
         let userPayload = InstructionChain.userPayload(instruction: instruction, text: target)
         refineDebug("applyInstruction ENTER provider=\(llmProvider) sessionID=\(sessionID.uuidString.prefix(8)) instr=\"\(instruction.prefix(30))\" target=\"\(target.prefix(30))\"")
 
+        refineLLMInFlight = true
         ensureBundledLLMReady(statusWhileLoading: "Refining…", quiesceWhisper: true, work: { [weak self] in
             guard let self else { return }
             self.refineDebug("applyInstruction work() -> POST to \(self.llmEndpoint.baseURL) model=\"\(self.llmModel)\"")
@@ -2377,6 +2419,7 @@ class AppState: ObservableObject {
             ) { [weak self] result in
                 Task { @MainActor in
                     guard let self else { return }
+                    self.refineLLMInFlight = false
                     guard sessionID == self.activeSessionID else {
                         self.refineDebug("applyInstruction RESULT DROPPED: session changed (cap=\(sessionID.uuidString.prefix(8)) now=\(self.activeSessionID.uuidString.prefix(8)))")
                         return
@@ -2399,7 +2442,9 @@ class AppState: ObservableObject {
                 }
             }
         }, fallback: { [weak self] in
-            guard let self, sessionID == self.activeSessionID else { return }
+            guard let self else { return }
+            self.refineLLMInFlight = false
+            guard sessionID == self.activeSessionID else { return }
             self.isTranscribing = false
             self.insertCompletedText(target, originalText: target)
             self.statusMessage = "Built-in model unavailable; inserted text"
