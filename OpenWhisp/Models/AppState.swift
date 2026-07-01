@@ -960,10 +960,10 @@ class AppState: ObservableObject {
         // NOT start a new content dictation; instead we either start capturing the
         // instruction now (if step-1 already finished) or let step-1 finish and then
         // capture it (handled in completeFinalText). Esc cancels.
-        if !refineArmed, !isInstructionSession,
-           InstructionChain.isAvailable(outputMode: outputMode, llmConfigured: llmConfigured, enabled: instructionChainEnabled),
-           InstructionChain.isDoubleTap(lastReleaseUptime: lastReleaseUptime,
-                                        pressUptime: ProcessInfo.processInfo.systemUptime) {
+        let dtAvail = InstructionChain.isAvailable(outputMode: outputMode, llmConfigured: llmConfigured, enabled: instructionChainEnabled)
+        let dtDouble = InstructionChain.isDoubleTap(lastReleaseUptime: lastReleaseUptime, pressUptime: ProcessInfo.processInfo.systemUptime)
+        refineDebug("startDictation: provider=\(llmProvider) armed=\(refineArmed) instr=\(isInstructionSession) available=\(dtAvail) isDoubleTap=\(dtDouble) llmConfigured=\(llmConfigured) outputMode=\(outputMode)")
+        if !refineArmed, !isInstructionSession, dtAvail, dtDouble {
             beginRefine()
             return
         }
@@ -1243,13 +1243,34 @@ class AppState: ObservableObject {
     /// failure. For every other provider it runs `work` immediately. `work` must
     /// itself call `processFinalText`; we bracket the request with the engine's
     /// in-flight counter so idle teardown can't kill a live generation.
+    /// Diagnostic logger for the refine/instruction-chain flow. Writes to
+    /// ~/Library/Caches/com.openwhisp.app/refine-debug.log. Dev-only: a NO-OP in
+    /// consumer builds (this flow has been a recurring source of subtle bugs, so
+    /// the trace is worth keeping in instrumented builds).
+    func refineDebug(_ message: String) {
+        #if OPENWHISP_INSTRUMENTATION
+        let url = URL(fileURLWithPath: NSHomeDirectory())
+            .appendingPathComponent("Library/Caches/com.openwhisp.app/refine-debug.log")
+        let line = "[\(ISO8601DateFormatter().string(from: Date()))] \(message)\n"
+        try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        if let h = try? FileHandle(forWritingTo: url) {
+            defer { try? h.close() }
+            try? h.seekToEnd(); h.write(Data(line.utf8))
+        } else {
+            try? line.write(to: url, atomically: true, encoding: .utf8)
+        }
+        #endif
+    }
+
     private func ensureBundledLLMReady(
         statusWhileLoading: String = "Loading local model…",
         quiesceWhisper: Bool = false,
         work: @escaping () -> Void,
         fallback: @escaping () -> Void
     ) {
+        refineDebug("ensureBundledLLMReady ENTER provider=\(llmProvider) sessionID=\(activeSessionID.uuidString.prefix(8))")
         guard llmProvider == "bundled" else {
+            refineDebug("ensureBundledLLMReady: non-bundled -> work() immediately")
             work()
             return
         }
@@ -2039,6 +2060,7 @@ class AppState: ObservableObject {
 
     private func completeFinalText(_ text: String) {
         let finalText = postProcess(text, isFinalTranscript: true)
+        refineDebug("completeFinalText: text=\"\(finalText.prefix(30))\" awaitingStep1=\(awaitingStep1) isInstructionSession=\(isInstructionSession) refineArmed=\(refineArmed)")
 
         // After a double-tap, step-1's transcript may still have been in flight. The
         // FIRST completed transcript while awaiting it is step-1 (latch it, don't
@@ -2156,6 +2178,7 @@ class AppState: ObservableObject {
     /// (the user is holding the hotkey and about to speak it). Step-1's text arrives
     /// separately into `refineStep1Text`.
     private func beginRefine() {
+        refineDebug("beginRefine ENTER streamingText=\"\(streamingText.prefix(30))\" refineStep1=\(refineStep1Text != nil)")
         lastReleaseUptime = nil          // consume the double-tap
         refineArmed = true
         refineInstruction = nil
@@ -2192,6 +2215,7 @@ class AppState: ObservableObject {
         }
         isInstructionSession = true
         let liveMode = outputMode == "liveChunks" || outputMode == "preview"
+        refineDebug("beginRefine: resolved step1=\(refineStep1Text != nil ? "\"\(refineStep1Text!.prefix(20))\"" : "nil") awaitingStep1=\(awaitingStep1) engine=\(transcriptionEngine) liveMode=\(liveMode) -> \(transcriptionEngine == "appleSpeech" || (transcriptionEngine == "whisperKit" && liveMode) ? "startStreamingSession" : "startRecording")")
         if transcriptionEngine == "appleSpeech" || (transcriptionEngine == "whisperKit" && liveMode) {
             startStreamingSession()
         } else {
@@ -2233,6 +2257,7 @@ class AppState: ObservableObject {
     /// Once BOTH step-1 text and the spoken instruction are available, run the LLM and
     /// insert the result. No-op until both are present.
     private func tryApplyRefine() {
+        refineDebug("tryApplyRefine: step1=\(refineStep1Text != nil ? "\"\(refineStep1Text!.prefix(20))\"" : "nil") instruction=\(refineInstruction != nil ? "\"\(refineInstruction!.prefix(20))\"" : "nil")")
         guard let target = refineStep1Text, let instruction = refineInstruction else { return }
         refineArmed = false
         isInstructionSession = false
@@ -2292,28 +2317,41 @@ class AppState: ObservableObject {
             overlayIsVisible = true
         }
         let sessionID = activeSessionID
-        let directive = InstructionChain.directive(forInstruction: instruction)
+        // Instruction + text are labeled together in ONE user message, with a
+        // transform-only system prompt — this is what keeps tiny on-device models
+        // from answering/obeying the text (e.g. rewriting "what is the capital of
+        // Egypt?" instead of answering "Cairo"). See InstructionChain.
+        let systemDirective = InstructionChain.systemDirective
+        let userPayload = InstructionChain.userPayload(instruction: instruction, text: target)
+        refineDebug("applyInstruction ENTER provider=\(llmProvider) sessionID=\(sessionID.uuidString.prefix(8)) instr=\"\(instruction.prefix(30))\" target=\"\(target.prefix(30))\"")
 
         ensureBundledLLMReady(statusWhileLoading: "Refining…", quiesceWhisper: true, work: { [weak self] in
             guard let self else { return }
+            self.refineDebug("applyInstruction work() -> POST to \(self.llmEndpoint.baseURL) model=\"\(self.llmModel)\"")
             self.translationService.processFinalText(
-                text: target,
+                text: userPayload,
                 mode: "rephrase",
                 targetLanguage: self.translationTargetLanguage,
                 endpoint: self.llmEndpoint,
                 model: self.llmModel,
-                customInstruction: directive
+                customInstruction: systemDirective
             ) { [weak self] result in
                 Task { @MainActor in
-                    guard let self, sessionID == self.activeSessionID else { return }
+                    guard let self else { return }
+                    guard sessionID == self.activeSessionID else {
+                        self.refineDebug("applyInstruction RESULT DROPPED: session changed (cap=\(sessionID.uuidString.prefix(8)) now=\(self.activeSessionID.uuidString.prefix(8)))")
+                        return
+                    }
                     self.isTranscribing = false
                     switch result {
                     case .success(let processedText):
+                        self.refineDebug("applyInstruction SUCCESS raw=\"\(processedText.prefix(50))\"")
                         let cleaned = self.postProcess(processedText)
                         let textToInsert = cleaned.isEmpty ? target : cleaned
                         self.translationStatus = "Instruction applied"
                         self.insertCompletedText(textToInsert, originalText: target)
                     case .failure(let error):
+                        self.refineDebug("applyInstruction FAILURE: \(error.localizedDescription)")
                         self.error = "Instruction failed: \(error.localizedDescription)"
                         self.translationStatus = "Instruction failed"
                         self.insertCompletedText(target, originalText: target)

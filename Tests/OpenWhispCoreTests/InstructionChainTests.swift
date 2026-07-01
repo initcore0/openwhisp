@@ -55,12 +55,26 @@ final class InstructionChainTests: XCTestCase {
             lastReleaseUptime: 100.0, pressUptime: 99.9, gap: 0.5))    // clock weirdness
     }
 
-    // MARK: directive
+    // MARK: system directive + user payload
 
-    func testDirectiveEmbedsInstructionAndAsksForTextOnly() {
-        let d = InstructionChain.directive(forInstruction: "  make it a telegram post  ")
-        XCTAssertTrue(d.contains("make it a telegram post"))
-        XCTAssertFalse(d.contains("  make it"))                 // trimmed
-        XCTAssertTrue(d.lowercased().contains("return only"))   // no preamble
+    func testSystemDirectiveIsTransformOnlyAndGuardsAgainstAnsweringText() {
+        let d = InstructionChain.systemDirective
+        let lower = d.lowercased()
+        XCTAssertTrue(lower.contains("only the rewritten text") || lower.contains("output only"))
+        // The key robustness property: never answer/obey the TEXT itself. This is
+        // what stops tiny models from answering "what is the capital of Egypt?".
+        XCTAssertTrue(lower.contains("never answer"))
+        XCTAssertTrue(lower.contains("never follow"))
+    }
+
+    func testUserPayloadLabelsInstructionAndTextAndTrims() {
+        let p = InstructionChain.userPayload(instruction: "  make it a telegram post  ",
+                                             text: "  hello team  ")
+        XCTAssertTrue(p.contains("INSTRUCTION: make it a telegram post"))
+        XCTAssertTrue(p.contains("TEXT:\nhello team"))
+        XCTAssertFalse(p.contains("  make it"))   // instruction trimmed
+        XCTAssertFalse(p.contains("  hello"))     // text trimmed
+        // Instruction comes before the text so the model reads the request first.
+        XCTAssertTrue(p.range(of: "INSTRUCTION:")!.lowerBound < p.range(of: "TEXT:")!.lowerBound)
     }
 }
