@@ -477,6 +477,13 @@ class AppState: ObservableObject {
     /// recover after this timeout so the overlay can never get permanently stuck.
     private var refineWatchdog: DispatchWorkItem?
     private let refineWatchdogTimeout: TimeInterval = 4
+    /// A just-finished dictation's paste, deferred for the re-press window so that
+    /// a re-press-to-refine can cancel it and paste the refined text instead (no
+    /// raw+refined duplicate). Fires the paste if no re-press arrives in time.
+    private var pendingStep1Paste: DispatchWorkItem?
+    /// The text of the deferred paste, handed to the machine as step-1 if a
+    /// re-press engages refine before the paste fires.
+    private var pendingStep1Text: String?
 
     /// Set briefly when an insert couldn't be confirmed and the text was left on the
     /// clipboard instead — drives a "copied, press ⌘V" cue in the overlay so the
@@ -981,6 +988,17 @@ class AppState: ObservableObject {
         if refineFlow.isActive {
             executeRefineEffects(refineFlow.handle(.abort))
         }
+        // Flush a deferred step-1 paste from the previous dictation NOW: the user
+        // chose to dictate again rather than refine, so paste that text before the
+        // new session (its closure captured its own text, so this is safe).
+        if let work = pendingStep1Paste {
+            work.cancel()
+            pendingStep1Paste = nil
+            if let text = pendingStep1Text {
+                pendingStep1Text = nil
+                insertCompletedText(text, originalText: text)
+            }
+        }
 
         guard !isRecording, !isTranscribing else { return }
         // Privacy guard: never dictate into a focused password/secure field. The
@@ -1052,6 +1070,8 @@ class AppState: ObservableObject {
         sessionActive = false
         pendingStop = false
         cancelRefineWatchdog()
+        cancelPendingStep1Paste()
+        pendingStep1Text = nil
         refineFlow.reset()
         syncRefineUI()
         transcriptionRequests.removeAll()
@@ -2120,7 +2140,10 @@ class AppState: ObservableObject {
             && (outputMode == "finalOnly" || outputMode == "preview")
         guard enhanceWholeText else {
             isTranscribing = false
-            insertCompletedText(finalText, originalText: finalText)
+            // If refine is available, DEFER this paste briefly: a re-press within
+            // the window engages refine on THIS text, and refine will paste the
+            // refined version instead. Pasting now would duplicate (raw + refined).
+            insertOrDeferForRefine(finalText)
             return
         }
 
@@ -2184,11 +2207,46 @@ class AppState: ObservableObject {
     // The lifecycle is driven by the pure `RefineFlow` state machine. These methods
     // only (a) feed it events and (b) execute the effects it returns.
 
+    /// Insert a finished dictation now, UNLESS refine is available — then defer the
+    /// paste for the re-press window. If the user re-presses in time, refine takes
+    /// over this text (cancelling the paste) and pastes the refined version instead,
+    /// so we never paste raw-then-refined (the duplication bug). If no re-press
+    /// arrives, the paste fires. Non-refine configs paste immediately.
+    private func insertOrDeferForRefine(_ text: String) {
+        let refineAvailable = InstructionChain.isAvailable(outputMode: outputMode, llmConfigured: llmConfigured, enabled: instructionChainEnabled)
+        guard refineAvailable, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            insertCompletedText(text, originalText: text)
+            return
+        }
+        cancelPendingStep1Paste()
+        pendingStep1Text = text
+        // Keep the overlay's "finalizing" cue up during the brief hold so it doesn't
+        // flash "done" then reopen for refine.
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.pendingStep1Paste = nil
+            self.pendingStep1Text = nil
+            // A refine may have engaged after this was scheduled — don't double-paste.
+            guard !self.refineFlow.isActive else { return }
+            self.insertCompletedText(text, originalText: text)
+        }
+        pendingStep1Paste = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + InstructionChain.repressGap, execute: work)
+    }
+
+    private func cancelPendingStep1Paste() {
+        pendingStep1Paste?.cancel()
+        pendingStep1Paste = nil
+    }
+
     /// Snapshot of step-1's just-dictated text when a re-press engages refine
-    /// during/just-after a dictation. If already resolved (in `streamingText`) we
-    /// hand it to the machine; otherwise nil and the machine waits for
-    /// `step1Finalized` when the late transcript lands.
+    /// during/just-after a dictation. Prefers the still-deferred paste (so refine
+    /// takes over the exact un-pasted text); falls back to streamingText; nil means
+    /// step-1 is still transcribing and the machine will await `step1Finalized`.
     private func refineFlowPendingStep1() -> String? {
+        if let pending = pendingStep1Text?.trimmingCharacters(in: .whitespacesAndNewlines), !pending.isEmpty {
+            return pending
+        }
         let t = streamingText.trimmingCharacters(in: .whitespacesAndNewlines)
         return t.isEmpty ? nil : t
     }
@@ -2197,6 +2255,10 @@ class AppState: ObservableObject {
     private func engageRefine(step1: String?, fromSelection: Bool) {
         refineDebug("engageRefine step1=\(step1 != nil) fromSelection=\(fromSelection)")
         lastReleaseUptime = nil
+        // Refine takes over step-1; cancel its deferred paste so we don't paste
+        // raw step-1 in addition to the refined result.
+        cancelPendingStep1Paste()
+        pendingStep1Text = nil
         executeRefineEffects(refineFlow.handle(.engage(step1: step1, fromSelection: fromSelection)))
     }
 
