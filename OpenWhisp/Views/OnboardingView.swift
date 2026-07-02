@@ -35,6 +35,11 @@ struct OnboardingView: View {
         .frame(width: 520, height: 460)
         .onAppear(perform: refresh)
         .onReceive(pollTimer) { _ in refresh() }
+        // The host keeps the window (isReleasedWhenClosed = false) and only
+        // releases it via onClose. Catch every close path — including the red
+        // title-bar button — so this view and its 1 Hz poll timer don't outlive
+        // the window.
+        .background(WindowCloseObserver(onWillClose: onClose))
     }
 
     // MARK: - Content per step

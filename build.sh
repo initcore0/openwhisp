@@ -26,7 +26,11 @@ mkdir -p "$BUILD_DIR"
 echo ""
 echo "Step 1: Compiling Swift files..."
 
-SWIFT_FILES=$(find "$PROJECT_DIR/OpenWhisp" -name "*.swift" | tr '\n' ' ')
+# Collect sources into an array so paths with spaces survive (no word-splitting).
+SWIFT_FILES=()
+while IFS= read -r f; do
+    SWIFT_FILES+=("$f")
+done < <(find "$PROJECT_DIR/OpenWhisp" -name "*.swift")
 
 # WhisperKit backend. ON BY DEFAULT (it's the default transcription engine); opt
 # out with WHISPERKIT=0 for a lean build. The link-args logic is shared with
@@ -41,7 +45,9 @@ resolve_whisperkit_args
 source "$PROJECT_DIR/scripts/instrumentation-args.sh"
 resolve_instrumentation_args
 
-xcrun swiftc \
+# swiftc runs inside the if condition so set -e doesn't abort before the
+# failure branch can report.
+if xcrun swiftc \
     -target arm64-apple-macosx14.0 \
     -sdk "$(xcrun --show-sdk-path --sdk macosx)" \
     -parse-as-library \
@@ -57,11 +63,10 @@ xcrun swiftc \
     -framework CoreGraphics \
     "${WHISPERKIT_ARGS[@]}" \
     "${INSTRUMENTATION_ARGS[@]+"${INSTRUMENTATION_ARGS[@]}"}" \
-    $SWIFT_FILES \
+    "${SWIFT_FILES[@]}" \
     -o "$BUILD_DIR/OpenWhisp" \
     2>&1
-
-if [ $? -eq 0 ]; then
+then
     echo ""
     echo "✓ Build successful!"
     echo "Output: $BUILD_DIR/OpenWhisp"

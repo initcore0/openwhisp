@@ -11,17 +11,31 @@ import Foundation
 /// "translate this to English" is left untouched rather than emptied).
 enum MetaInstructionStripper {
 
+    /// Language slot of a translate command: ONE free word, optionally preceded
+    /// by a whitelisted modifier for real multi-word language names ("Brazilian
+    /// Portuguese", "simplified Chinese"). One free word covers essentially
+    /// every language name (Ukrainian, Polish, Hindi, …) without the greed of
+    /// `[a-z ]+`, which swallowed arbitrary trailing words ("…translate this to
+    /// English properly" → "…how to."). The second word stays whitelisted
+    /// because that's where the greed lives.
+    private static let languages =
+        #"(?:(?:simplified|traditional|modern|brazilian|mandarin|swiss) )?[a-z]+"#
+
     /// Trailing clauses to remove (matched case-insensitively at the end, after
     /// an optional sentence break). Order: longest/most-specific first.
+    ///
+    /// Every pattern requires an explicit translate/transcribe command verb.
+    /// Bare "in English"/"на английский" directives are deliberately NOT
+    /// matched: strip() runs on every final transcript, and a sentence that
+    /// legitimately ends with a language name ("send me the documentation in
+    /// English") must survive intact.
     private static let trailingPatterns: [String] = [
         // "translate this into/to <language>", with optional "please"
-        #"translate (?:this|it|that|the (?:text|above))? ?(?:in ?to|to) [a-z ]+"#,
-        #"translate (?:in ?to|to) [a-z]+"#,
+        #"translate (?:this|it|that|the (?:text|above))? ?(?:in ?to|to) "# + languages,
+        #"translate (?:in ?to|to) "# + languages,
         #"translate (?:this|it|that)"#,
         // "transcribe this/it/that ..."
-        #"transcribe (?:this|it|that)(?: (?:in ?to|to) [a-z]+)?"#,
-        // bare "in English/Russian/..." as a trailing language directive
-        #"in (?:english|russian|spanish|french|german|italian|portuguese|japanese|chinese|korean|arabic)"#,
+        #"transcribe (?:this|it|that)(?: (?:in ?to|to) "# + languages + #")?"#,
 
         // --- Russian ---
         // When dictating in Russian with translate-on, whisper renders the Russian
@@ -32,9 +46,7 @@ enum MetaInstructionStripper {
         #"перевед[иь](?:те)?(?: (?:это|этот текст|текст|всё это|все это|сообщение))? на [а-яё]+"#,
         #"переводи(?:те)?(?: (?:это|этот текст|текст|всё это|все это|сообщение))? на [а-яё]+"#,
         // "переведи это/текст" without an explicit language.
-        #"перевед[иь](?:те)? (?:это|этот текст|текст|всё это|все это|сообщение)"#,
-        // bare "на английский/русский/…" as a trailing language directive.
-        #"на (?:английский|русский|испанский|французский|немецкий|итальянский|португальский|японский|китайский|корейский|арабский)"#
+        #"перевед[иь](?:те)? (?:это|этот текст|текст|всё это|все это|сообщение)"#
     ]
 
     /// Strip a trailing translate/transcribe instruction if present. Returns the
@@ -55,7 +67,11 @@ enum MetaInstructionStripper {
             // politeness lead-in ("Please"/"could you"/…) right before the command.
             let lead = #"[\s,;:-]*(?:(?:could you|can you|would you|please|kindly|пожалуйста|будьте добры|будь добр[а]?)[\s,]*)*"#
             let trail = #"(?:[\s,]*(?:please|пожалуйста))?[\s,.!?]*$"#
-            let full = #"(?i)"# + lead + pattern + trail
+            // \b before the command verb: the lead can match empty, so without
+            // it the pattern would match mid-word ("mistranslate this into
+            // English" → "mis."). ICU's \b is Unicode-aware, so it also covers
+            // the Cyrillic patterns.
+            let full = #"(?i)"# + lead + #"\b"# + pattern + trail
             guard let range = trimmed.range(of: full, options: .regularExpression) else { continue }
 
             // The slice that precedes the matched instruction. Trim trailing

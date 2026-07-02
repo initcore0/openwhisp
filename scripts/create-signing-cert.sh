@@ -17,8 +17,25 @@ set -euo pipefail
 
 CERT_NAME="OpenWhisp Self-Signed"
 
-if security find-certificate -c "$CERT_NAME" >/dev/null 2>&1; then
+# Done only when the cert is a *usable* codesigning identity (imported AND
+# trusted). Checking mere existence would wedge an interrupted run: cert
+# imported, trust step skipped, and no way to retry through the script.
+if security find-identity -v -p codesigning 2>/dev/null | grep -q "$CERT_NAME"; then
     echo "✓ Code-signing certificate '$CERT_NAME' already exists."
+    exit 0
+fi
+
+if security find-certificate -c "$CERT_NAME" >/dev/null 2>&1; then
+    # A previous run was interrupted after importing the cert but before the
+    # trust grant. Re-run just the trust step against the existing cert.
+    echo "Certificate '$CERT_NAME' exists but is not trusted for code signing."
+    WORK="$(mktemp -d)"
+    trap 'rm -rf "$WORK"' EXIT
+    security find-certificate -c "$CERT_NAME" -p > "$WORK/cert.pem"
+    echo ">>> Granting code-signing trust to the certificate (needs your password)..."
+    sudo security add-trusted-cert -d -r trustRoot \
+        -p codeSign -k /Library/Keychains/System.keychain "$WORK/cert.pem"
+    echo "✓ '$CERT_NAME' is now trusted for code signing."
     exit 0
 fi
 
@@ -42,16 +59,30 @@ keyUsage = critical, digitalSignature
 extendedKeyUsage = critical, codeSigning
 EOF
 
-openssl req -x509 -newkey rsa:2048 -nodes \
+if ! openssl req -x509 -newkey rsa:2048 -nodes \
     -keyout "$WORK/key.pem" -out "$WORK/cert.pem" \
-    -days 3650 -config "$CONF" >/dev/null 2>&1
+    -days 3650 -config "$CONF" >"$WORK/openssl.log" 2>&1; then
+    echo "ERROR: openssl req failed:" >&2
+    cat "$WORK/openssl.log" >&2
+    exit 1
+fi
 
-# Bundle key+cert into a PKCS#12. Use -legacy + a password: modern OpenSSL's
-# default PKCS#12 cipher is rejected by macOS `security import`.
+# Bundle key+cert into a PKCS#12. OpenSSL 3.x needs -legacy: its default PKCS#12
+# cipher is rejected by macOS `security import`. LibreSSL (stock /usr/bin/openssl)
+# doesn't have the flag — and doesn't need it, its defaults are already legacy.
 P12="$WORK/identity.p12"
 P12PASS="openwhisp"
-openssl pkcs12 -export -legacy -inkey "$WORK/key.pem" -in "$WORK/cert.pem" \
-    -out "$P12" -passout "pass:$P12PASS" -name "$CERT_NAME" >/dev/null 2>&1
+LEGACY_FLAG=()
+if openssl pkcs12 -help 2>&1 | grep -q -- '-legacy'; then
+    LEGACY_FLAG=(-legacy)
+fi
+if ! openssl pkcs12 -export "${LEGACY_FLAG[@]+"${LEGACY_FLAG[@]}"}" \
+    -inkey "$WORK/key.pem" -in "$WORK/cert.pem" \
+    -out "$P12" -passout "pass:$P12PASS" -name "$CERT_NAME" >"$WORK/openssl.log" 2>&1; then
+    echo "ERROR: openssl pkcs12 failed:" >&2
+    cat "$WORK/openssl.log" >&2
+    exit 1
+fi
 
 KEYCHAIN="$HOME/Library/Keychains/login.keychain-db"
 # -T /usr/bin/codesign lets codesign use the key without an interactive prompt each time.

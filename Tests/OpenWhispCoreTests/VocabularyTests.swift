@@ -22,6 +22,25 @@ final class VocabularyTests: XCTestCase {
         XCTAssertEqual(s.apply(to: "category catalog cat"), "category catalog dog")
     }
 
+    func testPunctuationEdgedFromMatches() {
+        // \b inverts at non-word edges, so "C++"/".net"/"@here"-style entries
+        // would silently never fire; the lookaround boundaries must match them.
+        let s = VocabularySubstitutor(substitutions: [sub("c++", "C++")])
+        XCTAssertEqual(s.apply(to: "i like c++ a lot"), "i like C++ a lot")
+
+        let dot = VocabularySubstitutor(substitutions: [sub(".net", ".NET")])
+        XCTAssertEqual(dot.apply(to: "use .net here"), "use .NET here")
+
+        let at = VocabularySubstitutor(substitutions: [sub("@here", "@channel")])
+        XCTAssertEqual(at.apply(to: "ping @here now"), "ping @channel now")
+    }
+
+    func testPunctuationEdgedFromStillNotGluedToWordChars() {
+        // The relaxed boundary must not rewrite a phrase glued to a word char.
+        let s = VocabularySubstitutor(substitutions: [sub("c++", "C++")])
+        XCTAssertEqual(s.apply(to: "typedef c++x thing"), "typedef c++x thing")
+    }
+
     func testReplacementWithDollarIsLiteral() {
         // Replacement must not be interpreted as a regex template ($5 -> literal).
         let s = VocabularySubstitutor(substitutions: [sub("dollars", "$5")])

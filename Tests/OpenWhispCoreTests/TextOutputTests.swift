@@ -55,27 +55,84 @@ final class TextOutputTests: XCTestCase {
 
     // MARK: InsertVerifier (AX read-back decision)
 
-    func testVerifyReflectedWhenValueContainsText() {
+    func testVerifyReflectedWhenValueChangedAndContainsText() {
         XCTAssertEqual(
-            InsertVerifier.axInsertReflected(expected: "hello", current: "say hello there"),
+            InsertVerifier.axInsertReflected(expected: "hello", before: "say ", current: "say hello there"),
             true
         )
     }
 
-    func testVerifyContradictedWhenValueLacksText() {
-        // Readable value that doesn't contain our text → AX silently failed.
+    func testVerifyContradictedWhenValueUnchangedAndLacksText() {
+        // Readable value, unchanged by the set, doesn't contain our text →
+        // AX silently failed → fall back to paste.
         XCTAssertEqual(
-            InsertVerifier.axInsertReflected(expected: "hello", current: "unchanged"),
+            InsertVerifier.axInsertReflected(expected: "hello", before: "unchanged", current: "unchanged"),
             false
+        )
+    }
+
+    func testVerifyUnverifiableWhenTextAlreadyPresentBeforeSet() {
+        // The field already held the dictated phrase and the set changed nothing:
+        // could be an ignored AX set OR a no-op replacement of an identical
+        // selection — must NOT verify (would silently drop text in lying apps),
+        // must NOT contradict (paste would duplicate) → nil.
+        XCTAssertNil(
+            InsertVerifier.axInsertReflected(expected: "thanks", before: "well thanks", current: "well thanks")
+        )
+    }
+
+    func testVerifyReflectedWhenAppAppliedSmartQuotes() {
+        // The app applied typographic substitution (smart quotes) to our text —
+        // normalization reclassifies this as a verified insert (a paste fallback
+        // would insert a second copy).
+        XCTAssertEqual(
+            InsertVerifier.axInsertReflected(expected: "it's ready", before: "", current: "it\u{2019}s ready"),
+            true
+        )
+    }
+
+    func testVerifyContradictedWhenFieldClearedBySet() {
+        // AX reported success but the field ended up EMPTY — the app discarded
+        // the text (validator reset). The text exists nowhere; paste must recover.
+        XCTAssertEqual(
+            InsertVerifier.axInsertReflected(expected: "hello", before: "draft text", current: ""),
+            false
+        )
+    }
+
+    func testVerifyContradictedWhenFieldShrankWithoutText() {
+        // Field shrank and doesn't contain our text — a successful insert of
+        // non-empty text cannot shrink the value → discarded → paste fallback.
+        XCTAssertEqual(
+            InsertVerifier.axInsertReflected(expected: "hello world", before: "some longer content", current: "some"),
+            false
+        )
+    }
+
+    func testVerifyUnverifiableWhenFieldGrewWithRewrittenText() {
+        // Field grew but our text is absent even after normalization — the app
+        // aggressively rewrote it (autocorrect/markdown). Pasting would
+        // duplicate → trust the AX status.
+        XCTAssertNil(
+            InsertVerifier.axInsertReflected(expected: "teh quick fix", before: "note: ", current: "note: the quick fix")
+        )
+    }
+
+    func testVerifyReflectedWhenBeforeUnreadable() {
+        // No pre-set snapshot but the read-back changed relative to nil and
+        // contains our text → verified.
+        XCTAssertEqual(
+            InsertVerifier.axInsertReflected(expected: "hello", before: nil, current: "say hello there"),
+            true
         )
     }
 
     func testVerifyUnverifiableWhenNoReadableValue() {
         // nil read-back → can't verify → trust the AX status (nil result).
-        XCTAssertNil(InsertVerifier.axInsertReflected(expected: "hello", current: nil))
+        XCTAssertNil(InsertVerifier.axInsertReflected(expected: "hello", before: "x", current: nil))
     }
 
     func testVerifyEmptyExpectedIsUnverifiable() {
-        XCTAssertNil(InsertVerifier.axInsertReflected(expected: "   ", current: "anything"))
+        XCTAssertNil(InsertVerifier.axInsertReflected(expected: "   ", before: "", current: "anything"))
     }
 }

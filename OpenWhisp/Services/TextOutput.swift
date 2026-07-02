@@ -30,19 +30,56 @@ enum InsertionOutcome: Equatable {
 /// and string-based so it lives in OpenWhispCore and is unit-tested without AX.
 enum InsertVerifier {
     /// After an AX set, decide whether the insert is reflected in the element's
-    /// re-read value. `current` is the value read back (nil = element exposes no
-    /// readable value, so we can't verify).
+    /// re-read value. `before` is the value read just BEFORE the set and `current`
+    /// the value read after (nil = element exposes no readable value).
+    ///
+    /// The before-snapshot guards both directions of a bare contains() check:
+    /// a value that already held the dictated phrase must not verify a set the
+    /// app silently ignored (text would be dropped), and a value the app changed
+    /// but transformed must not be treated as a failure (paste would duplicate).
     ///
     /// Returns:
-    ///   - `true`  → verified: the re-read value contains our text.
-    ///   - `false` → contradicted: value is readable but does NOT contain our text →
-    ///               AX silently failed; caller should fall back to paste.
-    ///   - `nil`   → unverifiable: no readable value → trust the AX status code.
-    static func axInsertReflected(expected: String, current: String?) -> Bool? {
+    ///   - `true`  → verified: the value changed and now contains our text
+    ///               (compared after typographic normalization, so smart-quote /
+    ///               dash substitution by the app still verifies).
+    ///   - `false` → contradicted: value is readable and either UNCHANGED by the
+    ///               set without containing our text (AX silently failed), or
+    ///               changed but emptied/shrunk without containing it (the app
+    ///               reset the field — a successful insert of non-empty text
+    ///               cannot shrink the value) → caller should fall back to paste.
+    ///   - `nil`   → unverifiable: no readable value; value unchanged but the text
+    ///               was already present before the set (can't distinguish a no-op
+    ///               replacement from an ignored set); or value GREW without
+    ///               containing the text even normalized (app rewrote it —
+    ///               autocorrect, markdown rendering; pasting would duplicate) →
+    ///               trust the AX status code.
+    static func axInsertReflected(expected: String, before: String?, current: String?) -> Bool? {
         let needle = expected.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !needle.isEmpty else { return nil }
         guard let current else { return nil }   // can't read → can't verify
-        return current.contains(needle)
+        let containsNeedle = normalize(current).contains(normalize(needle))
+        if current == before {
+            return containsNeedle ? nil : false
+        }
+        if containsNeedle { return true }
+        // Changed but our text is absent: split by growth. A cleared or shrunken
+        // field after a "successful" set is the discard signature — the text is
+        // nowhere; paste must recover it. A grown field means the app accepted
+        // the text in altered form; pasting would insert a duplicate.
+        return current.count < (before?.count ?? 0) || current.isEmpty ? false : nil
+    }
+
+    /// Fold the typographic substitutions apps commonly apply to inserted text
+    /// (smart quotes, dashes, ellipsis, non-breaking spaces) so they don't defeat
+    /// the contains() check.
+    private static func normalize(_ s: String) -> String {
+        var out = s
+        for (fancy, plain) in [("\u{2018}", "'"), ("\u{2019}", "'"), ("\u{201C}", "\""),
+                               ("\u{201D}", "\""), ("\u{2013}", "-"), ("\u{2014}", "-"),
+                               ("\u{2026}", "..."), ("\u{00A0}", " ")] {
+            out = out.replacingOccurrences(of: fancy, with: plain)
+        }
+        return out
     }
 }
 

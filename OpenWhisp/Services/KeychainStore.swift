@@ -31,7 +31,10 @@ final class KeychainStore: SecretStore {
         ]
 
         if value.isEmpty {
-            SecItemDelete(query as CFDictionary)
+            let status = SecItemDelete(query as CFDictionary)
+            if status != errSecSuccess && status != errSecItemNotFound {
+                print("[KeychainStore] delete failed for \(key): OSStatus \(status)")
+            }
             return
         }
 
@@ -43,7 +46,15 @@ final class KeychainStore: SecretStore {
         if status == errSecItemNotFound {
             var newItem = query
             newItem[kSecValueData as String] = data
-            SecItemAdd(newItem as CFDictionary, nil)
+            let addStatus = SecItemAdd(newItem as CFDictionary, nil)
+            if addStatus != errSecSuccess {
+                print("[KeychainStore] add failed for \(key): OSStatus \(addStatus)")
+            }
+        } else if status != errSecSuccess {
+            // e.g. errSecAuthFailed / errSecUserCanceled (denied ACL prompt on a
+            // re-signed build) or errSecInteractionNotAllowed (locked keychain).
+            // The value is NOT persisted — at least leave a trace in the log.
+            print("[KeychainStore] update failed for \(key): OSStatus \(status)")
         }
     }
 }

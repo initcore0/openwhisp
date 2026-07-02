@@ -118,14 +118,26 @@ final class LlamaServerEngine {
 
             self.serverLock.lock()
 
-            // Fast path: already healthy on this exact model.
-            if self.serverModelPath == modelPath,
-               self.serverProcess?.isRunning == true,
-               self.healthCheck() {
+            // Fast path: already healthy on this exact model. healthCheck()
+            // can block for up to ~1.2s, so probe WITHOUT the lock (a blocked
+            // lock stalls main-actor callers like requestStarted) and
+            // re-validate the generation before committing, mirroring
+            // waitForHealth.
+            if !self.starting,
+               self.serverModelPath == modelPath,
+               self.serverProcess?.isRunning == true {
+                let probedGeneration = self.serverGeneration
                 self.serverLock.unlock()
-                self.noteActivity()
-                completion(.success(()))
-                return
+                let healthy = self.healthCheck()
+                self.serverLock.lock()
+                if healthy, self.serverGeneration == probedGeneration {
+                    self.serverLock.unlock()
+                    self.noteActivity()
+                    completion(.success(()))
+                    return
+                }
+                // Unhealthy, or stopped/replaced while probing — fall through
+                // (lock re-held) to coalesce or relaunch.
             }
 
             // Coalesce: a start for the SAME model is already in flight — wait on it.
@@ -160,12 +172,23 @@ final class LlamaServerEngine {
             let stdoutPipe = Pipe()
             let stderrPipe = Pipe()
             stdoutPipe.fileHandleForReading.readabilityHandler = { handle in
-                if let line = String(data: handle.availableData, encoding: .utf8), !line.isEmpty {
+                let data = handle.availableData
+                guard !data.isEmpty else {
+                    // EOF: unhook, or the dispatch read source fires forever.
+                    handle.readabilityHandler = nil
+                    return
+                }
+                if let line = String(data: data, encoding: .utf8), !line.isEmpty {
                     print("[llama-server] \(line.trimmingCharacters(in: .whitespacesAndNewlines))")
                 }
             }
             stderrPipe.fileHandleForReading.readabilityHandler = { handle in
-                if let line = String(data: handle.availableData, encoding: .utf8), !line.isEmpty {
+                let data = handle.availableData
+                guard !data.isEmpty else {
+                    handle.readabilityHandler = nil
+                    return
+                }
+                if let line = String(data: data, encoding: .utf8), !line.isEmpty {
                     print("[llama-server] \(line.trimmingCharacters(in: .whitespacesAndNewlines))")
                 }
             }
@@ -196,24 +219,27 @@ final class LlamaServerEngine {
 
             // Wait for health WITHOUT holding the lock. llama load is heavier
             // than whisper's, so allow a longer timeout.
-            let healthy = self.waitForHealth(timeout: 60, generation: myGeneration)
+            let healthy = self.waitForHealth(timeout: 60, generation: myGeneration, process: process)
 
             self.serverLock.lock()
+
+            // A concurrent stop/replace happened — our process is no longer
+            // current. stopServerLocked already drained-and-failed our waiters,
+            // and a NEWER start may have installed its own starting state and
+            // waiters, which we must not touch.
+            guard self.serverGeneration == myGeneration, self.serverProcess === process else {
+                self.serverLock.unlock()
+                if process.isRunning { process.terminate() }
+                return
+            }
+
             self.starting = false
             self.startingModelPath = nil
             let waiters = self.pendingCompletions
             self.pendingCompletions = []
 
-            // A concurrent stop/replace happened — our process is no longer current.
-            guard self.serverGeneration == myGeneration, self.serverProcess === process else {
-                self.serverLock.unlock()
-                if process.isRunning { process.terminate() }
-                waiters.forEach { $0(.failure(LlamaError.unavailable)) }
-                return
-            }
-
             if healthy, process.isRunning {
-                self.scheduleIdleTeardown()
+                self.scheduleIdleTeardownLocked()
                 self.serverLock.unlock()
                 self.log("llama-server healthy on port \(self.serverPort) for \(modelPath)")
                 waiters.forEach { $0(.success(())) }
@@ -241,29 +267,33 @@ final class LlamaServerEngine {
     func requestFinished() {
         serverLock.lock()
         inFlight = max(0, inFlight - 1)
+        scheduleIdleTeardownLocked()
         serverLock.unlock()
-        noteActivity()
     }
 
     /// Re-arm the idle teardown timer.
     func noteActivity() {
-        scheduleIdleTeardown()
+        serverLock.lock()
+        scheduleIdleTeardownLocked()
+        serverLock.unlock()
     }
 
-    private func scheduleIdleTeardown() {
+    /// Must be called with `serverLock` held — `idleTimer` is guarded by it
+    /// (it's mutated from the start path, the timer's own handler, and
+    /// main-actor callers via noteActivity/requestFinished).
+    private func scheduleIdleTeardownLocked() {
         let timer = DispatchSource.makeTimerSource(queue: idleQueue)
         timer.schedule(deadline: .now() + idleTimeout)
         timer.setEventHandler { [weak self] in
             guard let self = self else { return }
             self.serverLock.lock()
-            let busy = self.inFlight > 0
-            self.serverLock.unlock()
-            if busy {
+            if self.inFlight > 0 {
                 // Don't kill a live generation — reschedule.
-                self.scheduleIdleTeardown()
+                self.scheduleIdleTeardownLocked()
             } else {
-                self.stopServer()
+                self.stopServerLocked()
             }
+            self.serverLock.unlock()
         }
         // Replace any existing timer.
         idleTimer?.cancel()
@@ -278,17 +308,49 @@ final class LlamaServerEngine {
     }
 
     /// Must be called with `serverLock` held. Bumps `serverGeneration` so any
-    /// in-progress start/health-wait bails out instead of committing.
+    /// in-progress start/health-wait bails out instead of committing, and fails
+    /// any completions queued on an in-flight start — their server is going
+    /// away, and leaving them queued would let a NEW start's epilogue drain
+    /// waiters that were never its own (or drop them entirely).
     private func stopServerLocked() {
         serverGeneration += 1
         idleTimer?.cancel()
         idleTimer = nil
 
+        starting = false
+        startingModelPath = nil
+        let dropped = pendingCompletions
+        pendingCompletions = []
+        if !dropped.isEmpty {
+            // Off the lock — a completion may re-enter the engine.
+            DispatchQueue.global(qos: .userInitiated).async {
+                dropped.forEach { $0(.failure(LlamaError.unavailable)) }
+            }
+        }
+
         serverStdoutPipe?.fileHandleForReading.readabilityHandler = nil
         serverStderrPipe?.fileHandleForReading.readabilityHandler = nil
         if let process = serverProcess, process.isRunning {
-            let pid = process.processIdentifier
-            process.terminate()
+            Self.terminateAsync(process)
+        }
+        serverProcess = nil
+        serverModelPath = nil
+        serverStdoutPipe = nil
+        serverStderrPipe = nil
+        try? FileManager.default.removeItem(at: pidFileURL)
+    }
+
+    /// SIGTERM the process now, then escalate to SIGKILL on a background queue
+    /// if it hasn't exited within ~2s. Never blocks the caller: `stopServer()`
+    /// runs synchronously on the main actor (Settings toggles, quit) with
+    /// `serverLock` held, and llama-server can take seconds to free a large
+    /// model. Its SIGTERM handler closes the listen socket immediately, so a
+    /// replacement server can bind the port while the old one drains. Mirrors
+    /// WhisperEngine.terminateAsync.
+    private static func terminateAsync(_ process: Process) {
+        let pid = process.processIdentifier
+        process.terminate()
+        DispatchQueue.global(qos: .utility).async {
             for _ in 0..<20 where process.isRunning {
                 Thread.sleep(forTimeInterval: 0.1)
             }
@@ -296,11 +358,6 @@ final class LlamaServerEngine {
                 kill(pid, SIGKILL)
             }
         }
-        serverProcess = nil
-        serverModelPath = nil
-        serverStdoutPipe = nil
-        serverStderrPipe = nil
-        try? FileManager.default.removeItem(at: pidFileURL)
     }
 
     // MARK: - Binary resolution
@@ -323,9 +380,10 @@ final class LlamaServerEngine {
 
     // MARK: - Health
 
-    /// Polls `/health` until it succeeds, the timeout elapses, or the server
-    /// generation changes (a concurrent stop/replace). Runs WITHOUT `serverLock`.
-    private func waitForHealth(timeout: TimeInterval, generation: Int) -> Bool {
+    /// Polls `/health` until it succeeds, the timeout elapses, the child dies,
+    /// or the server generation changes (a concurrent stop/replace). Runs
+    /// WITHOUT `serverLock`.
+    private func waitForHealth(timeout: TimeInterval, generation: Int, process: Process) -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
             serverLock.lock()
@@ -333,6 +391,9 @@ final class LlamaServerEngine {
             serverLock.unlock()
             if cancelled { return false }
             if healthCheck() { return true }
+            // Child died (crash, bad model, failed bind) — fail fast instead
+            // of polling a dead server for the rest of the timeout.
+            if !process.isRunning { return false }
             Thread.sleep(forTimeInterval: 0.25)
         }
         return false

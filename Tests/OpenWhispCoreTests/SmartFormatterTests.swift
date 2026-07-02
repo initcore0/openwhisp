@@ -66,4 +66,18 @@ final class SmartFormatterTests: XCTestCase {
             f.format(" um i think comma therefore i am period done", language: "en"),
             "I think, therefore I am. Done")
     }
+
+    func testKeepsMillimetersUnit() {
+        // "mm" is a unit, not a filler — measurements must survive intact.
+        XCTAssertEqual(f.format("the gap is 3 mm wide", language: "en"), "The gap is 3 mm wide")
+        XCTAssertEqual(f.format("use a 10 mm socket", language: "en"), "Use a 10 mm socket")
+    }
+
+    func testCapitalizesMultiClusterUppercaseWithoutCrashing() {
+        // ß uppercases to "SS" (two grapheme clusters) — must not trap, and the
+        // full uppercase form must be preserved.
+        XCTAssertEqual(f.format("ß is a letter", language: "en"), "SS is a letter")
+        // Ligature ﬁ uppercases to "FI".
+        XCTAssertEqual(f.format("ﬁne. done", language: "en"), "FIne. Done")
+    }
 }

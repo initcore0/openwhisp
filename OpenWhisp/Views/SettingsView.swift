@@ -8,7 +8,6 @@ struct SettingsView: View {
     @ObservedObject var appState: AppState
     
     @State private var availableMics: [AudioDevice] = []
-    @State private var selectedMicIndex: Int = 0
     @State private var selectedModel: String = "base"
 
     // OpenAI model picker support: preset models plus a synthetic "Custom" option.
@@ -22,6 +21,20 @@ struct SettingsView: View {
     // New-substitution draft fields for the vocabulary editor.
     @State private var newSubFrom: String = ""
     @State private var newSubTo: String = ""
+
+    // Draft of the comma-separated bias-terms list; committed to
+    // appState.vocabulary (which persists to disk) after a typing pause rather
+    // than per keystroke. `seeded` gates commits so an empty, never-shown draft
+    // can't overwrite the stored value.
+    @State private var vocabularyTermsDraft: String = ""
+    @State private var vocabularyDraftSeeded = false
+    @State private var vocabularySaveTask: Task<Void, Never>?
+
+    // Draft of the OpenAI API key; committed to the Keychain on submit/focus
+    // loss rather than per keystroke (each write is a blocking SecItem call).
+    @State private var openAIKeyDraft: String = ""
+    @State private var openAIKeyDraftSeeded = false
+    @FocusState private var openAIKeyFocused: Bool
 
     // New-profile draft fields.
     @State private var newProfileBundleID: String = ""
@@ -111,7 +124,21 @@ struct SettingsView: View {
         .onAppear {
             selectedModel = appState.modelName
             refreshDevices()
+            vocabularyTermsDraft = appState.vocabulary.terms.joined(separator: ", ")
+            vocabularyDraftSeeded = true
+            openAIKeyDraft = appState.openAIAPIKey
+            openAIKeyDraftSeeded = true
         }
+        // The Settings window is retained after close (isReleasedWhenClosed =
+        // false), so focus-loss never fires when it's closed via the title-bar
+        // button. Commit pending drafts when THIS window closes — scoped to the
+        // hosting window (an app-wide willClose publisher would also fire for
+        // open panels / other windows and commit half-typed drafts mid-edit),
+        // and on every close since the retained window reopens.
+        .background(WindowCloseObserver(firesOnce: false) {
+            commitVocabularyTerms()
+            commitOpenAIKey()
+        })
         .frame(minWidth: 640, minHeight: 600)
     }
 
@@ -409,17 +436,23 @@ struct SettingsView: View {
     
     private var microphoneSection: some View {
         settingsSection("Microphone") {
-            Picker("Input Device", selection: $selectedMicIndex) {
-                ForEach(availableMics.indices, id: \.self) { index in
-                    Text(availableMics[index].name).tag(index)
+            // Tagged by device UID (the persisted value), not list index, so the
+            // highlighted row always reflects what recording actually uses —
+            // even when the saved device is unplugged or the list changes.
+            Picker("Input Device", selection: $appState.microphoneID) {
+                Text("System Default").tag("")
+                ForEach(availableMics, id: \.uid) { mic in
+                    Text(mic.name).tag(mic.uid)
+                }
+                // Saved device not currently connected: show that honestly
+                // (recording falls back to the default input) instead of
+                // highlighting a device that isn't actually selected.
+                if !appState.microphoneID.isEmpty,
+                   !availableMics.contains(where: { $0.uid == appState.microphoneID }) {
+                    Text("Saved microphone (disconnected)").tag(appState.microphoneID)
                 }
             }
-            .onChange(of: selectedMicIndex) {
-                if selectedMicIndex < availableMics.count {
-                    appState.microphoneID = availableMics[selectedMicIndex].uid
-                }
-            }
-            
+
             Button("Refresh Devices") {
                 refreshDevices()
             }
@@ -469,18 +502,24 @@ struct SettingsView: View {
         }
     }
 
-    // Comma-separated editing of the bias-terms list.
-    private var vocabularyTermsText: Binding<String> {
-        Binding(
-            get: { appState.vocabulary.terms.joined(separator: ", ") },
-            set: { newValue in
-                let terms = newValue
-                    .components(separatedBy: ",")
-                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-                    .filter { !$0.isEmpty }
-                appState.vocabulary.terms = terms
-            }
-        )
+    // Comma-separated editing of the bias-terms list. Edits land in a local
+    // draft and commit after a short pause — writing through on every keystroke
+    // would rewrite vocabulary.json per character (AppState.vocabulary's didSet
+    // persists synchronously).
+    private func parseVocabularyTerms(_ text: String) -> [String] {
+        text.components(separatedBy: ",")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+    }
+
+    private func commitVocabularyTerms() {
+        guard vocabularyDraftSeeded else { return }
+        vocabularySaveTask?.cancel()
+        vocabularySaveTask = nil
+        let terms = parseVocabularyTerms(vocabularyTermsDraft)
+        if terms != appState.vocabulary.terms {
+            appState.vocabulary.terms = terms
+        }
     }
 
     private var vocabularySection: some View {
@@ -491,10 +530,31 @@ struct SettingsView: View {
                 .font(.caption)
                 .foregroundColor(.secondary)
 
-            TextField("e.g. Claude, Anthropic, kubectl, OpenWhisp", text: vocabularyTermsText, axis: .vertical)
+            TextField("e.g. Claude, Anthropic, kubectl, OpenWhisp", text: $vocabularyTermsDraft, axis: .vertical)
                 .textFieldStyle(.roundedBorder)
                 .lineLimit(2...4)
                 .disabled(!appState.customVocabularyEnabled)
+                .onAppear {
+                    vocabularyTermsDraft = appState.vocabulary.terms.joined(separator: ", ")
+                    vocabularyDraftSeeded = true
+                }
+                .onChange(of: vocabularyTermsDraft) {
+                    // Debounce: coalesce keystrokes into one parse + save.
+                    vocabularySaveTask?.cancel()
+                    vocabularySaveTask = Task {
+                        try? await Task.sleep(nanoseconds: 600_000_000)
+                        guard !Task.isCancelled else { return }
+                        commitVocabularyTerms()
+                    }
+                }
+                .onChange(of: appState.vocabulary.terms) {
+                    // External change (config import, pack apply): refresh the
+                    // draft unless it already parses to the same terms.
+                    if parseVocabularyTerms(vocabularyTermsDraft) != appState.vocabulary.terms {
+                        vocabularyTermsDraft = appState.vocabulary.terms.joined(separator: ", ")
+                    }
+                }
+                .onDisappear { commitVocabularyTerms() }
 
             Divider()
 
@@ -575,6 +635,9 @@ struct SettingsView: View {
 
                     HStack {
                         Button(testButtonLabel) {
+                            // Clicking a button needn't unfocus the key field;
+                            // commit the draft so the test uses what's typed.
+                            commitOpenAIKey()
                             appState.validateOpenAIKey()
                         }
                         Spacer()
@@ -644,8 +707,28 @@ struct SettingsView: View {
                 .textFieldStyle(.roundedBorder)
         }
 
-        SecureField("OpenAI API Key", text: $appState.openAIAPIKey)
+        SecureField("OpenAI API Key", text: $openAIKeyDraft)
             .textFieldStyle(.roundedBorder)
+            .focused($openAIKeyFocused)
+            .onSubmit { commitOpenAIKey() }
+            .onAppear {
+                openAIKeyDraft = appState.openAIAPIKey
+                openAIKeyDraftSeeded = true
+            }
+            .onChange(of: openAIKeyFocused) {
+                if !openAIKeyFocused { commitOpenAIKey() }
+            }
+            .onDisappear { commitOpenAIKey() }
+    }
+
+    /// Persists the API-key draft (a changed empty draft still commits, which
+    /// deletes the stored secret). Committing per keystroke would do a blocking
+    /// Keychain write per character and store every partial prefix of the key.
+    private func commitOpenAIKey() {
+        guard openAIKeyDraftSeeded else { return }
+        if openAIKeyDraft != appState.openAIAPIKey {
+            appState.openAIAPIKey = openAIKeyDraft
+        }
     }
 
     @ViewBuilder private var localLLMFields: some View {
@@ -1294,13 +1377,6 @@ struct SettingsView: View {
     
     private func refreshDevices() {
         availableMics = AudioDevice.availableInputs()
-        if !availableMics.isEmpty {
-            if !appState.microphoneID.isEmpty {
-                if let index = availableMics.firstIndex(where: { $0.uid == appState.microphoneID }) {
-                    selectedMicIndex = index
-                }
-            }
-        }
     }
     
     private func browseModelPath() {

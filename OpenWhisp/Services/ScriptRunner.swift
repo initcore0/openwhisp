@@ -46,12 +46,21 @@ enum ScriptRunner {
         // already exec'd). Lets us SIGKILL(-pgid) to reap daemonized grandchildren.
         setpgid(pid, pid)
 
-        // Feed stdin then close so the script sees EOF. Guard the write — a script
-        // that exits without reading would otherwise raise SIGPIPE.
-        let handle = stdinPipe.fileHandleForWriting
+        // Feed stdin on a background queue, then close so the script sees EOF.
+        // Off-thread because write(2) blocks once the ~64 KiB pipe buffer fills:
+        // a script that isn't draining stdin would otherwise hang the finalize
+        // thread before the timeout below is even armed. F_SETNOSIGPIPE makes a
+        // write to a dead reader fail with EPIPE (swallowed by `try?`) instead of
+        // raising SIGPIPE, whose default disposition would kill the whole app.
+        let stdinHandle = stdinPipe.fileHandleForWriting
+        _ = fcntl(stdinHandle.fileDescriptor, F_SETNOSIGPIPE, 1)
         let inputData = Data(input.utf8)
-        try? handle.write(contentsOf: inputData)
-        try? handle.close()
+        let writeQueue = DispatchQueue(label: "com.openwhisp.app.script-write")
+        let writeGroup = DispatchGroup()
+        writeQueue.async(group: writeGroup) {
+            try? stdinHandle.write(contentsOf: inputData)
+            try? stdinHandle.close()
+        }
 
         // Read stdout on a background queue so a chatty script can't deadlock us
         // by filling the pipe buffer while we wait on termination.
@@ -90,6 +99,16 @@ enum ScriptRunner {
             // we need before reading `stdoutData`.
             try? stdoutPipe.fileHandleForReading.close()
             readGroup.wait()
+        }
+
+        // Join the stdin feeder so we don't leak a blocked writer thread. On the
+        // happy path the script drained stdin or exited (write got EPIPE). If an
+        // orphan of a killed script still holds the read end, close our write end
+        // to release the writer — mirroring the stdout handling above — with a
+        // bounded second wait rather than risking an indefinite hang.
+        if writeGroup.wait(timeout: .now() + 0.5) == .timedOut {
+            try? stdinHandle.close()
+            _ = writeGroup.wait(timeout: .now() + 0.5)
         }
 
         let exitCode: Int32? = timedOut ? nil : process.terminationStatus

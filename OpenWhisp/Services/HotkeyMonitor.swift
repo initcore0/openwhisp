@@ -19,8 +19,8 @@ final class HotkeyMonitor: HotkeyControlling {
     var onCancel: (() -> Void)?
     var onPermissionStateChanged: ((Bool) -> Void)?
 
-    // Fn key code
-    static let fnKeyCode: UInt16 = 0x37
+    // Fn key code (kVK_Function)
+    static let fnKeyCode: UInt16 = 0x3F
     private static let spaceKeyCode: Int64 = 0x31
     private static let escapeKeyCode: Int64 = 0x35
 
@@ -160,25 +160,43 @@ final class HotkeyMonitor: HotkeyControlling {
     }
 
     /// Whether the modifier FLAG corresponding to a given modifier keycode is set
-    /// in `flags` — i.e. "is this key currently held". Maps the right-hand modifier
-    /// keycodes to their device-independent flag.
-    private static func modifierFlagActive(forKeyCode keyCode: Int64, cgFlags: CGEventFlags) -> Bool {
+    /// in `flags` — i.e. "is this key currently held". Uses the DEVICE-DEPENDENT
+    /// bits (IOKit NX_DEVICER*KEYMASK, carried in the low word of both CGEventFlags
+    /// and NSEvent.modifierFlags): the device-independent flags (.maskAlternate
+    /// etc.) stay set while the LEFT sibling of the pair is held, which would make
+    /// us miss the refine key's release edge.
+    /// Union of all NX_DEVICE[LR]*KEYMASK modifier bits. HID-sourced events
+    /// always carry these; synthesizers that assign public device-independent
+    /// masks (CGEventSetFlags) wipe the whole low word. Excludes
+    /// NX_DEVICE_ALPHASHIFT_STATELESS_MASK (0x0080), which isn't a modifier key.
+    private static let anyDeviceModifierBits: UInt64 = 0x207F
+
+    private static func rightModifierBits(forKeyCode keyCode: Int64) -> (device: UInt64, independent: UInt64)? {
         switch keyCode {
-        case 0x3D: return cgFlags.contains(.maskAlternate)  // Right Option
-        case 0x36: return cgFlags.contains(.maskCommand)    // Right Command
-        case 0x3E: return cgFlags.contains(.maskControl)    // Right Control
-        case 0x3C: return cgFlags.contains(.maskShift)      // Right Shift
-        default:   return false
+        case 0x3D: return (0x0040, CGEventFlags.maskAlternate.rawValue) // Right Option (NX_DEVICERALTKEYMASK)
+        case 0x36: return (0x0010, CGEventFlags.maskCommand.rawValue)   // Right Command (NX_DEVICERCMDKEYMASK)
+        case 0x3E: return (0x2000, CGEventFlags.maskControl.rawValue)   // Right Control (NX_DEVICERCTLKEYMASK)
+        case 0x3C: return (0x0004, CGEventFlags.maskShift.rawValue)     // Right Shift (NX_DEVICERSHIFTKEYMASK)
+        default:   return nil
         }
     }
+    private static func modifierFlagActive(forKeyCode keyCode: Int64, rawFlags: UInt64) -> Bool {
+        guard let bits = rightModifierBits(forKeyCode: keyCode) else { return false }
+        if rawFlags & bits.device != 0 { return true }
+        // When ANY device bit is present the event is HID-sourced and the
+        // device bit alone is authoritative — this preserves the release-edge
+        // detection while the LEFT sibling of the pair is still held. Zero
+        // device bits means a synthetic event (Hammerspoon, AppleScript,
+        // remote desktop) — fall back to the device-independent flag.
+        return rawFlags & anyDeviceModifierBits == 0 && rawFlags & bits.independent != 0
+    }
+    private static func modifierFlagActive(forKeyCode keyCode: Int64, cgFlags: CGEventFlags) -> Bool {
+        modifierFlagActive(forKeyCode: keyCode, rawFlags: cgFlags.rawValue)
+    }
     private static func modifierFlagActive(forKeyCode keyCode: Int64, nsFlags: NSEvent.ModifierFlags) -> Bool {
-        switch keyCode {
-        case 0x3D: return nsFlags.contains(.option)
-        case 0x36: return nsFlags.contains(.command)
-        case 0x3E: return nsFlags.contains(.control)
-        case 0x3C: return nsFlags.contains(.shift)
-        default:   return false
-        }
+        // NSEvent.ModifierFlags shares CGEventFlags' raw layout for both the
+        // device-independent masks and the device-dependent low word.
+        modifierFlagActive(forKeyCode: keyCode, rawFlags: UInt64(nsFlags.rawValue))
     }
 
     private func handleEvent(type: CGEventType, event: CGEvent) {
@@ -258,7 +276,11 @@ final class HotkeyMonitor: HotkeyControlling {
     // MARK: - Fn
 
     private func handleFnEvent(_ event: NSEvent) {
-        if event.keyCode == Self.fnKeyCode {
+        // Real keyDown/keyUp for the Fn keycode (some external keyboards emit
+        // these). The built-in Fn key arrives as flagsChanged and MUST fall
+        // through to the flags branch below.
+        if event.keyCode == Self.fnKeyCode,
+           event.type == .keyDown || event.type == .keyUp {
             apply(fnKeyGesture(isKeyDown: event.type == .keyDown))
             return
         }
@@ -270,7 +292,8 @@ final class HotkeyMonitor: HotkeyControlling {
     }
 
     private func handleFn(type: CGEventType, keyCode: Int64, event: CGEvent) {
-        if keyCode == Self.fnKeyCode {
+        if keyCode == Self.fnKeyCode,
+           type == .keyDown || type == .keyUp {
             apply(fnKeyGesture(isKeyDown: type == .keyDown))
             return
         }
@@ -281,7 +304,8 @@ final class HotkeyMonitor: HotkeyControlling {
         ))
     }
 
-    /// The dedicated Fn key (0x37): keyDown is active, keyUp is inactive.
+    /// The dedicated Fn key (kVK_Function, 0x3F) delivered as a real keyDown/keyUp:
+    /// keyDown is active, keyUp is inactive.
     private func fnKeyGesture(isKeyDown: Bool) -> HotkeyGesture {
         HotkeyGesture.resolve(isActive: isKeyDown, wasPressed: isPressed)
     }

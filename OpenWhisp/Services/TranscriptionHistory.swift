@@ -36,11 +36,18 @@ enum TranscriptionHistoryStore {
     }
 
     static func load() -> [TranscriptionEntry] {
-        guard let data = try? Data(contentsOf: fileURL),
-              let entries = try? JSONDecoder().decode([TranscriptionEntry].self, from: data) else {
+        guard let data = try? Data(contentsOf: fileURL) else { return [] }
+        do {
+            return try JSONDecoder().decode([TranscriptionEntry].self, from: data)
+        } catch {
+            // The file exists but is undecodable (corruption, hand-edit, version
+            // skew). Move it aside instead of returning [] silently — the next
+            // save would otherwise overwrite it and make the loss permanent.
+            let backup = fileURL.appendingPathExtension("corrupt-\(Int(Date().timeIntervalSince1970))")
+            try? FileManager.default.moveItem(at: fileURL, to: backup)
+            print("[TranscriptionHistoryStore] load failed: \(error); moved file to \(backup.lastPathComponent)")
             return []
         }
-        return entries
     }
 
     static func save(_ entries: [TranscriptionEntry]) {

@@ -51,11 +51,18 @@ enum VocabularyStore {
     }
 
     static func load() -> Vocabulary {
-        guard let data = try? Data(contentsOf: fileURL),
-              let vocab = try? JSONDecoder().decode(Vocabulary.self, from: data) else {
+        guard let data = try? Data(contentsOf: fileURL) else { return .empty }
+        do {
+            return try JSONDecoder().decode(Vocabulary.self, from: data)
+        } catch {
+            // The file exists but is undecodable (corruption, hand-edit, version
+            // skew). Move it aside instead of returning .empty silently — the
+            // next save would otherwise overwrite it and make the loss permanent.
+            let backup = fileURL.appendingPathExtension("corrupt-\(Int(Date().timeIntervalSince1970))")
+            try? FileManager.default.moveItem(at: fileURL, to: backup)
+            print("[VocabularyStore] load failed: \(error); moved file to \(backup.lastPathComponent)")
             return .empty
         }
-        return vocab
     }
 
     static func save(_ vocabulary: Vocabulary) {
@@ -87,8 +94,12 @@ struct VocabularySubstitutor: PostProcessor {
             guard !from.isEmpty else { continue }
             let to = sub.to
             // Whole-phrase, case-insensitive replacement with word boundaries so
-            // we don't rewrite substrings inside larger words.
-            let pattern = "\\b\(NSRegularExpression.escapedPattern(for: from))\\b"
+            // we don't rewrite substrings inside larger words. Lookarounds instead
+            // of \b: at a non-word edge (e.g. "C++", ".net") \b inverts and
+            // demands a word character outside the phrase, so the rule would
+            // silently never match. (?<!\w)/(?!\w) equal \b at word-char edges
+            // and degrade to "not glued to a word char" at punctuation edges.
+            let pattern = "(?<!\\w)\(NSRegularExpression.escapedPattern(for: from))(?!\\w)"
             result = result.replacingOccurrences(
                 of: pattern,
                 with: NSRegularExpression.escapedTemplate(for: to),

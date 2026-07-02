@@ -266,11 +266,11 @@ class AppState: ObservableObject {
             // stopping here makes the switch explicit and frees the old model's RAM.
             if llmProvider == "bundled" {
                 llamaEngine?.stopServer()
-                if bundledLLMModelInstalled {
-                    warmLlamaServerIfPossible()
-                } else {
-                    ensureLLMModelExists()
-                }
+                // Always route through ensureLLMModelExists: its installed
+                // fast-path clears a stale isLLMModelDownloading left by a
+                // superseded download (switching to an installed model while
+                // another model is still downloading) and then warms the server.
+                ensureLLMModelExists()
             }
         }
     }
@@ -288,7 +288,9 @@ class AppState: ObservableObject {
     @Published var llmModelDownloadProgress: Double?
     @Published var llmModelDownloadStatus = ""
     @Published var llmModelDownloadFailed = false
-    private var downloadingLLMModelPath: String?
+    /// LLM model paths with a download currently in flight (per-path, so switching
+    /// models mid-download can't clear the other download's dedup guard).
+    private var inFlightLLMModelDownloads: Set<String> = []
 
     /// Lazily-created engine that manages the bundled llama-server subprocess.
     private var llamaEngine: LlamaServerEngine?
@@ -482,10 +484,6 @@ class AppState: ObservableObject {
     /// Overlay cue: true whenever a refine is engaged. Published so OverlayView can
     /// show the "refining" tint. Kept in sync with the state machine via `syncRefineUI`.
     @Published private(set) var refineArmed = false
-    /// Failsafe: if a refine engages but nothing progresses (no speech captured),
-    /// recover after this timeout so the overlay can never get permanently stuck.
-    private var refineWatchdog: DispatchWorkItem?
-    private let refineWatchdogTimeout: TimeInterval = 4
     /// Set when the user taps the Refine key MID-DICTATION (while still holding Fn):
     /// everything spoken after this point is the instruction; everything before is
     /// the content to refine. Applied on Fn release. nil = not refining this session.
@@ -519,7 +517,10 @@ class AppState: ObservableObject {
     private var activeStreamingEngine: StreamingTranscriptionEngine {
         transcriptionEngine == "whisperKit" ? whisperKitStreamEngine : appleSpeechEngine
     }
-    private var downloadingModelPath: String?
+    /// Model paths with a download currently in flight. Per-path (not a single
+    /// value): switching models mid-download starts a second download, and each
+    /// one must dedupe itself without clearing the other's guard.
+    private var inFlightModelDownloads: Set<String> = []
 
     /// Global setting values saved before a per-app profile temporarily overrode
     /// them for the current session, so they can be restored when it ends.
@@ -823,6 +824,14 @@ class AppState: ObservableObject {
                     self.isArming = false
                     self.isRecording = true
                     self.statusMessage = self.outputMode == "liveChunks" ? "Listening..." : "Recording..."
+                    // The hotkey-up can land AFTER the grant callback's pendingStop
+                    // guard but BEFORE this state change is delivered. Nothing else
+                    // reads pendingStop once recording starts, so honor it here —
+                    // otherwise the mic keeps recording unattended after a quick tap.
+                    if self.pendingStop, self.sessionActive {
+                        self.pendingStop = false
+                        self.stopDictation()
+                    }
                 case .stopped, .idle:
                     self.isArming = false
                     self.isRecording = false
@@ -1034,7 +1043,6 @@ class AppState: ObservableObject {
         // Esc while a refine is engaged (waiting for step-1 or the instruction):
         // abort the flow without inserting anything.
         if refineFlow.isActive && !isRecording && !isTranscribing && !sessionActive {
-            cancelRefineWatchdog()
             refineFlow.reset()
             syncRefineUI()
             statusMessage = "Cancelled"
@@ -1045,7 +1053,6 @@ class AppState: ObservableObject {
         activeSessionID = UUID()
         sessionActive = false
         pendingStop = false
-        cancelRefineWatchdog()
         refineContentSnapshot = nil
         refineFlow.reset()
         syncRefineUI()
@@ -1212,7 +1219,7 @@ class AppState: ObservableObject {
 
     /// Whether a download is currently in flight for the given model id.
     func isLLMModelDownloadingForLab(_ id: String) -> Bool {
-        isLLMModelDownloading && downloadingLLMModelPath == bundledModelPath(id)
+        inFlightLLMModelDownloads.contains(bundledModelPath(id))
     }
 
     /// The list of swappable built-in models for the Settings picker.
@@ -1275,16 +1282,20 @@ class AppState: ObservableObject {
         #endif
     }
 
+    /// `work` receives a `done` callback that MUST be invoked exactly once when the
+    /// LLM request actually completes (before any early-return guards) — it closes
+    /// the engine's in-flight bracket so idle teardown can't kill a live generation.
+    /// For non-bundled providers `done` is a no-op.
     private func ensureBundledLLMReady(
         statusWhileLoading: String = "Loading local model…",
         quiesceWhisper: Bool = false,
-        work: @escaping () -> Void,
+        work: @escaping (_ done: @escaping () -> Void) -> Void,
         fallback: @escaping () -> Void
     ) {
         refineDebug("ensureBundledLLMReady ENTER provider=\(llmProvider) sessionID=\(activeSessionID.uuidString.prefix(8))")
         guard llmProvider == "bundled" else {
             refineDebug("ensureBundledLLMReady: non-bundled -> work() immediately")
-            work()
+            work({})
             return
         }
 
@@ -1316,10 +1327,16 @@ class AppState: ObservableObject {
                 }
                 switch result {
                 case .success:
-                    // requestFinished is called by the refinement completion path
-                    // once processFinalText returns; keep the request open through it.
-                    work()
-                    engine.requestFinished()
+                    // Keep the request open through the async LLM call: `done`
+                    // decrements the in-flight count (single-fire) when the
+                    // completion path invokes it, so the idle timer can't tear the
+                    // server down mid-generation.
+                    var finished = false
+                    work({
+                        guard !finished else { return }
+                        finished = true
+                        engine.requestFinished()
+                    })
                 case .failure:
                     engine.requestFinished()
                     self.translationStatus = "Local model unavailable"
@@ -1340,7 +1357,7 @@ class AppState: ObservableObject {
             return
         }
 
-        guard downloadingLLMModelPath != path else { return }
+        guard !inFlightLLMModelDownloads.contains(path) else { return }
         guard let entry = Self.bundledLLMManifest()?.first(where: { $0.id == bundledLLMModel }),
               let url = URL(string: entry.url) else {
             llmModelDownloadFailed = true
@@ -1349,7 +1366,7 @@ class AppState: ObservableObject {
         }
 
         let fileName = entry.file
-        downloadingLLMModelPath = path
+        inFlightLLMModelDownloads.insert(path)
         isLLMModelDownloading = true
         llmModelDownloadFailed = false
         llmModelDownloadProgress = nil
@@ -1361,8 +1378,11 @@ class AppState: ObservableObject {
                 try dest.deletingLastPathComponent().createDirectories()
                 try await downloadLLMModelWithProgress(from: url, to: dest, fileName: fileName)
                 await MainActor.run {
+                    self.inFlightLLMModelDownloads.remove(path)
+                    // A superseded download (the user switched models mid-flight)
+                    // must not clobber the selected model's download UI state.
+                    guard path == self.selectedLLMModelPath() else { return }
                     self.isLLMModelDownloading = false
-                    self.downloadingLLMModelPath = nil
                     self.llmModelDownloadProgress = 1.0
                     self.llmModelDownloadFailed = false
                     self.llmModelDownloadStatus = "Installed: \(fileName)"
@@ -1370,8 +1390,9 @@ class AppState: ObservableObject {
                 }
             } catch {
                 await MainActor.run {
+                    self.inFlightLLMModelDownloads.remove(path)
+                    guard path == self.selectedLLMModelPath() else { return }
                     self.isLLMModelDownloading = false
-                    self.downloadingLLMModelPath = nil
                     self.llmModelDownloadProgress = nil
                     self.llmModelDownloadFailed = true
                     self.llmModelDownloadStatus = "Download failed: \(fileName)"
@@ -1383,7 +1404,6 @@ class AppState: ObservableObject {
 
     func retryLLMModelDownload() {
         guard !isLLMModelDownloading else { return }
-        downloadingLLMModelPath = nil
         llmModelDownloadFailed = false
         error = nil
         ensureLLMModelExists()
@@ -1396,12 +1416,16 @@ class AppState: ObservableObject {
         try? FileManager.default.removeItem(at: tempURL)
         let downloadedURL = try await ModelDownloader.download(from: url) { [weak self] written, totalExpected in
             Task { @MainActor in
-                guard let self, self.isLLMModelDownloading else { return }
+                // Only reflect progress for the download of the currently selected
+                // model (a superseded download may still be running).
+                guard let self, self.isLLMModelDownloading, self.selectedLLMModelPath() == destination.path else { return }
                 let progress = DownloadProgressFormatter.make(written: written, totalExpected: totalExpected)
                 self.llmModelDownloadProgress = progress.fraction
                 self.llmModelDownloadStatus = progress.label
             }
         }
+        // GGUF files start with the ASCII magic "GGUF".
+        try Self.validateModelMagic(at: downloadedURL, expected: ["GGUF"], fileName: fileName)
         try? FileManager.default.removeItem(at: destination)
         try FileManager.default.moveItem(at: downloadedURL, to: tempURL)
         try FileManager.default.moveItem(at: tempURL, to: destination)
@@ -1506,6 +1530,12 @@ class AppState: ObservableObject {
             return
         }
         beginSession(streaming: false)
+        // Snapshot the live-typed decision for this session. In liveChunks mode the
+        // streaming handlers type each delta incrementally, so insertCompletedText
+        // must take the "already pasted, clipboard only" branch — exactly like
+        // whisper chunked sessions. Deciding from the live @Published outputMode
+        // there would paste the whole final text a second time.
+        isLiveChunkSession = outputMode == "liveChunks"
         isAppleSpeechSession = true
         streamingUsesWhisperKit = transcriptionEngine == "whisperKit"
         appleLiveInsertedText = ""
@@ -1576,9 +1606,18 @@ class AppState: ObservableObject {
         // at the true end (insert / finishSessionUI).
         activeStreamingEngine.stop(cancel: false)
 
+        // Session-scoped fallback: a rapid follow-up session could otherwise be
+        // finalized early by THIS session's leftover timer.
+        //
+        // 2.0s (not 0.9s): AppleSpeechEngine's own 0.8s fallback guarantees a
+        // final for the Apple path, so this is a stuck-session guard (WhisperKit
+        // streaming teardown, engine deallocated) — with a wide margin so a busy
+        // main thread can't let this fire first and clobber the engine's genuine
+        // final (which arrives via an extra Task hop) with a stale partial.
+        let sessionID = activeSessionID
         Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 900_000_000)
-            if self.isAppleSpeechSession && self.isTranscribing && !self.appleDidCompleteFinal {
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            if sessionID == self.activeSessionID && self.isAppleSpeechSession && self.isTranscribing && !self.appleDidCompleteFinal {
                 self.handleAppleSpeechFinal(self.streamingText)
             }
         }
@@ -1594,7 +1633,7 @@ class AppState: ObservableObject {
         // INSTRUCTION — don't type them into the document as live chunks.
         guard refineContentSnapshot == nil else { return }
 
-        guard outputMode == "liveChunks", !text.isEmpty else { return }
+        guard isLiveChunkSession, !text.isEmpty else { return }
         let delta = liveDelta(previous: appleLiveInsertedText, current: text)
         guard !delta.isEmpty else { return }
 
@@ -1624,7 +1663,9 @@ class AppState: ObservableObject {
         // liveChunks: completeFinalText only sets the clipboard for non-finalOnly, so words
         // in the final transcript that were not in the last pasted partial would be dropped.
         // Paste the trailing delta here (mirroring handleAppleSpeechPartial) before routing.
-        if outputMode == "liveChunks", !SecureFieldDetector.focusedFieldIsSecure() {
+        // While a refine is armed the delta is the spoken INSTRUCTION — same guard as the
+        // partial handler; completeFinalText consumes it via the snapshot path.
+        if isLiveChunkSession, refineContentSnapshot == nil, !SecureFieldDetector.focusedFieldIsSecure() {
             let delta = liveDelta(previous: appleLiveInsertedText, current: finalText)
             if !delta.isEmpty {
                 let insertion = appleLiveInsertedText.isEmpty ? delta : " \(delta)"
@@ -1825,7 +1866,6 @@ class AppState: ObservableObject {
         // capture session of a too-fast re-press left the flow active with no live
         // session — a late transcript would re-enter the refine path and wedge the
         // overlay. reset() (not .abort) because we're already tearing the UI down.
-        cancelRefineWatchdog()
         refineContentSnapshot = nil
         refineFlow.reset()
         syncRefineUI()
@@ -2009,8 +2049,8 @@ class AppState: ObservableObject {
             }
         }
 
-        ensureBundledLLMReady(work: { [weak self] in
-            guard let self else { return }
+        ensureBundledLLMReady(work: { [weak self] done in
+            guard let self else { done(); return }
             self.translationService.processFinalText(
                 text: item,
                 mode: self.refinementMode("rephrase"),
@@ -2019,6 +2059,9 @@ class AppState: ObservableObject {
                 model: self.llmModel
             ) { [weak self] result in
                 Task { @MainActor in
+                    // Close the engine's in-flight bracket on EVERY completion path
+                    // (including the guarded early returns below).
+                    done()
                     guard let self, sessionID == self.activeSessionID else { return }
                     let textToInsert: String
                     switch result {
@@ -2132,8 +2175,8 @@ class AppState: ObservableObject {
         // it would paste/clobber the clipboard after the session was cancelled.
         let sessionID = activeSessionID
 
-        ensureBundledLLMReady(quiesceWhisper: true, work: { [weak self] in
-            guard let self else { return }
+        ensureBundledLLMReady(quiesceWhisper: true, work: { [weak self] done in
+            guard let self else { done(); return }
             self.translationService.processFinalText(
                 text: finalText,
                 mode: self.refinementMode(self.openAIEnhancementMode),
@@ -2142,6 +2185,9 @@ class AppState: ObservableObject {
                 model: self.llmModel
             ) { [weak self] result in
                 Task { @MainActor in
+                    // Close the engine's in-flight bracket on EVERY completion path
+                    // (including the guarded early returns below).
+                    done()
                     guard let self, sessionID == self.activeSessionID else { return }
                     self.isTranscribing = false
                     switch result {
@@ -2254,18 +2300,15 @@ class AppState: ObservableObject {
 
             case let .runLLM(step1, instruction):
                 refineDebug("effect: runLLM step1=\"\(step1.prefix(20))\" instr=\"\(instruction.prefix(20))\"")
-                cancelRefineWatchdog()
                 applyRefineLLM(instruction: instruction, to: step1)
 
             case let .insert(text, replacingSelection):
                 refineDebug("effect: insert replacingSelection=\(replacingSelection)")
-                cancelRefineWatchdog()
                 isTranscribing = false
                 insertCompletedText(text, originalText: text)
 
             case let .finishQuietly(status):
                 refineDebug("effect: finishQuietly \(status)")
-                cancelRefineWatchdog()
                 isTranscribing = false
                 streamingText = ""
                 currentSessionText = ""
@@ -2285,27 +2328,6 @@ class AppState: ObservableObject {
         // Armed while a mid-session refine is pending (content snapshot taken) OR
         // the machine is applying.
         refineArmed = refineContentSnapshot != nil || refineFlow.isActive
-    }
-
-    /// Failsafe: if a refine engages but nothing progresses (no speech captured),
-    /// recover after a timeout so the overlay can never get permanently stuck. The
-    /// machine's `isApplying` distinguishes a genuine in-flight LLM call from a
-    /// wedge; we also leave it alone while the user is still recording.
-    private func armRefineWatchdog() {
-        refineWatchdog?.cancel()
-        let work = DispatchWorkItem { [weak self] in
-            guard let self else { return }
-            guard self.refineFlow.isActive, !self.refineFlow.isApplying, !self.isRecording else { return }
-            self.refineDebug("refineWatchdog FIRED — recovering stuck refine/overlay")
-            self.executeRefineEffects(self.refineFlow.handle(.abort))
-        }
-        refineWatchdog = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + refineWatchdogTimeout, execute: work)
-    }
-
-    private func cancelRefineWatchdog() {
-        refineWatchdog?.cancel()
-        refineWatchdog = nil
     }
 
     /// Run the refine LLM (apply `instruction` to `target`) and feed the result
@@ -2329,8 +2351,8 @@ class AppState: ObservableObject {
         let userPayload = InstructionChain.userPayload(instruction: instruction, text: target)
         refineDebug("applyRefineLLM provider=\(llmProvider) sessionID=\(sessionID.uuidString.prefix(8))")
 
-        ensureBundledLLMReady(statusWhileLoading: "Refining…", quiesceWhisper: true, work: { [weak self] in
-            guard let self else { return }
+        ensureBundledLLMReady(statusWhileLoading: "Refining…", quiesceWhisper: true, work: { [weak self] done in
+            guard let self else { done(); return }
             self.refineDebug("applyRefineLLM POST to \(self.llmEndpoint.baseURL) model=\"\(self.llmModel)\"")
             self.translationService.processFinalText(
                 text: userPayload,
@@ -2341,6 +2363,9 @@ class AppState: ObservableObject {
                 customInstruction: systemDirective
             ) { [weak self] result in
                 Task { @MainActor in
+                    // Close the engine's in-flight bracket on EVERY completion path
+                    // (including the guarded early returns below).
+                    done()
                     guard let self else { return }
                     guard sessionID == self.activeSessionID else {
                         self.refineDebug("applyRefineLLM RESULT DROPPED: session changed")
@@ -2467,7 +2492,9 @@ class AppState: ObservableObject {
             // Only clear if a newer notice/session hasn't superseded this one.
             guard self.clipboardFallbackToken == token else { return }
             self.clipboardFallbackActive = false
-            if !self.isRecording && !self.isTranscribing {
+            // Don't hide a NEW session's overlay while it's still arming
+            // (isRecording flips true only after the async grant + engine start).
+            if !self.isRecording && !self.isTranscribing && !self.sessionActive && !self.isArming {
                 self.hideOverlayNow()
             }
         }
@@ -2508,6 +2535,16 @@ class AppState: ObservableObject {
     private func finishSessionUI(delay: TimeInterval = 0) {
         sessionActive = false
         pendingStop = false
+        // A refine armed mid-session that never reached completeFinalText (error
+        // terminations: engine onError, recorder .error, empty-WAV, final-kind
+        // failure) must not leak into the next dictation — a stale snapshot would
+        // hijack it, treating the new speech as an instruction on the old content.
+        // Normal refines consumed the snapshot before getting here, so this is
+        // a no-op for them.
+        if refineContentSnapshot != nil {
+            refineContentSnapshot = nil
+            syncRefineUI()
+        }
         // Never leave the overlay stuck in the "starting" arming cue once a session
         // ends (capture may never have gone live — denied permission, abort, error).
         isArming = false
@@ -2531,7 +2568,10 @@ class AppState: ObservableObject {
         if delay > 0 {
             Task { @MainActor in
                 try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
-                if !self.isRecording && !self.isTranscribing {
+                // Also check sessionActive/isArming: a new session started during
+                // the delay is "arming" (isRecording still false) and its overlay
+                // must not be hidden by this stale task.
+                if !self.isRecording && !self.isTranscribing && !self.sessionActive && !self.isArming {
                     self.hideOverlayNow()
                 }
             }
@@ -2840,10 +2880,10 @@ class AppState: ObservableObject {
             return
         }
 
-        guard downloadingModelPath != modelPath else { return }
+        guard !inFlightModelDownloads.contains(modelPath) else { return }
         let fileName = URL(fileURLWithPath: modelPath).lastPathComponent
         let currentModelPath = modelPath
-        downloadingModelPath = currentModelPath
+        inFlightModelDownloads.insert(currentModelPath)
         isModelDownloading = true
         modelDownloadFailed = false
         modelDownloadProgress = nil
@@ -2857,8 +2897,11 @@ class AppState: ObservableObject {
                 try dest.deletingLastPathComponent().createDirectories()
                 try await downloadModelWithProgress(from: url, to: dest, fileName: fileName)
                 await MainActor.run {
+                    self.inFlightModelDownloads.remove(currentModelPath)
+                    // A superseded download (the user switched models mid-flight)
+                    // must not clobber the selected model's download UI state.
+                    guard currentModelPath == self.modelPath else { return }
                     self.isModelDownloading = false
-                    self.downloadingModelPath = nil
                     self.modelDownloadProgress = 1.0
                     self.modelDownloadFailed = false
                     self.modelDownloadStatus = "Installed: \(fileName)"
@@ -2869,8 +2912,9 @@ class AppState: ObservableObject {
                 }
             } catch {
                 await MainActor.run {
+                    self.inFlightModelDownloads.remove(currentModelPath)
+                    guard currentModelPath == self.modelPath else { return }
                     self.isModelDownloading = false
-                    self.downloadingModelPath = nil
                     self.modelDownloadProgress = nil
                     self.modelDownloadFailed = true
                     self.modelDownloadStatus = "Download failed: \(fileName)"
@@ -2884,10 +2928,10 @@ class AppState: ObservableObject {
     }
 
     /// Re-attempt a model download after a failure. Clears any prior error state
-    /// (including the stale `downloadingModelPath` guard) and restarts the flow.
+    /// and restarts the flow (a failed download already removed itself from
+    /// `inFlightModelDownloads`, so ensureModelExists can start fresh).
     func retryModelDownload() {
         guard !isModelDownloading else { return }
-        downloadingModelPath = nil
         modelDownloadFailed = false
         error = nil
         ensureModelExists()
@@ -2915,12 +2959,30 @@ class AppState: ObservableObject {
         try? FileManager.default.removeItem(at: tempURL)
         let downloadedURL = try await ModelDownloader.download(from: url) { [weak self] written, totalExpected in
             Task { @MainActor in
-                self?.updateModelDownloadProgress(written: written, totalExpected: totalExpected)
+                guard let self, self.modelPath == destination.path else { return }
+                self.updateModelDownloadProgress(written: written, totalExpected: totalExpected)
             }
         }
+        // whisper.cpp GGML files start with the magic "lmgg" (0x67676d6c LE).
+        try Self.validateModelMagic(at: downloadedURL, expected: ["lmgg"], fileName: fileName)
         try? FileManager.default.removeItem(at: destination)
         try FileManager.default.moveItem(at: downloadedURL, to: tempURL)
         try FileManager.default.moveItem(at: tempURL, to: destination)
+    }
+
+    /// Reject a downloaded payload that isn't the expected model format before it
+    /// is installed. Catches error/captive-portal pages served with HTTP 200 (a
+    /// status check alone misses those): once a bogus file sits at the model path,
+    /// ensure*ModelExists treats it as installed forever and every transcription
+    /// fails with no in-app recovery.
+    private static func validateModelMagic(at url: URL, expected: [String], fileName: String) throws {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        let head = (try? handle.read(upToCount: 4)) ?? Data()
+        let magics = expected.compactMap { $0.data(using: .ascii) }
+        guard magics.contains(head) else {
+            throw ModelDownloadError(message: "Downloaded \(fileName) is not a valid model file (server may have returned an error page)")
+        }
     }
 
     private static func modelDownloadURL(modelID: String, fileName: String) -> URL {
@@ -2974,6 +3036,11 @@ struct ModelManifestEntry: Decodable {
     let license: String?
 }
 
+struct ModelDownloadError: LocalizedError {
+    let message: String
+    var errorDescription: String? { message }
+}
+
 final class ModelDownloader: NSObject, URLSessionDownloadDelegate {
     private var continuation: CheckedContinuation<URL, Error>?
     /// Called as bytes arrive with (totalBytesWritten, totalBytesExpectedToWrite).
@@ -3008,6 +3075,16 @@ final class ModelDownloader: NSObject, URLSessionDownloadDelegate {
     }
 
     func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
+        // URLSession delivers this for ANY completed transfer, including 404/403/5xx
+        // (the error body is what got written to disk). Installing an error page as
+        // the model file would break every subsequent transcription with no in-app
+        // recovery, so fail the download instead.
+        if let http = downloadTask.response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
+            continuation?.resume(throwing: ModelDownloadError(message: "Server returned HTTP \(http.statusCode)"))
+            continuation = nil
+            session.invalidateAndCancel()
+            return
+        }
         do {
             let tempURL = FileManager.default.temporaryDirectory
                 .appendingPathComponent("openwhisp-model-\(UUID().uuidString).download")
@@ -3035,12 +3112,5 @@ final class ModelDownloader: NSObject, URLSessionDownloadDelegate {
 extension URL {
     func createDirectories() throws {
         try FileManager.default.createDirectory(at: self, withIntermediateDirectories: true, attributes: nil)
-    }
-}
-
-extension URLSession {
-    func downloadModel(from url: URL, to destination: URL) async throws {
-        let (tempURL, _) = try await download(from: url)
-        try FileManager.default.moveItem(at: tempURL, to: destination)
     }
 }

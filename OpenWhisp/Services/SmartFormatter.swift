@@ -122,7 +122,9 @@ struct SmartFormatter: PostProcessor {
 
     /// Conservative filler set. These are rarely meaningful content words in
     /// dictation. "like"/"so"/"you know" are intentionally EXCLUDED — too risky.
-    private static let fillerWords = ["um", "uh", "uhh", "umm", "erm", "hmm", "mm"]
+    /// "mm" is excluded too: it's the millimeters unit in dictated measurements
+    /// ("3 mm wide"), and whisper renders the filler as "Hmm"/"Mm-hmm" anyway.
+    private static let fillerWords = ["um", "uh", "uhh", "umm", "erm", "hmm"]
 
     private static func removeFillers(from text: String) -> String {
         var result = text
@@ -165,23 +167,29 @@ struct SmartFormatter: PostProcessor {
 
     private static func capitalizeSentences(_ text: String) -> String {
         guard !text.isEmpty else { return text }
-        var chars = Array(text)
+        var result = ""
+        result.reserveCapacity(text.count)
         var capitalizeNext = true
 
-        for i in 0..<chars.count {
-            let c = chars[i]
+        for c in text {
             if capitalizeNext, c.isLetter {
-                chars[i] = Character(String(c).uppercased())
+                // uppercased() can expand to multiple characters (ß → "SS",
+                // ﬁ → "FI"), so append it as a String — forcing it back into a
+                // single Character would trap.
+                result.append(String(c).uppercased())
                 capitalizeNext = false
-            } else if c == "." || c == "!" || c == "?" || c == "\n" {
-                capitalizeNext = true
-            } else if c.isWhitespace {
-                // keep waiting
             } else {
-                capitalizeNext = false
+                result.append(c)
+                if c == "." || c == "!" || c == "?" || c == "\n" {
+                    capitalizeNext = true
+                } else if c.isWhitespace {
+                    // keep waiting
+                } else {
+                    capitalizeNext = false
+                }
             }
         }
-        return String(chars)
+        return result
     }
 
     /// Capitalize the standalone pronoun "i" -> "I".
