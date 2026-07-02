@@ -20,7 +20,7 @@ Transcription runs locally with [whisper.cpp](https://github.com/ggerganov/whisp
 - **Custom vocabulary** — bias whisper toward your names/jargon, plus "heard → correct" substitutions (e.g. "clod code" → "Claude Code").
 - **AI post‑processing (optional)** — rephrase or improve translation with an LLM. Choose **Built‑in (offline)** to run a small model fully on‑device with no setup (downloads once, then never phones home), point it at a **local OpenAI‑compatible server** (llama.cpp `llama-server`, Ollama), or at OpenAI.
 - **Refine while dictating** — keep holding the dictation key, tap the Refine key, and speak an instruction ("make it a Telegram post"); on release the AI rewrites what you dictated.
-- **Refine your selection** — highlight text in any app, hold your Refine key, and speak an instruction ("make it more formal", "translate to Russian"); the selected text is replaced in place with the AI's result. No dictation needed.
+- **Refine your selection** — with text highlighted in any app, hold the dictation key, tap the Refine key, and speak an instruction ("make it more formal", "translate to Russian"); the selected text is replaced in place with the AI's result.
 - **Per‑app modes** — auto‑apply language / output / AI‑cleanup overrides based on the app you're typing into.
 - **Transcription history** — local, searchable list of past dictations with copy/re‑use.
 - **Multiple models & languages** — tiny → large‑v3; 12 languages plus auto‑detect; optional whisper translate‑to‑English.
@@ -233,9 +233,9 @@ It's one continuous hold — normal dictation (no Refine tap) always pastes inst
 
 **Refine selected text** — with text **selected** and no in-session dictation, tapping Refine during a hold applies to the selection instead.
 
-> Select a paragraph, hold your **Refine key**, say *"make it more concise"* → the selection is replaced in place with the AI's rewrite.
+> Select a paragraph, hold the dictation key, **tap the Refine key**, say *"make it more concise"*, release → the selection is replaced in place with the AI's rewrite.
 
-The selection is read via the Accessibility API (no clipboard touch); for apps that don't expose it, OpenWhisp falls back to a synthesized ⌘C and **restores your previous clipboard** afterward. Dictation takes priority — the selection is only used when you didn't dictate. Password/secure fields are never read.
+The selection is read via the Accessibility API (no clipboard touch); for apps that don't expose it, OpenWhisp falls back to a synthesized ⌘C and **restores your previous clipboard** afterward. In-session dictation takes priority — the selection is only used when you didn't dictate anything before tapping Refine. Password/secure fields are never read.
 
 ### Script post‑processor (advanced)
 
@@ -282,8 +282,10 @@ OpenWhisp/
 │   ├── TextInserter.swift           # Accessibility insert + Cmd+V paste fallback
 │   ├── SelectionReader.swift        # read selected text (AX, ⌘C fallback) for refine-selection
 │   ├── InstructionChain.swift       # refine availability + LLM prompt construction
+│   ├── RefineFlow.swift             # pure, unit-tested refine state machine
+│   ├── RefineKey.swift              # selectable refine key (id ↔ keycode)
 │   ├── KeyboardSynthesizer.swift    # thin shim over TextInserter
-│   ├── HotkeyMonitor.swift          # CGEventTap (+ NSEvent fallback) push-to-talk
+│   ├── HotkeyMonitor.swift          # CGEventTap (+ NSEvent fallback) push-to-talk + refine key
 │   ├── PostProcessor.swift          # protocol + chain for text post-processing
 │   ├── SmartFormatter.swift         # local formatting/punctuation/filler rules
 │   ├── Vocabulary.swift             # custom terms + substitutions
