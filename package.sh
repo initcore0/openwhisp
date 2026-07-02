@@ -23,7 +23,7 @@ done
 # Build first if binary doesn't exist
 if [ ! -f "$BUILD_DIR/OpenWhisp" ]; then
     echo "Binary not found. Building first..."
-    ./build.sh
+    "$PROJECT_DIR/build.sh"
 fi
 
 # Clean old bundle

@@ -19,8 +19,8 @@ final class HotkeyMonitor: HotkeyControlling {
     var onCancel: (() -> Void)?
     var onPermissionStateChanged: ((Bool) -> Void)?
 
-    // Fn key code
-    static let fnKeyCode: UInt16 = 0x37
+    // Fn key code (kVK_Function)
+    static let fnKeyCode: UInt16 = 0x3F
     private static let spaceKeyCode: Int64 = 0x31
     private static let escapeKeyCode: Int64 = 0x35
 
@@ -160,25 +160,27 @@ final class HotkeyMonitor: HotkeyControlling {
     }
 
     /// Whether the modifier FLAG corresponding to a given modifier keycode is set
-    /// in `flags` — i.e. "is this key currently held". Maps the right-hand modifier
-    /// keycodes to their device-independent flag.
-    private static func modifierFlagActive(forKeyCode keyCode: Int64, cgFlags: CGEventFlags) -> Bool {
+    /// in `flags` — i.e. "is this key currently held". Uses the DEVICE-DEPENDENT
+    /// bits (IOKit NX_DEVICER*KEYMASK, carried in the low word of both CGEventFlags
+    /// and NSEvent.modifierFlags): the device-independent flags (.maskAlternate
+    /// etc.) stay set while the LEFT sibling of the pair is held, which would make
+    /// us miss the refine key's release edge.
+    private static func rightModifierDeviceBit(forKeyCode keyCode: Int64) -> UInt64? {
         switch keyCode {
-        case 0x3D: return cgFlags.contains(.maskAlternate)  // Right Option
-        case 0x36: return cgFlags.contains(.maskCommand)    // Right Command
-        case 0x3E: return cgFlags.contains(.maskControl)    // Right Control
-        case 0x3C: return cgFlags.contains(.maskShift)      // Right Shift
-        default:   return false
+        case 0x3D: return 0x0040   // NX_DEVICERALTKEYMASK   (Right Option)
+        case 0x36: return 0x0010   // NX_DEVICERCMDKEYMASK   (Right Command)
+        case 0x3E: return 0x2000   // NX_DEVICERCTLKEYMASK   (Right Control)
+        case 0x3C: return 0x0004   // NX_DEVICERSHIFTKEYMASK (Right Shift)
+        default:   return nil
         }
     }
+    private static func modifierFlagActive(forKeyCode keyCode: Int64, cgFlags: CGEventFlags) -> Bool {
+        guard let bit = rightModifierDeviceBit(forKeyCode: keyCode) else { return false }
+        return cgFlags.rawValue & bit != 0
+    }
     private static func modifierFlagActive(forKeyCode keyCode: Int64, nsFlags: NSEvent.ModifierFlags) -> Bool {
-        switch keyCode {
-        case 0x3D: return nsFlags.contains(.option)
-        case 0x36: return nsFlags.contains(.command)
-        case 0x3E: return nsFlags.contains(.control)
-        case 0x3C: return nsFlags.contains(.shift)
-        default:   return false
-        }
+        guard let bit = rightModifierDeviceBit(forKeyCode: keyCode) else { return false }
+        return UInt64(nsFlags.rawValue) & bit != 0
     }
 
     private func handleEvent(type: CGEventType, event: CGEvent) {
@@ -258,7 +260,11 @@ final class HotkeyMonitor: HotkeyControlling {
     // MARK: - Fn
 
     private func handleFnEvent(_ event: NSEvent) {
-        if event.keyCode == Self.fnKeyCode {
+        // Real keyDown/keyUp for the Fn keycode (some external keyboards emit
+        // these). The built-in Fn key arrives as flagsChanged and MUST fall
+        // through to the flags branch below.
+        if event.keyCode == Self.fnKeyCode,
+           event.type == .keyDown || event.type == .keyUp {
             apply(fnKeyGesture(isKeyDown: event.type == .keyDown))
             return
         }
@@ -270,7 +276,8 @@ final class HotkeyMonitor: HotkeyControlling {
     }
 
     private func handleFn(type: CGEventType, keyCode: Int64, event: CGEvent) {
-        if keyCode == Self.fnKeyCode {
+        if keyCode == Self.fnKeyCode,
+           type == .keyDown || type == .keyUp {
             apply(fnKeyGesture(isKeyDown: type == .keyDown))
             return
         }
@@ -281,7 +288,8 @@ final class HotkeyMonitor: HotkeyControlling {
         ))
     }
 
-    /// The dedicated Fn key (0x37): keyDown is active, keyUp is inactive.
+    /// The dedicated Fn key (kVK_Function, 0x3F) delivered as a real keyDown/keyUp:
+    /// keyDown is active, keyUp is inactive.
     private func fnKeyGesture(isKeyDown: Bool) -> HotkeyGesture {
         HotkeyGesture.resolve(isActive: isKeyDown, wasPressed: isPressed)
     }

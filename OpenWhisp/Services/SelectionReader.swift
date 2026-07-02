@@ -69,11 +69,21 @@ enum SelectionReader {
             }
         }
 
-        // Mark the pasteboard, synthesize ⌘C, then detect whether it changed.
-        let beforeCount = pb.changeCount
+        // Mark the pasteboard, synthesize ⌘C, then detect whether it changed. The
+        // marker count is taken AFTER clearContents (which itself bumps changeCount)
+        // so only the target app's copy registers as a change.
         pb.clearContents()
+        let beforeCount = pb.changeCount
         postCommandC()
-        Thread.sleep(forTimeInterval: 0.15)
+
+        // Wait for the target app to service the copy, polling so a fast copy
+        // returns early. This blocks the calling thread (the refine tap arrives on
+        // the main actor), so the 150ms worst-case is only paid when the app never
+        // copies (e.g. nothing selected).
+        let deadline = Date().addingTimeInterval(0.15)
+        while pb.changeCount == beforeCount, Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.01)
+        }
 
         // Read whatever the copy produced (nil if the app didn't copy anything).
         let copied = pb.changeCount != beforeCount

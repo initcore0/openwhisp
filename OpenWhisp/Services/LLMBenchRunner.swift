@@ -77,12 +77,18 @@ final class LLMBenchRunner {
                 let coldMs = Int(Date().timeIntervalSince(coldStart) * 1000)
                 Task { @MainActor in
                     let endpoint = LLMEndpoint(baseURL: self.engine.baseURL, apiKey: "", requiresKey: false)
+                    // Bracket the whole run so the engine's idle teardown can't
+                    // kill the server mid-bench (a slow model can push the
+                    // total past the 90s idle timeout). Mirrors the production
+                    // path in AppState.ensureBundledLLMReady.
+                    self.engine.requestStarted()
                     var results: [LLMBenchCaseResult] = []
                     for c in cases {
                         let r = await self.refineOne(c, endpoint: endpoint)
                         results.append(r)
                         progress(r)
                     }
+                    self.engine.requestFinished()
                     completion(.success(LLMBenchModelResult(modelID: modelID, coldStartMs: coldMs, caseResults: results)))
                 }
             }

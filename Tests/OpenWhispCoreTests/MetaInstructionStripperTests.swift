@@ -35,13 +35,34 @@ final class MetaInstructionStripperTests: XCTestCase {
             "here is the summary of our discussion.")
     }
 
-    func testBareInRussian() {
-        XCTAssertEqual(
-            MetaInstructionStripper.strip("вот мой длинный текст для заметки. in Russian"),
-            "вот мой длинный текст для заметки.")
+    // MARK: Must NOT strip (legitimate content)
+
+    func testKeepsTrailingLanguageNameAsContent() {
+        // A bare trailing "in <language>" is NOT a command — "…documentation in
+        // English" is legitimate dictation and must survive intact.
+        let s = "Can you send me the documentation in English"
+        XCTAssertEqual(MetaInstructionStripper.strip(s), s)
     }
 
-    // MARK: Must NOT strip (legitimate content)
+    func testKeepsRussianTrailingLanguageNameAsContent() {
+        // Same for the bare Russian "на <язык>" directive.
+        let s = "Я перевожу книгу на английский"
+        XCTAssertEqual(MetaInstructionStripper.strip(s), s)
+    }
+
+    func testDoesNotMatchInsideWords() {
+        // The command verb must start at a word boundary: "mistranslate" is
+        // content, not a "translate" command ("The app might mis." bug).
+        let s = "The app might mistranslate this into English"
+        XCTAssertEqual(MetaInstructionStripper.strip(s), s)
+    }
+
+    func testDoesNotConsumeTrailingWordsAfterLanguage() {
+        // The language slot is a whitelist, not a greedy [a-z ]+ — trailing
+        // words after the language name mean this is content, not a command.
+        let s = "I don't know how to translate this to English properly"
+        XCTAssertEqual(MetaInstructionStripper.strip(s), s)
+    }
 
     func testKeepsInEnglishAsContent() {
         // "...written in English" mid-sentence is content, not a trailing directive.

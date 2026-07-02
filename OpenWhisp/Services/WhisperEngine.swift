@@ -29,6 +29,12 @@ class WhisperEngine: FileTranscriptionEngine {
     /// committing success — so a concurrent stop/replace can't be clobbered.
     private var serverGeneration: Int = 0
 
+    /// Generation whose startup (`waitForHealth`) is currently in flight, or nil.
+    /// Guarded by `serverLock`. Lets a concurrent `ensureServer` for the same
+    /// model JOIN the in-progress startup instead of tearing down a server that
+    /// is running but not yet healthy (still loading its model).
+    private var startingGeneration: Int?
+
     init() {
         serverPort = Self.availableLoopbackPort() ?? 8178
         pidFileURL = Self.workerPIDFileURL()
@@ -192,7 +198,6 @@ class WhisperEngine: FileTranscriptionEngine {
                 "-f", wavPath,
                 "-l", task.language,
                 "--no-timestamps",
-                "-otxt",
                 "-nt"
             ]
             if task.translate {
@@ -300,9 +305,28 @@ class WhisperEngine: FileTranscriptionEngine {
         // --- Phase 1: snapshot / start under the lock -------------------------
         serverLock.lock()
 
-        if serverModelPath == modelPath, serverProcess?.isRunning == true, healthCheck() {
-            serverLock.unlock()
-            return true
+        if serverModelPath == modelPath, serverProcess?.isRunning == true {
+            // A startup for this exact server is still in flight: join it
+            // (wait for health without the lock) instead of killing a server
+            // that is merely still loading its model — restarting here would
+            // fail the owning caller AND this one. Teardown on failure is left
+            // to the owning generation's phase 3.
+            if startingGeneration == serverGeneration {
+                let myGeneration = serverGeneration
+                let process = serverProcess
+                serverLock.unlock()
+                let healthy = waitForHealth(timeout: 45, generation: myGeneration)
+                serverLock.lock()
+                let stillCurrent = serverGeneration == myGeneration && serverProcess === process
+                serverLock.unlock()
+                return healthy && stillCurrent
+            }
+            // No startup pending: a passing health check means it's usable.
+            // A failing one means the server is hung — fall through to restart.
+            if healthCheck() {
+                serverLock.unlock()
+                return true
+            }
         }
 
         // Tear down any existing/mismatched server before starting a new one.
@@ -330,12 +354,23 @@ class WhisperEngine: FileTranscriptionEngine {
         let stdoutPipe = Pipe()
         let stderrPipe = Pipe()
         stdoutPipe.fileHandleForReading.readabilityHandler = { handle in
-            if let line = String(data: handle.availableData, encoding: .utf8), !line.isEmpty {
+            let data = handle.availableData
+            guard !data.isEmpty else {
+                // EOF: unhook, or the dispatch read source fires forever.
+                handle.readabilityHandler = nil
+                return
+            }
+            if let line = String(data: data, encoding: .utf8), !line.isEmpty {
                 print("[whisper-server] \(line.trimmingCharacters(in: .whitespacesAndNewlines))")
             }
         }
         stderrPipe.fileHandleForReading.readabilityHandler = { handle in
-            if let line = String(data: handle.availableData, encoding: .utf8), !line.isEmpty {
+            let data = handle.availableData
+            guard !data.isEmpty else {
+                handle.readabilityHandler = nil
+                return
+            }
+            if let line = String(data: data, encoding: .utf8), !line.isEmpty {
                 print("[whisper-server] \(line.trimmingCharacters(in: .whitespacesAndNewlines))")
             }
         }
@@ -362,6 +397,7 @@ class WhisperEngine: FileTranscriptionEngine {
         // release the lock.
         serverGeneration += 1
         let myGeneration = serverGeneration
+        startingGeneration = myGeneration
         serverProcess = process
         serverModelPath = modelPath
         serverStdoutPipe = stdoutPipe
@@ -377,6 +413,12 @@ class WhisperEngine: FileTranscriptionEngine {
         // --- Phase 3: re-acquire to commit success or tear down on failure ---
         serverLock.lock()
         defer { serverLock.unlock() }
+
+        // Our startup is no longer in flight (only clear it if a newer startup
+        // hasn't claimed the marker after tearing us down).
+        if startingGeneration == myGeneration {
+            startingGeneration = nil
+        }
 
         // If a concurrent stop/replace happened, the process we started is no
         // longer the current one — don't touch shared state, just bail.
@@ -413,8 +455,25 @@ class WhisperEngine: FileTranscriptionEngine {
         serverStdoutPipe?.fileHandleForReading.readabilityHandler = nil
         serverStderrPipe?.fileHandleForReading.readabilityHandler = nil
         if let process = serverProcess, process.isRunning {
-            let pid = process.processIdentifier
-            process.terminate()
+            Self.terminateAsync(process)
+        }
+        serverProcess = nil
+        serverModelPath = nil
+        serverStdoutPipe = nil
+        serverStderrPipe = nil
+        try? FileManager.default.removeItem(at: pidFileURL)
+    }
+
+    /// SIGTERM the process now, then escalate to SIGKILL on a background queue
+    /// if it hasn't exited within ~2s. Never blocks the caller: `stopServer()`
+    /// is invoked synchronously from the main actor (backend switch, quit), and
+    /// a busy whisper-server can take seconds to finish its graceful shutdown.
+    /// Its SIGTERM handler closes the listen socket immediately, so a
+    /// replacement server can bind the port while the old one drains.
+    private static func terminateAsync(_ process: Process) {
+        let pid = process.processIdentifier
+        process.terminate()
+        DispatchQueue.global(qos: .utility).async {
             for _ in 0..<20 where process.isRunning {
                 Thread.sleep(forTimeInterval: 0.1)
             }
@@ -422,11 +481,6 @@ class WhisperEngine: FileTranscriptionEngine {
                 kill(pid, SIGKILL)
             }
         }
-        serverProcess = nil
-        serverModelPath = nil
-        serverStdoutPipe = nil
-        serverStderrPipe = nil
-        try? FileManager.default.removeItem(at: pidFileURL)
     }
 
     private func serverBinaryPath(for cliPath: String) -> String? {

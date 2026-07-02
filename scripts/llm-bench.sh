@@ -100,6 +100,15 @@ PY
 RESULTS_JSON="$CACHE_DIR/.results.$$.json"
 echo "[]" > "$RESULTS_JSON"
 
+# If anything aborts the script (set -e, signal), don't orphan a multi-GB
+# llama-server or leave the temp results file behind.
+SERVER_PID=""
+cleanup() {
+    [ -n "$SERVER_PID" ] && kill "$SERVER_PID" 2>/dev/null || true
+    rm -f "$RESULTS_JSON"
+}
+trap cleanup EXIT
+
 printf '\n%-26s | %-10s | %-9s | %-9s | %-8s | %-9s\n' "model" "cold(ms)" "med(ms)" "ttft(ms)" "tok/s" "peakRSS"
 printf -- '---------------------------+------------+-----------+-----------+----------+----------\n'
 
@@ -132,12 +141,16 @@ for row in "${MODEL_ROWS[@]}"; do
     if [ "$READY" != "1" ]; then
         echo "  $ID: server did not become healthy — see $CACHE_DIR/.server.$ID.log"
         kill "$SERVER_PID" 2>/dev/null || true
+        wait "$SERVER_PID" 2>/dev/null || true
+        SERVER_PID=""
         continue
     fi
 
     # Run all cases (with REPEATS) via a python harness; it prints a summary line
-    # and appends the structured per-case results to RESULTS_JSON.
-    python3 - "$ID" "$LABEL" "$PORT" "$CASES" "$REPEATS" "$STREAM" "$COLD_MS" "$SERVER_PID" "$RESULTS_JSON" "$SYSTEM_PROMPT" <<'PY'
+    # and appends the structured per-case results to RESULTS_JSON. Run it inside
+    # the if condition so a harness failure (e.g. HTTP 500 from the server) skips
+    # to the next model instead of aborting the whole bench via set -e.
+    if ! python3 - "$ID" "$LABEL" "$PORT" "$CASES" "$REPEATS" "$STREAM" "$COLD_MS" "$SERVER_PID" "$RESULTS_JSON" "$SYSTEM_PROMPT" <<'PY'
 import json, sys, time, urllib.request, statistics, subprocess
 
 mid, label, port, cases_path, repeats, stream, cold_ms, server_pid, results_path, system_prompt = sys.argv[1:11]
@@ -224,7 +237,7 @@ for c in cases:
     all_toks.append(tok_s)
     per_case.append({"id": c["id"], "category": c["category"], "input": c["input"],
                      "output": out_text, "median_ms": round(med), "ttft_ms": round(ttft_v) if ttft_v else None,
-                     "tok_s": round(tok_s, 1), "note": c["note"]})
+                     "tok_s": round(tok_s, 1), "note": c.get("note")})
     print(f"[{c['category']:<11}] {c['id']}")
     print(f"   IN : {c['input']}")
     print(f"   OUT: {out_text}")
@@ -244,9 +257,13 @@ json.dump(res, open(results_path, "w"), indent=2, ensure_ascii=False)
 # Table row to stderr-ish (goes to stdout after the per-case dump).
 print(f"\nSUMMARY_ROW\t{mid}\t{cold_ms}\t{med_lat}\t{med_ttft}\t{med_toks}\t{peak}MB")
 PY
+    then
+        echo "  $ID: bench harness failed — see $CACHE_DIR/.server.$ID.log"
+    fi
 
     kill "$SERVER_PID" 2>/dev/null || true
     wait "$SERVER_PID" 2>/dev/null || true
+    SERVER_PID=""
 done
 
 # Reprint the compact table from the structured results.

@@ -14,6 +14,14 @@ final class AppleSpeechEngine: StreamingTranscriptionEngine {
     private var recognizer: SFSpeechRecognizer?
     private var lastPartial = ""
     private var didStop = false
+    /// True once onFinal has fired for the current session (genuine or
+    /// synthesized) — the stop() fallback checks it before synthesizing.
+    private var finalDelivered = false
+    /// Session generation, bumped on every start(). stop(cancel: false) leaves
+    /// the recognition task running so it can deliver its genuine final; the
+    /// generation check keeps that orphaned task's late callbacks (and the
+    /// synthesized-final fallback) from leaking into the next session.
+    private var generation = 0
     
     static func requestAuthorization(_ completion: @escaping (SFSpeechRecognizerAuthorizationStatus) -> Void) {
         SFSpeechRecognizer.requestAuthorization { status in
@@ -29,8 +37,10 @@ final class AppleSpeechEngine: StreamingTranscriptionEngine {
     
     func start(language: String) throws {
         stop(cancel: true)
-        
+
+        generation += 1
         didStop = false
+        finalDelivered = false
         lastPartial = ""
         
         let localeIdentifier = language == "auto" ? Locale.current.identifier : language
@@ -48,28 +58,37 @@ final class AppleSpeechEngine: StreamingTranscriptionEngine {
         let engine = AVAudioEngine()
         let input = engine.inputNode
         let format = input.outputFormat(forBus: 0)
-        
+        // With no input device the format is 0 Hz / 0 ch and installTap raises
+        // an ObjC NSException that Swift try/catch can't intercept (app crash).
+        guard format.sampleRate > 0, format.channelCount > 0 else {
+            throw AppleSpeechError.unavailable("No audio input device available.")
+        }
+
         input.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
             request.append(buffer)
             self?.publishLevel(from: buffer)
         }
-        
+
+        let myGeneration = generation
         recognitionTask = recognizer.recognitionTask(with: request) { [weak self] result, error in
-            guard let self else { return }
-            
+            guard let self, self.generation == myGeneration else { return }
+
             if let result {
                 let text = result.bestTranscription.formattedString
                 self.lastPartial = text
                 DispatchQueue.main.async {
+                    guard self.generation == myGeneration else { return }
                     self.onPartial?(text)
-                    if result.isFinal {
+                    if result.isFinal, !self.finalDelivered {
+                        self.finalDelivered = true
                         self.onFinal?(text)
                     }
                 }
             }
-            
+
             if let error, !self.didStop {
                 DispatchQueue.main.async {
+                    guard self.generation == myGeneration else { return }
                     self.onError?(error.localizedDescription)
                 }
             }
@@ -95,11 +114,20 @@ final class AppleSpeechEngine: StreamingTranscriptionEngine {
             recognitionTask?.cancel()
         } else {
             recognitionRequest?.endAudio()
-            let finalText = lastPartial
-            if !finalText.isEmpty {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
-                    self?.onFinal?(finalText)
-                }
+            // Leave the task running: its genuine final (post-endAudio, often
+            // containing trailing words absent from the last partial) is
+            // preferred. Only synthesize a final from the latest partial if it
+            // hasn't arrived after a grace period — 0.8s keeps this ahead of
+            // AppState's own 0.9s watchdog. The generation check drops the
+            // fallback if a new session started meanwhile.
+            recognitionTask?.finish()
+            let myGeneration = generation
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+                guard let self, self.generation == myGeneration, !self.finalDelivered else { return }
+                let finalText = self.lastPartial
+                guard !finalText.isEmpty else { return }
+                self.finalDelivered = true
+                self.onFinal?(finalText)
             }
         }
         

@@ -30,19 +30,33 @@ enum InsertionOutcome: Equatable {
 /// and string-based so it lives in OpenWhispCore and is unit-tested without AX.
 enum InsertVerifier {
     /// After an AX set, decide whether the insert is reflected in the element's
-    /// re-read value. `current` is the value read back (nil = element exposes no
-    /// readable value, so we can't verify).
+    /// re-read value. `before` is the value read just BEFORE the set and `current`
+    /// the value read after (nil = element exposes no readable value).
+    ///
+    /// The before-snapshot guards both directions of a bare contains() check:
+    /// a value that already held the dictated phrase must not verify a set the
+    /// app silently ignored (text would be dropped), and a value the app changed
+    /// but transformed must not be treated as a failure (paste would duplicate).
     ///
     /// Returns:
-    ///   - `true`  → verified: the re-read value contains our text.
-    ///   - `false` → contradicted: value is readable but does NOT contain our text →
-    ///               AX silently failed; caller should fall back to paste.
-    ///   - `nil`   → unverifiable: no readable value → trust the AX status code.
-    static func axInsertReflected(expected: String, current: String?) -> Bool? {
+    ///   - `true`  → verified: the value changed and now contains our text.
+    ///   - `false` → contradicted: value is readable, UNCHANGED by the set, and
+    ///               does not contain our text → AX silently failed; caller should
+    ///               fall back to paste.
+    ///   - `nil`   → unverifiable: no readable value; value unchanged but the text
+    ///               was already present before the set (can't distinguish a no-op
+    ///               replacement from an ignored set); or value changed without
+    ///               containing the text (app transformed it) → trust the AX
+    ///               status code.
+    static func axInsertReflected(expected: String, before: String?, current: String?) -> Bool? {
         let needle = expected.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !needle.isEmpty else { return nil }
         guard let current else { return nil }   // can't read → can't verify
-        return current.contains(needle)
+        let containsNeedle = current.contains(needle)
+        if current == before {
+            return containsNeedle ? nil : false
+        }
+        return containsNeedle ? true : nil
     }
 }
 

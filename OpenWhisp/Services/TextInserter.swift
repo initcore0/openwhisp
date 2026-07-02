@@ -25,24 +25,33 @@ final class TextInserter: TextOutput {
     /// sets stay strictly FIFO-ordered (prevents the paste/clobber races).
     private let queue = DispatchQueue(label: "com.openwhisp.app.insert")
 
+    /// The user's clipboard snapshot awaiting a deferred restore, carried forward
+    /// across consecutive paste chunks so live dictation restores the ORIGINAL
+    /// clipboard, not an intermediate chunk. Only touched on `queue`.
+    private var pendingRestoreItems: [NSPasteboardItem] = []
+    /// `NSPasteboard.changeCount` right after our last paste write; lets a chunk
+    /// recognize "the clipboard still holds our previous chunk" and keep the
+    /// carried snapshot instead of re-snapshotting our own text. Only on `queue`.
+    private var lastPasteWriteCount: Int = -1
+
     /// Insert `text` into the focused app. Runs off the main thread; `completion`
     /// (if given) reports on the main thread whether the insert was confirmed or fell
     /// back to leaving the text on the clipboard.
     func insert(_ text: String, mode: InsertionMode, restoreClipboard: Bool,
                 completion: ((InsertionOutcome) -> Void)?) {
         guard !text.isEmpty else { return }
-        queue.async {
+        queue.async { [self] in
             let outcome: InsertionOutcome
             switch mode {
             case .paste:
-                outcome = Self.pasteWithSafetyNet(text, restoreClipboard: restoreClipboard)
+                outcome = pasteWithSafetyNet(text, restoreClipboard: restoreClipboard)
             case .directAX, .auto:
                 // Try verified AX first; fall back to paste (with its own safety net)
                 // when AX is unsupported or its result can't be confirmed.
                 if Self.insertViaAccessibility(text) {
                     outcome = .inserted
                 } else {
-                    outcome = Self.pasteWithSafetyNet(text, restoreClipboard: restoreClipboard)
+                    outcome = pasteWithSafetyNet(text, restoreClipboard: restoreClipboard)
                 }
             }
             if let completion {
@@ -91,6 +100,11 @@ final class TextInserter: TextOutput {
         )
         guard settableErr == .success, settable.boolValue else { return false }
 
+        // Snapshot the element's value BEFORE the set so verification can tell
+        // "the set changed the field" apart from "our text was already there"
+        // (see InsertVerifier.axInsertReflected).
+        let before = copyStringAttribute(element, kAXValueAttribute)
+
         // Setting selected text replaces the current selection with `text`; with
         // an empty selection it inserts at the caret. This is exactly the paste
         // semantics, minus the clipboard.
@@ -102,11 +116,11 @@ final class TextInserter: TextOutput {
         guard setErr == .success else { return false }
 
         // Best-effort verification: re-read the element's whole value (if exposed)
-        // and confirm our text is present. If the value is readable but doesn't
-        // reflect the insert, AX lied → report failure so we fall back to paste.
-        // If the value isn't readable, we can't verify → trust the status code.
+        // and compare against the pre-set snapshot. If the value is readable but
+        // unchanged and doesn't reflect the insert, AX lied → report failure so we
+        // fall back to paste. If it can't be decided, trust the status code.
         let readBack = copyStringAttribute(element, kAXValueAttribute)
-        switch InsertVerifier.axInsertReflected(expected: text, current: readBack) {
+        switch InsertVerifier.axInsertReflected(expected: text, before: before, current: readBack) {
         case .some(false): return false   // contradicted → fall back
         default:           return true    // verified, or unverifiable (trust setErr)
         }
@@ -127,24 +141,30 @@ final class TextInserter: TextOutput {
     /// Synchronous paste (already on `queue`) with verification: snapshot the
     /// clipboard, set our text and CONFIRM the write, then — only if a focused app
     /// can receive ⌘V — synthesize it. If preconditions can't be met (clipboard
-    /// write failed, or no other app is frontmost to paste into), we DON'T restore
-    /// the clipboard and report `.copiedToClipboard` so the text is never lost and
-    /// the user can paste it manually.
-    private static func pasteWithSafetyNet(_ text: String, restoreClipboard: Bool) -> InsertionOutcome {
+    /// write failed, ⌘V couldn't be synthesized, or no other app is frontmost to
+    /// paste into), we DON'T restore the clipboard and report `.copiedToClipboard`
+    /// so the text is never lost and the user can paste it manually.
+    private func pasteWithSafetyNet(_ text: String, restoreClipboard: Bool) -> InsertionOutcome {
         let pb = NSPasteboard.general
 
-        var savedItems: [NSPasteboardItem] = []
-        if restoreClipboard, let existing = pb.pasteboardItems {
-            for item in existing {
-                let copy = NSPasteboardItem()
-                for type in item.types {
-                    if let data = item.data(forType: type) {
-                        copy.setData(data, forType: type)
+        if restoreClipboard {
+            // Snapshot the current clipboard for the deferred restore — unless it
+            // still holds OUR previous chunk (changeCount unchanged since our last
+            // write), in which case keep carrying the user's original snapshot.
+            if pb.changeCount != lastPasteWriteCount {
+                var savedItems: [NSPasteboardItem] = []
+                for item in pb.pasteboardItems ?? [] {
+                    let copy = NSPasteboardItem()
+                    for type in item.types {
+                        if let data = item.data(forType: type) {
+                            copy.setData(data, forType: type)
+                        }
+                    }
+                    if !copy.types.isEmpty {
+                        savedItems.append(copy)
                     }
                 }
-                if !copy.types.isEmpty {
-                    savedItems.append(copy)
-                }
+                pendingRestoreItems = savedItems
             }
         }
 
@@ -157,6 +177,7 @@ final class TextInserter: TextOutput {
             // the UI can tell the user. (Don't restore: our text is the best we have.)
             return .copiedToClipboard
         }
+        lastPasteWriteCount = pb.changeCount
 
         // Is there a foreground app (other than us) that can receive the paste? The
         // overlay is a non-activating panel, so the target app should stay frontmost.
@@ -166,12 +187,30 @@ final class TextInserter: TextOutput {
         }
 
         Thread.sleep(forTimeInterval: 0.05)
-        postCommandV()
+        guard Self.postCommandV() else {
+            // ⌘V couldn't be synthesized — no paste happened. Leave our text on the
+            // clipboard (no restore) and report it so the user can paste manually.
+            return .copiedToClipboard
+        }
         Thread.sleep(forTimeInterval: 0.15)
 
-        if restoreClipboard, !savedItems.isEmpty {
-            pb.clearContents()
-            pb.writeObjects(savedItems)
+        if restoreClipboard, !pendingRestoreItems.isEmpty {
+            // The target app services the synthesized ⌘V asynchronously; a busy app
+            // can read the pasteboard well after 150ms, and restoring here would
+            // make it paste the OLD clipboard. Defer the restore on the same serial
+            // queue, and skip it if anything (a user copy, a later chunk, or
+            // setClipboard) has rewritten the pasteboard since — the later writer
+            // owns the clipboard then.
+            let expectedChangeCount = pb.changeCount
+            queue.asyncAfter(deadline: .now() + 1.0) { [self] in
+                let pb = NSPasteboard.general
+                guard pb.changeCount == expectedChangeCount else { return }
+                let items = pendingRestoreItems
+                guard !items.isEmpty else { return }
+                pendingRestoreItems = []
+                pb.clearContents()
+                pb.writeObjects(items)
+            }
         }
         return .inserted
     }
@@ -184,17 +223,20 @@ final class TextInserter: TextOutput {
         return front.bundleIdentifier != Bundle.main.bundleIdentifier
     }
 
-    private static func postCommandV() {
-        guard let source = CGEventSource(stateID: .combinedSessionState) else { return }
+    /// Returns false when the ⌘V events couldn't even be created — the caller must
+    /// NOT assume a paste happened (and must not restore the clipboard over the
+    /// text it just set).
+    private static func postCommandV() -> Bool {
+        guard let source = CGEventSource(stateID: .combinedSessionState),
+              let vDown = CGEvent(keyboardEventSource: source, virtualKey: 0x09, keyDown: true),
+              let vUp = CGEvent(keyboardEventSource: source, virtualKey: 0x09, keyDown: false)
+        else { return false }
         let tap: CGEventTapLocation = .cghidEventTap
-        if let vDown = CGEvent(keyboardEventSource: source, virtualKey: 0x09, keyDown: true) {
-            vDown.flags = .maskCommand
-            vDown.post(tap: tap)
-        }
+        vDown.flags = .maskCommand
+        vDown.post(tap: tap)
         Thread.sleep(forTimeInterval: 0.08)
-        if let vUp = CGEvent(keyboardEventSource: source, virtualKey: 0x09, keyDown: false) {
-            vUp.flags = .maskCommand
-            vUp.post(tap: tap)
-        }
+        vUp.flags = .maskCommand
+        vUp.post(tap: tap)
+        return true
     }
 }

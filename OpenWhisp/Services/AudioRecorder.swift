@@ -40,6 +40,15 @@ class AudioRecorder: NSObject, AVAudioRecorderDelegate, AudioCapture {
     private var chunkTimer: Timer?
     private var streamingChunks: [URL] = []
     private var onChunkComplete: ((URL?) -> Void)?
+    /// Completed chunk files whose main-thread delivery hasn't run yet. Guarded
+    /// by `streamQueue`; claimed by `deliverPendingChunks()` or drained by
+    /// `stop()`, whichever runs first, so a chunk finalized just before stop
+    /// (whose main.async emission can't run while stop blocks the main thread)
+    /// is handed to the stop completion instead of being silently dropped.
+    private var pendingCompletedChunks: [URL] = []
+    /// Observer for `AVAudioEngineConfigurationChange` on the live streaming
+    /// engine (input device disconnected/switched mid-session).
+    private var configChangeObserver: NSObjectProtocol?
     private var chunkCount = 0
     private var isStreaming = false
     private var isPauseBasedStreaming = false
@@ -149,6 +158,12 @@ class AudioRecorder: NSObject, AVAudioRecorderDelegate, AudioCapture {
             startMetering()
             onStateChanged?(.recording)
         } catch {
+            // Undo the default-device switch above: on failure stop() never runs,
+            // so without this the machine-wide default input stays changed.
+            if let previous = previousDefaultInputDevice {
+                Self.setDefaultInputDevice(previous)
+                previousDefaultInputDevice = nil
+            }
             onStateChanged?(.error("Recording failed: \(error.localizedDescription)"))
         }
     }
@@ -198,13 +213,14 @@ class AudioRecorder: NSObject, AVAudioRecorderDelegate, AudioCapture {
                         try self.streamingFile?.write(from: converted)
                     } catch {
                         DispatchQueue.main.async {
-                            self.onStateChanged?(.error("Streaming write failed: \(error.localizedDescription)"))
+                            self.failSession("Streaming write failed: \(error.localizedDescription)")
                         }
                     }
                 }
             }
 
             try engine.start()
+            observeConfigurationChanges(of: engine)
             onStateChanged?(.recording)
             scheduleChunkTimer(chunkDuration: chunkDuration)
         } catch {
@@ -278,6 +294,7 @@ class AudioRecorder: NSObject, AVAudioRecorderDelegate, AudioCapture {
             }
 
             try engine.start()
+            observeConfigurationChanges(of: engine)
             onStateChanged?(.recording)
         } catch {
             input.removeTap(onBus: 0)
@@ -302,7 +319,9 @@ class AudioRecorder: NSObject, AVAudioRecorderDelegate, AudioCapture {
     private func rotateChunk() {
         guard isStreaming else { return }
         streamQueue.async {
-            let completedURL = self.streamingURL
+            if let completedURL = self.streamingURL {
+                self.pendingCompletedChunks.append(completedURL)
+            }
             self.streamingFile = nil
             self.streamingURL = nil
 
@@ -310,17 +329,13 @@ class AudioRecorder: NSObject, AVAudioRecorderDelegate, AudioCapture {
                 try self.openNextStreamingFile()
             } catch {
                 DispatchQueue.main.async {
-                    self.onStateChanged?(.error("Chunk rotation failed: \(error.localizedDescription)"))
+                    self.failSession("Chunk rotation failed: \(error.localizedDescription)")
                 }
                 return
             }
-            
+
             DispatchQueue.main.async {
-                if let completedURL {
-                    self.onChunkComplete?(completedURL)
-                    self.streamingChunks.append(completedURL)
-                    self.chunkCount += 1
-                }
+                self.deliverPendingChunks()
             }
         }
     }
@@ -364,7 +379,7 @@ class AudioRecorder: NSObject, AVAudioRecorderDelegate, AudioCapture {
             }
         } catch {
             DispatchQueue.main.async {
-                self.onStateChanged?(.error("Pause-based streaming failed: \(error.localizedDescription)"))
+                self.failSession("Pause-based streaming failed: \(error.localizedDescription)")
             }
         }
     }
@@ -376,14 +391,35 @@ class AudioRecorder: NSObject, AVAudioRecorderDelegate, AudioCapture {
         streamingURL = nil
         resetPauseStreamingState()
 
-        DispatchQueue.main.async {
-            guard let completedURL else { return }
-            if shouldEmit {
-                self.onChunkComplete?(completedURL)
-                self.streamingChunks.append(completedURL)
-                self.chunkCount += 1
+        guard let completedURL else { return }
+        if shouldEmit {
+            pendingCompletedChunks.append(completedURL)
+            DispatchQueue.main.async {
+                self.deliverPendingChunks()
+            }
+        } else {
+            try? FileManager.default.removeItem(at: completedURL)
+        }
+    }
+
+    /// Delivers completed chunks to `onChunkComplete`. Main thread only. Chunks
+    /// are claimed inside `streamQueue.sync`, mutually exclusive with the drain
+    /// in `stop()` (also under `streamQueue.sync`), so a chunk is delivered
+    /// exactly once — either here or through stop's completion.
+    private func deliverPendingChunks() {
+        let urls = streamQueue.sync { () -> [URL] in
+            let claimed = pendingCompletedChunks
+            pendingCompletedChunks = []
+            return claimed
+        }
+        for url in urls {
+            if let callback = onChunkComplete {
+                callback(url)
+                streamingChunks.append(url)
+                chunkCount += 1
             } else {
-                try? FileManager.default.removeItem(at: completedURL)
+                // No consumer anymore: don't leak the WAV in the cache dir.
+                try? FileManager.default.removeItem(at: url)
             }
         }
     }
@@ -396,9 +432,14 @@ class AudioRecorder: NSObject, AVAudioRecorderDelegate, AudioCapture {
         chunkTimer = nil
         meterTimer?.invalidate()
         meterTimer = nil
-        
+        if let observer = configChangeObserver {
+            NotificationCenter.default.removeObserver(observer)
+            configChangeObserver = nil
+        }
+
         // Stop recording
         let path: URL?
+        var undeliveredChunks: [URL] = []
         if isStreaming, let engine = streamingEngine {
             engine.inputNode.removeTap(onBus: 0)
             engine.stop()
@@ -415,6 +456,11 @@ class AudioRecorder: NSObject, AVAudioRecorderDelegate, AudioCapture {
                 if !shouldKeepCurrentChunk, let streamingURL {
                     try? FileManager.default.removeItem(at: streamingURL)
                 }
+                // Claim chunks whose main-thread delivery hasn't run yet (it
+                // can't while stop() blocks the main thread); they're handed to
+                // `completion` below so finished audio isn't dropped.
+                undeliveredChunks = pendingCompletedChunks
+                pendingCompletedChunks = []
                 streamingFile = nil
                 streamingURL = nil
                 streamingFormat = nil
@@ -446,11 +492,54 @@ class AudioRecorder: NSObject, AVAudioRecorderDelegate, AudioCapture {
         }
 
         onStateChanged?(.stopped)
+        // Chunks that finished rotating just before stop(), oldest first, ahead
+        // of the in-progress file. Callers treat each URL like the final path
+        // (enqueue for transcription, or delete on cancel).
+        for url in undeliveredChunks {
+            if let completion {
+                completion(url)
+            } else {
+                try? FileManager.default.removeItem(at: url)
+            }
+        }
         completion?(path)
     }
     
+    // MARK: - Failure Handling
+
+    /// Fatal mid-session failure: tear the capture session down (tap, engine,
+    /// timers, chunk state) BEFORE surfacing the error, so the mic doesn't stay
+    /// hot and chunks don't keep rotating after AppState resets the session UI.
+    /// Main thread only — never call from `streamQueue` (stop() blocks on it
+    /// via `streamQueue.sync` and would deadlock).
+    private func failSession(_ message: String) {
+        if isStreaming || recorder != nil {
+            stop { url in
+                if let url { try? FileManager.default.removeItem(at: url) }
+            }
+        }
+        // Emit the error after stop()'s .stopped so "Error" isn't clobbered.
+        onStateChanged?(.error(message))
+    }
+
+    /// Watches for the streaming engine's configuration changing mid-session
+    /// (input device disconnected or switched — e.g. AirPods dropping). The
+    /// engine stops rendering when that happens, so without this the session
+    /// keeps showing "recording" while capturing nothing. Minimal handling:
+    /// tear down and surface the failure instead of migrating devices.
+    private func observeConfigurationChanges(of engine: AVAudioEngine) {
+        configChangeObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange,
+            object: engine,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self, self.isStreaming, self.streamingEngine === engine else { return }
+            self.failSession("Microphone disconnected or input device changed")
+        }
+    }
+
     // MARK: - Helpers
-    
+
     private func makeSettings() -> [String: Any] {
         [
             AVFormatIDKey: Int(kAudioFormatLinearPCM),
@@ -512,7 +601,7 @@ class AudioRecorder: NSObject, AVAudioRecorderDelegate, AudioCapture {
         if status == .error {
             if let error {
                 DispatchQueue.main.async {
-                    self.onStateChanged?(.error("Audio conversion failed: \(error.localizedDescription)"))
+                    self.failSession("Audio conversion failed: \(error.localizedDescription)")
                 }
             }
             return nil

@@ -51,10 +51,16 @@ final class WhisperKitEngine: FileTranscriptionEngine {
     // tasks arrive almost at once; without coordination each would start its OWN
     // load and the parallel ANE compiles thrash and never finish (the cold-start
     // "stuck" bug). We therefore keep a SINGLE shared load Task — the first caller
-    // creates it, everyone else awaits the same one. The Task property is only
-    // touched on the main actor (see loadTaskOnMain) so the check-and-set is atomic.
-    private var loadedKit: WhisperKitHandle?
+    // creates it, everyone else awaits the same one. ALL of the load state below
+    // (cached kit, in-flight Task, generation) is touched only on the main actor
+    // (see loadTaskOnMain) so the check-and-set is atomic — transcribe tasks run on
+    // the cooperative pool and stopServer() is called from the main thread, so a
+    // non-isolated property here would be an unsynchronized cross-thread write.
+    @MainActor private var loadedKit: WhisperKitHandle?
     @MainActor private var inFlightLoad: Task<WhisperKitHandle, Error>?
+    /// Bumped by stopServer(). A load that began before a stop must NOT repopulate
+    /// `loadedKit` when it completes — "stop" means the model stays dropped.
+    @MainActor private var loadGeneration = 0
 
     // Sticky language for the "auto" setting. We detect the spoken language ONCE
     // (on the first chunk) and reuse it for the rest of the session — per-2s-chunk
@@ -85,9 +91,14 @@ final class WhisperKitEngine: FileTranscriptionEngine {
 
     func stopServer() {
         // Nothing to tear down (no external process); drop the model to free memory.
-        loadedKit = nil
+        // Cancel any in-flight load, and bump the generation so a load already past
+        // the point of cancellation can't resurrect the model on a stopped engine
+        // (the dual-engine memory-pressure case when switching backends mid-warm).
         Task { @MainActor in
+            self.inFlightLoad?.cancel()
             self.inFlightLoad = nil
+            self.loadedKit = nil
+            self.loadGeneration += 1
             // Forget the detected language so the next session re-detects.
             self.stickyLanguage = nil
             self.inFlightDetect = nil
@@ -134,13 +145,13 @@ final class WhisperKitEngine: FileTranscriptionEngine {
 
     @discardableResult
     private func ensureLoaded() async throws -> WhisperKitHandle {
-        if let kit = loadedKit { return kit }
         // Coalesce concurrent loads into ONE shared Task, created/observed on the
         // main actor so the check-and-create is atomic (prevents the load stampede).
-        let task = await loadTaskOnMain()
+        // The cached-kit fast path lives inside loadTaskOnMain for the same reason.
+        let (generation, task) = await loadTaskOnMain()
         do {
             let kit = try await task.value
-            loadedKit = kit
+            await storeLoadedKit(kit, generation: generation)
             return kit
         } catch {
             // The shared load failed (e.g. timed-out cold start). Clear the cached
@@ -152,6 +163,14 @@ final class WhisperKitEngine: FileTranscriptionEngine {
         }
     }
 
+    /// Cache the loaded kit — unless a stopServer() intervened since this load
+    /// began (generation mismatch), in which case the model must stay dropped.
+    @MainActor
+    private func storeLoadedKit(_ kit: WhisperKitHandle, generation: Int) {
+        guard generation == loadGeneration else { return }
+        loadedKit = kit
+    }
+
     /// Drop the cached load Task if it's the one that just failed, so a later
     /// `ensureLoaded()` retries from scratch.
     @MainActor
@@ -159,12 +178,14 @@ final class WhisperKitEngine: FileTranscriptionEngine {
         if inFlightLoad == failed { inFlightLoad = nil }
     }
 
-    /// Returns the single in-flight load Task, creating it on first call. All the
-    /// state access happens on the main actor, so concurrent callers can't each
+    /// Returns the single in-flight load Task (or an already-loaded kit wrapped in
+    /// one), creating it on first call, plus the load generation it belongs to. All
+    /// the state access happens on the main actor, so concurrent callers can't each
     /// spawn their own load.
     @MainActor
-    private func loadTaskOnMain() -> Task<WhisperKitHandle, Error> {
-        if let existing = inFlightLoad { return existing }
+    private func loadTaskOnMain() -> (generation: Int, task: Task<WhisperKitHandle, Error>) {
+        if let kit = loadedKit { return (loadGeneration, Task<WhisperKitHandle, Error> { kit }) }
+        if let existing = inFlightLoad { return (loadGeneration, existing) }
         let name = modelName
         let status = onWorkerStatus
         let task = Task<WhisperKitHandle, Error> {
@@ -176,7 +197,7 @@ final class WhisperKitEngine: FileTranscriptionEngine {
             return kit
         }
         inFlightLoad = task
-        return task
+        return (loadGeneration, task)
     }
 
     func resetSession() {

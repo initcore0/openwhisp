@@ -57,8 +57,14 @@ final class WhisperKitStreamingEngine: StreamingTranscriptionEngine {
         MainActor.assumeIsolated {
             self.lastConfirmedText = ""
             self.didFinish = false
-            self.lifecycle.enqueue { [weak self] in
-                await self?.runStart(task: task)
+            // Strong capture on purpose: the chain must keep the engine alive until
+            // its lifecycle work completes. AppState may drop its (only) reference
+            // right after stop() (e.g. rebuildFileEngine swaps the engine), and a
+            // weak self here would dealloc the engine before the queued teardown
+            // runs — leaving the mic streaming forever. The Task releases the
+            // closure when it finishes, so this is not a retain cycle.
+            self.lifecycle.enqueue {
+                await self.runStart(task: task)
             }
         }
     }
@@ -80,7 +86,20 @@ final class WhisperKitStreamingEngine: StreamingTranscriptionEngine {
             // `start()` runs the realtime loop until stopped; it returns when the
             // stream ends. Don't block the chain on it (a stop must be able to run),
             // so drive it in a detached child whose lifetime the stop tears down.
-            Task { try? await handle.start() }
+            // Startup failures (AVAudioEngine won't start, input device gone, tap
+            // failure) throw from start() — surface them instead of leaving the
+            // session silently dead behind a "Listening..." UI. Guard on the handle
+            // still being current: a late failure from a torn-down session must not
+            // fire onError into a newly started one.
+            Task { @MainActor [weak self] in
+                do {
+                    try await handle.start()
+                } catch {
+                    NSLog("[WhisperKitStream] stream error: %@", error.localizedDescription)
+                    guard let self, self.transcriber === handle, !self.didFinish else { return }
+                    self.onError?("WhisperKit streaming failed: \(error.localizedDescription)")
+                }
+            }
         } catch {
             NSLog("[WhisperKitStream] start error: %@", error.localizedDescription)
             guard !didFinish else { return }
@@ -91,8 +110,10 @@ final class WhisperKitStreamingEngine: StreamingTranscriptionEngine {
     func stop(cancel: Bool) {
         // Synchronous main-actor enqueue (see start) so stop→start order is preserved.
         MainActor.assumeIsolated {
-            self.lifecycle.enqueue { [weak self] in
-                await self?.runStop(cancel: cancel)
+            // Strong capture (see start): teardown must run even if the caller drops
+            // its reference to this engine immediately after enqueueing the stop.
+            self.lifecycle.enqueue {
+                await self.runStop(cancel: cancel)
             }
         }
     }

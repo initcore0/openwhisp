@@ -76,6 +76,10 @@ enum WhisperKitBridge {
     static let downloadLoadTimeout: Double = 600
 
     static func load(model: String) async throws -> WhisperKit {
+        // Honor a stopServer()-issued cancel that landed before the load began;
+        // cancellation DURING the load is handled by withTimeout, which forwards
+        // caller cancellation to the racing operation/watchdog tasks.
+        try Task.checkCancellation()
         let compute = ModelComputeOptions(audioEncoderCompute: .cpuAndGPU)
         if let folder = WhisperKitModelInstaller.compiledModelFolder(for: model) {
             // Timed span (instrumentation builds only): this is where the CoreML
@@ -262,8 +266,24 @@ struct WhisperKitStreamState {
 /// `state` is private, so we cache the latest snapshot from the state callback.
 final class WhisperKitStreamHandle {
     private var transcriber: AudioStreamTranscriber?
-    /// Newest state snapshot, written from the state-change callback.
-    fileprivate var latest: WhisperKitStreamState?
+
+    /// Newest state snapshot. Written from the state-change callback, which fires
+    /// on AudioStreamTranscriber's own executor (off-main), and read from the main
+    /// actor at stop (`fullText()`) — lock-guarded because the two sides have no
+    /// happens-before edge (a decode window completing right after stop still
+    /// writes here).
+    private let latestLock = NSLock()
+    private var latestStorage: WhisperKitStreamState?
+    fileprivate var latest: WhisperKitStreamState? {
+        get {
+            latestLock.lock(); defer { latestLock.unlock() }
+            return latestStorage
+        }
+        set {
+            latestLock.lock(); defer { latestLock.unlock() }
+            latestStorage = newValue
+        }
+    }
 
     fileprivate func attach(_ transcriber: AudioStreamTranscriber) {
         self.transcriber = transcriber
