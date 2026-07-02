@@ -118,8 +118,11 @@ Fix it once by creating a **stable self‑signed identity**:
 
 After this, permissions persist across rebuilds. (This is self‑signed: it stops
 the re‑prompts on *your* machine but doesn't make the app trusted for other
-users — that needs an Apple Developer ID cert + notarization. If you have one,
-set `SIGN_IDENTITY="Developer ID Application: …"` and `package.sh` will use it.)
+users — that needs an Apple Developer ID cert + notarization.)
+
+To build a **distributable, notarized** DMG that opens on other Macs with no
+Gatekeeper warning, see **[docs/SIGNING_AND_NOTARIZATION.md](docs/SIGNING_AND_NOTARIZATION.md)**
+(`NOTARIZE=1 ./build-dmg.sh release` once you have a Developer ID cert).
 
 ### Optional: build a DMG
 

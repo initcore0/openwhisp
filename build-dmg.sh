@@ -85,9 +85,10 @@ mkdir -p "$APP_DIR/Contents/Resources/models"
 cp "$BUILD_DIR/OpenWhisp" "$APP_DIR/Contents/MacOS/"
 cp "$PROJECT_DIR/OpenWhisp/Info.plist" "$APP_DIR/Contents/"
 
-if [ -f "$PROJECT_DIR/OpenWhisp/OpenWhisp.entitlements" ]; then
-    cp "$PROJECT_DIR/OpenWhisp/OpenWhisp.entitlements" "$APP_DIR/Contents/"
-fi
+# NOTE: the .entitlements file is a BUILD INPUT (passed to codesign --entitlements
+# below), NOT a bundle resource — it's baked into the signature, not read at runtime.
+# Don't copy it into Contents/: an unsigned stray file there fails `codesign --verify
+# --deep --strict` (and would break notarization).
 
 if [ -d "$PROJECT_DIR/OpenWhisp/Resources" ]; then
     cp -R "$PROJECT_DIR/OpenWhisp/Resources/"* "$APP_DIR/Contents/Resources/"
@@ -111,19 +112,56 @@ fi
 
 echo ""
 echo "Step 4: Signing app bundle..."
-# Prefer a stable identity (SIGN_IDENTITY env, else the self-signed OpenWhisp cert)
-# so TCC permissions survive rebuilds; fall back to ad-hoc.
+# Identity selection. Priority:
+#   1) SIGN_IDENTITY env (e.g. "Developer ID Application: Name (TEAMID)")
+#   2) an installed Developer ID Application cert (auto-detected) — enables
+#      hardened runtime + notarization (see NOTARIZE below)
+#   3) the self-signed "OpenWhisp Self-Signed" cert (stable TCC across rebuilds)
+#   4) ad-hoc ("-")
 SIGN_IDENTITY="${SIGN_IDENTITY:-}"
-if [ -z "$SIGN_IDENTITY" ] && security find-identity -v -p codesigning 2>/dev/null | grep -q "OpenWhisp Self-Signed"; then
-    SIGN_IDENTITY="OpenWhisp Self-Signed"
+if [ -z "$SIGN_IDENTITY" ]; then
+    # `|| true`: a no-match grep exits 1, which would abort under `set -euo pipefail`.
+    IDENTITIES="$(security find-identity -v -p codesigning 2>/dev/null || true)"
+    DEV_ID_LINE="$(printf '%s\n' "$IDENTITIES" | grep "Developer ID Application" | head -1 || true)"
+    if [ -n "$DEV_ID_LINE" ]; then
+        # Extract the quoted cert name, e.g. Developer ID Application: Name (TEAMID)
+        SIGN_IDENTITY="$(printf '%s' "$DEV_ID_LINE" | sed -E 's/.*"(.*)".*/\1/')"
+    elif printf '%s\n' "$IDENTITIES" | grep -q "OpenWhisp Self-Signed"; then
+        SIGN_IDENTITY="OpenWhisp Self-Signed"
+    fi
 fi
 [ -z "$SIGN_IDENTITY" ] && SIGN_IDENTITY="-"
 echo "  Using identity: $SIGN_IDENTITY"
+
+# A real Developer ID identity gets the hardened runtime + a secure timestamp,
+# which notarization REQUIRES. Ad-hoc and self-signed certs can't timestamp and
+# aren't notarizable, so they sign plainly (unchanged behavior for local dev).
+HARDENED_ARGS=()
+case "$SIGN_IDENTITY" in
+    "Developer ID Application"*) HARDENED_ARGS=(--options runtime --timestamp) ;;
+esac
+
 ENTITLEMENTS_ARGS=()
 if [ -f "$PROJECT_DIR/OpenWhisp/OpenWhisp.entitlements" ]; then
     ENTITLEMENTS_ARGS=(--entitlements "$PROJECT_DIR/OpenWhisp/OpenWhisp.entitlements")
 fi
-codesign --force --deep --sign "$SIGN_IDENTITY" "${ENTITLEMENTS_ARGS[@]}" "$APP_DIR"
+
+# Sign INSIDE-OUT. `--deep` is unreliable with the hardened runtime (it can skip
+# nested Mach-O and mis-apply flags), so sign the bundled dylibs and helper
+# executables (whisper-server/-cli, llama-server) individually first, then the app.
+# Nested code takes the hardened runtime but NOT the app entitlements.
+NESTED=()
+while IFS= read -r f; do NESTED+=("$f"); done < <(
+    find "$APP_DIR/Contents/Resources" -type f \( -name "*.dylib" -o -perm -111 \) 2>/dev/null
+)
+if [ "${#NESTED[@]}" -gt 0 ]; then
+    echo "  Signing ${#NESTED[@]} nested libraries/executables..."
+    for f in "${NESTED[@]}"; do
+        codesign --force "${HARDENED_ARGS[@]+"${HARDENED_ARGS[@]}"}" --sign "$SIGN_IDENTITY" "$f"
+    done
+fi
+
+codesign --force "${HARDENED_ARGS[@]+"${HARDENED_ARGS[@]}"}" --sign "$SIGN_IDENTITY" "${ENTITLEMENTS_ARGS[@]+"${ENTITLEMENTS_ARGS[@]}"}" "$APP_DIR"
 codesign --verify --deep --strict --verbose=2 "$APP_DIR"
 
 echo ""
@@ -146,6 +184,44 @@ hdiutil create \
 echo ""
 echo "Step 7: Verifying DMG..."
 hdiutil verify "$DMG_PATH"
+
+# Optional: notarize + staple the DMG so Gatekeeper opens it with no warning on
+# other Macs. OFF by default; enable with NOTARIZE=1. Requires a Developer ID
+# identity (above) and a stored notarytool keychain profile:
+#
+#   xcrun notarytool store-credentials "$NOTARY_PROFILE" \
+#       --apple-id you@example.com --team-id TEAMID --password APP_SPECIFIC_PW
+#
+# NOTARY_PROFILE defaults to "openwhisp-notary".
+if [ "${NOTARIZE:-0}" = "1" ]; then
+    NOTARY_PROFILE="${NOTARY_PROFILE:-openwhisp-notary}"
+    echo ""
+    echo "Step 8: Notarizing DMG (profile: $NOTARY_PROFILE)..."
+
+    case "$SIGN_IDENTITY" in
+        "Developer ID Application"*) : ;;
+        *)
+            echo "ERROR: NOTARIZE=1 needs a Developer ID Application identity, but signed with '$SIGN_IDENTITY'." >&2
+            echo "       Install your Developer ID cert (see docs) or pass SIGN_IDENTITY=..." >&2
+            exit 1
+            ;;
+    esac
+
+    # The DMG itself must be signed with the same Developer ID before submission.
+    codesign --force --timestamp --sign "$SIGN_IDENTITY" "$DMG_PATH"
+
+    # Submit and block until Apple returns a verdict; --wait fails non-zero if the
+    # notarization is rejected (the log URL in the output explains why).
+    xcrun notarytool submit "$DMG_PATH" --keychain-profile "$NOTARY_PROFILE" --wait
+
+    # Staple the ticket so the DMG passes Gatekeeper offline.
+    echo "Stapling notarization ticket..."
+    xcrun stapler staple "$DMG_PATH"
+    xcrun stapler validate "$DMG_PATH"
+    spctl --assess --type open --context context:primary-signature -v "$DMG_PATH" || true
+
+    echo "✓ Notarized + stapled."
+fi
 
 echo ""
 echo "✓ Done"
