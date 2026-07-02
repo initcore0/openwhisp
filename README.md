@@ -19,7 +19,7 @@ Transcription runs locally with [whisper.cpp](https://github.com/ggerganov/whisp
 - **Smart formatting (local, default‑on)** — capitalization, punctuation cleanup, filler‑word removal ("um/uh"), and spoken punctuation ("new line", "comma", "period").
 - **Custom vocabulary** — bias whisper toward your names/jargon, plus "heard → correct" substitutions (e.g. "clod code" → "Claude Code").
 - **AI post‑processing (optional)** — rephrase or improve translation with an LLM. Choose **Built‑in (offline)** to run a small model fully on‑device with no setup (downloads once, then never phones home), point it at a **local OpenAI‑compatible server** (llama.cpp `llama-server`, Ollama), or at OpenAI.
-- **Refine with a follow-up** — dictate, then hold your Refine key and speak an instruction ("make it a Telegram post"); the AI rewrites your text accordingly.
+- **Refine while dictating** — keep holding the dictation key, tap the Refine key, and speak an instruction ("make it a Telegram post"); on release the AI rewrites what you dictated.
 - **Refine your selection** — highlight text in any app, hold your Refine key, and speak an instruction ("make it more formal", "translate to Russian"); the selected text is replaced in place with the AI's result. No dictation needed.
 - **Per‑app modes** — auto‑apply language / output / AI‑cleanup overrides based on the app you're typing into.
 - **Transcription history** — local, searchable list of past dictations with copy/re‑use.
@@ -221,17 +221,17 @@ OpenWhisp can run a final LLM pass to rephrase your text or improve a translatio
 
 Use **Test Connection** / **Validate** in Settings to confirm reachability.
 
-### Refine with a spoken instruction (hold your Refine key)
+### Refine while dictating (tap the Refine key)
 
-Hold your **Refine key** (default **Right Option**, changeable under **Settings → Hotkey**) and speak an instruction — the AI applies it to your **selected** text, or, if nothing is selected, to the **last thing you dictated**:
+While still **holding your dictation key**, **tap the Refine key** (default **Right Control**, changeable under **Settings → Hotkey**) and speak an instruction. When you **release the dictation key**, the AI rewrites what you dictated before the tap:
 
-> Dictate "hello team, I'm on vacation and all is great", then hold your **Refine key** and say *"make it a Telegram post"* → the rewritten Telegram post replaces it.
+> Hold Fn, say "hello team, I'm on vacation and all is great", **tap Right Control** (keep holding Fn), say *"make it a Telegram post"*, release Fn → the rewritten Telegram post is inserted.
 
-It's a dedicated key (default **Right Option**, changeable under **Settings → Hotkey**), separate from the dictation key, so normal dictation always pastes instantly. No fixed phrases — say what you want in plain language (any language). Needs an AI provider configured; the overlay turns magenta while you speak the instruction and shows **"Refining…"** while the AI works. Toggle it in **Settings → AI Post‑processing**.
+It's one continuous hold — normal dictation (no Refine tap) always pastes instantly. No fixed phrases — say what you want in plain language (any language). Needs an AI provider configured; the overlay turns magenta while you speak the instruction and shows **"Refining…"** while the AI works. Toggle it in **Settings → AI Post‑processing**.
 
 (Trailing translate/transcribe instructions are still stripped from output, so dictating in Russian and saying "translate this into English" won't leave that phrase in your text.)
 
-**Refine selected text** — hold your **Refine key** with text **selected** in any app (no dictation needed):
+**Refine selected text** — with text **selected** and no in-session dictation, tapping Refine during a hold applies to the selection instead.
 
 > Select a paragraph, hold your **Refine key**, say *"make it more concise"* → the selection is replaced in place with the AI's rewrite.
 

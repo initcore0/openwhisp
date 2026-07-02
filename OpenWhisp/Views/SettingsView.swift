@@ -590,12 +590,12 @@ struct SettingsView: View {
             Toggle("Refine with a spoken instruction", isOn: $appState.instructionChainEnabled)
 
             Text("""
-            Hold your Refine key (set it under Settings › Hotkey) and speak an \
-            instruction — the AI applies it to your SELECTED text, or, if nothing is \
-            selected, to the last thing you dictated. For example: select some text (or \
-            dictate it), hold the Refine key and say "make it a Telegram post". No fixed \
-            phrases — say what you want in plain language (any language). Needs an AI \
-            provider above; works in Preview and Paste-at-end modes.
+            While holding your dictation key, TAP the Refine key (set it under \
+            Settings › Hotkey), then speak an instruction — on release, the AI rewrites \
+            what you dictated before the tap. For example: dictate "hello team, out \
+            sick", tap Refine, say "make it a Telegram post". No fixed phrases — say \
+            what you want in plain language (any language). Needs an AI provider above; \
+            works in Preview and Paste-at-end modes.
             """)
                 .font(.caption)
                 .foregroundColor(.secondary)
@@ -746,9 +746,9 @@ struct SettingsView: View {
                     Text(key.label).tag(key.rawValue)
                 }
             }
-            Label("Refine with a spoken instruction", systemImage: "wand.and.stars")
+            Label("Refine while dictating", systemImage: "wand.and.stars")
                 .font(.caption.bold())
-            Text("Hold your Refine key and speak an instruction (\u{201C}make it a Telegram post\u{201D}, \u{201C}more formal\u{201D}) to rewrite your selected text — or, if nothing is selected, the last thing you dictated. Right-hand modifier keys work best. Requires an AI provider under AI Post-processing.")
+            Text("While still holding your dictation key, TAP the Refine key — then speak an instruction (\u{201C}make it a Telegram post\u{201D}, \u{201C}more formal\u{201D}). When you release the dictation key, the AI rewrites what you dictated before the tap. Requires an AI provider under AI Post-processing.")
                 .font(.caption)
                 .foregroundColor(.secondary)
         }
