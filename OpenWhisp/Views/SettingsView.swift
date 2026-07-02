@@ -131,12 +131,14 @@ struct SettingsView: View {
         }
         // The Settings window is retained after close (isReleasedWhenClosed =
         // false), so focus-loss never fires when it's closed via the title-bar
-        // button. Commit pending drafts on any window close; commits are no-ops
-        // when nothing changed.
-        .onReceive(NotificationCenter.default.publisher(for: NSWindow.willCloseNotification)) { _ in
+        // button. Commit pending drafts when THIS window closes — scoped to the
+        // hosting window (an app-wide willClose publisher would also fire for
+        // open panels / other windows and commit half-typed drafts mid-edit),
+        // and on every close since the retained window reopens.
+        .background(WindowCloseObserver(firesOnce: false) {
             commitVocabularyTerms()
             commitOpenAIKey()
-        }
+        })
         .frame(minWidth: 640, minHeight: 600)
     }
 

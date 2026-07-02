@@ -165,22 +165,38 @@ final class HotkeyMonitor: HotkeyControlling {
     /// and NSEvent.modifierFlags): the device-independent flags (.maskAlternate
     /// etc.) stay set while the LEFT sibling of the pair is held, which would make
     /// us miss the refine key's release edge.
-    private static func rightModifierDeviceBit(forKeyCode keyCode: Int64) -> UInt64? {
+    /// Union of all NX_DEVICE[LR]*KEYMASK modifier bits. HID-sourced events
+    /// always carry these; synthesizers that assign public device-independent
+    /// masks (CGEventSetFlags) wipe the whole low word. Excludes
+    /// NX_DEVICE_ALPHASHIFT_STATELESS_MASK (0x0080), which isn't a modifier key.
+    private static let anyDeviceModifierBits: UInt64 = 0x207F
+
+    private static func rightModifierBits(forKeyCode keyCode: Int64) -> (device: UInt64, independent: UInt64)? {
         switch keyCode {
-        case 0x3D: return 0x0040   // NX_DEVICERALTKEYMASK   (Right Option)
-        case 0x36: return 0x0010   // NX_DEVICERCMDKEYMASK   (Right Command)
-        case 0x3E: return 0x2000   // NX_DEVICERCTLKEYMASK   (Right Control)
-        case 0x3C: return 0x0004   // NX_DEVICERSHIFTKEYMASK (Right Shift)
+        case 0x3D: return (0x0040, CGEventFlags.maskAlternate.rawValue) // Right Option (NX_DEVICERALTKEYMASK)
+        case 0x36: return (0x0010, CGEventFlags.maskCommand.rawValue)   // Right Command (NX_DEVICERCMDKEYMASK)
+        case 0x3E: return (0x2000, CGEventFlags.maskControl.rawValue)   // Right Control (NX_DEVICERCTLKEYMASK)
+        case 0x3C: return (0x0004, CGEventFlags.maskShift.rawValue)     // Right Shift (NX_DEVICERSHIFTKEYMASK)
         default:   return nil
         }
     }
+    private static func modifierFlagActive(forKeyCode keyCode: Int64, rawFlags: UInt64) -> Bool {
+        guard let bits = rightModifierBits(forKeyCode: keyCode) else { return false }
+        if rawFlags & bits.device != 0 { return true }
+        // When ANY device bit is present the event is HID-sourced and the
+        // device bit alone is authoritative — this preserves the release-edge
+        // detection while the LEFT sibling of the pair is still held. Zero
+        // device bits means a synthetic event (Hammerspoon, AppleScript,
+        // remote desktop) — fall back to the device-independent flag.
+        return rawFlags & anyDeviceModifierBits == 0 && rawFlags & bits.independent != 0
+    }
     private static func modifierFlagActive(forKeyCode keyCode: Int64, cgFlags: CGEventFlags) -> Bool {
-        guard let bit = rightModifierDeviceBit(forKeyCode: keyCode) else { return false }
-        return cgFlags.rawValue & bit != 0
+        modifierFlagActive(forKeyCode: keyCode, rawFlags: cgFlags.rawValue)
     }
     private static func modifierFlagActive(forKeyCode keyCode: Int64, nsFlags: NSEvent.ModifierFlags) -> Bool {
-        guard let bit = rightModifierDeviceBit(forKeyCode: keyCode) else { return false }
-        return UInt64(nsFlags.rawValue) & bit != 0
+        // NSEvent.ModifierFlags shares CGEventFlags' raw layout for both the
+        // device-independent masks and the device-dependent low word.
+        modifierFlagActive(forKeyCode: keyCode, rawFlags: UInt64(nsFlags.rawValue))
     }
 
     private func handleEvent(type: CGEventType, event: CGEvent) {

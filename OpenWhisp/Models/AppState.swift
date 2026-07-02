@@ -266,11 +266,11 @@ class AppState: ObservableObject {
             // stopping here makes the switch explicit and frees the old model's RAM.
             if llmProvider == "bundled" {
                 llamaEngine?.stopServer()
-                if bundledLLMModelInstalled {
-                    warmLlamaServerIfPossible()
-                } else {
-                    ensureLLMModelExists()
-                }
+                // Always route through ensureLLMModelExists: its installed
+                // fast-path clears a stale isLLMModelDownloading left by a
+                // superseded download (switching to an installed model while
+                // another model is still downloading) and then warms the server.
+                ensureLLMModelExists()
             }
         }
     }
@@ -1608,9 +1608,15 @@ class AppState: ObservableObject {
 
         // Session-scoped fallback: a rapid follow-up session could otherwise be
         // finalized early by THIS session's leftover timer.
+        //
+        // 2.0s (not 0.9s): AppleSpeechEngine's own 0.8s fallback guarantees a
+        // final for the Apple path, so this is a stuck-session guard (WhisperKit
+        // streaming teardown, engine deallocated) — with a wide margin so a busy
+        // main thread can't let this fire first and clobber the engine's genuine
+        // final (which arrives via an extra Task hop) with a stale partial.
         let sessionID = activeSessionID
         Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 900_000_000)
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
             if sessionID == self.activeSessionID && self.isAppleSpeechSession && self.isTranscribing && !self.appleDidCompleteFinal {
                 self.handleAppleSpeechFinal(self.streamingText)
             }
@@ -1657,7 +1663,9 @@ class AppState: ObservableObject {
         // liveChunks: completeFinalText only sets the clipboard for non-finalOnly, so words
         // in the final transcript that were not in the last pasted partial would be dropped.
         // Paste the trailing delta here (mirroring handleAppleSpeechPartial) before routing.
-        if isLiveChunkSession, !SecureFieldDetector.focusedFieldIsSecure() {
+        // While a refine is armed the delta is the spoken INSTRUCTION — same guard as the
+        // partial handler; completeFinalText consumes it via the snapshot path.
+        if isLiveChunkSession, refineContentSnapshot == nil, !SecureFieldDetector.focusedFieldIsSecure() {
             let delta = liveDelta(previous: appleLiveInsertedText, current: finalText)
             if !delta.isEmpty {
                 let insertion = appleLiveInsertedText.isEmpty ? delta : " \(delta)"

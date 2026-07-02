@@ -59,6 +59,12 @@ class AudioRecorder: NSObject, AVAudioRecorderDelegate, AudioCapture {
     private var lastSpeechAt: TimeInterval?
     private var activeChunkDuration: TimeInterval = 0
     private var activeChunkHasSpeech = false
+    /// Monotonic session counter (main thread only), bumped by `stop()`. Async
+    /// failure paths capture it when the session starts, so a failure that was
+    /// enqueued for a session that has since ended (stop() drained the queue
+    /// after the failing block ran) is dropped instead of emitting a stale
+    /// `.error` that clobbers the finished — or worse, the next — session.
+    private var sessionGeneration = 0
     
     override init() {
         super.init()
@@ -204,16 +210,18 @@ class AudioRecorder: NSObject, AVAudioRecorderDelegate, AudioCapture {
                 try self.openNextStreamingFile()
             }
 
+            let generation = sessionGeneration
             input.installTap(onBus: 0, bufferSize: 2048, format: format) { [weak self] buffer, _ in
                 guard let self else { return }
                 self.publishLevel(from: buffer)
                 self.streamQueue.async {
-                    guard let converted = self.convertToTarget(buffer) else { return }
+                    guard let converted = self.convertToTarget(buffer, generation: generation) else { return }
                     do {
                         try self.streamingFile?.write(from: converted)
                     } catch {
                         DispatchQueue.main.async {
-                            self.failSession("Streaming write failed: \(error.localizedDescription)")
+                            self.failSession("Streaming write failed: \(error.localizedDescription)",
+                                             generation: generation)
                         }
                     }
                 }
@@ -285,11 +293,12 @@ class AudioRecorder: NSObject, AVAudioRecorderDelegate, AudioCapture {
         smoothedGain = 1.0
 
         do {
+            let generation = sessionGeneration
             input.installTap(onBus: 0, bufferSize: 2048, format: format) { [weak self] buffer, _ in
                 guard let self else { return }
                 self.publishLevel(from: buffer)
                 self.streamQueue.async {
-                    self.handlePauseBasedBuffer(buffer)
+                    self.handlePauseBasedBuffer(buffer, generation: generation)
                 }
             }
 
@@ -318,6 +327,7 @@ class AudioRecorder: NSObject, AVAudioRecorderDelegate, AudioCapture {
     
     private func rotateChunk() {
         guard isStreaming else { return }
+        let generation = sessionGeneration
         streamQueue.async {
             if let completedURL = self.streamingURL {
                 self.pendingCompletedChunks.append(completedURL)
@@ -329,7 +339,8 @@ class AudioRecorder: NSObject, AVAudioRecorderDelegate, AudioCapture {
                 try self.openNextStreamingFile()
             } catch {
                 DispatchQueue.main.async {
-                    self.failSession("Chunk rotation failed: \(error.localizedDescription)")
+                    self.failSession("Chunk rotation failed: \(error.localizedDescription)",
+                                     generation: generation)
                 }
                 return
             }
@@ -340,7 +351,7 @@ class AudioRecorder: NSObject, AVAudioRecorderDelegate, AudioCapture {
         }
     }
 
-    private func handlePauseBasedBuffer(_ buffer: AVAudioPCMBuffer) {
+    private func handlePauseBasedBuffer(_ buffer: AVAudioPCMBuffer, generation: Int) {
         guard isStreaming, isPauseBasedStreaming else { return }
 
         // VAD operates on the native tap buffer (loudest channel).
@@ -358,7 +369,7 @@ class AudioRecorder: NSObject, AVAudioRecorderDelegate, AudioCapture {
             guard streamingFile != nil else { return }
 
             // Write resampled 16kHz mono int16 audio to disk for whisper.cpp.
-            guard let converted = convertToTarget(buffer) else { return }
+            guard let converted = convertToTarget(buffer, generation: generation) else { return }
             try streamingFile?.write(from: converted)
             let bufferDuration = Double(buffer.frameLength) / max(1.0, buffer.format.sampleRate)
             activeChunkDuration += bufferDuration
@@ -379,7 +390,8 @@ class AudioRecorder: NSObject, AVAudioRecorderDelegate, AudioCapture {
             }
         } catch {
             DispatchQueue.main.async {
-                self.failSession("Pause-based streaming failed: \(error.localizedDescription)")
+                self.failSession("Pause-based streaming failed: \(error.localizedDescription)",
+                                 generation: generation)
             }
         }
     }
@@ -427,6 +439,8 @@ class AudioRecorder: NSObject, AVAudioRecorderDelegate, AudioCapture {
     // MARK: - Stop
     
     func stop(completion: ((URL?) -> Void)? = nil) {
+        // Any failure report captured for the ending session is now stale.
+        sessionGeneration += 1
         // Cancel streaming timer if active
         chunkTimer?.invalidate()
         chunkTimer = nil
@@ -512,10 +526,33 @@ class AudioRecorder: NSObject, AVAudioRecorderDelegate, AudioCapture {
     /// hot and chunks don't keep rotating after AppState resets the session UI.
     /// Main thread only — never call from `streamQueue` (stop() blocks on it
     /// via `streamQueue.sync` and would deadlock).
-    private func failSession(_ message: String) {
+    ///
+    /// `generation` is the session counter captured when the failing session
+    /// started; a mismatch means that session already ended (its failure raced
+    /// a normal stop) and the report must be dropped, not surfaced.
+    ///
+    /// Salvage: completed chunks are valid audio in every failure mode and are
+    /// always delivered for transcription. The in-progress file is delivered
+    /// only when `currentChunkIsValid` (config change: the engine stopped
+    /// cleanly, the tail is good) and deleted otherwise (write/conversion
+    /// failures: the file is suspect).
+    private func failSession(_ message: String, generation: Int,
+                             currentChunkIsValid: Bool = false) {
+        guard generation == sessionGeneration else { return }
         if isStreaming || recorder != nil {
+            // Capture before stop() clears it; read the in-progress URL on the
+            // stream queue (its owning queue) so we can tell it apart from
+            // completed chunks in the completion below.
+            let deliver = onChunkComplete
+            let inProgress = streamQueue.sync { streamingURL }
             stop { url in
-                if let url { try? FileManager.default.removeItem(at: url) }
+                guard let url else { return }
+                let keep = url != inProgress || currentChunkIsValid
+                if let deliver, keep {
+                    deliver(url)
+                } else {
+                    try? FileManager.default.removeItem(at: url)
+                }
             }
         }
         // Emit the error after stop()'s .stopped so "Error" isn't clobbered.
@@ -528,13 +565,18 @@ class AudioRecorder: NSObject, AVAudioRecorderDelegate, AudioCapture {
     /// keeps showing "recording" while capturing nothing. Minimal handling:
     /// tear down and surface the failure instead of migrating devices.
     private func observeConfigurationChanges(of engine: AVAudioEngine) {
+        let generation = sessionGeneration
         configChangeObserver = NotificationCenter.default.addObserver(
             forName: .AVAudioEngineConfigurationChange,
             object: engine,
             queue: .main
         ) { [weak self] _ in
             guard let self, self.isStreaming, self.streamingEngine === engine else { return }
-            self.failSession("Microphone disconnected or input device changed")
+            // The engine stopped cleanly on the device change, so audio written
+            // up to that point — including the in-progress chunk — is valid;
+            // salvage it for transcription instead of losing the tail.
+            self.failSession("Microphone disconnected or input device changed",
+                             generation: generation, currentChunkIsValid: true)
         }
     }
 
@@ -573,7 +615,7 @@ class AudioRecorder: NSObject, AVAudioRecorderDelegate, AudioCapture {
 
     /// Resamples/converts a native tap buffer to the 16 kHz mono int16 target
     /// format using the session converter. Must be called on `streamQueue`.
-    private func convertToTarget(_ buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
+    private func convertToTarget(_ buffer: AVAudioPCMBuffer, generation: Int) -> AVAudioPCMBuffer? {
         guard let converter = streamingConverter, let target = targetFormat else { return nil }
 
         // Size the output buffer for the resampled frame count (round up).
@@ -601,7 +643,8 @@ class AudioRecorder: NSObject, AVAudioRecorderDelegate, AudioCapture {
         if status == .error {
             if let error {
                 DispatchQueue.main.async {
-                    self.failSession("Audio conversion failed: \(error.localizedDescription)")
+                    self.failSession("Audio conversion failed: \(error.localizedDescription)",
+                                     generation: generation)
                 }
             }
             return nil

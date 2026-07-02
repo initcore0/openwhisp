@@ -315,15 +315,30 @@ class WhisperEngine: FileTranscriptionEngine {
                 let myGeneration = serverGeneration
                 let process = serverProcess
                 serverLock.unlock()
-                let healthy = waitForHealth(timeout: 45, generation: myGeneration)
+                let healthy = waitForHealth(timeout: 45, generation: myGeneration, process: process)
                 serverLock.lock()
                 let stillCurrent = serverGeneration == myGeneration && serverProcess === process
                 serverLock.unlock()
                 return healthy && stillCurrent
             }
-            // No startup pending: a passing health check means it's usable.
-            // A failing one means the server is hung — fall through to restart.
-            if healthCheck() {
+            // No startup pending: probe health WITHOUT the lock (healthCheck
+            // blocks up to ~1.2s; holding serverLock stalls main-actor callers
+            // like stopServer on backend switch/quit), then re-validate. If the
+            // generation moved while probing, another caller stopped/replaced
+            // the server — re-evaluate from the top instead of tearing down
+            // THEIR fresh server. A passing probe on unchanged state means the
+            // server is usable; a failing one means it's hung — fall through
+            // to restart.
+            let probedGeneration = serverGeneration
+            let probedProcess = serverProcess
+            serverLock.unlock()
+            let probeHealthy = healthCheck()
+            serverLock.lock()
+            if serverGeneration != probedGeneration || serverProcess !== probedProcess {
+                serverLock.unlock()
+                return ensureServer(binaryPath: binaryPath, modelPath: modelPath)
+            }
+            if probeHealthy {
                 serverLock.unlock()
                 return true
             }
@@ -408,7 +423,7 @@ class WhisperEngine: FileTranscriptionEngine {
 
         // --- Phase 2: wait for health WITHOUT holding the lock ---------------
         // `stopServer()` can bump `serverGeneration` to make this loop bail early.
-        let healthy = waitForHealth(timeout: 45, generation: myGeneration)
+        let healthy = waitForHealth(timeout: 45, generation: myGeneration, process: process)
 
         // --- Phase 3: re-acquire to commit success or tear down on failure ---
         serverLock.lock()
@@ -505,11 +520,12 @@ class WhisperEngine: FileTranscriptionEngine {
         return nil
     }
 
-    /// Polls `/health` until it succeeds, the timeout elapses, or the server
+    /// Polls `/health` until it succeeds, the timeout elapses, the server
     /// generation changes out from under us (set by `stopServer()` /
-    /// `stopServerLocked()`). Runs WITHOUT `serverLock` held so a concurrent
-    /// stop can bail it out early. Returns false if cancelled.
-    private func waitForHealth(timeout: TimeInterval, generation: Int) -> Bool {
+    /// `stopServerLocked()`), or the child process dies. Runs WITHOUT
+    /// `serverLock` held so a concurrent stop can bail it out early. Returns
+    /// false if cancelled.
+    private func waitForHealth(timeout: TimeInterval, generation: Int, process: Process?) -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
             // Bail early if our server was stopped or replaced.
@@ -517,6 +533,11 @@ class WhisperEngine: FileTranscriptionEngine {
             let cancelled = serverGeneration != generation
             serverLock.unlock()
             if cancelled {
+                return false
+            }
+            // Child died (crash, bad model, failed bind) — fail fast instead of
+            // polling a corpse's /health for the full timeout.
+            if let process, !process.isRunning {
                 return false
             }
             if healthCheck() {

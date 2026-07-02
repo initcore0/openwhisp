@@ -200,8 +200,10 @@ final class TextInserter: TextOutput {
             // make it paste the OLD clipboard. Defer the restore on the same serial
             // queue, and skip it if anything (a user copy, a later chunk, or
             // setClipboard) has rewritten the pasteboard since — the later writer
-            // owns the clipboard then.
-            let expectedChangeCount = pb.changeCount
+            // owns the clipboard then. Bind the guard to OUR verified write
+            // (recorded before the sleeps), not the current count: a foreign
+            // write during the sleeps must veto the restore, not be clobbered.
+            let expectedChangeCount = lastPasteWriteCount
             queue.asyncAfter(deadline: .now() + 1.0) { [self] in
                 let pb = NSPasteboard.general
                 guard pb.changeCount == expectedChangeCount else { return }

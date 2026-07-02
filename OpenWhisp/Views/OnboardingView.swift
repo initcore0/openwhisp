@@ -363,58 +363,6 @@ struct OnboardingView: View {
         appState.refreshPermissionLabels()
     }
 
-    // MARK: - Window lifecycle
-
-    /// Invokes `onWillClose` (once) when the hosting NSWindow is about to close,
-    /// regardless of how — Skip/Done or the title-bar close button. Without this,
-    /// a red-X close leaves the retained window, this view, and its poll timer
-    /// alive for the rest of the app's lifetime.
-    private struct WindowCloseObserver: NSViewRepresentable {
-        var onWillClose: () -> Void
-
-        func makeNSView(context: Context) -> ObserverView {
-            let view = ObserverView()
-            view.onWillClose = onWillClose
-            return view
-        }
-
-        func updateNSView(_ nsView: ObserverView, context: Context) {
-            nsView.onWillClose = onWillClose
-        }
-
-        final class ObserverView: NSView {
-            var onWillClose: (() -> Void)?
-            private var observedWindow: NSWindow?
-
-            override func viewDidMoveToWindow() {
-                super.viewDidMoveToWindow()
-                guard window !== observedWindow else { return }
-                if let observedWindow {
-                    NotificationCenter.default.removeObserver(
-                        self, name: NSWindow.willCloseNotification, object: observedWindow)
-                }
-                observedWindow = window
-                if let window {
-                    NotificationCenter.default.addObserver(
-                        self, selector: #selector(windowWillClose(_:)),
-                        name: NSWindow.willCloseNotification, object: window)
-                }
-            }
-
-            @objc private func windowWillClose(_ note: Notification) {
-                // Fire once, and defer past the in-flight close() so the
-                // callback (which may call close() itself) isn't re-entrant.
-                let callback = onWillClose
-                onWillClose = nil
-                DispatchQueue.main.async { callback?() }
-            }
-
-            deinit {
-                NotificationCenter.default.removeObserver(self)
-            }
-        }
-    }
-
     // MARK: - Layout helper
 
     @ViewBuilder

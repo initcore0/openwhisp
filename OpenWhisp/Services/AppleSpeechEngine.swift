@@ -117,17 +117,18 @@ final class AppleSpeechEngine: StreamingTranscriptionEngine {
             // Leave the task running: its genuine final (post-endAudio, often
             // containing trailing words absent from the last partial) is
             // preferred. Only synthesize a final from the latest partial if it
-            // hasn't arrived after a grace period — 0.8s keeps this ahead of
-            // AppState's own 0.9s watchdog. The generation check drops the
-            // fallback if a new session started meanwhile.
+            // hasn't arrived after a grace period. The engine owns final
+            // delivery — an empty final is delivered too (no-speech sessions
+            // produce no genuine final because the recognizer reports that as
+            // an error, swallowed after didStop), so the session always ends
+            // without leaning on AppState's watchdog. The generation check
+            // drops the fallback if a new session started meanwhile.
             recognitionTask?.finish()
             let myGeneration = generation
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
                 guard let self, self.generation == myGeneration, !self.finalDelivered else { return }
-                let finalText = self.lastPartial
-                guard !finalText.isEmpty else { return }
                 self.finalDelivered = true
-                self.onFinal?(finalText)
+                self.onFinal?(self.lastPartial)
             }
         }
         

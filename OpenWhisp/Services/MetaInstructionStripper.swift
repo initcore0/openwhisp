@@ -11,11 +11,15 @@ import Foundation
 /// "translate this to English" is left untouched rather than emptied).
 enum MetaInstructionStripper {
 
-    /// Language names a translate command may target. Kept as an explicit
-    /// whitelist — a greedy `[a-z ]+` here would swallow arbitrary trailing
-    /// words ("…translate this to English properly" → "…how to.").
+    /// Language slot of a translate command: ONE free word, optionally preceded
+    /// by a whitelisted modifier for real multi-word language names ("Brazilian
+    /// Portuguese", "simplified Chinese"). One free word covers essentially
+    /// every language name (Ukrainian, Polish, Hindi, …) without the greed of
+    /// `[a-z ]+`, which swallowed arbitrary trailing words ("…translate this to
+    /// English properly" → "…how to."). The second word stays whitelisted
+    /// because that's where the greed lives.
     private static let languages =
-        #"(?:english|russian|spanish|french|german|italian|portuguese|japanese|chinese|korean|arabic)"#
+        #"(?:(?:simplified|traditional|modern|brazilian|mandarin|swiss) )?[a-z]+"#
 
     /// Trailing clauses to remove (matched case-insensitively at the end, after
     /// an optional sentence break). Order: longest/most-specific first.

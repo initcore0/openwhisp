@@ -58,9 +58,44 @@ final class MetaInstructionStripperTests: XCTestCase {
     }
 
     func testDoesNotConsumeTrailingWordsAfterLanguage() {
-        // The language slot is a whitelist, not a greedy [a-z ]+ — trailing
+        // The language slot is ONE free word, not a greedy [a-z ]+ — trailing
         // words after the language name mean this is content, not a command.
         let s = "I don't know how to translate this to English properly"
+        XCTAssertEqual(MetaInstructionStripper.strip(s), s)
+    }
+
+    func testStripsNonWhitelistedLanguages() {
+        // Any single-word language works — the slot is a free word, not a
+        // hardcoded language list (regression: Ukrainian/Polish/Hindi commands
+        // were pasted verbatim).
+        XCTAssertEqual(
+            MetaInstructionStripper.strip("the meeting moved to Friday. Translate this into Ukrainian"),
+            "the meeting moved to Friday.")
+        XCTAssertEqual(
+            MetaInstructionStripper.strip("send the invoice by Tuesday, translate this to Polish"),
+            "send the invoice by Tuesday.")
+        XCTAssertEqual(
+            MetaInstructionStripper.strip("the demo went well today. translate this into Hindi, please"),
+            "the demo went well today.")
+        XCTAssertEqual(
+            MetaInstructionStripper.strip("we ship on Monday. Translate into Turkish"),
+            "we ship on Monday.")
+    }
+
+    func testStripsMultiWordLanguage() {
+        // Real two-word language names go through the modifier whitelist.
+        XCTAssertEqual(
+            MetaInstructionStripper.strip("the contract is ready for review. Translate this into Brazilian Portuguese"),
+            "the contract is ready for review.")
+        XCTAssertEqual(
+            MetaInstructionStripper.strip("labels need updating soon. translate this to simplified Chinese"),
+            "labels need updating soon.")
+    }
+
+    func testKeepsMultiFreeWordTrailer() {
+        // Two free words after the command is content — documents the
+        // one-free-word bound on the language slot.
+        let s = "it took me an hour to translate this into readable prose"
         XCTAssertEqual(MetaInstructionStripper.strip(s), s)
     }
 
