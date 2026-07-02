@@ -14,6 +14,8 @@ final class HotkeyMonitor: HotkeyControlling {
 
     var onHotkeyDown: (() -> Void)?
     var onHotkeyUp: (() -> Void)?
+    var onRefineDown: (() -> Void)?
+    var onRefineUp: (() -> Void)?
     var onCancel: (() -> Void)?
     var onPermissionStateChanged: ((Bool) -> Void)?
 
@@ -28,7 +30,12 @@ final class HotkeyMonitor: HotkeyControlling {
     private var localMonitor: Any?
     private var isRunning = false
     private var isPressed = false
+    /// Debounced held-state for the refine key, tracked independently of the
+    /// dictation trigger.
+    private var isRefinePressed = false
     var triggerMode: String = "controlSpace"
+    /// Selected refine key id (see RefineKey). "off" disables it.
+    var refineKey: String = "rightOption"
 
     init() {}
 
@@ -126,6 +133,54 @@ final class HotkeyMonitor: HotkeyControlling {
         }
     }
 
+    /// Refine chord edge dispatch (Fn+Ctrl held together). Independent of the
+    /// dictation trigger so the two never interfere.
+    private func applyRefine(_ gesture: HotkeyGesture) {
+        switch gesture {
+        case .down:
+            isRefinePressed = true
+            Task { @MainActor in self.onRefineDown?() }
+        case .up:
+            isRefinePressed = false
+            Task { @MainActor in self.onRefineUp?() }
+        case .none:
+            break
+        }
+    }
+
+    /// The refine key is a SINGLE modifier key, detected by its keycode in a
+    /// flagsChanged event. A modifier keyDown/keyUp both arrive as flagsChanged
+    /// carrying that key's keycode; we infer down vs. up from whether the key's
+    /// own modifier flag is now set. This is stable under the event tap (unlike a
+    /// Fn-based chord, whose flags oscillate while held).
+    private func handleRefineKey(keyCode: Int64, flagActive: Bool) {
+        guard let target = RefineKey.from(id: refineKey).keyCode, refineKey != "off" else { return }
+        guard keyCode == target else { return }
+        applyRefine(HotkeyGesture.resolve(isActive: flagActive, wasPressed: isRefinePressed))
+    }
+
+    /// Whether the modifier FLAG corresponding to a given modifier keycode is set
+    /// in `flags` — i.e. "is this key currently held". Maps the right-hand modifier
+    /// keycodes to their device-independent flag.
+    private static func modifierFlagActive(forKeyCode keyCode: Int64, cgFlags: CGEventFlags) -> Bool {
+        switch keyCode {
+        case 0x3D: return cgFlags.contains(.maskAlternate)  // Right Option
+        case 0x36: return cgFlags.contains(.maskCommand)    // Right Command
+        case 0x3E: return cgFlags.contains(.maskControl)    // Right Control
+        case 0x3C: return cgFlags.contains(.maskShift)      // Right Shift
+        default:   return false
+        }
+    }
+    private static func modifierFlagActive(forKeyCode keyCode: Int64, nsFlags: NSEvent.ModifierFlags) -> Bool {
+        switch keyCode {
+        case 0x3D: return nsFlags.contains(.option)
+        case 0x36: return nsFlags.contains(.command)
+        case 0x3E: return nsFlags.contains(.control)
+        case 0x3C: return nsFlags.contains(.shift)
+        default:   return false
+        }
+    }
+
     private func handleEvent(type: CGEventType, event: CGEvent) {
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
             if let eventTap {
@@ -142,6 +197,14 @@ final class HotkeyMonitor: HotkeyControlling {
             handleControlSpace(type: type, keyCode: keyCode, event: event)
         }
 
+        // Refine key (a single selectable modifier) — track by its keycode.
+        if type == .flagsChanged {
+            handleRefineKey(
+                keyCode: keyCode,
+                flagActive: Self.modifierFlagActive(forKeyCode: keyCode, cgFlags: event.flags)
+            )
+        }
+
         if type == .keyDown, keyCode == Self.escapeKeyCode {
             Task { @MainActor in self.onCancel?() }
         }
@@ -152,6 +215,13 @@ final class HotkeyMonitor: HotkeyControlling {
             handleFnEvent(event)
         } else {
             handleControlSpaceEvent(event)
+        }
+
+        if event.type == .flagsChanged {
+            handleRefineKey(
+                keyCode: Int64(event.keyCode),
+                flagActive: Self.modifierFlagActive(forKeyCode: Int64(event.keyCode), nsFlags: event.modifierFlags)
+            )
         }
 
         if event.type == .keyDown, Int64(event.keyCode) == Self.escapeKeyCode {

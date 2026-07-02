@@ -31,43 +31,6 @@ final class InstructionChainTests: XCTestCase {
             outputMode: "liveChunks", llmConfigured: true, enabled: true))
     }
 
-
-    // MARK: shouldEngageRefine (forgiving re-press trigger)
-
-    func testEngageRefineWithinForgivingWindow() {
-        // A re-press up to ~1.5s after release still engages refine — no tight
-        // double-tap needed. Use an explicit window to keep the test stable if the
-        // shipped default is tuned later.
-        XCTAssertTrue(InstructionChain.shouldEngageRefine(
-            lastReleaseUptime: 100.0, pressUptime: 101.4, window: 1.5))
-        XCTAssertTrue(InstructionChain.shouldEngageRefine(
-            lastReleaseUptime: 100.0, pressUptime: 100.0, window: 1.5))   // instant
-    }
-
-    func testDoNotEngageRefineBeyondWindow() {
-        XCTAssertFalse(InstructionChain.shouldEngageRefine(
-            lastReleaseUptime: 100.0, pressUptime: 102.0, window: 1.5))   // too late = new dictation
-    }
-
-    func testDoNotEngageRefineWithoutPriorRelease() {
-        // First press of a fresh dictation: no prior release, so never refine —
-        // this is the "fast double press should just start dictation" guarantee.
-        XCTAssertFalse(InstructionChain.shouldEngageRefine(
-            lastReleaseUptime: nil, pressUptime: 100.0, window: 1.5))
-    }
-
-    func testDoNotEngageRefineForNegativeDelta() {
-        XCTAssertFalse(InstructionChain.shouldEngageRefine(
-            lastReleaseUptime: 100.0, pressUptime: 99.9, window: 1.5))
-    }
-
-    func testDefaultRepressGapIsForgiving() {
-        // Guardrail: the shipped window should be comfortably hittable, not the
-        // old 250ms — but not so long that paste feels laggy. Keep it in a sane band.
-        XCTAssertGreaterThanOrEqual(InstructionChain.repressGap, 0.6)
-        XCTAssertLessThanOrEqual(InstructionChain.repressGap, 1.5)
-    }
-
     // MARK: system directive + user payload
 
     func testSystemDirectiveIsTransformOnlyAndGuardsAgainstAnsweringText() {

@@ -587,23 +587,21 @@ struct SettingsView: View {
 
             Divider()
 
-            Toggle("Refine with a follow-up instruction (double-tap)", isOn: $appState.instructionChainEnabled)
+            Toggle("Refine with a spoken instruction", isOn: $appState.instructionChainEnabled)
 
             Text("""
-            Dictate, release, then quickly DOUBLE-TAP the hotkey (release and press \
-            again) and speak an instruction — the AI applies it to what you just said. \
-            For example: dictate "hello team, I'm on vacation and all is great", \
-            double-tap, then say "make it a Telegram post". It's a deliberate gesture \
-            you can do by feel; no need to watch the screen. The double-tap is an \
-            explicit command, so it overrides the rephrase/translate setting above. No \
-            fixed phrases — say what you want in plain language (any language). Needs an \
-            AI provider above; works in Preview and Paste-at-end modes.
+            While holding your dictation key, TAP the Refine key (set it under \
+            Settings › Hotkey), then speak an instruction — on release, the AI rewrites \
+            what you dictated before the tap. For example: dictate "hello team, out \
+            sick", tap Refine, say "make it a Telegram post". No fixed phrases — say \
+            what you want in plain language (any language). Needs an AI provider above; \
+            works in Preview and Paste-at-end modes.
             """)
                 .font(.caption)
                 .foregroundColor(.secondary)
 
             if appState.instructionChainEnabled && !appState.llmConfigured {
-                Text("Set up an AI provider above to use follow-up instructions.")
+                Text("Set up an AI provider above to use spoken-instruction refine.")
                     .font(.caption)
                     .foregroundColor(.orange)
             }
@@ -738,6 +736,19 @@ struct SettingsView: View {
             }
             
             Text(appState.hotkeyHelpText)
+                .font(.caption)
+                .foregroundColor(.secondary)
+
+            Divider()
+
+            Picker("Refine key", selection: $appState.refineKey) {
+                ForEach(RefineKey.allCases, id: \.rawValue) { key in
+                    Text(key.label).tag(key.rawValue)
+                }
+            }
+            Label("Refine while dictating", systemImage: "wand.and.stars")
+                .font(.caption.bold())
+            Text("While still holding your dictation key, TAP the Refine key — then speak an instruction (\u{201C}make it a Telegram post\u{201D}, \u{201C}more formal\u{201D}). When you release the dictation key, the AI rewrites what you dictated before the tap. Requires an AI provider under AI Post-processing.")
                 .font(.caption)
                 .foregroundColor(.secondary)
         }

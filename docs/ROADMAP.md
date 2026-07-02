@@ -282,23 +282,28 @@ seam, plus optionally lifting more orchestration out of `AppState`.
   only makes it *possible* without a rewrite.
 
 ### Phase 3 — Hackability *(the wedge)* — ✅ complete
-- ✅ **Refine with a follow-up instruction (double-tap)** — *replaces* the old
-  named-voice-actions system. Dictate, double-tap the hotkey, and speak a
-  natural-language instruction the LLM applies to the just-dictated text (e.g.
-  "make it a Telegram post"). No hardcoded phrases, wake words, or per-app prompt
-  config — the LLM interprets plain language in any language, which works far
-  better with the rephrase pipeline than the old phrase-matching. The double-tap is
-  an explicit command that bypasses the rephrase/translate setting. Pure decision
-  logic in `InstructionChain` (OpenWhispCore, unit-tested). Removed:
-  `VoiceCommandParser`, `VoiceAction`/registry/editor, the Telegram/Tweet built-ins
-  and packs, and the wake-word setting.
-- ✅ **Refine your selection** — the same double-tap gesture works on text
-  SELECTED in any app, with no dictation: highlight text, double-tap, speak an
-  instruction, and the selection is replaced in place with the LLM's result.
-  Selection is read via Accessibility (`SelectionReader`, `kAXSelectedTextAttribute`)
-  with a synthesized-⌘C clipboard fallback (previous clipboard restored). Dictation
-  takes priority; secure/password fields are never read. Reuses the entire refine
-  pipeline — the selection just becomes "step-1 text".
+- ✅ **Refine with a spoken instruction (mid-dictation)** — *replaces* the old
+  named-voice-actions system. Hold the dictation key and speak your content; while
+  still holding, **tap the Refine key** (default Right Control, selectable in
+  Settings → Hotkey) and speak an instruction; **release** to apply. The LLM
+  rewrites what was dictated before the tap (e.g. "make it a Telegram post") — no
+  hardcoded phrases, wake words, or per-app prompt config; plain language in any
+  language. One continuous hold, so there's no separate recognizer session, no
+  modifier-chord oscillation, and no timing race. *History:* this shipped first as
+  a timed double-press (PR #81), which proved fragile (stuck overlay, wrong-text,
+  duplicate paste, hard-to-hit window); it was rebuilt as the mid-dictation tap
+  (PR #82). The lifecycle now lives in a **pure, unit-tested `RefineFlow` state
+  machine** (idle → capturing → applying, with defined transitions and effects),
+  with `InstructionChain` owning availability + the LLM prompt and `RefineKey`
+  the id↔keycode map. Removed: `VoiceCommandParser`, `VoiceAction`/registry/editor,
+  the built-ins/packs, and the wake-word setting.
+- ✅ **Refine your selection** — the same tap works on text SELECTED in any app:
+  with a selection and no in-session dictation, tapping Refine during a hold
+  targets the selection, and the LLM's result replaces it in place. Selection is
+  read via Accessibility (`SelectionReader`, `kAXSelectedTextAttribute`) with a
+  synthesized-⌘C clipboard fallback (previous clipboard restored). In-session
+  dictation takes priority; secure/password fields are never read. The selection
+  just becomes the refine content ("step-1").
 - ✅ **JSON import/export** for profiles / vocab / prompts — versioned, tolerant
   `ConfigBundle` (OpenWhispCore, unit-tested); Settings → Backup & Sharing.
   Partial bundles supported (import touches only the sections present), which is
@@ -321,9 +326,28 @@ seam, plus optionally lifting more orchestration out of `AppState`.
   the text is left on the clipboard with a "copied, press ⌘V" overlay cue — never
   silently lost. Pure `InsertVerifier` + `InsertionOutcome` (OpenWhispCore, tested);
   logic in `TextInserter`. Fixed the "couldn't paste into some apps" reports.
+- ✅ **Built-in (offline) LLM refinement** — a 3rd AI provider (`llmProvider ==
+  "bundled"`, default off) that refines fully on-device with no Ollama / external
+  server. Bundles `llama.cpp` `llama-server` as a loopback subprocess (its own
+  isolated ggml dylibs, `-DGGML_METAL=ON -DLLAMA_CURL=OFF -DLLAMA_OPENSSL=OFF`)
+  built by `scripts/build-llama.sh` (opt-in; whisper-only builds still package).
+  Model (default Qwen2.5-0.5B, Apache-2.0) downloads once on first use via the
+  existing `ModelDownloader`; swappable from the menu-bar AI submenu. Lazy start +
+  idle teardown to bound memory; reuses the whisper-server subprocess pattern and
+  the OpenAI-compatible client. Onboarding gained an AI step. See
+  [BUNDLED_LLM_PLAN.md](BUNDLED_LLM_PLAN.md). Dev tooling (gated by
+  OPENWHISP_INSTRUMENTATION): LLM Lab + `scripts/llm-bench.sh` for model A/B, an
+  overlay debug HUD, and a Settings runtime indicator.
+- ✅ **Selectable refine key** — the refine trigger is user-choosable (Right
+  Control default / Right Option / Right Command / Right Shift / off) in Settings
+  → Hotkey (`RefineKey`, keycode-based detection). Dictation key remappability
+  (Fn vs Control+Space) already existed.
+- ✅ **Overlay live-transcript polish** — fixed the shimmer/flicker while the
+  preview fills (fixed 3-line height + bottom-anchored scroll, no head-truncation,
+  animation disabled on the text subtree).
 - `OutputTarget` protocol: file / webhook / Notion / Things / Shortcuts.
 - LLM backend **presets** on `LLMEndpoint` (Ollama / llama-server / OpenAI).
-- Remappable hotkey + toggle mode.
+- Toggle (hands-free) dictation mode.
 
 ### Phase 5 — Bigger bets *(valuable, large)*
 - Whisper streaming partials. See the [ASR alternatives study](ASR_ALTERNATIVES.md)

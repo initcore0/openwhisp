@@ -9,10 +9,18 @@ import Foundation
 protocol HotkeyControlling: AnyObject {
     /// Which gesture triggers dictation: "fn" or "controlSpace".
     var triggerMode: String { get set }
+    /// Which single key triggers refine (held-to-talk). One of the ids in
+    /// `RefineKey` (e.g. "rightOption"); "off" disables the refine key.
+    var refineKey: String { get set }
     /// Push-to-talk pressed (begin dictation).
     var onHotkeyDown: (() -> Void)? { get set }
     /// Push-to-talk released (end dictation).
     var onHotkeyUp: (() -> Void)? { get set }
+    /// Refine key pressed (begin capturing a spoken instruction to refine the
+    /// selection or last dictation). A dedicated chord, separate from dictation.
+    var onRefineDown: (() -> Void)? { get set }
+    /// Refine key released (end instruction capture; apply it).
+    var onRefineUp: (() -> Void)? { get set }
     /// Cancel key (Esc) pressed during a session.
     var onCancel: (() -> Void)? { get set }
     /// Whether the OS granted the low-level event-capture permission. Surfaced so
