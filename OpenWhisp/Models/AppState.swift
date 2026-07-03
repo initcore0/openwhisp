@@ -177,6 +177,11 @@ class AppState: ObservableObject {
             // Rebuild + rewire the file engine so switching backends takes effect
             // without an app restart (the Whisper-family path uses `whisperEngine`).
             rebuildFileEngine()
+            // Provision the newly-selected engine's model if it isn't installed, so
+            // switching engines never leaves the user with a working UI but no model
+            // (the same class of "feels broken" bug as first launch). Engine-aware +
+            // no-ops when already staged.
+            ensureSelectedEngineModel()
         }
     }
 
@@ -3012,6 +3017,32 @@ class AppState: ObservableObject {
             ("large-v3-turbo", "Large v3 Turbo - best speed/quality", "1.5 GB"),
             ("large-v3",       "Large v3 - best quality, slowest", "2.9 GB")
         ]
+    }
+
+    /// Provision the model for the CURRENTLY SELECTED engine — and only that engine.
+    /// Called on launch. Previously launch always ran `ensureModelExists()`, which
+    /// downloads a whisper.cpp `.bin` regardless of engine; with WhisperKit as the
+    /// default that fetched the WRONG model (whisper.cpp) while the actual engine's
+    /// CoreML model was never staged, so a fresh install felt broken. Route by engine
+    /// so we download exactly what's in use (nothing for Apple Speech).
+    func ensureSelectedEngineModel() {
+        switch transcriptionEngine {
+        case "whisperKit":
+            // Stage the selected WhisperKit CoreML model if it isn't already present.
+            // downloadWhisperKitModel is single-flight and warms the engine after.
+            guard !WhisperKitModelCatalog.isStaged(whisperKitModel) else {
+                warmWhisperServerIfPossible()
+                return
+            }
+            downloadWhisperKitModel(whisperKitModel)
+        case "appleSpeech":
+            // Uses the built-in macOS dictation model — nothing to download.
+            return
+        default:
+            // whisper.cpp: download its GGML model (the original behavior, now scoped
+            // to when whisper.cpp is actually the selected engine).
+            ensureModelExists()
+        }
     }
 
     func ensureModelExists() {
