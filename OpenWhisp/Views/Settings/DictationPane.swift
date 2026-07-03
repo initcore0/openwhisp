@@ -14,6 +14,13 @@ struct DictationPane: View {
                     Text("Fn (Globe)").tag("fn")
                     Text("Control + Space").tag("controlSpace")
                 }
+
+                if RefineKey.from(id: appState.refineKey).conflictsWithTrigger(appState.triggerMode) {
+                    SettingsCallout(
+                        .warning,
+                        "Your refine key is Control, which clashes with Control + Space — refine is disabled until you change one of them (Cleanup › Refine)."
+                    )
+                }
             } header: {
                 Text("Activation")
             } footer: {

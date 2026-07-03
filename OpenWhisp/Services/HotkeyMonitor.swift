@@ -35,7 +35,7 @@ final class HotkeyMonitor: HotkeyControlling {
     private var isRefinePressed = false
     var triggerMode: String = "controlSpace"
     /// Selected refine key id (see RefineKey). "off" disables it.
-    var refineKey: String = "rightOption"
+    var refineKey: String = RefineKey.defaultKey.rawValue
 
     init() {}
 
@@ -154,7 +154,12 @@ final class HotkeyMonitor: HotkeyControlling {
     /// own modifier flag is now set. This is stable under the event tap (unlike a
     /// Fn-based chord, whose flags oscillate while held).
     private func handleRefineKey(keyCode: Int64, flagActive: Bool) {
-        guard let target = RefineKey.from(id: refineKey).keyCode, refineKey != "off" else { return }
+        let key = RefineKey.from(id: refineKey)
+        guard let target = key.keyCode, refineKey != "off" else { return }
+        // A Control refine key can't coexist with the Control+Space trigger —
+        // holding Control to start dictation would read as a refine tap. The
+        // Settings UI warns about this combination; suppress it here too.
+        guard !key.conflictsWithTrigger(triggerMode) else { return }
         guard keyCode == target else { return }
         applyRefine(HotkeyGesture.resolve(isActive: flagActive, wasPressed: isRefinePressed))
     }
@@ -171,8 +176,11 @@ final class HotkeyMonitor: HotkeyControlling {
     /// NX_DEVICE_ALPHASHIFT_STATELESS_MASK (0x0080), which isn't a modifier key.
     private static let anyDeviceModifierBits: UInt64 = 0x207F
 
-    private static func rightModifierBits(forKeyCode keyCode: Int64) -> (device: UInt64, independent: UInt64)? {
+    private static func modifierBits(forKeyCode keyCode: Int64) -> (device: UInt64, independent: UInt64)? {
         switch keyCode {
+        case 0x3B: return (0x0001, CGEventFlags.maskControl.rawValue)   // Left Control (NX_DEVICELCTLKEYMASK)
+        case 0x3A: return (0x0020, CGEventFlags.maskAlternate.rawValue) // Left Option (NX_DEVICELALTKEYMASK)
+        case 0x37: return (0x0008, CGEventFlags.maskCommand.rawValue)   // Left Command (NX_DEVICELCMDKEYMASK)
         case 0x3D: return (0x0040, CGEventFlags.maskAlternate.rawValue) // Right Option (NX_DEVICERALTKEYMASK)
         case 0x36: return (0x0010, CGEventFlags.maskCommand.rawValue)   // Right Command (NX_DEVICERCMDKEYMASK)
         case 0x3E: return (0x2000, CGEventFlags.maskControl.rawValue)   // Right Control (NX_DEVICERCTLKEYMASK)
@@ -181,7 +189,7 @@ final class HotkeyMonitor: HotkeyControlling {
         }
     }
     private static func modifierFlagActive(forKeyCode keyCode: Int64, rawFlags: UInt64) -> Bool {
-        guard let bits = rightModifierBits(forKeyCode: keyCode) else { return false }
+        guard let bits = modifierBits(forKeyCode: keyCode) else { return false }
         if rawFlags & bits.device != 0 { return true }
         // When ANY device bit is present the event is HID-sourced and the
         // device bit alone is authoritative — this preserves the release-edge

@@ -367,6 +367,16 @@ struct CleanupPane: View {
                 }
             }
 
+            // Control+Space matches either Control key, so a Control refine key
+            // would fire on every dictation start; the monitor suppresses the
+            // combination — tell the user instead of failing silently.
+            if RefineKey.from(id: appState.refineKey).conflictsWithTrigger(appState.triggerMode) {
+                SettingsCallout(
+                    .warning,
+                    "Control can't be the refine key while Control + Space is the push-to-talk key — pick another refine key, or switch push-to-talk to Fn."
+                )
+            }
+
             if appState.instructionChainEnabled && !appState.llmConfigured {
                 SettingsCallout(
                     .warning,
