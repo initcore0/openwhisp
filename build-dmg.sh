@@ -186,17 +186,20 @@ echo "Step 7: Verifying DMG..."
 hdiutil verify "$DMG_PATH"
 
 # Optional: notarize + staple the DMG so Gatekeeper opens it with no warning on
-# other Macs. OFF by default; enable with NOTARIZE=1. Requires a Developer ID
-# identity (above) and a stored notarytool keychain profile:
+# other Macs. OFF by default; enable with NOTARIZE=1. Needs a Developer ID identity
+# (above) plus notary credentials, supplied one of two ways:
 #
-#   xcrun notarytool store-credentials "$NOTARY_PROFILE" \
-#       --apple-id you@example.com --team-id TEAMID --password APP_SPECIFIC_PW
+#   (a) Local — a stored notarytool keychain profile (NOTARY_PROFILE, default
+#       "openwhisp-notary"), created once with:
+#         xcrun notarytool store-credentials "openwhisp-notary" \
+#           --apple-id you@example.com --team-id TEAMID --password APP_SPECIFIC_PW
 #
-# NOTARY_PROFILE defaults to "openwhisp-notary".
+#   (b) CI — direct credentials via env: NOTARY_APPLE_ID + NOTARY_TEAM_ID +
+#       NOTARY_PASSWORD (an app-specific password). Takes precedence when set, so no
+#       keychain profile is needed on an ephemeral runner.
 if [ "${NOTARIZE:-0}" = "1" ]; then
-    NOTARY_PROFILE="${NOTARY_PROFILE:-openwhisp-notary}"
     echo ""
-    echo "Step 8: Notarizing DMG (profile: $NOTARY_PROFILE)..."
+    echo "Step 8: Notarizing DMG..."
 
     case "$SIGN_IDENTITY" in
         "Developer ID Application"*) : ;;
@@ -207,12 +210,24 @@ if [ "${NOTARIZE:-0}" = "1" ]; then
             ;;
     esac
 
+    # Choose the notarytool credential source: direct env creds (CI) or a keychain
+    # profile (local). Build the arg array so the password never appears in `set -x`.
+    NOTARY_ARGS=()
+    if [ -n "${NOTARY_APPLE_ID:-}" ] && [ -n "${NOTARY_TEAM_ID:-}" ] && [ -n "${NOTARY_PASSWORD:-}" ]; then
+        echo "  Using direct notary credentials (Apple ID: $NOTARY_APPLE_ID)"
+        NOTARY_ARGS=(--apple-id "$NOTARY_APPLE_ID" --team-id "$NOTARY_TEAM_ID" --password "$NOTARY_PASSWORD")
+    else
+        NOTARY_PROFILE="${NOTARY_PROFILE:-openwhisp-notary}"
+        echo "  Using keychain profile: $NOTARY_PROFILE"
+        NOTARY_ARGS=(--keychain-profile "$NOTARY_PROFILE")
+    fi
+
     # The DMG itself must be signed with the same Developer ID before submission.
     codesign --force --timestamp --sign "$SIGN_IDENTITY" "$DMG_PATH"
 
     # Submit and block until Apple returns a verdict; --wait fails non-zero if the
     # notarization is rejected (the log URL in the output explains why).
-    xcrun notarytool submit "$DMG_PATH" --keychain-profile "$NOTARY_PROFILE" --wait
+    xcrun notarytool submit "$DMG_PATH" "${NOTARY_ARGS[@]}" --wait
 
     # Staple the ticket so the DMG passes Gatekeeper offline.
     echo "Stapling notarization ticket..."
