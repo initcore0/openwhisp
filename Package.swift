@@ -49,7 +49,8 @@ let package = Package(
                 "WhisperKitBridge.swift",
                 "WhisperKitModelCatalog.swift",
                 "PermissionBannerPolicy.swift",
-                "ModelStorage.swift"
+                "ModelStorage.swift",
+                "SettingsMigration.swift"
             ]
         ),
         .testTarget(

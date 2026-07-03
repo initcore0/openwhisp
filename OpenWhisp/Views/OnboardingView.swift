@@ -183,7 +183,7 @@ struct OnboardingView: View {
         ) {
             VStack(alignment: .leading, spacing: 12) {
                 Picker("", selection: $appState.triggerMode) {
-                    Text("Fn / Globe key — one-handed, recommended").tag("fn")
+                    Text("Fn (Globe) — one-handed, recommended").tag("fn")
                     Text("Control + Space").tag("controlSpace")
                 }
                 .pickerStyle(.radioGroup)
@@ -208,9 +208,9 @@ struct OnboardingView: View {
 
                 if appState.openAIEnhancementEnabled {
                     Picker("", selection: $appState.llmProvider) {
-                        Text("Built-in — offline, no setup").tag("bundled")
-                        Text("OpenAI — cloud, needs API key").tag("openai")
-                        Text("Local server — your own").tag("local")
+                        Text("On this Mac (built-in) — offline, no setup").tag("bundled")
+                        Text("OpenAI (cloud) — needs an API key").tag("openai")
+                        Text("Your server (self-hosted) — any OpenAI-compatible server").tag("local")
                     }
                     .pickerStyle(.radioGroup)
                     .labelsHidden()
@@ -218,11 +218,11 @@ struct OnboardingView: View {
                     if appState.llmProvider == "bundled" {
                         bundledModelControls
                     } else if appState.llmProvider == "openai" {
-                        Text("Add your OpenAI API key in Settings → AI Post-processing. Your text is sent to OpenAI for cleanup.")
+                        Text("Add your OpenAI API key in Settings → Cleanup → AI Cleanup. Your text is sent to OpenAI for cleanup.")
                             .font(.caption)
                             .foregroundColor(.secondary)
                     } else {
-                        Text("Point OpenWhisp at your OpenAI-compatible server in Settings → AI Post-processing.")
+                        Text("Point OpenWhisp at your OpenAI-compatible server in Settings → Cleanup → AI Cleanup.")
                             .font(.caption)
                             .foregroundColor(.secondary)
                     }

@@ -1,7 +1,7 @@
 import Foundation
 
 /// The visual style of the recording overlay's voice indicator. User-selectable in
-/// Settings → Appearance. Foundation-only (string-backed) so it lives in
+/// Settings › General. Foundation-only (string-backed) so it lives in
 /// OpenWhispCore, is persisted via UserDefaults, and is unit-testable.
 ///
 /// Styles are added across phases: `.waveform` ships first; `.bars` (FFT-driven

@@ -48,6 +48,14 @@ class AppState: ObservableObject {
         didSet { persist(language, "language") }
     }
 
+    /// Translate speech (any language) into English text. Whisper-family
+    /// engines only — Apple Speech has no translate concept. Replaces the old
+    /// "English — Whisper translate to English" language-picker overload
+    /// (SettingsMigration rewrites stored `language == "en"` into this).
+    @Published var translateToEnglish: Bool {
+        didSet { persist(translateToEnglish, "translateToEnglish") }
+    }
+
     @Published var triggerMode: String {
         didSet {
             UserDefaults.standard.set(triggerMode, forKey: "triggerMode")
@@ -71,7 +79,7 @@ class AppState: ObservableObject {
         didSet { UserDefaults.standard.set(showOverlay, forKey: "showOverlay") }
     }
 
-    /// Visual style of the overlay's voice indicator (Settings → Appearance).
+    /// Visual style of the overlay's voice indicator (Settings › General → Recording Overlay).
     @Published var voiceIndicatorStyle: VoiceIndicatorStyle {
         didSet { UserDefaults.standard.set(voiceIndicatorStyle.rawValue, forKey: "voiceIndicatorStyle") }
     }
@@ -170,9 +178,11 @@ class AppState: ObservableObject {
             // WhisperKit doesn't support the "type live" (liveChunks) output mode —
             // it streams via its own pipeline. If a stale liveChunks value carries
             // over when switching to WhisperKit, snap it to the streaming-friendly
-            // "preview" so behavior matches the (filtered) Settings options.
+            // "preview" — and say so (never change state silently).
+            engineSwitchNotice = nil
             if transcriptionEngine == "whisperKit", outputMode == "liveChunks" {
                 outputMode = "preview"
+                engineSwitchNotice = "Live typing isn't available with WhisperKit — output switched to “Preview, then insert”."
             }
             // Rebuild + rewire the file engine so switching backends takes effect
             // without an app restart (the Whisper-family path uses `whisperEngine`).
@@ -211,8 +221,15 @@ class AppState: ObservableObject {
     @Published var openAIEnhancementEnabled: Bool {
         didSet {
             persist(openAIEnhancementEnabled, "openAIEnhancementEnabled")
-            if openAIEnhancementEnabled { warmLlamaServerIfPossible() }
-            else { llamaEngine?.stopServer() }
+            if openAIEnhancementEnabled {
+                // First enable with the built-in provider should work with zero
+                // setup: provision the model if it isn't on disk yet (no-ops and
+                // warms when it is).
+                if llmProvider == "bundled" { ensureLLMModelExists() }
+                else { warmLlamaServerIfPossible() }
+            } else {
+                llamaEngine?.stopServer()
+            }
         }
     }
 
@@ -239,8 +256,13 @@ class AppState: ObservableObject {
         didSet {
             UserDefaults.standard.set(llmProvider, forKey: "llmProvider")
             if llmProvider == "bundled" {
-                ensureLLMModelExists()
-                warmLlamaServerIfPossible()
+                // Provision/warm only when AI cleanup is actually on — switching
+                // the provider (or Reset All Settings) with cleanup off must not
+                // kick off a model download behind the user's back.
+                if openAIEnhancementEnabled {
+                    ensureLLMModelExists()
+                    warmLlamaServerIfPossible()
+                }
             } else {
                 // Free the ~0.7-1.5 GB the built-in LLM holds when it's not the
                 // active provider.
@@ -387,6 +409,10 @@ class AppState: ObservableObject {
     @Published var error: String?
     @Published var whisperWorkerStatus: String = "Not started"
     @Published var translationStatus: String = "Not configured"
+    /// Explanation for a settings change made on the user's behalf while
+    /// switching engines (e.g. WhisperKit snapping "Type live" to Preview).
+    /// Session-only, shown as a callout in Settings › Models; never persisted.
+    @Published var engineSwitchNotice: String? = nil
     @Published var modelDownloadStatus: String = "Not checked"
     @Published var isModelDownloading = false
     /// Download completion fraction in 0.0...1.0, or `nil` when the total size
@@ -542,7 +568,7 @@ class AppState: ObservableObject {
 
     /// Global setting values saved before a per-app profile temporarily overrode
     /// them for the current session, so they can be restored when it ends.
-    private var profileOverrideBackup: (language: String, outputMode: String, aiCleanup: Bool)?
+    private var profileOverrideBackup: (language: String, translateToEnglish: Bool, outputMode: String, aiCleanup: Bool)?
 
     /// While a per-app profile override is in effect, don't persist the overridden
     /// settings to UserDefaults — otherwise a crash/force-quit mid-session would
@@ -638,6 +664,23 @@ class AppState: ObservableObject {
         return "\(trigger) to insert - Esc to cancel"
     }
 
+    /// The engine-facing language setting: the user's spoken language, or the
+    /// translate-to-English sentinel when translation is on. Apple Speech has
+    /// no translate concept, so it always gets the plain language (used as a
+    /// locale hint).
+    var engineLanguageSetting: String {
+        if translateToEnglish, transcriptionEngine != "appleSpeech" {
+            return WhisperTask.translateToEnglishSetting
+        }
+        return language
+    }
+
+    /// The language of the OUTPUT text, for formatting rules (spoken
+    /// punctuation etc.): English when translating, else the spoken language.
+    private var outputLanguageForCleaning: String {
+        (translateToEnglish && transcriptionEngine != "appleSpeech") ? "en" : language
+    }
+
     /// Whether dictation can send any text off this machine to the internet.
     /// Transcription is always on-device; the only egress is AI post-processing
     /// with the OpenAI (cloud) provider. The local provider stays on machine/LAN.
@@ -666,23 +709,33 @@ class AppState: ObservableObject {
         let savedWhisperBinaryPath = UserDefaults.standard.string(forKey: "whisperBinaryPath") ?? ""
         whisperBinaryPath = Self.preferredWhisperCLIPath(savedPath: savedWhisperBinaryPath)
 
-        // Default first-run model is "tiny" (39 MB) for a near-instant first
-        // success during onboarding. Users can upgrade to higher-quality models
-        // from Settings → Quality at any time.
-        let savedModel = UserDefaults.standard.string(forKey: "modelName") ?? "tiny"
+        // Versioned settings migration MUST run before any key is read below:
+        // it preserves old defaults for existing installs and splits the legacy
+        // "en means translate" language value into language + translateToEnglish.
+        SettingsMigration.migrate(UserDefaults.standard)
+
+        // Default first-run model is "base" (147 MB): fast enough for a quick
+        // first success, and — unlike the old "tiny" default — one of the
+        // visible quality tiers, so a fresh install never renders as the
+        // synthetic "Custom" row. (Existing installs keep "tiny" via migration.)
+        let savedModel = UserDefaults.standard.string(forKey: "modelName") ?? "base"
         let fileName = Self.modelFileName(for: savedModel)
         modelName = savedModel
         let savedModelPath = UserDefaults.standard.string(forKey: "modelPath") ?? ""
         modelPath = Self.preferredModelPath(savedPath: savedModelPath, fileName: fileName)
         microphoneID = UserDefaults.standard.string(forKey: "microphoneID") ?? ""
         language = UserDefaults.standard.string(forKey: "language") ?? "auto"
+        translateToEnglish = UserDefaults.standard.object(forKey: "translateToEnglish") as? Bool ?? false
         triggerMode = UserDefaults.standard.string(forKey: "triggerMode") ?? "fn"
         refineKey = UserDefaults.standard.string(forKey: "refineKey") ?? "rightControl"
         outputMode = UserDefaults.standard.string(forKey: "outputMode") ?? "preview"
         showOverlay = UserDefaults.standard.object(forKey: "showOverlay") as? Bool ?? true
         voiceIndicatorStyle = VoiceIndicatorStyle.from(UserDefaults.standard.string(forKey: "voiceIndicatorStyle"))
         launchAtLogin = launchAtLoginService.isEnabled
-        restoreClipboard = UserDefaults.standard.object(forKey: "restoreClipboard") as? Bool ?? false
+        // Restoring is what users assume happens — clipboard clobbering is the
+        // top complaint about paste-based dictation. (Existing installs keep
+        // their old effective value via migration.)
+        restoreClipboard = UserDefaults.standard.object(forKey: "restoreClipboard") as? Bool ?? true
         insertionMode = UserDefaults.standard.string(forKey: "insertionMode") ?? "auto"
         addTrailingSpace = UserDefaults.standard.object(forKey: "addTrailingSpace") as? Bool ?? false
         autoGainEnabled = UserDefaults.standard.object(forKey: "autoGainEnabled") as? Bool ?? true
@@ -715,7 +768,10 @@ class AppState: ObservableObject {
             openAIAPIKey = ""
         }
         openAIModel = UserDefaults.standard.string(forKey: "openAIModel") ?? "gpt-4o-mini"
-        llmProvider = UserDefaults.standard.string(forKey: "llmProvider") ?? "openai"
+        // Built-in by default: first enable of AI cleanup works offline with
+        // zero setup, matching the product's privacy story. (Existing installs
+        // keep "openai" via migration.)
+        llmProvider = UserDefaults.standard.string(forKey: "llmProvider") ?? "bundled"
         localLLMBaseURL = UserDefaults.standard.string(forKey: "localLLMBaseURL") ?? "http://localhost:8080/v1"
         localLLMModel = UserDefaults.standard.string(forKey: "localLLMModel") ?? ""
         bundledLLMModel = UserDefaults.standard.string(forKey: "bundledLLMModel") ?? "qwen2.5-0.5b-instruct"
@@ -1461,7 +1517,7 @@ class AppState: ObservableObject {
         whisperKitStagedModels = WhisperKitModelCatalog.stagedModels()
     }
 
-    // MARK: - Model storage (Settings → Storage)
+    // MARK: - Model storage (Settings › Models → Storage)
 
     /// Every installed model across the three backends, with its on-disk size and
     /// whether it's the currently-active one. Drives the Storage list + total. Walks
@@ -1667,7 +1723,7 @@ class AppState: ObservableObject {
                 return
             }
             do {
-                try engine.start(language: self.language)
+                try engine.start(language: self.engineLanguageSetting)
                 self.isArming = false
                 self.isRecording = true
                 self.statusMessage = "Listening..."
@@ -2094,7 +2150,7 @@ class AppState: ObservableObject {
             requestID: requestID,
             binaryPath: whisperBinaryPath,
             modelPath: modelPath,
-            language: language,
+            language: engineLanguageSetting,
             wavPath: path.path,
             backend: whisperBackend == "serverAPI" ? .serverAPI : .cli,
             prompt: customVocabularyEnabled ? vocabulary.whisperPrompt : ""
@@ -2624,7 +2680,7 @@ class AppState: ObservableObject {
     /// each call so toggles take effect immediately.
     private var transcriptCleanerConfig: TranscriptCleaner.Config {
         TranscriptCleaner.Config(
-            language: language,
+            language: outputLanguageForCleaning,
             customVocabularyEnabled: customVocabularyEnabled,
             substitutions: vocabulary.substitutions,
             smartFormattingEnabled: smartFormattingEnabled,
@@ -2822,6 +2878,88 @@ class AppState: ObservableObject {
         NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: runningBundlePath)])
     }
 
+    func openMicrophonePrivacySettings() {
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone") {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
+    func openSpeechRecognitionPrivacySettings() {
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_SpeechRecognition") {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
+    // MARK: - Reset
+
+    /// Reset every preference to its factory default and clear the JSON stores
+    /// (profiles, vocabulary, history). Keeps the Keychain API key, downloaded
+    /// models, onboarding completion, and the settings-migration version — the
+    /// goal is a known-good configuration, not a factory-wipe reinstall.
+    func resetAllSettings() {
+        // Order matters in two places: AI cleanup goes off before the provider
+        // flips to "bundled" (so the didSet doesn't start a model download),
+        // and modelName is set after the engine (didSet re-resolves modelPath).
+        openAIEnhancementEnabled = false
+        llmProvider = "bundled"
+        openAIEnhancementMode = "rephrase"
+        translationTargetLanguage = "en"
+        openAIModel = "gpt-4o-mini"
+        localLLMBaseURL = "http://localhost:8080/v1"
+        localLLMModel = ""
+        bundledLLMModel = "qwen2.5-0.5b-instruct"
+        instructionChainEnabled = true
+
+        triggerMode = "fn"
+        refineKey = "rightControl"
+        microphoneID = ""
+        autoGainEnabled = true
+        language = "auto"
+        translateToEnglish = false
+
+        transcriptionEngine = Self.defaultTranscriptionEngine
+        whisperKitModel = "openai_whisper-small"
+        modelName = "base"
+        whisperBinaryPath = Self.preferredWhisperCLIPath(savedPath: "")
+        whisperBackend = "serverAPI"
+        liveChunkDuration = 2.0
+        pauseBasedLiveChunksEnabled = false
+
+        outputMode = "preview"
+        insertionMode = "auto"
+        restoreClipboard = true
+        addTrailingSpace = false
+        scriptPostProcessorEnabled = false
+        scriptPostProcessorPath = ""
+
+        showOverlay = true
+        voiceIndicatorStyle = .defaultStyle
+        smartFormattingEnabled = true
+        spokenPunctuationEnabled = true
+        fillerRemovalEnabled = true
+        customVocabularyEnabled = true
+        perAppModesEnabled = false
+        historyEnabled = true
+
+        vocabulary = .empty
+        profiles = []
+        clearHistory()
+
+        engineSwitchNotice = nil
+        error = nil
+        translationStatus = "Not configured"
+    }
+
+    /// Whether the GGML model for `name` is already downloaded at its default
+    /// Application Support location. Drives the Settings model rows' state.
+    func isWhisperModelInstalled(_ name: String) -> Bool {
+        FileManager.default.fileExists(
+            atPath: Self.applicationSupportModelsDirectory()
+                .appendingPathComponent(Self.modelFileName(for: name))
+                .path
+        )
+    }
+
     private func currentTextTargetApplication() -> NSRunningApplication? {
         let ownBundleID = Bundle.main.bundleIdentifier
         let frontmost = NSWorkspace.shared.frontmostApplication
@@ -2841,12 +2979,24 @@ class AppState: ObservableObject {
         let frontmost = currentTextTargetApplication()
         guard let profile = AppProfileStore.profile(for: frontmost?.bundleIdentifier, in: profiles) else { return }
 
-        // Back up the three overridable globals.
-        profileOverrideBackup = (language: language, outputMode: outputMode, aiCleanup: openAIEnhancementEnabled)
+        // Back up the overridable globals.
+        profileOverrideBackup = (language: language, translateToEnglish: translateToEnglish,
+                                 outputMode: outputMode, aiCleanup: openAIEnhancementEnabled)
 
         // Don't persist the overridden values; they're session-scoped.
         suppressSettingsPersistence = true
-        if let lang = profile.language { language = lang }
+        if let lang = profile.language {
+            // Preserve the profile's historical semantics: "en" meant
+            // translate-to-English (source auto-detected); any other explicit
+            // language transcribes in that language without translation.
+            if lang == "en" {
+                language = "auto"
+                translateToEnglish = true
+            } else {
+                language = lang
+                translateToEnglish = false
+            }
+        }
         if let mode = profile.outputMode { outputMode = mode }
         if let ai = profile.aiCleanupEnabled { openAIEnhancementEnabled = ai }
     }
@@ -2858,12 +3008,14 @@ class AppState: ObservableObject {
         // Re-enable persistence so restoring the originals writes them back.
         suppressSettingsPersistence = false
         if language != backup.language { language = backup.language }
+        if translateToEnglish != backup.translateToEnglish { translateToEnglish = backup.translateToEnglish }
         if outputMode != backup.outputMode { outputMode = backup.outputMode }
         if openAIEnhancementEnabled != backup.aiCleanup { openAIEnhancementEnabled = backup.aiCleanup }
         // Originals were already in UserDefaults from before the override; the
         // assignments above re-persist them anyway. Belt-and-suspenders: ensure
         // they reflect the true globals.
         UserDefaults.standard.set(language, forKey: "language")
+        UserDefaults.standard.set(translateToEnglish, forKey: "translateToEnglish")
         UserDefaults.standard.set(outputMode, forKey: "outputMode")
         UserDefaults.standard.set(openAIEnhancementEnabled, forKey: "openAIEnhancementEnabled")
     }
