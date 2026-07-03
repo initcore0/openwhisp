@@ -23,6 +23,23 @@ final class WhisperKitModelCatalogTests: XCTestCase {
         XCTAssertFalse(WhisperKitModelCatalog.isStaged(model, fileExists: { _ in false }))
     }
 
+    /// The Hub download base handed to WhisperKit must live NEXT TO the model
+    /// staging dir under our Application Support folder — and, critically, must
+    /// never be under ~/Documents (WhisperKit's Hub library defaults there when no
+    /// base is passed, which triggers the macOS Documents-access prompt).
+    func testHubBaseDirIsSiblingOfModelsDirUnderAppSupport() {
+        let hub = WhisperKitModelCatalog.hubBaseDir
+        let models = WhisperKitModelCatalog.baseDir
+        XCTAssertEqual(hub.lastPathComponent, "whisperkit-hub")
+        XCTAssertEqual(
+            hub.deletingLastPathComponent().standardizedFileURL.path,
+            models.deletingLastPathComponent().standardizedFileURL.path,
+            "hub base must be a sibling of the model staging dir"
+        )
+        XCTAssertTrue(hub.path.contains("Application Support/OpenWhisp"))
+        XCTAssertFalse(hub.path.contains("/Documents/"), "hub base must never be under ~/Documents")
+    }
+
     func testDisplayInfoKnownModels() {
         XCTAssertTrue(WhisperKitModelCatalog.displayInfo(for: "openai_whisper-small").label.contains("Small"))
         XCTAssertTrue(WhisperKitModelCatalog.displayInfo(for: "openai_whisper-tiny.en").label.contains("English"))
