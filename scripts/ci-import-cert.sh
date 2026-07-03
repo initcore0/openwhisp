@@ -22,31 +22,39 @@ CERT_PATH="$RUNNER_TEMP/openwhisp-cert.p12"
 
 echo "$MACOS_CERT_P12_BASE64" | base64 --decode > "$CERT_PATH"
 
+# IMPORTANT: this script's ONLY stdout is the final identity name (the caller does
+# IDENTITY="$(...)"). Every `security` subcommand's chatter — notably `security
+# import` printing "1 identity imported." — must go to stderr, or it contaminates
+# the captured value and breaks `echo "identity=$IDENTITY" >> $GITHUB_OUTPUT`
+# ("Invalid format", since a GITHUB_OUTPUT value can't contain a newline).
+
 # Fresh keychain, unlocked, with a long lock timeout so it stays usable all job.
-security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
-security set-keychain-settings -lut 21600 "$KEYCHAIN"
-security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN" >&2
+security set-keychain-settings -lut 21600 "$KEYCHAIN" >&2
+security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN" >&2
 
 # Import the cert + key. -A would allow ALL apps; scope to the tools that need it.
 security import "$CERT_PATH" \
     -k "$KEYCHAIN" \
     -P "$MACOS_CERT_PASSWORD" \
     -T /usr/bin/codesign \
-    -T /usr/bin/security
+    -T /usr/bin/security >&2
 
 # Let codesign use the key without an interactive prompt.
-security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" >/dev/null
+security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" >&2 2>&1
 
 # Put our keychain first in the search list (keep the login/system ones too).
-security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | sed 's/"//g')
+security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | sed 's/"//g') >&2
 
 rm -f "$CERT_PATH"
 
-# Emit the identity name so the caller can set SIGN_IDENTITY from it.
+# Emit the identity name so the caller can set SIGN_IDENTITY from it. `tr -d '\n'`
+# is a final guard: stdout must be exactly one line with no trailing newline issues.
 IDENTITY="$(security find-identity -v -p codesigning "$KEYCHAIN" | grep "Developer ID Application" | head -1 | sed -E 's/.*"(.*)".*/\1/')"
 if [ -z "$IDENTITY" ]; then
     echo "ERROR: no Developer ID Application identity found in the imported keychain." >&2
     security find-identity -v -p codesigning "$KEYCHAIN" >&2 || true
     exit 1
 fi
-echo "$IDENTITY"
+# Single clean line on stdout, no trailing newline (the caller captures it verbatim).
+printf '%s' "$IDENTITY"
