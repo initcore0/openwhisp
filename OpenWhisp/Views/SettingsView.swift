@@ -41,6 +41,12 @@ struct SettingsView: View {
     @State private var newProfileName: String = ""
     @State private var profileAddMessage: String = ""
 
+    // Model storage: the scanned list (refreshed on appear + after a delete) and the
+    // item pending a delete confirmation.
+    @State private var storageItems: [ModelStorage.Item] = []
+    @State private var storageDeleteTarget: ModelStorage.Item?
+    @State private var storageMessage: String = ""
+
     // Config import/export feedback.
     @State private var configMessage: String = ""
     // Built-in config packs (loaded from the app bundle on appear).
@@ -187,6 +193,7 @@ struct SettingsView: View {
                 scriptSection
                 historySection
                 backupSection
+                storageSection                                  // installed models: size + remove
                 if isWhisperCpp { whisperSection }              // CLI/server backend (whisper.cpp)
                 #if OPENWHISP_INSTRUMENTATION
                 settingsSection("LLM Lab") { LLMLabView(appState: appState) }
@@ -1211,6 +1218,108 @@ struct SettingsView: View {
                 configPacks = appState.bundledConfigPacks()
             }
         }
+    }
+
+    // MARK: Storage
+
+    /// Installed models across all backends, with on-disk size, a running total, and
+    /// a Remove action (confirmed; the active model is protected).
+    private var storageSection: some View {
+        settingsSection("Storage") {
+            let total = ModelStorage.totalBytes(storageItems)
+            HStack {
+                Text("Downloaded models")
+                    .font(.subheadline).fontWeight(.medium)
+                Spacer()
+                Text(ModelStorage.format(bytes: total))
+                    .font(.subheadline).fontWeight(.semibold)
+                    .foregroundColor(.secondary)
+            }
+
+            Text("Speech and AI models are stored on your Mac and re-downloaded on demand. Remove ones you don't use to reclaim space. The model currently in use can't be removed.")
+                .font(.caption)
+                .foregroundColor(.secondary)
+
+            if storageItems.isEmpty {
+                Text("No models installed yet.")
+                    .font(.caption).foregroundColor(.secondary)
+            } else {
+                ForEach(storageItems) { item in
+                    storageRow(item)
+                    if item.id != storageItems.last?.id { Divider() }
+                }
+            }
+
+            if !storageMessage.isEmpty {
+                Text(storageMessage).font(.caption).foregroundColor(.secondary)
+            }
+
+            HStack {
+                Button("Open Models Folder") {
+                    NSWorkspace.shared.open(WhisperKitModelCatalog.baseDir.deletingLastPathComponent())
+                }
+                .font(.caption)
+                Button("Refresh") { refreshStorage() }
+                    .font(.caption)
+                Spacer()
+            }
+            .padding(.top, 2)
+        }
+        .onAppear { refreshStorage() }
+        .confirmationDialog(
+            "Remove this model?",
+            isPresented: Binding(
+                get: { storageDeleteTarget != nil },
+                set: { if !$0 { storageDeleteTarget = nil } }
+            ),
+            presenting: storageDeleteTarget
+        ) { item in
+            Button("Remove \(ModelStorage.format(bytes: item.bytes))", role: .destructive) {
+                if let error = appState.removeModel(item) {
+                    storageMessage = error
+                } else {
+                    storageMessage = "Removed \(item.label)."
+                }
+                refreshStorage()
+                storageDeleteTarget = nil
+            }
+            Button("Cancel", role: .cancel) { storageDeleteTarget = nil }
+        } message: { item in
+            Text("\(item.label) (\(ModelStorage.format(bytes: item.bytes))) will be deleted from your Mac. It will be re-downloaded next time it's needed.")
+        }
+    }
+
+    @ViewBuilder
+    private func storageRow(_ item: ModelStorage.Item) -> some View {
+        HStack(spacing: 10) {
+            VStack(alignment: .leading, spacing: 1) {
+                Text(item.label).font(.system(size: 12, weight: .medium))
+                HStack(spacing: 6) {
+                    Text(item.kind.displayName)
+                    if item.isActive {
+                        Text("• In use").foregroundColor(.accentColor)
+                    }
+                }
+                .font(.caption2).foregroundColor(.secondary)
+            }
+            Spacer()
+            Text(ModelStorage.format(bytes: item.bytes))
+                .font(.caption).foregroundColor(.secondary)
+                .monospacedDigit()
+            Button(role: .destructive) {
+                storageDeleteTarget = item
+            } label: {
+                Image(systemName: "trash")
+            }
+            .buttonStyle(.borderless)
+            .disabled(item.isActive)
+            .help(item.isActive ? "The model in use can't be removed" : "Remove this model")
+        }
+        .padding(.vertical, 2)
+    }
+
+    private func refreshStorage() {
+        storageItems = appState.installedModelStorage()
     }
 
     private func exportConfig() {

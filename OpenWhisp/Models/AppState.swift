@@ -1456,6 +1456,92 @@ class AppState: ObservableObject {
         whisperKitStagedModels = WhisperKitModelCatalog.stagedModels()
     }
 
+    // MARK: - Model storage (Settings → Storage)
+
+    /// Every installed model across the three backends, with its on-disk size and
+    /// whether it's the currently-active one. Drives the Storage list + total. Walks
+    /// the real directories (so manually-staged models are counted too). The display
+    /// sorting/formatting/total is pure `ModelStorage`.
+    func installedModelStorage() -> [ModelStorage.Item] {
+        var items: [ModelStorage.Item] = []
+        let fm = FileManager.default
+
+        // WhisperKit CoreML: each staged model is a folder under whisperkit-models.
+        let wkBase = WhisperKitModelCatalog.baseDir
+        let activeWhisperKit = transcriptionEngine == "whisperKit" ? whisperKitModel : nil
+        for name in (try? fm.contentsOfDirectory(atPath: wkBase.path)) ?? [] {
+            let path = wkBase.appendingPathComponent(name)
+            guard (try? path.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true else { continue }
+            items.append(ModelStorage.Item(
+                kind: .whisperKit,
+                label: WhisperKitModelCatalog.displayInfo(for: name).label,
+                path: path.path,
+                bytes: Self.directorySize(at: path),
+                isActive: name == activeWhisperKit
+            ))
+        }
+
+        // whisper.cpp GGML (*.bin) and built-in LLM (*.gguf) share OpenWhisp/models.
+        let modelsDir = Self.applicationSupportModelsDirectory()
+        let activeGGMLPath = URL(fileURLWithPath: modelPath).standardizedFileURL.path
+        let activeLLMPath = URL(fileURLWithPath: selectedLLMModelPath()).standardizedFileURL.path
+        for name in (try? fm.contentsOfDirectory(atPath: modelsDir.path)) ?? [] {
+            let url = modelsDir.appendingPathComponent(name)
+            let bytes = Self.fileSize(at: url)
+            if name.hasSuffix(".bin") {
+                items.append(ModelStorage.Item(
+                    kind: .whisperCpp, label: name, path: url.path, bytes: bytes,
+                    isActive: url.standardizedFileURL.path == activeGGMLPath
+                ))
+            } else if name.hasSuffix(".gguf") {
+                items.append(ModelStorage.Item(
+                    kind: .bundledLLM, label: name, path: url.path, bytes: bytes,
+                    isActive: llmProvider == "bundled" && url.standardizedFileURL.path == activeLLMPath
+                ))
+            }
+        }
+        return ModelStorage.sorted(items)
+    }
+
+    /// Delete a model's files. Refuses the currently-active model (removing it would
+    /// force a re-download on the next dictation) — the UI disables that case, this
+    /// is the belt-and-suspenders guard. Returns nil on success, else an error message.
+    @discardableResult
+    func removeModel(_ item: ModelStorage.Item) -> String? {
+        guard !item.isActive else { return "Can't remove the model that's currently in use." }
+        do {
+            try FileManager.default.removeItem(atPath: item.path)
+            // WhisperKit removals change the staged set the picker reads.
+            if item.kind == .whisperKit { refreshWhisperKitStagedModels() }
+            return nil
+        } catch {
+            return "Couldn't remove: \(error.localizedDescription)"
+        }
+    }
+
+    /// Recursive allocated size of a directory (bytes). Used for WhisperKit models,
+    /// which are folders of compiled sub-models.
+    private static func directorySize(at url: URL) -> Int64 {
+        let fm = FileManager.default
+        guard let en = fm.enumerator(
+            at: url,
+            includingPropertiesForKeys: [.totalFileAllocatedSizeKey, .fileAllocatedSizeKey, .isRegularFileKey]
+        ) else { return 0 }
+        var total: Int64 = 0
+        for case let f as URL in en {
+            let vals = try? f.resourceValues(forKeys: [.totalFileAllocatedSizeKey, .fileAllocatedSizeKey, .isRegularFileKey])
+            guard vals?.isRegularFile == true else { continue }
+            total += Int64(vals?.totalFileAllocatedSize ?? vals?.fileAllocatedSize ?? 0)
+        }
+        return total
+    }
+
+    /// Allocated size of a single file (bytes).
+    private static func fileSize(at url: URL) -> Int64 {
+        let vals = try? url.resourceValues(forKeys: [.totalFileAllocatedSizeKey, .fileAllocatedSizeKey])
+        return Int64(vals?.totalFileAllocatedSize ?? vals?.fileAllocatedSize ?? 0)
+    }
+
     /// Download + stage a WhisperKit model from the model manager. Single-flight:
     /// ignores a request while another download is in progress.
     func downloadWhisperKitModel(_ model: String) {
