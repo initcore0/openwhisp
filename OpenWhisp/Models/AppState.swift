@@ -1706,19 +1706,75 @@ class AppState: ObservableObject {
         }
     }
 
-    func validateOpenAIKey() {
-        translationStatus = "Validating..."
+    /// Provider-aware "Test": verifies what the SELECTED provider actually
+    /// needs — the built-in runtime+model (loading the server if needed), the
+    /// self-hosted server, or the OpenAI key — and reports in those terms.
+    /// (Previously every provider went through the same endpoint ping, so a
+    /// bundled test could report "OpenAI key valid".)
+    func testLLMProvider() {
         error = nil
-        let isLocal = llmProvider == "local"
-        translationService.validate(endpoint: llmEndpoint, model: llmModel) { [weak self] result in
-            Task { @MainActor in
-                guard let self else { return }
-                switch result {
-                case .success:
-                    self.translationStatus = isLocal ? "Local LLM reachable" : "OpenAI key valid"
-                case .failure(let error):
-                    self.translationStatus = "Validation failed"
-                    self.error = "LLM validation failed: \(error.localizedDescription)"
+        switch llmProvider {
+        case "bundled":
+            guard bundledLLMRuntimeAvailable else {
+                translationStatus = "This build doesn't include the built-in AI runtime"
+                return
+            }
+            guard bundledLLMModelInstalled else {
+                translationStatus = "Built-in model not downloaded"
+                return
+            }
+            translationStatus = "Loading built-in model…"
+            // Route through the same readiness path refine uses, so a passing
+            // test means refine will actually work.
+            ensureBundledLLMReady(statusWhileLoading: "Loading built-in model…", work: { [weak self] done in
+                guard let self else { done(); return }
+                self.translationService.validate(endpoint: self.llmEndpoint, model: self.llmModel) { result in
+                    Task { @MainActor in
+                        done()
+                        switch result {
+                        case .success:
+                            self.translationStatus = "Built-in model working"
+                        case .failure(let error):
+                            self.translationStatus = "Built-in model test failed"
+                            self.error = "Built-in model test failed: \(error.localizedDescription)"
+                        }
+                    }
+                }
+            }, fallback: { [weak self] in
+                self?.translationStatus = "Built-in model unavailable"
+            })
+
+        case "local":
+            translationStatus = "Testing server…"
+            translationService.validate(endpoint: llmEndpoint, model: llmModel) { [weak self] result in
+                Task { @MainActor in
+                    guard let self else { return }
+                    switch result {
+                    case .success:
+                        self.translationStatus = "Server reachable"
+                    case .failure(let error):
+                        self.translationStatus = "Server test failed"
+                        self.error = "Server test failed: \(error.localizedDescription)"
+                    }
+                }
+            }
+
+        default:
+            guard !openAIAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                translationStatus = "Add your OpenAI API key first"
+                return
+            }
+            translationStatus = "Validating key…"
+            translationService.validate(endpoint: llmEndpoint, model: llmModel) { [weak self] result in
+                Task { @MainActor in
+                    guard let self else { return }
+                    switch result {
+                    case .success:
+                        self.translationStatus = "OpenAI key valid"
+                    case .failure(let error):
+                        self.translationStatus = "OpenAI key check failed"
+                        self.error = "OpenAI key check failed: \(error.localizedDescription)"
+                    }
                 }
             }
         }
