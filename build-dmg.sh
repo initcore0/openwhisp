@@ -103,16 +103,24 @@ echo ""
 echo "Step 3: Bundling whisper.cpp runtime..."
 "$PROJECT_DIR/scripts/bundle-whisper-runtime.sh" "$APP_DIR" "$WHISPER_BIN_DIR"
 
-# Bundle the optional built-in LLM runtime when it has been built. Guarded so a
-# whisper-only release still builds.
+# Bundle the built-in LLM runtime. The app DEFAULTS to the "On this Mac
+# (built-in)" AI provider, so a release DMG without llama-server ships a broken
+# built-in AI (every refine fails with "built-in model unavailable") — hard-fail
+# release builds that lack it. Dev builds may still skip it, loudly.
 rm -rf "$APP_DIR/Contents/Resources/llama"
 mkdir -p "$APP_DIR/Contents/Resources/llama"
 if [ -x "$LLAMA_BIN_DIR/llama-server" ]; then
     echo ""
     echo "Step 3b: Bundling llama.cpp runtime (built-in LLM)..."
     "$PROJECT_DIR/scripts/bundle-llama-runtime.sh" "$APP_DIR" "$LLAMA_BIN_DIR"
+elif [ "$CONFIG" = "release" ]; then
+    echo "ERROR: no llama-server at $LLAMA_BIN_DIR."
+    echo "The built-in AI provider is the app default; a release DMG must include it."
+    echo "Run scripts/build-llama.sh first."
+    exit 1
 else
-    echo "(skipping llama runtime: no llama-server at $LLAMA_BIN_DIR — run scripts/build-llama.sh to include the bundled LLM)"
+    echo "WARNING: skipping llama runtime (no llama-server at $LLAMA_BIN_DIR)."
+    echo "The built-in AI provider will be unavailable in this build — run scripts/build-llama.sh to include it."
 fi
 
 echo ""

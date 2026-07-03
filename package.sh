@@ -69,7 +69,8 @@ LLAMA_BIN_DIR="${LLAMA_BIN_DIR:-$PROJECT_DIR/third_party/llama.cpp/build/bin}"
 if [ -x "$LLAMA_BIN_DIR/llama-server" ]; then
     "$PROJECT_DIR/scripts/bundle-llama-runtime.sh" "$APP_DIR" "$LLAMA_BIN_DIR"
 else
-    echo "(skipping llama runtime: no llama-server at $LLAMA_BIN_DIR — run scripts/build-llama.sh to include the bundled LLM)"
+    echo "WARNING: skipping llama runtime (no llama-server at $LLAMA_BIN_DIR)."
+    echo "The built-in AI provider (the app default) will be unavailable in this build — run scripts/build-llama.sh to include it."
 fi
 
 # Copy entitlements
@@ -132,6 +133,14 @@ if [ "$INSTALL" = "1" ]; then
     rm -rf "$INSTALLED"
     # ditto preserves the bundle's signature/attributes (unlike a plain cp -R).
     ditto "$APP_DIR" "$INSTALLED"
+    # Verify the runtimes actually landed — a silent partial install is how a
+    # working app turns into "built-in model unavailable" with no clue why.
+    for rel in "Contents/Resources/whisper/whisper-cli" "Contents/Resources/llama/llama-server"; do
+        if [ -x "$APP_DIR/$rel" ] && [ ! -x "$INSTALLED/$rel" ]; then
+            echo "ERROR: $rel didn't survive the copy to $INSTALLED — install incomplete."
+            exit 1
+        fi
+    done
     echo "Installed. Relaunching..."
     open "$INSTALLED"
 fi

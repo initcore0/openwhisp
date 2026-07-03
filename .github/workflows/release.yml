@@ -53,6 +53,11 @@ jobs:
       - name: Build whisper.cpp (submodule)
         run: ./scripts/build-whisper.sh
 
+      # The built-in AI provider (bundled llama.cpp) is the app default, so the
+      # release DMG must include its runtime — build-dmg.sh release fails without it.
+      - name: Build llama.cpp (submodule)
+        run: ./scripts/build-llama.sh
+
       # Signing is enabled only when the Developer ID secret is present. Forks and
       # setups without the secret still get an ad-hoc DMG (unchanged behavior).
       # Fail fast on a HALF-configured setup (cert without notary credentials, or

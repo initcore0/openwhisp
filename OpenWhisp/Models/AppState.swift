@@ -542,6 +542,12 @@ class AppState: ObservableObject {
     /// dictation): an empty instruction then leaves the selection untouched
     /// instead of re-inserting it. Set alongside `refineContentSnapshot`.
     private var refineContentFromSelection = false
+    /// Generation counter for idle-arm expiry: an idle arm (refine tapped with
+    /// no active session) is invisible on screen, so it auto-expires unless a
+    /// dictation starts soon after.
+    private var refineArmGeneration = 0
+    /// How long an idle refine arm stays live before expiring.
+    private static let idleRefineArmTimeout: TimeInterval = 10
 
     /// Set briefly when an insert couldn't be confirmed and the text was left on the
     /// clipboard instead — drives a "copied, press ⌘V" cue in the overlay so the
@@ -656,12 +662,23 @@ class AppState: ObservableObject {
         return mode == "rephrase" ? "bundled-rephrase" : "bundled-improve"
     }
 
+    /// Whether this build includes the built-in LLM runtime (llama-server).
+    /// False for an app packaged without it — the built-in provider then can't
+    /// work no matter what, and the UI should say so rather than fail vaguely.
+    var bundledLLMRuntimeAvailable: Bool {
+        LlamaServerEngine.runtimeAvailable()
+    }
+
     /// Whether the active LLM provider is configured enough to call.
     var llmConfigured: Bool {
         switch llmProvider {
         case "bundled":
-            // Configured only once the selected model is actually on disk.
-            return FileManager.default.fileExists(atPath: selectedLLMModelPath())
+            // Configured only when this build can run the LLM at all AND the
+            // selected model is actually on disk. The runtime check keeps
+            // features like Refine from arming against a provider that is
+            // guaranteed to fail (an app packaged without the llama runtime).
+            return bundledLLMRuntimeAvailable
+                && FileManager.default.fileExists(atPath: selectedLLMModelPath())
         case "local":
             return !localLLMBaseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         default:
@@ -1389,6 +1406,14 @@ class AppState: ObservableObject {
         guard llmProvider == "bundled" else {
             refineDebug("ensureBundledLLMReady: non-bundled -> work() immediately")
             work({})
+            return
+        }
+
+        guard bundledLLMRuntimeAvailable else {
+            // Not a user-fixable state: this copy of the app was packaged
+            // without the llama runtime. Name the real problem.
+            translationStatus = "This build doesn't include the built-in AI runtime"
+            fallback()
             return
         }
 
@@ -2468,6 +2493,26 @@ class AppState: ObservableObject {
         refineArmed = true                       // overlay refine cue
         statusMessage = "Refine: now speak your instruction…"
         refineDebug("armRefineMidSession content=\"\(content.prefix(30))\" fromSelection=\(fromSelection)")
+
+        // An IDLE arm (no session running) has no visible UI — nothing changes
+        // on screen until the next dictation. Expire it, so a stray tap can't
+        // ambush a dictation minutes later as surprise refine mode.
+        if !sessionActive {
+            refineArmGeneration &+= 1
+            let generation = refineArmGeneration
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: UInt64(Self.idleRefineArmTimeout * 1_000_000_000))
+                guard let self,
+                      generation == self.refineArmGeneration,
+                      self.refineContentSnapshot != nil,
+                      !self.sessionActive else { return }
+                self.refineContentSnapshot = nil
+                self.refineContentFromSelection = false
+                self.syncRefineUI()
+                self.statusMessage = "Ready"
+                self.refineDebug("idle refine arm expired")
+            }
+        }
     }
 
     /// See `InstructionChain.instructionSuffix` — shared with the overlay's live

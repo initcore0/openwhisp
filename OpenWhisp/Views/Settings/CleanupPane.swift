@@ -315,6 +315,16 @@ struct CleanupPane: View {
     }
 
     @ViewBuilder private var bundledLLMFields: some View {
+        // Not user-fixable in Settings: the app itself was packaged without the
+        // llama runtime. Say so up front instead of letting the model download
+        // succeed and every use fail with a vague error.
+        if !appState.bundledLLMRuntimeAvailable {
+            SettingsCallout(
+                .error,
+                "This copy of OpenWhisp was built without the built-in AI runtime, so this provider can't run. Update to a release that includes it, or choose another provider."
+            )
+        }
+
         Picker("Built-in model", selection: $appState.bundledLLMModel) {
             ForEach(appState.bundledLLMModelsList(), id: \.id) { model in
                 Text("\(model.label) · \(model.size)").tag(model.id)
@@ -333,7 +343,7 @@ struct CleanupPane: View {
             SettingsCallout(.warning, "Download failed.", actionLabel: "Retry") {
                 appState.retryLLMModelDownload()
             }
-        } else if appState.bundledLLMModelInstalled {
+        } else if appState.bundledLLMModelInstalled && appState.bundledLLMRuntimeAvailable {
             TestResultLine(text: "Active — ready (offline)", isGood: true)
         } else {
             HStack {
