@@ -38,14 +38,20 @@ class OpenWhispApp: NSObject, NSApplicationDelegate {
             print("[OpenWhisp] WARNING: statusItem.button is nil!")
         }
 
-        // Request microphone permission
-        AVCaptureDevice.requestAccess(for: .audio) { _ in }
+        // Permission prompts: on FIRST run, let the onboarding wizard drive them
+        // (it has guided microphone/accessibility steps). Firing the raw OS prompts
+        // here at the same time is redundant and jarring on a brand-new Mac. On
+        // subsequent launches, prompt eagerly as before (and the permission-banner
+        // recheck handles any later revocation).
+        if appState.didCompleteOnboarding {
+            AVCaptureDevice.requestAccess(for: .audio) { _ in }
+            requestNotifications()
+        }
 
-        // Request notification permission (safely — requires .app bundle)
-        requestNotifications()
-
-        // Ensure model exists
-        appState.ensureModelExists()
+        // Provision the model for the SELECTED engine only (WhisperKit by default) —
+        // not an unconditional whisper.cpp download. The model download needs no
+        // permissions, so it's fine to start before onboarding.
+        appState.ensureSelectedEngineModel()
 
         // First-run onboarding
         showOnboardingIfNeeded()
