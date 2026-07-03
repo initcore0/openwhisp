@@ -50,7 +50,8 @@ let package = Package(
                 "WhisperKitModelCatalog.swift",
                 "PermissionBannerPolicy.swift",
                 "ModelStorage.swift",
-                "SettingsMigration.swift"
+                "SettingsMigration.swift",
+                "RefineTap.swift"
             ]
         ),
         .testTarget(

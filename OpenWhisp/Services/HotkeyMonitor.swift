@@ -33,6 +33,10 @@ final class HotkeyMonitor: HotkeyControlling {
     /// Debounced held-state for the refine key, tracked independently of the
     /// dictation trigger.
     private var isRefinePressed = false
+    /// Bare-tap detection for the refine key: a press only counts as a refine
+    /// tap if it's released quickly with NO other input in between — otherwise
+    /// it was a shortcut chord (⌃C, ⌃-click, …), not a refine request.
+    private var refineTap = RefineTapRecognizer()
     var triggerMode: String = "controlSpace"
     /// Selected refine key id (see RefineKey). "off" disables it.
     var refineKey: String = RefineKey.defaultKey.rawValue
@@ -80,7 +84,12 @@ final class HotkeyMonitor: HotkeyControlling {
     }
 
     private func startNSEventFallback() {
-        let eventMask: NSEvent.EventTypeMask = [.keyDown, .keyUp, .flagsChanged]
+        let eventMask: NSEvent.EventTypeMask = [
+            .keyDown, .keyUp, .flagsChanged,
+            // Only consumed as refine-tap disqualifiers (⌃-click, ⌃-scroll);
+            // handleNSEvent returns before any key handling for these.
+            .leftMouseDown, .rightMouseDown, .otherMouseDown, .scrollWheel,
+        ]
 
         globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: eventMask) { [weak self] event in
             self?.handleNSEvent(event)
@@ -133,15 +142,20 @@ final class HotkeyMonitor: HotkeyControlling {
         }
     }
 
-    /// Refine chord edge dispatch (Fn+Ctrl held together). Independent of the
-    /// dictation trigger so the two never interfere.
+    /// Refine key edge dispatch, independent of the dictation trigger. The
+    /// refine callback fires on the UP edge of a clean bare tap — firing on the
+    /// down edge treated every shortcut that uses the key (⌃C, ⌃-click…) as a
+    /// refine request, invisibly arming refine for the next dictation.
     private func applyRefine(_ gesture: HotkeyGesture) {
         switch gesture {
         case .down:
             isRefinePressed = true
-            Task { @MainActor in self.onRefineDown?() }
+            refineTap.keyDown()
         case .up:
             isRefinePressed = false
+            if refineTap.keyUp() {
+                Task { @MainActor in self.onRefineDown?() }
+            }
             Task { @MainActor in self.onRefineUp?() }
         case .none:
             break
@@ -160,7 +174,12 @@ final class HotkeyMonitor: HotkeyControlling {
         // holding Control to start dictation would read as a refine tap. The
         // Settings UI warns about this combination; suppress it here too.
         guard !key.conflictsWithTrigger(triggerMode) else { return }
-        guard keyCode == target else { return }
+        guard keyCode == target else {
+            // A DIFFERENT modifier changed while the refine key is held: the
+            // hold is a chord (⌃⌘…), not a bare tap.
+            if isRefinePressed { refineTap.otherInput() }
+            return
+        }
         applyRefine(HotkeyGesture.resolve(isActive: flagActive, wasPressed: isRefinePressed))
     }
 
@@ -229,6 +248,9 @@ final class HotkeyMonitor: HotkeyControlling {
                 keyCode: keyCode,
                 flagActive: Self.modifierFlagActive(forKeyCode: keyCode, cgFlags: event.flags)
             )
+        } else if type == .keyDown, isRefinePressed {
+            // Typing while the refine key is held = a keyboard shortcut.
+            refineTap.otherInput()
         }
 
         if type == .keyDown, keyCode == Self.escapeKeyCode {
@@ -237,6 +259,21 @@ final class HotkeyMonitor: HotkeyControlling {
     }
 
     private func handleNSEvent(_ event: NSEvent) {
+        // Mouse/scroll while the refine key is held = ⌃-click / ⌃-scroll etc.
+        // Handle and return BEFORE the key handlers (NSEvent.keyCode is only
+        // valid for key events).
+        switch event.type {
+        case .leftMouseDown, .rightMouseDown, .otherMouseDown, .scrollWheel:
+            if isRefinePressed { refineTap.otherInput() }
+            return
+        default:
+            break
+        }
+
+        if event.type == .keyDown, isRefinePressed {
+            refineTap.otherInput()
+        }
+
         if triggerMode == "fn" {
             handleFnEvent(event)
         } else {

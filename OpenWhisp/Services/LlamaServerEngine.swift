@@ -363,6 +363,18 @@ final class LlamaServerEngine {
     // MARK: - Binary resolution
 
     private func serverBinaryPath() -> String? {
+        Self.resolvedServerBinaryPath()
+    }
+
+    /// Whether this build can run the built-in LLM at all — i.e. a llama-server
+    /// binary exists (bundled in Resources/llama, or a dev build). False for an
+    /// app packaged without the llama runtime; the Settings UI uses this to say
+    /// so explicitly instead of failing every refine with a vague error.
+    static func runtimeAvailable() -> Bool {
+        resolvedServerBinaryPath() != nil
+    }
+
+    private static func resolvedServerBinaryPath() -> String? {
         if let bundled = Bundle.main.resourceURL?
             .appendingPathComponent("llama/llama-server")
             .path,
