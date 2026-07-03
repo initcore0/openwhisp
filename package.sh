@@ -20,11 +20,19 @@ for arg in "$@"; do
     esac
 done
 
-# Build first if binary doesn't exist
-if [ ! -f "$BUILD_DIR/OpenWhisp" ]; then
-    echo "Binary not found. Building first..."
-    "$PROJECT_DIR/build.sh"
-fi
+# ALWAYS rebuild — never reuse whatever binary happens to be in build/. Reusing a
+# stale binary once packaged a WHISPERKIT=0 lint-build stub as a "real" app, which
+# ran but failed at runtime ("WhisperKit backend isn't available in this build").
+# Pass through WHISPERKIT so a deliberate lean build still works.
+echo "Building fresh binary (rm stale + build.sh)..."
+rm -f "$BUILD_DIR/OpenWhisp"
+"$PROJECT_DIR/build.sh"
+
+# Guard: refuse to package a stub (missing WhisperKit) unless WHISPERKIT=0 was
+# explicitly requested. Turns the silent "stub shipped" failure into a build error.
+# shellcheck source=scripts/verify-whisperkit-binary.sh
+source "$PROJECT_DIR/scripts/verify-whisperkit-binary.sh"
+verify_whisperkit_binary "$BUILD_DIR/OpenWhisp"
 
 # Clean old bundle
 rm -rf "$APP_DIR"
