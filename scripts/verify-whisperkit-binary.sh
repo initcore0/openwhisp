@@ -28,8 +28,17 @@ verify_whisperkit_binary() {
     # which also appears as OpenWhisp's own type/method names (WhisperKitBridge,
     # isWhisperKit, whisperKitModelRow, …) and is present even in a stub build. A real
     # build links thousands of ArgmaxCore symbols; a stub has zero.
-    if nm "$binary" 2>/dev/null | grep -q "ArgmaxCore"; then
-        echo "WhisperKit verify: OK (backend is compiled into $binary)." >&2
+    #
+    # IMPORTANT: count with `grep -c` into a variable — do NOT use `nm ... | grep -q`.
+    # `grep -q` exits on the first match and closes the pipe, so `nm` (still writing
+    # its huge symbol table) dies with SIGPIPE; under the callers' `set -o pipefail`
+    # that makes the pipeline "fail" and the check false-negatives even when the
+    # symbols are present. `grep -c` reads the whole stream, and `|| true` absorbs
+    # grep's exit-1-on-zero-matches so `set -e` doesn't abort here.
+    local count
+    count="$(nm "$binary" 2>/dev/null | grep -c "ArgmaxCore" || true)"
+    if [ "${count:-0}" -gt 0 ]; then
+        echo "WhisperKit verify: OK ($count ArgmaxCore symbols in $binary)." >&2
         return 0
     fi
 
