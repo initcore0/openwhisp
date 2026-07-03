@@ -74,6 +74,11 @@ xcrun swiftc \
     $SWIFT_FILES \
     -o "$BUILD_DIR/OpenWhisp"
 
+# Guard: never ship a DMG whose binary is a WhisperKit stub (unless WHISPERKIT=0).
+# shellcheck source=scripts/verify-whisperkit-binary.sh
+source "$PROJECT_DIR/scripts/verify-whisperkit-binary.sh"
+verify_whisperkit_binary "$BUILD_DIR/OpenWhisp"
+
 echo ""
 echo "Step 2: Creating app bundle..."
 rm -rf "$APP_DIR"
