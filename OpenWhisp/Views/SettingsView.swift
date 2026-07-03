@@ -115,13 +115,26 @@ struct SettingsView: View {
     }
     
     var body: some View {
-        TabView {
-            basicTab
-                .tabItem { Label("Basic", systemImage: "slider.horizontal.3") }
-            advancedTab
-                .tabItem { Label("Advanced", systemImage: "gearshape.2") }
+        VStack(spacing: 0) {
+            // Launch-recheck banners: shown when a needed permission is missing
+            // (e.g. a reinstall revoked Accessibility). Auto-clears once granted —
+            // refreshPermissionBanners() runs on every app-became-active.
+            if !appState.missingPermissionBanners.isEmpty {
+                PermissionBannerStack(appState: appState)
+                    .padding(.horizontal, 16)
+                    .padding(.top, 12)
+                    .padding(.bottom, 4)
+            }
+
+            TabView {
+                basicTab
+                    .tabItem { Label("Basic", systemImage: "slider.horizontal.3") }
+                advancedTab
+                    .tabItem { Label("Advanced", systemImage: "gearshape.2") }
+            }
         }
         .onAppear {
+            appState.refreshPermissionBanners()
             selectedModel = appState.modelName
             refreshDevices()
             vocabularyTermsDraft = appState.vocabulary.terms.joined(separator: ", ")

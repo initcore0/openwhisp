@@ -405,6 +405,19 @@ class AppState: ObservableObject {
     @Published var recordingElapsed: TimeInterval = 0
     @Published var inputMonitoringPermissionLabel: String = "Unknown"
 
+    /// Banners for permissions that are needed but missing RIGHT NOW, re-checked
+    /// on launch and whenever the app becomes active. Live state only — never
+    /// persisted (a reinstall silently revokes Accessibility, so any cached
+    /// "granted" flag would lie). Decision logic lives in PermissionBannerPolicy.
+    @Published var missingPermissionBanners: [PermissionBannerPolicy.Permission] = []
+
+    /// Session-scoped dismissal tracking for the permission banners.
+    private var permissionBannerPolicy = PermissionBannerPolicy()
+
+    /// Last inferred Input Monitoring state (from the hotkey event-tap attempt);
+    /// nil until the monitor has reported. There is no direct "is granted" API.
+    private var inputMonitoringGranted: Bool?
+
     /// Whether the user has completed (or skipped) the first-run onboarding.
     @Published var didCompleteOnboarding: Bool {
         didSet { UserDefaults.standard.set(didCompleteOnboarding, forKey: "didCompleteOnboarding") }
@@ -715,6 +728,11 @@ class AppState: ObservableObject {
         wireUpServices()
         overlayController = OverlayWindowController(appState: self)
         hotkeyMonitor.start()
+        // Launch-time permission recheck: a reinstall silently revokes the TCC
+        // Accessibility grant, so verify the LIVE state now instead of trusting
+        // the persisted onboarding flag. (Input Monitoring reports asynchronously
+        // via onPermissionStateChanged above.)
+        refreshPermissionBanners()
         ensureModelExists()
         warmWhisperServerIfPossible()
     }
@@ -858,6 +876,8 @@ class AppState: ObservableObject {
         hotkeyMonitor.onPermissionStateChanged = { [weak self] isGranted in
             Task { @MainActor in
                 self?.inputMonitoringPermissionLabel = isGranted ? "Granted" : "Needs permission"
+                self?.inputMonitoringGranted = isGranted
+                self?.refreshPermissionBanners()
                 if !isGranted {
                     self?.error = "Input Monitoring is not available for this app build. Remove and re-add OpenWhisp in System Settings, then quit and reopen the app."
                 }
@@ -2640,6 +2660,44 @@ class AppState: ObservableObject {
     /// reflect live system state, not stored @Published values).
     func refreshPermissionLabels() {
         objectWillChange.send()
+    }
+
+    // MARK: - Launch-time permission recheck
+
+    /// Re-evaluate the live permission state and update the missing-permission
+    /// banners. Called on launch and every time the app becomes active, so the
+    /// banner appears when a reinstall revoked Accessibility and auto-clears the
+    /// moment the user grants it in System Settings and returns.
+    func refreshPermissionBanners() {
+        let banners = permissionBannerPolicy.visibleBanners(
+            accessibilityGranted: AXIsProcessTrusted(),
+            inputMonitoringGranted: inputMonitoringGranted
+        )
+        if banners != missingPermissionBanners {
+            missingPermissionBanners = banners
+        }
+        // The Settings permission rows read live computed labels; nudge them too.
+        refreshPermissionLabels()
+    }
+
+    /// Hide a banner for the rest of the session. Granting the permission later
+    /// re-arms it (see PermissionBannerPolicy), so a future revocation resurfaces.
+    func dismissPermissionBanner(_ permission: PermissionBannerPolicy.Permission) {
+        permissionBannerPolicy.dismiss(permission)
+        refreshPermissionBanners()
+    }
+
+    /// Deep link into the exact System Settings pane for a banner's permission.
+    func openSettings(for permission: PermissionBannerPolicy.Permission) {
+        switch permission {
+        case .accessibility:
+            // Also trigger the system prompt so OpenWhisp appears pre-listed
+            // in the Accessibility pane the user is about to see.
+            requestAccessibilityPermission()
+            openAccessibilitySettings()
+        case .inputMonitoring:
+            openInputMonitoringSettings()
+        }
     }
 
     func finishOnboarding() {

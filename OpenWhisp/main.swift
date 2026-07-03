@@ -52,6 +52,15 @@ class OpenWhispApp: NSObject, NSApplicationDelegate {
         print("[OpenWhisp] Ready")
     }
 
+    /// Re-check permissions whenever the app becomes active. This is what makes
+    /// the missing-permission banner AUTO-CLEAR: the user grants the permission
+    /// in System Settings, clicks back into OpenWhisp, and the live recheck
+    /// removes the banner. It also catches revocations (e.g. after a reinstall,
+    /// macOS silently drops the Accessibility grant) without re-running onboarding.
+    func applicationDidBecomeActive(_ notification: Notification) {
+        appState?.refreshPermissionBanners()
+    }
+
     private func showOnboardingIfNeeded() {
         guard let appState, !appState.didCompleteOnboarding else { return }
         // Onboarding requires a real .app bundle for the permission prompts to
@@ -140,6 +149,20 @@ class OpenWhispApp: NSObject, NSApplicationDelegate {
         statusItem.isEnabled = false
         menu.addItem(statusItem)
 
+        // Missing-permission affordance. OpenWhisp is a menu-bar app, so an
+        // accessory-app activation may never fire while the user only uses the
+        // status item — re-check here too, and surface a one-click deep link.
+        appState.refreshPermissionBanners()
+        for permission in appState.missingPermissionBanners {
+            let item = NSMenuItem(
+                title: "⚠️ \(permission.bannerTitle) — Open System Settings",
+                action: #selector(openPermissionSettings),
+                keyEquivalent: ""
+            )
+            item.representedObject = permission.rawValue
+            menu.addItem(item)
+        }
+
         // Only show the model line while it's downloading / not yet installed.
         if appState.isModelDownloading || !appState.modelDownloadStatus.hasPrefix("Installed") {
             let modelStatus = NSMenuItem(title: "Model: \(appState.modelDownloadStatus)", action: nil, keyEquivalent: "")
@@ -221,6 +244,12 @@ class OpenWhispApp: NSObject, NSApplicationDelegate {
         let pb = NSPasteboard.general
         pb.clearContents()
         pb.setString(text, forType: .string)
+    }
+
+    @objc private func openPermissionSettings(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String,
+              let permission = PermissionBannerPolicy.Permission(rawValue: raw) else { return }
+        appState.openSettings(for: permission)
     }
 
     @objc private func startDictation() { appState.startDictation() }
