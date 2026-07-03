@@ -538,6 +538,10 @@ class AppState: ObservableObject {
     /// is consumed at that point, so the overlay reads this to keep the
     /// instruction row visible through the rewrite. Cleared when refine disarms.
     @Published private(set) var refineActiveInstruction: String?
+    /// Whether the armed refine's content came from the user's selection (vs.
+    /// dictation): an empty instruction then leaves the selection untouched
+    /// instead of re-inserting it. Set alongside `refineContentSnapshot`.
+    private var refineContentFromSelection = false
 
     /// Set briefly when an insert couldn't be confirmed and the text was left on the
     /// clipboard instead — drives a "copied, press ⌘V" cue in the overlay so the
@@ -2308,14 +2312,16 @@ class AppState: ObservableObject {
         // session's final splits into CONTENT (snapshot at the tap) + INSTRUCTION
         // (spoken after). Run the refine via RefineFlow.
         if let content = refineContentSnapshot {
+            let fromSelection = refineContentFromSelection
             refineContentSnapshot = nil
+            refineContentFromSelection = false
             let instruction = instructionSuffix(fullFinal: finalText, content: content)
             refineActiveInstruction = instruction
-            refineDebug("completeFinalText MID-REFINE content=\"\(content.prefix(20))\" instr=\"\(instruction.prefix(20))\"")
+            refineDebug("completeFinalText MID-REFINE content=\"\(content.prefix(20))\" instr=\"\(instruction.prefix(20))\" fromSelection=\(fromSelection)")
             isTranscribing = true
             // Drive the machine: engage with the content as step-1, then feed the
-            // instruction. From-selection is false (content came from dictation).
-            executeRefineEffects(refineFlow.handle(.engage(step1: content, fromSelection: false)))
+            // instruction.
+            executeRefineEffects(refineFlow.handle(.engage(step1: content, fromSelection: fromSelection)))
             executeRefineEffects(refineFlow.handle(.instructionFinalized(instruction)))
             return
         }
@@ -2423,27 +2429,45 @@ class AppState: ObservableObject {
             return
         }
         guard refineContentSnapshot == nil else { return }   // already armed this session
-        // Content to refine = what's been dictated so far this session, else the
-        // current selection, else the last dictation.
+        // Content to refine, in intent order: what's been dictated so far this
+        // session, else the user's LIVE selection (an explicit selection is the
+        // clearest statement of intent — it must beat the last dictation, which
+        // can be arbitrarily stale), else the last dictation, else a selection
+        // via the clipboard fallback. The AX read is safe to probe early (no
+        // selection = nil); the clipboard fallback stays last because a
+        // synthesized copy with nothing selected copies the current line in
+        // some apps.
         let sofar = (currentSessionText.isEmpty ? streamingText : currentSessionText)
             .trimmingCharacters(in: .whitespacesAndNewlines)
+        let secureField = SecureFieldDetector.focusedFieldIsSecure()
         let content: String
+        let fromSelection: Bool
         if !sofar.isEmpty {
             content = sofar
+            fromSelection = false
+        } else if !secureField,
+                  let sel = SelectionReader.readSelectedText(allowClipboardFallback: false)?
+                      .trimmingCharacters(in: .whitespacesAndNewlines),
+                  !sel.isEmpty {
+            content = sel
+            fromSelection = true
         } else if let last = lastDictationText?.trimmingCharacters(in: .whitespacesAndNewlines), !last.isEmpty {
             content = last
-        } else if !SecureFieldDetector.focusedFieldIsSecure(),
+            fromSelection = false
+        } else if !secureField,
                   let sel = SelectionReader.readSelectedText()?.trimmingCharacters(in: .whitespacesAndNewlines),
                   !sel.isEmpty {
             content = sel
+            fromSelection = true
         } else {
             statusMessage = "Nothing to refine yet — dictate first, then tap Refine"
             return
         }
         refineContentSnapshot = content
+        refineContentFromSelection = fromSelection
         refineArmed = true                       // overlay refine cue
         statusMessage = "Refine: now speak your instruction…"
-        refineDebug("armRefineMidSession content=\"\(content.prefix(30))\"")
+        refineDebug("armRefineMidSession content=\"\(content.prefix(30))\" fromSelection=\(fromSelection)")
     }
 
     /// See `InstructionChain.instructionSuffix` — shared with the overlay's live

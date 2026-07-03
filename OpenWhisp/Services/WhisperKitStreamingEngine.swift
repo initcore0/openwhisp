@@ -128,9 +128,12 @@ final class WhisperKitStreamingEngine: StreamingTranscriptionEngine {
         didFinish = true
         await handle?.stop()
         if !cancel {
-            // Final = the full assembled transcript (confirmed + any trailing
-            // unconfirmed text), so the last words aren't lost.
-            let full = handle?.fullText() ?? ""
+            // Flush the undecoded tail first: the realtime loop only decodes once
+            // ≥1 s of new audio accumulates, so a quick hotkey release strands the
+            // last words (for refine, the whole spoken instruction) in the buffer.
+            // finalizeTail() decodes them; nil = everything was already decoded.
+            // Falls back to the assembled transcript (confirmed + unconfirmed).
+            let full = await handle?.finalizeTail() ?? handle?.fullText() ?? ""
             let final = full.isEmpty ? lastConfirmedText : full
             onFinal?(final.trimmingCharacters(in: .whitespacesAndNewlines))
         }
