@@ -75,6 +75,18 @@ enum WhisperKitBridge {
     /// network on first use — so it's allowed much longer before we call it stuck.
     static let downloadLoadTimeout: Double = 600
 
+    /// Hub `downloadBase` passed to every WhisperKitConfig. Without an explicit
+    /// base, WhisperKit's bundled Hub library defaults to `~/Documents/huggingface`
+    /// — even a staged-model load touches it for the tokenizer fetch/cache
+    /// (`tokenizerFolder = config.tokenizerFolder ?? config.downloadBase`), which
+    /// is what triggered the macOS "access your Documents folder" prompt. Pinning
+    /// it here keeps WhisperKit entirely inside our Application Support dir.
+    static func hubDownloadBase() -> URL {
+        let dir = WhisperKitModelCatalog.hubBaseDir
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
     static func load(model: String) async throws -> WhisperKit {
         // Honor a stopServer()-issued cancel that landed before the load began;
         // cancellation DURING the load is handled by withTimeout, which forwards
@@ -86,14 +98,22 @@ enum WhisperKitBridge {
             // specialization/warm-up cost shows up — the cold-vs-warm-launch number.
             return try await Instrumentation.measure("whisperkit.load.staged") {
                 try await withTimeout(seconds: stagedLoadTimeout, operation: "Loading model") {
-                    let config = WhisperKitConfig(modelFolder: folder.path, computeOptions: compute)
+                    let config = WhisperKitConfig(
+                        downloadBase: hubDownloadBase(),
+                        modelFolder: folder.path,
+                        computeOptions: compute
+                    )
                     return try await WhisperKit(config)
                 }
             }
         }
         return try await Instrumentation.measure("whisperkit.load.download") {
             try await withTimeout(seconds: downloadLoadTimeout, operation: "Downloading model") {
-                let config = WhisperKitConfig(model: model, computeOptions: compute)
+                let config = WhisperKitConfig(
+                    model: model,
+                    downloadBase: hubDownloadBase(),
+                    computeOptions: compute
+                )
                 return try await WhisperKit(config)
             }
         }

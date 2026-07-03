@@ -17,6 +17,17 @@ enum WhisperKitModelCatalog {
             .appendingPathComponent("whisperkit-models", isDirectory: true)
     }
 
+    /// Base dir handed to WhisperKit as its Hub `downloadBase`. When no explicit
+    /// base is passed, WhisperKit's bundled HuggingFace Hub library defaults to
+    /// `~/Documents/huggingface` — which makes macOS prompt the user for Documents
+    /// access on first run. Pinning every WhisperKit construction to this sibling
+    /// of `baseDir` keeps all of its caches (tokenizer/config fetches, any
+    /// auto-downloaded model) under our Application Support directory instead.
+    static var hubBaseDir: URL {
+        baseDir.deletingLastPathComponent()
+            .appendingPathComponent("whisperkit-hub", isDirectory: true)
+    }
+
     /// The three compiled sub-models a staged WhisperKit model must contain to load.
     static let requiredSubmodels = ["MelSpectrogram.mlmodelc", "AudioEncoder.mlmodelc", "TextDecoder.mlmodelc"]
 
