@@ -211,7 +211,11 @@ if [ "${NOTARIZE:-0}" = "1" ]; then
     esac
 
     # Choose the notarytool credential source: direct env creds (CI) or a keychain
-    # profile (local). Build the arg array so the password never appears in `set -x`.
+    # profile (local). Note: with direct creds the password is passed on the
+    # notarytool command line (briefly visible to `ps` on the machine; notarytool
+    # has no @env: syntax). Acceptable on an ephemeral single-tenant CI runner —
+    # prefer the keychain profile on shared/local machines. Never enable `set -x`
+    # around this block; it would print the password.
     NOTARY_ARGS=()
     if [ -n "${NOTARY_APPLE_ID:-}" ] && [ -n "${NOTARY_TEAM_ID:-}" ] && [ -n "${NOTARY_PASSWORD:-}" ]; then
         echo "  Using direct notary credentials (Apple ID: $NOTARY_APPLE_ID)"

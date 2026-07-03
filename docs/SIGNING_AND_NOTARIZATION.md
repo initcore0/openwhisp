@@ -85,6 +85,28 @@ The workflow imports the cert into a temp keychain (`scripts/ci-import-cert.sh`)
 derives `SIGN_IDENTITY` from it, and runs `NOTARIZE=1 ./build-dmg.sh release` with
 the notary credentials passed directly (no keychain profile needed on the runner).
 
+If `MACOS_CERT_P12_BASE64` is set but any of the other five secrets are missing, the
+workflow **fails fast** at the "Detect signing availability" step with the list of
+missing names, instead of erroring twenty minutes later inside notarytool.
+
+### Protecting the signing secrets (recommended)
+
+Repository-level secrets are visible to **every workflow run**, including
+`workflow_dispatch` runs of `release.yml` launched from an arbitrary branch — so
+anyone with write access could dispatch the workflow from a branch with a modified
+build script and reach the cert. To close that off, move the six secrets into a
+**GitHub Environment** (Settings → Environments → e.g. `release`):
+
+1. Create the environment, add the same six secrets there, and delete the
+   repository-level copies.
+2. Under *Deployment branches*, restrict it to `main` only.
+3. Add `environment: release` to the `release` job in `release.yml`.
+
+With that, the secrets are only injected when the workflow runs against `main`, and
+optionally only after a required-reviewer approval. For a solo-maintainer repo this
+is defense-in-depth rather than a must, but it's cheap and it's the standard
+mitigation for "CI holds my code-signing identity."
+
 ## Notes
 
 - **Without a Developer ID cert**, `build-dmg.sh` falls back to the self-signed or
