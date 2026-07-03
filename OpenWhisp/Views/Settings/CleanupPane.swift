@@ -1,0 +1,421 @@
+import SwiftUI
+
+/// Cleanup: everything that transforms the transcript, in pipeline order —
+/// deterministic formatting → vocabulary → AI rewrite → spoken refine.
+/// Absorbs the old Smart Formatting, Custom Vocabulary, AI Post-processing
+/// sections and the Refine key from Hotkey.
+struct CleanupPane: View {
+    @ObservedObject var appState: AppState
+
+    // OpenAI model picker support: preset models plus a synthetic "Custom" option.
+    private static let presetOpenAIModels = ["gpt-4o-mini", "gpt-4.1-mini", "gpt-4.1-nano"]
+    private static let customOpenAIModelTag = "__custom__"
+
+    // Tracks whether the user explicitly chose the Custom option, so the text
+    // field stays revealed even while it's empty (which would otherwise look
+    // like a preset).
+    @State private var openAIModelIsCustom: Bool = false
+
+    // Substitutions table selection (for the − footer button).
+    @State private var selectedSubstitutionID: UUID?
+
+    // Draft of the OpenAI API key; committed to the Keychain on submit/focus
+    // loss rather than per keystroke (each write is a blocking SecItem call).
+    @State private var openAIKeyDraft: String = ""
+    @State private var openAIKeyDraftSeeded = false
+    @FocusState private var openAIKeyFocused: Bool
+
+    // When the last Test result arrived, for the persistent result line.
+    @State private var testResultTime: Date?
+
+    var body: some View {
+        Form {
+            formattingSection
+            vocabularySection
+            aiCleanupSection
+            refineSection
+        }
+        .formStyle(.grouped)
+        .onAppear {
+            openAIKeyDraft = appState.openAIAPIKey
+            openAIKeyDraftSeeded = true
+        }
+        .onChange(of: appState.translationStatus) {
+            testResultTime = Date()
+        }
+        // The Settings window is retained after close (isReleasedWhenClosed =
+        // false), so focus-loss never fires when it's closed via the title-bar
+        // button. Commit the pending key draft when THIS window closes — scoped
+        // to the hosting window, and on every close since the retained window
+        // reopens.
+        .background(WindowCloseObserver(firesOnce: false) {
+            commitOpenAIKey()
+        })
+    }
+
+    // MARK: - Formatting
+
+    private var formattingSection: some View {
+        Section {
+            Toggle("Clean up dictation automatically", isOn: $appState.smartFormattingEnabled)
+
+            if appState.smartFormattingEnabled {
+                SubtitledToggle(
+                    "Apply spoken punctuation",
+                    subtitle: "“new line”, “comma”, “period”",
+                    isOn: $appState.spokenPunctuationEnabled
+                )
+                .padding(.leading, 16)
+                SubtitledToggle(
+                    "Remove filler words",
+                    subtitle: "“um”, “uh”",
+                    isOn: $appState.fillerRemovalEnabled
+                )
+                .padding(.leading, 16)
+            }
+        } header: {
+            Text("Formatting")
+        } footer: {
+            SettingsFootnote("Free, instant, on-device: capitalizes sentences and tidies spacing and punctuation. No internet required.")
+        }
+    }
+
+    // MARK: - Vocabulary
+
+    private var vocabularySection: some View {
+        Section {
+            Toggle("Use custom vocabulary", isOn: $appState.customVocabularyEnabled)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Bias terms")
+                SettingsFootnote("Names, jargon, and acronyms Whisper usually gets wrong. Press Return to add each term.")
+                TokenField(
+                    tokens: $appState.vocabulary.terms,
+                    placeholder: "e.g. Claude, Anthropic, kubectl, OpenWhisp",
+                    isEnabled: appState.customVocabularyEnabled
+                )
+            }
+            .padding(.vertical, 2)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Substitutions")
+                SettingsFootnote("Fix recurring mishearings — applied locally after transcription.")
+                substitutionsTable
+            }
+            .padding(.vertical, 2)
+            .disabled(!appState.customVocabularyEnabled)
+        } header: {
+            Text("Vocabulary")
+        }
+    }
+
+    /// Standard macOS table + ± footer, same pattern as Per-App Profiles.
+    private var substitutionsTable: some View {
+        VStack(spacing: 0) {
+            Table(appState.vocabulary.substitutions, selection: $selectedSubstitutionID) {
+                TableColumn("Heard") { sub in
+                    TextField("heard", text: substitutionBinding(sub.id, keyPath: \.from))
+                        .textFieldStyle(.plain)
+                }
+                TableColumn("Replace with") { sub in
+                    TextField("correct", text: substitutionBinding(sub.id, keyPath: \.to))
+                        .textFieldStyle(.plain)
+                }
+            }
+            .frame(minHeight: 90, maxHeight: 160)
+
+            HStack(spacing: 0) {
+                Button {
+                    let new = Vocabulary.Substitution(from: "", to: "")
+                    appState.vocabulary.substitutions.append(new)
+                    selectedSubstitutionID = new.id
+                } label: {
+                    Image(systemName: "plus").frame(width: 24, height: 20)
+                }
+                .buttonStyle(.borderless)
+                .accessibilityLabel("Add substitution")
+
+                Divider().frame(height: 14)
+
+                Button {
+                    if let id = selectedSubstitutionID {
+                        appState.vocabulary.substitutions.removeAll { $0.id == id }
+                        selectedSubstitutionID = nil
+                    }
+                } label: {
+                    Image(systemName: "minus").frame(width: 24, height: 20)
+                }
+                .buttonStyle(.borderless)
+                .disabled(selectedSubstitutionID == nil)
+                .accessibilityLabel("Remove selected substitution")
+
+                Spacer()
+            }
+            .background(Color.secondary.opacity(0.05))
+        }
+        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.2)))
+    }
+
+    /// Edit-in-place binding for one substitution field, looked up by id (Table
+    /// rows don't carry bindings).
+    private func substitutionBinding(_ id: UUID, keyPath: WritableKeyPath<Vocabulary.Substitution, String>) -> Binding<String> {
+        Binding(
+            get: {
+                appState.vocabulary.substitutions.first(where: { $0.id == id })?[keyPath: keyPath] ?? ""
+            },
+            set: { newValue in
+                guard let idx = appState.vocabulary.substitutions.firstIndex(where: { $0.id == id }) else { return }
+                appState.vocabulary.substitutions[idx][keyPath: keyPath] = newValue
+            }
+        )
+    }
+
+    // MARK: - AI cleanup
+
+    private var aiCleanupSection: some View {
+        Section {
+            SubtitledToggle(
+                "Improve text with AI",
+                subtitle: "Runs the transcript through a language model after transcription. Only edits final text, never live chunks.",
+                isOn: $appState.openAIEnhancementEnabled
+            )
+
+            // Consistent, privacy-honest labels on one axis: where it runs.
+            Picker("Provider", selection: $appState.llmProvider) {
+                Text("On this Mac (built-in)").tag("bundled")
+                Text("OpenAI (cloud)").tag("openai")
+                Text("Your server (self-hosted)").tag("local")
+            }
+
+            SettingsFootnote(providerDescription)
+
+            Picker("Mode", selection: $appState.openAIEnhancementMode) {
+                Text("Rephrase in the same language").tag("rephrase")
+                // Meaningless unless translation is on — shown contextually.
+                if appState.translateToEnglish || appState.openAIEnhancementMode == "improveTranslation" {
+                    Text("Improve English translation").tag("improveTranslation")
+                }
+            }
+
+            if !appState.translateToEnglish && appState.openAIEnhancementMode != "improveTranslation" {
+                SettingsFootnote("Turn on “Translate to English” in Dictation › Language to also get a translation-improvement mode.")
+            }
+
+            if appState.openAIEnhancementMode == "improveTranslation" {
+                Picker("Target language", selection: $appState.translationTargetLanguage) {
+                    Text("English").tag("en")
+                    Text("Russian").tag("ru")
+                }
+            }
+
+            // Provider fields shown directly — required configuration never
+            // hides behind a disclosure.
+            switch appState.llmProvider {
+            case "bundled": bundledLLMFields
+            case "local":   localLLMFields
+            default:        openAIFields
+            }
+
+            HStack {
+                Button("Test") {
+                    // Clicking a button needn't unfocus the key field; commit
+                    // the draft so the test uses what's typed.
+                    commitOpenAIKey()
+                    appState.validateOpenAIKey()
+                }
+                Spacer()
+                TestResultLine(
+                    text: appState.translationStatus,
+                    isGood: translationStatusIsGood,
+                    timestamp: testResultTime
+                )
+            }
+        } header: {
+            Text("AI Cleanup")
+        }
+    }
+
+    private var translationStatusIsGood: Bool {
+        ["OpenAI key valid", "Local LLM reachable", "Rephrased", "Improved"].contains(appState.translationStatus)
+    }
+
+    private var providerDescription: String {
+        switch appState.llmProvider {
+        case "bundled":
+            return "Runs a small model fully on-device — nothing leaves your Mac, no setup or server needed. The model downloads once."
+        case "local":
+            return "Any OpenAI-compatible server on your machine or LAN (llama.cpp llama-server, Ollama). No data leaves to the cloud."
+        default:
+            return "Sends the final transcript to OpenAI for cleanup. Needs an API key."
+        }
+    }
+
+    private var isCustomOpenAIModel: Bool {
+        openAIModelIsCustom || !Self.presetOpenAIModels.contains(appState.openAIModel)
+    }
+
+    // Drives the Picker so a free-form custom model never produces an invalid selection.
+    private var openAIModelPickerSelection: Binding<String> {
+        Binding(
+            get: {
+                isCustomOpenAIModel ? Self.customOpenAIModelTag : appState.openAIModel
+            },
+            set: { newValue in
+                if newValue == Self.customOpenAIModelTag {
+                    openAIModelIsCustom = true
+                } else {
+                    openAIModelIsCustom = false
+                    appState.openAIModel = newValue
+                }
+            }
+        )
+    }
+
+    @ViewBuilder private var openAIFields: some View {
+        Picker("Model", selection: openAIModelPickerSelection) {
+            Text("GPT-4o mini").tag("gpt-4o-mini")
+            Text("GPT-4.1 mini").tag("gpt-4.1-mini")
+            Text("GPT-4.1 nano").tag("gpt-4.1-nano")
+            Text("Custom…").tag(Self.customOpenAIModelTag)
+        }
+
+        if isCustomOpenAIModel {
+            TextField("Custom OpenAI model", text: $appState.openAIModel)
+                .textFieldStyle(.roundedBorder)
+        }
+
+        VStack(alignment: .leading, spacing: 4) {
+            SecureField("API key", text: $openAIKeyDraft)
+                .textFieldStyle(.roundedBorder)
+                .focused($openAIKeyFocused)
+                .onSubmit { commitOpenAIKey() }
+                .onChange(of: openAIKeyFocused) {
+                    if !openAIKeyFocused { commitOpenAIKey() }
+                }
+                .onDisappear { commitOpenAIKey() }
+            SettingsFootnote("Stored in your Keychain, never in preferences.")
+        }
+    }
+
+    /// Persists the API-key draft (a changed empty draft still commits, which
+    /// deletes the stored secret). Committing per keystroke would do a blocking
+    /// Keychain write per character and store every partial prefix of the key.
+    private func commitOpenAIKey() {
+        guard openAIKeyDraftSeeded else { return }
+        if openAIKeyDraft != appState.openAIAPIKey {
+            appState.openAIAPIKey = openAIKeyDraft
+        }
+    }
+
+    @ViewBuilder private var localLLMFields: some View {
+        TextField("Server URL", text: $appState.localLLMBaseURL, prompt: Text("http://localhost:8080/v1"))
+            .textFieldStyle(.roundedBorder)
+        TextField("Model", text: $appState.localLLMModel, prompt: Text("Leave blank for server default"))
+            .textFieldStyle(.roundedBorder)
+    }
+
+    @ViewBuilder private var bundledLLMFields: some View {
+        Picker("Built-in model", selection: $appState.bundledLLMModel) {
+            ForEach(appState.bundledLLMModelsList(), id: \.id) { model in
+                Text("\(model.label) · \(model.size)").tag(model.id)
+            }
+        }
+
+        if appState.isLLMModelDownloading {
+            HStack(spacing: 10) {
+                ProgressView(value: appState.llmModelDownloadProgress ?? 0)
+                    .frame(maxWidth: 240)
+                Text(appState.llmModelDownloadStatus)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+        } else if appState.llmModelDownloadFailed {
+            SettingsCallout(.warning, "Download failed.", actionLabel: "Retry") {
+                appState.retryLLMModelDownload()
+            }
+        } else if appState.bundledLLMModelInstalled {
+            TestResultLine(text: "Active — ready (offline)", isGood: true)
+        } else {
+            HStack {
+                Button("Download") { appState.ensureLLMModelExists() }
+                SettingsFootnote("Downloads once, then runs fully offline.")
+            }
+        }
+
+        if appState.bundledLLMHasMemoryCaution {
+            SettingsCallout(.warning, "You're running whisper.cpp's server engine and the built-in LLM together. On an 8 GB Mac that's tight — the Apple Speech or WhisperKit engine pairs more lightly with built-in refinement.")
+        }
+
+        #if OPENWHISP_INSTRUMENTATION
+        BundledLLMDebugStatus(appState: appState)
+        #endif
+    }
+
+    // MARK: - Refine
+
+    private var refineSection: some View {
+        Section {
+            SubtitledToggle(
+                "Refine with a spoken instruction",
+                subtitle: "Tap the refine key mid-dictation and speak an instruction — “make it formal”, “turn into bullet points”. On release, the AI rewrites what you dictated before the tap.",
+                isOn: $appState.instructionChainEnabled
+            )
+
+            Picker("Refine key", selection: $appState.refineKey) {
+                ForEach(RefineKey.allCases, id: \.rawValue) { key in
+                    Text(key.label).tag(key.rawValue)
+                }
+            }
+
+            if appState.instructionChainEnabled && !appState.llmConfigured {
+                SettingsCallout(
+                    .warning,
+                    "Refine needs AI cleanup with a working provider.",
+                    actionLabel: appState.openAIEnhancementEnabled ? nil : "Turn on AI cleanup"
+                ) {
+                    appState.openAIEnhancementEnabled = true
+                }
+            }
+        } header: {
+            Text("Refine")
+        } footer: {
+            SettingsFootnote("No fixed phrases — say what you want in plain language, any language. Works in the Preview and Insert-at-end output modes.")
+        }
+    }
+}
+
+#if OPENWHISP_INSTRUMENTATION
+/// Dev-only: shows which built-in model is selected vs. actually loaded in the
+/// running llama-server. `refreshTick` forces a re-read since the status is a
+/// plain computed value, not an @Published one.
+private struct BundledLLMDebugStatus: View {
+    @ObservedObject var appState: AppState
+    @State private var debugRefreshTick: Int = 0
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 6) {
+            Image(systemName: "ladybug")
+                .foregroundColor(.secondary)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Runtime (debug)")
+                    .font(.caption.bold())
+                    .foregroundColor(.secondary)
+                Text(appState.bundledLLMRuntimeStatus)
+                    .font(.caption.monospaced())
+                    .foregroundColor(.secondary)
+                    .id(debugRefreshTick)
+                    .textSelection(.enabled)
+            }
+            Spacer()
+            Button {
+                debugRefreshTick &+= 1
+            } label: {
+                Image(systemName: "arrow.clockwise")
+            }
+            .buttonStyle(.borderless)
+            .help("Refresh runtime status")
+        }
+        .onAppear { debugRefreshTick &+= 1 }
+    }
+}
+#endif

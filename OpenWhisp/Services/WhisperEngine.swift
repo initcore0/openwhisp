@@ -189,9 +189,9 @@ class WhisperEngine: FileTranscriptionEngine {
 
             let process = Process()
             process.executableURL = URL(fileURLWithPath: binaryPath)
-            // Map the Language setting to whisper's (source language, translate)
-            // params. "en" => translate speech to English (-l auto --translate);
-            // see WhisperTask. The app previously sent -l en and never translated.
+            // Map the engine-facing language setting to whisper's (source
+            // language, translate) params — the translate-to-English sentinel
+            // becomes (-l auto --translate); see WhisperTask.
             let task = WhisperTask.resolve(languageSetting: language)
             var arguments = [
                 "-m", modelPath,
@@ -640,8 +640,8 @@ class WhisperEngine: FileTranscriptionEngine {
             data.append("\(value)\r\n".data(using: .utf8)!)
         }
 
-        // Same mapping as the CLI path (see WhisperTask): "en" => translate to
-        // English with source auto-detected, sent as translate=true + language=auto.
+        // Same mapping as the CLI path (see WhisperTask): the translate-to-English
+        // sentinel is sent as translate=true + language=auto.
         let task = WhisperTask.resolve(languageSetting: language)
         appendField("response_format", "json")
         appendField("temperature", "0.0")

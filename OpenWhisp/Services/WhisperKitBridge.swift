@@ -1,8 +1,9 @@
 import Foundation
 
-/// Maps OpenWhisp's Language setting to WhisperKit decoding options. Mirrors
-/// `WhisperTask` (used for whisper.cpp): "en" means translate-to-English with the
-/// source auto-detected; everything else transcribes in that language. Pure, so
+/// Maps OpenWhisp's engine-facing language setting to WhisperKit decoding
+/// options. Mirrors `WhisperTask` (used for whisper.cpp): the shared
+/// translate-to-English sentinel means translate with the source auto-detected;
+/// every plain language ("en" included) transcribes in that language. Pure, so
 /// it's testable without importing WhisperKit.
 enum WhisperKitTaskMapper {
     struct Resolved: Equatable {
@@ -13,7 +14,7 @@ enum WhisperKitTaskMapper {
     }
 
     static func map(languageSetting: String) -> Resolved {
-        if languageSetting == "en" {
+        if languageSetting == WhisperTask.translateToEnglishSetting {
             return Resolved(language: nil, translate: true)
         }
         if languageSetting.isEmpty || languageSetting == "auto" {

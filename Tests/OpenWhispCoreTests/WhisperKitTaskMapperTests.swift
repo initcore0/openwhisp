@@ -3,12 +3,17 @@ import XCTest
 
 /// The pure language→task mapper for the WhisperKit pilot. (The WhisperKit API
 /// bridge itself is behind `#if WHISPERKIT` and not part of the test build.)
-/// Mirrors WhisperTaskTests: "en" must mean translate-to-English with the source
-/// auto-detected, not "source is English".
+/// Mirrors WhisperTaskTests: the shared sentinel means translate-to-English
+/// with the source auto-detected; plain "en" is an explicit source language.
 final class WhisperKitTaskMapperTests: XCTestCase {
-    func testEnglishMeansTranslateWithAutoSource() {
-        XCTAssertEqual(WhisperKitTaskMapper.map(languageSetting: "en"),
+    func testTranslateSentinelMeansTranslateWithAutoSource() {
+        XCTAssertEqual(WhisperKitTaskMapper.map(languageSetting: WhisperTask.translateToEnglishSetting),
                        .init(language: nil, translate: true))
+    }
+
+    func testEnglishIsAPlainSourceLanguage() {
+        XCTAssertEqual(WhisperKitTaskMapper.map(languageSetting: "en"),
+                       .init(language: "en", translate: false))
     }
 
     func testAutoTranscribesNoTranslate() {

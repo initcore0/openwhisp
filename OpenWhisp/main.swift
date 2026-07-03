@@ -199,7 +199,7 @@ class OpenWhispApp: NSObject, NSApplicationDelegate {
         menu.addItem(.separator())
 
         // Quick mid-use toggles only. Engine, live-chunk plumbing, etc. live in
-        // Settings → Advanced; the menu holds what you flip between dictations.
+        // Settings; the menu holds what you flip between dictations.
         let languageMenu = NSMenu()
         for option in languageOptions {
             let item = NSMenuItem(
@@ -215,6 +215,18 @@ class OpenWhispApp: NSObject, NSApplicationDelegate {
         let languageItem = NSMenuItem(title: "Language: \(appState.languageDisplayName)", action: nil, keyEquivalent: "")
         languageItem.submenu = languageMenu
         menu.addItem(languageItem)
+
+        // Translate is its own switch now (split from the old "English —
+        // translate to English" language overload). Whisper engines only.
+        if appState.transcriptionEngine != "appleSpeech" {
+            let translateItem = NSMenuItem(
+                title: "Translate to English",
+                action: #selector(toggleTranslateToEnglish),
+                keyEquivalent: ""
+            )
+            translateItem.state = appState.translateToEnglish ? .on : .off
+            menu.addItem(translateItem)
+        }
 
         // AI refinement: ONE self-describing row that shows the live state
         // (on/off + which engine) and opens a small submenu. Model selection is
@@ -268,6 +280,9 @@ class OpenWhispApp: NSObject, NSApplicationDelegate {
     @objc private func selectLanguage(_ sender: NSMenuItem) {
         guard let code = sender.representedObject as? String else { return }
         appState.language = code
+    }
+    @objc private func toggleTranslateToEnglish() {
+        appState.translateToEnglish.toggle()
     }
     @objc private func toggleAICleanup() {
         appState.openAIEnhancementEnabled.toggle()
@@ -350,7 +365,7 @@ class OpenWhispApp: NSObject, NSApplicationDelegate {
     private var languageOptions: [(code: String, title: String)] {
         [
             ("auto", "Auto Detect"),
-            ("en", "English - Whisper translate to English"),
+            ("en", "English"),
             ("ru", "Russian"),
             ("es", "Spanish"),
             ("fr", "French"),
@@ -375,13 +390,13 @@ class OpenWhispApp: NSObject, NSApplicationDelegate {
         let host = NSHostingController(rootView: view)
 
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 700, height: 680),
+            contentRect: NSRect(x: 0, y: 0, width: 880, height: 620),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered, defer: false
         )
         window.title = "OpenWhisp Settings"
         window.isReleasedWhenClosed = false
-        window.minSize = NSSize(width: 620, height: 460)
+        window.minSize = NSSize(width: 760, height: 540)
         window.contentViewController = host
         window.center()
         window.makeKeyAndOrderFront(nil)

@@ -2,11 +2,18 @@ import XCTest
 @testable import OpenWhispCore
 
 final class WhisperTaskTests: XCTestCase {
-    func testEnglishMeansTranslateWithAutoSource() {
-        // The bug: "en" must become (auto, translate=true), NOT (en, translate=false)
-        // — otherwise whisper treats the source as English and never translates.
-        XCTAssertEqual(WhisperTask.resolve(languageSetting: "en"),
+    func testTranslateSentinelMeansTranslateWithAutoSource() {
+        // whisper's --translate always targets English and needs the source
+        // auto-detected, so the sentinel must become (auto, translate=true).
+        XCTAssertEqual(WhisperTask.resolve(languageSetting: WhisperTask.translateToEnglishSetting),
                        .init(language: "auto", translate: true))
+    }
+
+    func testEnglishIsAPlainSourceLanguage() {
+        // Since the translateToEnglish split, "en" honestly means "the speech
+        // is English" — the old overload (en → translate) is migrated away.
+        XCTAssertEqual(WhisperTask.resolve(languageSetting: "en"),
+                       .init(language: "en", translate: false))
     }
 
     func testAutoTranscribesNoTranslate() {
@@ -24,5 +31,11 @@ final class WhisperTaskTests: XCTestCase {
     func testEmptyFallsBackToAuto() {
         XCTAssertEqual(WhisperTask.resolve(languageSetting: ""),
                        .init(language: "auto", translate: false))
+    }
+
+    func testSentinelIsNotALanguageCode() {
+        // The sentinel must never collide with a legitimate picker value.
+        XCTAssertFalse(["auto", "en", "ru", "es", "fr", "de", "it", "pt", "ja", "zh", "ko", "ar"]
+            .contains(WhisperTask.translateToEnglishSetting))
     }
 }
