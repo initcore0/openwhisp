@@ -727,7 +727,9 @@ class AppState: ObservableObject {
         language = UserDefaults.standard.string(forKey: "language") ?? "auto"
         translateToEnglish = UserDefaults.standard.object(forKey: "translateToEnglish") as? Bool ?? false
         triggerMode = UserDefaults.standard.string(forKey: "triggerMode") ?? "fn"
-        refineKey = UserDefaults.standard.string(forKey: "refineKey") ?? "rightControl"
+        // Left Control: the old rightControl default doesn't exist on MacBook
+        // keyboards, which made refine silently impossible there.
+        refineKey = UserDefaults.standard.string(forKey: "refineKey") ?? RefineKey.defaultKey.rawValue
         outputMode = UserDefaults.standard.string(forKey: "outputMode") ?? "preview"
         showOverlay = UserDefaults.standard.object(forKey: "showOverlay") as? Bool ?? true
         voiceIndicatorStyle = VoiceIndicatorStyle.from(UserDefaults.standard.string(forKey: "voiceIndicatorStyle"))
@@ -2911,7 +2913,7 @@ class AppState: ObservableObject {
         instructionChainEnabled = true
 
         triggerMode = "fn"
-        refineKey = "rightControl"
+        refineKey = RefineKey.defaultKey.rawValue
         microphoneID = ""
         autoGainEnabled = true
         language = "auto"

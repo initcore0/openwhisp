@@ -23,7 +23,7 @@ extension UserDefaults: SettingsStore {}
 /// Fresh installs skip straight to the new defaults.
 enum SettingsMigration {
     static let versionKey = "settingsVersion"
-    static let currentVersion = 2
+    static let currentVersion = 3
 
     /// Keys whose presence marks an existing (pre-versioning) install. Every
     /// install that ran the app at least once has `didCompleteOnboarding` (set
@@ -51,6 +51,12 @@ enum SettingsMigration {
         let isExistingInstall = installMarkerKeys.contains { store.object(forKey: $0) != nil }
         guard isExistingInstall else { return }
 
+        if version < 2 { applyVersion2(store) }
+        if version < 3 { applyVersion3(store) }
+    }
+
+    /// v2 — Settings redesign: preserve old defaults; split the language overload.
+    private static func applyVersion2(_ store: SettingsStore) {
         for (key, oldDefault) in version2PreservedDefaults where store.object(forKey: key) == nil {
             store.set(oldDefault, forKey: key)
         }
@@ -61,6 +67,27 @@ enum SettingsMigration {
         if store.object(forKey: "language") as? String == "en" {
             store.set("auto", forKey: "language")
             store.set(true, forKey: "translateToEnglish")
+        }
+    }
+
+    /// v3 — refine-key and AI-provider corrections:
+    /// - A stored `rightControl` refine key becomes `leftControl`: MacBook
+    ///   keyboards have no right Control key at all, so the old default made
+    ///   refine silently impossible there. (Anyone who genuinely uses right
+    ///   Control on an external keyboard can re-pick it — it stays offered.)
+    /// - While AI cleanup is OFF, a dormant non-bundled provider snaps to
+    ///   "bundled" so the first enable works offline with zero setup. Never
+    ///   touches an install where AI cleanup is actually on.
+    private static func applyVersion3(_ store: SettingsStore) {
+        if store.object(forKey: "refineKey") as? String == "rightControl" {
+            store.set("leftControl", forKey: "refineKey")
+        }
+
+        let cleanupOn = store.object(forKey: "openAIEnhancementEnabled") as? Bool ?? false
+        if !cleanupOn,
+           let provider = store.object(forKey: "llmProvider") as? String,
+           provider != "bundled" {
+            store.set("bundled", forKey: "llmProvider")
         }
     }
 }
