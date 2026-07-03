@@ -229,13 +229,66 @@ if [ "${NOTARIZE:-0}" = "1" ]; then
     # The DMG itself must be signed with the same Developer ID before submission.
     codesign --force --timestamp --sign "$SIGN_IDENTITY" "$DMG_PATH"
 
-    # Submit and block until Apple returns a verdict; --wait fails non-zero if the
-    # notarization is rejected (the log URL in the output explains why).
-    xcrun notarytool submit "$DMG_PATH" "${NOTARY_ARGS[@]}" --wait
+    # Submit and block until Apple returns a verdict. We capture the JSON and assert
+    # status == "Accepted" BEFORE stapling, rather than trusting the exit code alone.
+    # Why: a rejected/Invalid submission that still exits 0 (or an "Accepted" we
+    # misread) would otherwise fall through to stapling and surface as a confusing
+    # "Record not found" / Error 65 — the exact mis-diagnosis behind wrong-cert reports
+    # (e.g. signing with an Apple Distribution cert instead of Developer ID). Parsing
+    # the real status turns that into a clear, actionable failure + the notary log.
+    echo "Submitting to Apple notary service..."
+    SUBMIT_JSON="$(xcrun notarytool submit "$DMG_PATH" "${NOTARY_ARGS[@]}" --wait --output-format json)" || true
+    echo "$SUBMIT_JSON"
+    NOTARY_STATUS="$(printf '%s' "$SUBMIT_JSON" | /usr/bin/plutil -extract status raw -o - - 2>/dev/null \
+        || printf '%s' "$SUBMIT_JSON" | sed -n 's/.*"status"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
+    SUBMISSION_ID="$(printf '%s' "$SUBMIT_JSON" | /usr/bin/plutil -extract id raw -o - - 2>/dev/null \
+        || printf '%s' "$SUBMIT_JSON" | sed -n 's/.*"id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
 
-    # Staple the ticket so the DMG passes Gatekeeper offline.
+    if [ "$NOTARY_STATUS" != "Accepted" ]; then
+        echo "ERROR: notarization did not succeed (status: ${NOTARY_STATUS:-unknown})." >&2
+        if [ -n "$SUBMISSION_ID" ]; then
+            echo "Fetching the notary log for $SUBMISSION_ID:" >&2
+            xcrun notarytool log "$SUBMISSION_ID" "${NOTARY_ARGS[@]}" >&2 || true
+        fi
+        echo "Common cause: signing with the wrong certificate type — you need a" >&2
+        echo "'Developer ID Application' cert (NOT Apple Development / Apple Distribution)." >&2
+        exit 1
+    fi
+    echo "Notarization Accepted (id: ${SUBMISSION_ID:-unknown})."
+
+    # Staple the ticket so the DMG passes Gatekeeper OFFLINE. Notarization has
+    # already succeeded above; stapling just embeds the ticket. But the ticket
+    # propagates to Apple's CDN a little AFTER notarytool returns "Accepted", so an
+    # immediate staple often fails with "Record not found" / "The staple and
+    # validate action failed! Error 65" — a transient race, not a real error.
+    # Retry with backoff until the ticket is available.
     echo "Stapling notarization ticket..."
-    xcrun stapler staple "$DMG_PATH"
+    STAPLE_ATTEMPTS="${STAPLE_ATTEMPTS:-8}"
+    STAPLE_DELAY="${STAPLE_DELAY:-15}"   # seconds; grows each attempt
+    stapled=0
+    attempt=1
+    while [ "$attempt" -le "$STAPLE_ATTEMPTS" ]; do
+        if xcrun stapler staple "$DMG_PATH"; then
+            stapled=1
+            break
+        fi
+        if [ "$attempt" -lt "$STAPLE_ATTEMPTS" ]; then
+            wait_s=$(( STAPLE_DELAY * attempt ))
+            echo "  Staple attempt $attempt/$STAPLE_ATTEMPTS failed (ticket may still be propagating); retrying in ${wait_s}s..."
+            sleep "$wait_s"
+        fi
+        attempt=$(( attempt + 1 ))
+    done
+
+    if [ "$stapled" -ne 1 ]; then
+        echo "ERROR: stapling failed after $STAPLE_ATTEMPTS attempts." >&2
+        echo "       The DMG IS notarized (Gatekeeper will verify it online on first" >&2
+        echo "       launch), but the ticket isn't embedded for offline checks. Re-run" >&2
+        echo "       'xcrun stapler staple \"$DMG_PATH\"' in a few minutes once the" >&2
+        echo "       ticket propagates — no rebuild/re-notarize needed." >&2
+        exit 1
+    fi
+
     xcrun stapler validate "$DMG_PATH"
     spctl --assess --type open --context context:primary-signature -v "$DMG_PATH" || true
 
