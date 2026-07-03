@@ -53,7 +53,66 @@ jobs:
       - name: Build whisper.cpp (submodule)
         run: ./scripts/build-whisper.sh
 
-      - name: Build app + DMG (release, ad-hoc signed)
+      # Signing is enabled only when the Developer ID secret is present. Forks and
+      # setups without the secret still get an ad-hoc DMG (unchanged behavior).
+      # Fail fast on a HALF-configured setup (cert without notary credentials, or
+      # missing passwords): a clear error here beats a confusing notarytool failure
+      # twenty minutes into the build.
+      - name: Detect signing availability
+        id: signing
+        env:
+          MACOS_CERT_P12_BASE64: ${{ secrets.MACOS_CERT_P12_BASE64 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+          NOTARY_APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
+          NOTARY_TEAM_ID: ${{ secrets.NOTARY_TEAM_ID }}
+          NOTARY_PASSWORD: ${{ secrets.NOTARY_PASSWORD }}
+        run: |
+          if [ -z "$MACOS_CERT_P12_BASE64" ]; then
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "No MACOS_CERT_P12_BASE64 secret — building ad-hoc (unsigned) DMG."
+            exit 0
+          fi
+          MISSING=""
+          for VAR in MACOS_CERT_PASSWORD KEYCHAIN_PASSWORD NOTARY_APPLE_ID NOTARY_TEAM_ID NOTARY_PASSWORD; do
+            [ -n "${!VAR:-}" ] || MISSING="$MISSING $VAR"
+          done
+          if [ -n "$MISSING" ]; then
+            echo "::error::MACOS_CERT_P12_BASE64 is set but these signing secrets are missing:$MISSING"
+            echo "::error::Set them all (see docs/SIGNING_AND_NOTARIZATION.md) or remove MACOS_CERT_P12_BASE64 to build ad-hoc."
+            exit 1
+          fi
+          echo "enabled=true" >> "$GITHUB_OUTPUT"
+
+      - name: Import Developer ID certificate
+        if: steps.signing.outputs.enabled == 'true'
+        id: cert
+        env:
+          MACOS_CERT_P12_BASE64: ${{ secrets.MACOS_CERT_P12_BASE64 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          # The identity name is NOT masked: it's embedded in the signature of
+          # every published DMG (anyone can read it with `codesign -dv`), and
+          # masking it would make the runner drop the step output ("Skip output
+          # since it may contain secret"), leaving SIGN_IDENTITY empty and
+          # failing the signed build.
+          IDENTITY="$(./scripts/ci-import-cert.sh)"
+          echo "Imported identity: $IDENTITY"
+          echo "identity=$IDENTITY" >> "$GITHUB_OUTPUT"
+
+      - name: Build app + DMG (signed + notarized)
+        if: steps.signing.outputs.enabled == 'true'
+        env:
+          NOTARIZE: "1"
+          SIGN_IDENTITY: ${{ steps.cert.outputs.identity }}
+          NOTARY_APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
+          NOTARY_TEAM_ID: ${{ secrets.NOTARY_TEAM_ID }}
+          NOTARY_PASSWORD: ${{ secrets.NOTARY_PASSWORD }}
+        run: ./build-dmg.sh release
+
+      - name: Build app + DMG (ad-hoc, unsigned)
+        if: steps.signing.outputs.enabled != 'true'
         run: ./build-dmg.sh release
 
       - name: Verify DMG exists
@@ -64,23 +123,27 @@ jobs:
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
+          SIGNED: ${{ steps.signing.outputs.enabled }}
         run: |
           TAG="${{ steps.version.outputs.tag }}"
           NOTES_FILE="$(mktemp)"
-          cat > "$NOTES_FILE" <<EOF
-          Automated build from commit ${GITHUB_SHA:0:7} on \`main\`.
-
-          **Install:** download \`OpenWhisp.dmg\`, open it, drag **OpenWhisp** to Applications.
-
-          > This build is **ad-hoc signed** (no paid Apple Developer ID yet), so macOS
-          > Gatekeeper blocks it on first launch ("damaged / cannot be opened"). To open:
-          > • **macOS 15+:** launch once, then **System Settings → Privacy & Security → Open Anyway**.
-          > • **Any version (Terminal):** \`xattr -dr com.apple.quarantine /Applications/OpenWhisp.app\`
-          > (Right‑click → Open no longer works for ad-hoc apps on macOS 15+. Building from
-          > source avoids the warning; a notarized Developer ID build would remove it entirely.)
-
-          See the [README](https://github.com/${GITHUB_REPOSITORY}#readme) for setup and permissions.
-          EOF
+          {
+            echo "Automated build from commit ${GITHUB_SHA:0:7} on \`main\`."
+            echo ""
+            echo "**Install:** download \`OpenWhisp.dmg\`, open it, drag **OpenWhisp** to Applications."
+            echo ""
+            if [ "$SIGNED" = "true" ]; then
+              echo "> This build is **signed with a Developer ID and notarized by Apple**, so it"
+              echo "> opens normally — no Gatekeeper warning."
+            else
+              echo "> This build is **ad-hoc signed**, so macOS Gatekeeper blocks it on first"
+              echo "> launch (\"damaged / cannot be opened\"). To open:"
+              echo "> • **macOS 15+:** launch once, then **System Settings → Privacy & Security → Open Anyway**."
+              echo "> • **Any version (Terminal):** \`xattr -dr com.apple.quarantine /Applications/OpenWhisp.app\`"
+            fi
+            echo ""
+            echo "See the [README](https://github.com/${GITHUB_REPOSITORY}#readme) for setup and permissions."
+          } > "$NOTES_FILE"
 
           gh release create "$TAG" \
             dist/OpenWhisp.dmg \
