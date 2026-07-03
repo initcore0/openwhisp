@@ -120,6 +120,13 @@ jobs:
           test -f dist/OpenWhisp.dmg
           ls -lh dist/OpenWhisp.dmg
 
+      # When signing was supposed to happen, REFUSE to publish a DMG that isn't
+      # actually Developer ID signed + notarized (e.g. a silent fallback to the
+      # self-signed/ad-hoc identity). A broken release is better absent than shipped.
+      - name: Verify DMG is signed + notarized
+        if: steps.signing.outputs.enabled == 'true'
+        run: ./scripts/verify-signed-notarized.sh dist/OpenWhisp.dmg
+
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
