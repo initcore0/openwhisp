@@ -25,9 +25,11 @@ final class OverlayWindowController {
             // per-update window resizing (which would flicker). Instrumented
             // builds get extra height for the debug HUD.
             #if OPENWHISP_INSTRUMENTATION
-            let size = NSSize(width: 440, height: 320)
+            let size = NSSize(width: 440, height: 340)
             #else
-            let size = NSSize(width: 440, height: 180)
+            // Tall enough for pill + caption + transcript box + the refine
+            // instruction row; unused space is transparent.
+            let size = NSSize(width: 440, height: 208)
             #endif
             let panel = NSPanel(
                 contentRect: NSRect(origin: .zero, size: size),
@@ -160,7 +162,37 @@ struct OverlayView: View {
         appState.streamingText.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private var showTranscript: Bool { !transcriptText.isEmpty }
+    private var showTranscript: Bool { !transcriptText.isEmpty || refineContentText != nil }
+
+    // MARK: Refine presentation
+
+    /// Refine's accent (matches `accent` while armed) — the instruction row and
+    /// cues render in this so refine reads as a distinct stage, not more dictation.
+    private static let refineAccent = Color(red: 0.93, green: 0.42, blue: 0.86)
+
+    /// The frozen dictated content while refining. During instruction capture
+    /// it's the snapshot taken at the refine tap; during the rewrite the stream
+    /// holds exactly the content being rewritten.
+    private var refineContentText: String? {
+        guard appState.refineArmed else { return nil }
+        let content = (appState.refineContentSnapshot ?? appState.streamingText)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return content.isEmpty ? nil : content
+    }
+
+    /// True while the refine LLM is rewriting (instruction already captured).
+    private var refineIsApplying: Bool { appState.refineArmed && appState.isTranscribing }
+
+    /// The instruction to display: the finalized one while rewriting, else the
+    /// live tail of the transcript beyond the frozen snapshot — the same split
+    /// the LLM receives (InstructionChain.instructionSuffix).
+    private var refineInstructionText: String {
+        if let final = appState.refineActiveInstruction {
+            return final
+        }
+        guard let content = appState.refineContentSnapshot else { return "" }
+        return InstructionChain.instructionSuffix(fullFinal: appState.streamingText, content: content)
+    }
 
     private var phaseCaption: String? {
         appState.isTranscribing ? appState.statusMessage : nil
@@ -205,10 +237,12 @@ struct OverlayView: View {
                     .transition(.opacity)
             }
 
-            if appState.refineArmed {
+            // With content on screen the instruction row inside the panel carries
+            // the refine cue; this standalone caption only covers the no-panel case.
+            if appState.refineArmed && !showTranscript {
                 Text("Refine — speak your instruction")
                     .font(.system(size: 11, weight: .semibold, design: .rounded))
-                    .foregroundColor(Color(red: 0.66, green: 0.55, blue: 0.98))
+                    .foregroundColor(Self.refineAccent)
                     .transition(.opacity)
             }
 
@@ -371,9 +405,12 @@ struct OverlayView: View {
             }
             ScrollViewReader { proxy in
                 ScrollView(.vertical, showsIndicators: false) {
-                    Text(transcriptText)
+                    // While refining, the dictated content freezes and dims — the
+                    // instruction being spoken renders in its own row below
+                    // instead of streaming into this text as more dictation.
+                    Text(refineContentText ?? transcriptText)
                         .font(.system(size: 13, weight: .regular, design: .rounded))
-                        .foregroundColor(.white.opacity(0.88))
+                        .foregroundColor(.white.opacity(appState.refineArmed ? 0.5 : 0.88))
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .multilineTextAlignment(.leading)
                         // Static anchor — never .id(transcriptText), which would
@@ -399,6 +436,12 @@ struct OverlayView: View {
             // Belt-and-braces: no ancestor implicit animation may animate the
             // rapidly-changing transcript content.
             .transaction { $0.animation = nil }
+
+            if appState.refineArmed {
+                Divider().overlay(Self.refineAccent.opacity(0.35))
+                refineInstructionRow
+                    .transaction { $0.animation = nil }
+            }
         }
         .padding(.horizontal, 18)
         .padding(.vertical, 12)
@@ -419,6 +462,39 @@ struct OverlayView: View {
             }
             .shadow(color: Color.black.opacity(0.30), radius: 16, x: 0, y: 8)
         }
+    }
+
+    /// The refine instruction as its own visually distinct row: wand icon +
+    /// magenta text under the dimmed, frozen content — so refining never reads
+    /// as "the dictation just kept going".
+    private var refineInstructionRow: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 7) {
+            Image(systemName: "wand.and.stars")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundColor(Self.refineAccent)
+
+            if refineIsApplying {
+                ProgressView()
+                    .controlSize(.small)
+                    .scaleEffect(0.6)
+                Text(refineInstructionText.isEmpty
+                     ? "Rewriting…"
+                     : "“\(refineInstructionText)” — rewriting…")
+                    .font(.system(size: 12, weight: .medium, design: .rounded))
+                    .foregroundColor(Self.refineAccent)
+            } else if refineInstructionText.isEmpty {
+                Text("Speak your instruction — “make it formal”, “shorten it”…")
+                    .font(.system(size: 12, weight: .medium, design: .rounded).italic())
+                    .foregroundColor(Self.refineAccent.opacity(0.75))
+            } else {
+                Text("“\(refineInstructionText)”")
+                    .font(.system(size: 12, weight: .medium, design: .rounded))
+                    .foregroundColor(Self.refineAccent)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .lineLimit(2)
+        .accessibilityLabel("Refine instruction: \(refineInstructionText.isEmpty ? "listening" : refineInstructionText)")
     }
 }
 

@@ -531,7 +531,17 @@ class AppState: ObservableObject {
     /// Set when the user taps the Refine key MID-DICTATION (while still holding Fn):
     /// everything spoken after this point is the instruction; everything before is
     /// the content to refine. Applied on Fn release. nil = not refining this session.
-    private var refineContentSnapshot: String?
+    /// Published so the overlay can freeze the dictated content and render the
+    /// live instruction as its own visually distinct row.
+    @Published private(set) var refineContentSnapshot: String?
+    /// The finalized spoken instruction while the refine LLM runs — the snapshot
+    /// is consumed at that point, so the overlay reads this to keep the
+    /// instruction row visible through the rewrite. Cleared when refine disarms.
+    @Published private(set) var refineActiveInstruction: String?
+    /// Whether the armed refine's content came from the user's selection (vs.
+    /// dictation): an empty instruction then leaves the selection untouched
+    /// instead of re-inserting it. Set alongside `refineContentSnapshot`.
+    private var refineContentFromSelection = false
 
     /// Set briefly when an insert couldn't be confirmed and the text was left on the
     /// clipboard instead — drives a "copied, press ⌘V" cue in the overlay so the
@@ -2302,13 +2312,16 @@ class AppState: ObservableObject {
         // session's final splits into CONTENT (snapshot at the tap) + INSTRUCTION
         // (spoken after). Run the refine via RefineFlow.
         if let content = refineContentSnapshot {
+            let fromSelection = refineContentFromSelection
             refineContentSnapshot = nil
+            refineContentFromSelection = false
             let instruction = instructionSuffix(fullFinal: finalText, content: content)
-            refineDebug("completeFinalText MID-REFINE content=\"\(content.prefix(20))\" instr=\"\(instruction.prefix(20))\"")
+            refineActiveInstruction = instruction
+            refineDebug("completeFinalText MID-REFINE content=\"\(content.prefix(20))\" instr=\"\(instruction.prefix(20))\" fromSelection=\(fromSelection)")
             isTranscribing = true
             // Drive the machine: engage with the content as step-1, then feed the
-            // instruction. From-selection is false (content came from dictation).
-            executeRefineEffects(refineFlow.handle(.engage(step1: content, fromSelection: false)))
+            // instruction.
+            executeRefineEffects(refineFlow.handle(.engage(step1: content, fromSelection: fromSelection)))
             executeRefineEffects(refineFlow.handle(.instructionFinalized(instruction)))
             return
         }
@@ -2416,43 +2429,51 @@ class AppState: ObservableObject {
             return
         }
         guard refineContentSnapshot == nil else { return }   // already armed this session
-        // Content to refine = what's been dictated so far this session, else the
-        // current selection, else the last dictation.
+        // Content to refine, in intent order: what's been dictated so far this
+        // session, else the user's LIVE selection (an explicit selection is the
+        // clearest statement of intent — it must beat the last dictation, which
+        // can be arbitrarily stale), else the last dictation, else a selection
+        // via the clipboard fallback. The AX read is safe to probe early (no
+        // selection = nil); the clipboard fallback stays last because a
+        // synthesized copy with nothing selected copies the current line in
+        // some apps.
         let sofar = (currentSessionText.isEmpty ? streamingText : currentSessionText)
             .trimmingCharacters(in: .whitespacesAndNewlines)
+        let secureField = SecureFieldDetector.focusedFieldIsSecure()
         let content: String
+        let fromSelection: Bool
         if !sofar.isEmpty {
             content = sofar
+            fromSelection = false
+        } else if !secureField,
+                  let sel = SelectionReader.readSelectedText(allowClipboardFallback: false)?
+                      .trimmingCharacters(in: .whitespacesAndNewlines),
+                  !sel.isEmpty {
+            content = sel
+            fromSelection = true
         } else if let last = lastDictationText?.trimmingCharacters(in: .whitespacesAndNewlines), !last.isEmpty {
             content = last
-        } else if !SecureFieldDetector.focusedFieldIsSecure(),
+            fromSelection = false
+        } else if !secureField,
                   let sel = SelectionReader.readSelectedText()?.trimmingCharacters(in: .whitespacesAndNewlines),
                   !sel.isEmpty {
             content = sel
+            fromSelection = true
         } else {
             statusMessage = "Nothing to refine yet — dictate first, then tap Refine"
             return
         }
         refineContentSnapshot = content
+        refineContentFromSelection = fromSelection
         refineArmed = true                       // overlay refine cue
         statusMessage = "Refine: now speak your instruction…"
-        refineDebug("armRefineMidSession content=\"\(content.prefix(30))\"")
+        refineDebug("armRefineMidSession content=\"\(content.prefix(30))\" fromSelection=\(fromSelection)")
     }
 
-    /// The instruction is whatever was spoken AFTER the content snapshot. The
-    /// recognizer produces one continuous transcript, so the instruction is the
-    /// final text with the content prefix removed (falling back to the whole final
-    /// if the prefix drifted — recognizers can revise earlier words).
+    /// See `InstructionChain.instructionSuffix` — shared with the overlay's live
+    /// instruction row, so what the user sees is exactly what the model receives.
     private func instructionSuffix(fullFinal: String, content: String) -> String {
-        let full = fullFinal.trimmingCharacters(in: .whitespacesAndNewlines)
-        let head = content.trimmingCharacters(in: .whitespacesAndNewlines)
-        if full.count > head.count, full.lowercased().hasPrefix(head.lowercased()) {
-            let idx = full.index(full.startIndex, offsetBy: head.count)
-            return String(full[idx...]).trimmingCharacters(in: .whitespacesAndNewlines)
-        }
-        // Prefix drifted or the whole thing is the instruction — use the full tail
-        // that isn't the content. Best effort: if identical, treat as empty.
-        return full.caseInsensitiveCompare(head) == .orderedSame ? "" : full
+        InstructionChain.instructionSuffix(fullFinal: fullFinal, content: content)
     }
 
     /// Perform the state machine's effects. This is the ONLY place refine side
@@ -2497,6 +2518,8 @@ class AppState: ObservableObject {
         // Armed while a mid-session refine is pending (content snapshot taken) OR
         // the machine is applying.
         refineArmed = refineContentSnapshot != nil || refineFlow.isActive
+        // The finalized instruction only matters while the rewrite is in flight.
+        if !refineArmed { refineActiveInstruction = nil }
     }
 
     /// Run the refine LLM (apply `instruction` to `target`) and feed the result

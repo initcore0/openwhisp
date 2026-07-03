@@ -239,7 +239,7 @@ enum WhisperKitBridge {
             skipSpecialTokens: true,
             withoutTimestamps: true
         )
-        let handle = WhisperKitStreamHandle()
+        let handle = WhisperKitStreamHandle(kit: kit, decodingOptions: options)
         let transcriber = AudioStreamTranscriber(
             audioEncoder: kit.audioEncoder,
             featureExtractor: kit.featureExtractor,
@@ -268,12 +268,21 @@ struct WhisperKitStreamState {
     let fullText: String
     /// Peak relative mic energy in the latest buffer (0–1), for the waveform.
     let peakEnergy: Float?
+    /// How many buffer samples the realtime loop had decoded as of this state —
+    /// anything beyond it in the audio buffer is captured but NOT transcribed
+    /// yet. Read at stop to decide whether a final flush decode is needed.
+    let decodedSampleCount: Int
+    /// Where the confirmed transcript ends (seconds); the flush decode clips
+    /// from here, mirroring the realtime loop's own windowing.
+    let confirmedEndSeconds: Float
 
     init(from state: AudioStreamTranscriber.State) {
         let confirmed = state.confirmedSegments.map(\.text).joined(separator: " ")
         let unconfirmed = state.unconfirmedSegments.map(\.text).joined(separator: " ")
         self.confirmedText = confirmed
         self.fullText = (confirmed + " " + unconfirmed)
+        self.decodedSampleCount = state.lastBufferSize
+        self.confirmedEndSeconds = state.lastConfirmedSegmentEndSeconds
         // `bufferEnergy` is the cumulative per-buffer relative-energy history,
         // refreshed every ~0.1s. Read the RECENT window (not the all-time max, which
         // freezes the bars) and map it with the relative-energy curve (NOT fromRMS,
@@ -287,6 +296,16 @@ struct WhisperKitStreamState {
 /// `state` is private, so we cache the latest snapshot from the state callback.
 final class WhisperKitStreamHandle {
     private var transcriber: AudioStreamTranscriber?
+    /// The loaded kit + the session's decoding options, kept for the stop-time
+    /// flush decode (`finalizeTail`). The engine caches the kit anyway, so this
+    /// adds no model lifetime.
+    private let kit: WhisperKit
+    private let decodingOptions: DecodingOptions
+
+    init(kit: WhisperKit, decodingOptions: DecodingOptions) {
+        self.kit = kit
+        self.decodingOptions = decodingOptions
+    }
 
     /// Newest state snapshot. Written from the state-change callback, which fires
     /// on AudioStreamTranscriber's own executor (off-main), and read from the main
@@ -317,6 +336,45 @@ final class WhisperKitStreamHandle {
     /// The full assembled transcript (confirmed + unconfirmed) as of the last state.
     func fullText() -> String {
         (latest?.fullText ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Ignore stop-time tails shorter than this (0.25 s @ 16 kHz): releasing the
+    /// hotkey right at a decode boundary leaves a sliver of silence that isn't
+    /// worth a decode pass.
+    private static let minFlushSamples = 4_000
+
+    /// Decode any audio captured after the realtime loop's last decode window.
+    ///
+    /// The loop only transcribes once ≥1 s of NEW audio has accumulated
+    /// (AudioStreamTranscriber.transcribeCurrentBuffer), so releasing the hotkey
+    /// right after speaking strands the trailing words in the buffer undecoded —
+    /// for a mid-dictation refine, that's the entire spoken instruction, which
+    /// made refine a no-op unless the user paused ~1 s before releasing.
+    ///
+    /// Called after `stop()` (mic already released). Mirrors the loop's own
+    /// windowing: decode the full buffer clipped from the last CONFIRMED segment,
+    /// replacing the unconfirmed tail with a fresh decode that includes the
+    /// stranded audio. Returns the corrected full transcript, or nil when the
+    /// loop already decoded everything (the common paused-before-release path —
+    /// no added latency there).
+    func finalizeTail() async -> String? {
+        let snapshot = latest
+        let samples = Array(kit.audioProcessor.audioSamples)
+        let decoded = snapshot?.decodedSampleCount ?? 0
+        guard samples.count > decoded + Self.minFlushSamples else { return nil }
+
+        var options = decodingOptions
+        options.clipTimestamps = [snapshot?.confirmedEndSeconds ?? 0]
+        let kit = self.kit
+        guard let results = try? await withTimeout(seconds: 15, operation: "Final flush decode", {
+            try await kit.transcribe(audioArray: samples, decodeOptions: options)
+        }) else { return nil }
+
+        let tail = results.map(\.text).joined(separator: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let confirmed = (snapshot?.confirmedText ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let full = (confirmed + " " + tail).trimmingCharacters(in: .whitespacesAndNewlines)
+        return full.isEmpty ? nil : full
     }
 }
 

@@ -53,4 +53,48 @@ final class InstructionChainTests: XCTestCase {
         // Instruction comes before the text so the model reads the request first.
         XCTAssertTrue(p.range(of: "INSTRUCTION:")!.lowerBound < p.range(of: "TEXT:")!.lowerBound)
     }
+
+    // MARK: instructionSuffix (shared by the LLM call and the overlay's live row)
+
+    func testInstructionSuffixSplitsTailAfterContent() {
+        XCTAssertEqual(
+            InstructionChain.instructionSuffix(
+                fullFinal: "hello team im out sick today make it formal",
+                content: "hello team im out sick today"
+            ),
+            "make it formal"
+        )
+    }
+
+    func testInstructionSuffixIsCaseInsensitiveOnThePrefix() {
+        XCTAssertEqual(
+            InstructionChain.instructionSuffix(
+                fullFinal: "Hello team, make it shorter",
+                content: "hello team,"
+            ),
+            "make it shorter"
+        )
+    }
+
+    func testInstructionSuffixFallsBackToFullTextWhenPrefixDrifted() {
+        // Recognizers revise earlier words; an idle refine's fresh session also
+        // contains only the instruction. Both fall back to the full text.
+        XCTAssertEqual(
+            InstructionChain.instructionSuffix(
+                fullFinal: "make it a telegram post",
+                content: "completely different dictation"
+            ),
+            "make it a telegram post"
+        )
+    }
+
+    func testInstructionSuffixEmptyWhenNothingSpokenAfterContent() {
+        XCTAssertEqual(
+            InstructionChain.instructionSuffix(
+                fullFinal: "hello team",
+                content: "Hello Team"
+            ),
+            ""
+        )
+    }
 }

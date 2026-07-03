@@ -47,4 +47,23 @@ enum InstructionChain {
         let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
         return "INSTRUCTION: \(i)\n\nTEXT:\n\(t)"
     }
+
+    /// The instruction is whatever was spoken AFTER the content snapshot. The
+    /// recognizer produces one continuous transcript, so the instruction is the
+    /// full text with the content prefix removed (falling back to the whole
+    /// thing when the prefix drifted — recognizers can revise earlier words, and
+    /// an idle refine's fresh session contains only the instruction). Shared by
+    /// the LLM call and the overlay's live instruction row, so what the user
+    /// sees is exactly what the model receives.
+    static func instructionSuffix(fullFinal: String, content: String) -> String {
+        let full = fullFinal.trimmingCharacters(in: .whitespacesAndNewlines)
+        let head = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        if full.count > head.count, full.lowercased().hasPrefix(head.lowercased()) {
+            let idx = full.index(full.startIndex, offsetBy: head.count)
+            return String(full[idx...]).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        // Prefix drifted or the whole thing is the instruction — use the full tail
+        // that isn't the content. Best effort: if identical, treat as empty.
+        return full.caseInsensitiveCompare(head) == .orderedSame ? "" : full
+    }
 }
