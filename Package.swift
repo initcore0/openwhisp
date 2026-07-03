@@ -47,7 +47,8 @@ let package = Package(
                 "Instrumentation.swift",
                 "VoiceIndicatorStyle.swift",
                 "WhisperKitBridge.swift",
-                "WhisperKitModelCatalog.swift"
+                "WhisperKitModelCatalog.swift",
+                "PermissionBannerPolicy.swift"
             ]
         ),
         .testTarget(
