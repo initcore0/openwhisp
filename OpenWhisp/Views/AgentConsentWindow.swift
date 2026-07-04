@@ -24,12 +24,12 @@ final class AgentConsentWindowController: NSObject, NSWindowDelegate {
     private var pending: ((Choice) -> Void)?
     private var timeoutTask: Task<Void, Never>?
 
-    func present(clientName: String, completion: @escaping (Choice) -> Void) {
+    func present(clientName: String, scope: AgentScope, completion: @escaping (Choice) -> Void) {
         // One consent prompt at a time.
         guard window == nil else { completion(.dismiss); return }
         pending = completion
 
-        let view = AgentConsentView(clientName: clientName) { [weak self] choice in
+        let view = AgentConsentView(clientName: clientName, scope: scope) { [weak self] choice in
             self?.resolve(choice)
         }
         let hosting = NSHostingController(rootView: view)
@@ -70,18 +70,22 @@ final class AgentConsentWindowController: NSObject, NSWindowDelegate {
 /// verbatim but always framed as "X wants to…", never as OpenWhisp's own voice.
 private struct AgentConsentView: View {
     let clientName: String
+    let scope: AgentScope
     let onChoice: (AgentConsentWindowController.Choice) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack(spacing: 12) {
-                Image(systemName: "mic.badge.plus")
+                Image(systemName: scopeIcon)
                     .font(.system(size: 28))
                     .foregroundColor(.accentColor)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("\(displayName) wants to use OpenWhisp")
+                    // Names the SPECIFIC capability being requested — consent is
+                    // per-scope, so granting "dictate" must not read as granting
+                    // history or refine too.
+                    Text("\(displayName) wants to \(scope.title)")
                         .font(.headline)
-                    Text("It can ask you to dictate, rewrite text with your on-device AI, and read your recent dictation history. Everything stays on this Mac.")
+                    Text("\(scopeDetail) Everything stays on this Mac. You can grant each capability separately.")
                         .font(.callout)
                         .foregroundColor(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -116,6 +120,23 @@ private struct AgentConsentView: View {
     private var displayName: String {
         let capped = BridgeWire.sanitizedForDisplay(clientName, maxLength: 60)
         return capped.isEmpty ? "An agent" : capped
+    }
+
+    private var scopeIcon: String {
+        switch scope {
+        case .dictate: return "mic.badge.plus"
+        case .history: return "clock.arrow.circlepath"
+        case .refine:  return "wand.and.stars"
+        }
+    }
+
+    /// A sentence describing what THIS scope entails (privacy-relevant specifics).
+    private var scopeDetail: String {
+        switch scope {
+        case .dictate: return "It opens your voice overlay so you can speak an answer; the transcript goes back to the agent."
+        case .history: return "It can read the text of your recent dictations and which apps they went to."
+        case .refine:  return "It can send text to your configured AI model to rewrite it."
+        }
     }
 
     private func label(_ title: String, _ subtitle: String) -> some View {

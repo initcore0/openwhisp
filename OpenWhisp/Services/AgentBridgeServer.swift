@@ -18,13 +18,17 @@ protocol AgentBridgeHost: AnyObject {
     /// The capability tokens this build actually implements (grows as dictate /
     /// refine are wired). Advertised in `bridge.hello`.
     func bridgeCapabilities() -> [String]
-    /// The consent posture `clientName` would get right now (stored policy +
-    /// this-run grants), WITHOUT prompting. Advertised in `bridge.hello`.
+    /// The OVERALL consent posture `clientName` would get right now across all
+    /// scopes (stored per-scope policies + this-run grants), WITHOUT prompting.
+    /// Advertised in `bridge.hello` as a single summary: `.granted` only if every
+    /// scope is already allowed, `.denied` only if every scope is denied, else
+    /// `.pending`. Per-scope resolution happens per call in `bridgeResolveConsent`.
     func bridgeConsentSnapshot(clientName: String) -> BridgeWire.ConsentState
-    /// Resolve consent for `clientName` (presenting the consent window if the
-    /// stored policy requires it). `completion` fires on the main thread with
-    /// allow/deny; the server blocks its connection thread until it does.
-    func bridgeResolveConsent(clientName: String, completion: @escaping (Bool) -> Void)
+    /// Resolve consent for `clientName` for a SPECIFIC `scope` (presenting the
+    /// consent window if that scope's stored policy requires it). `completion`
+    /// fires on the main thread with allow/deny; the server blocks its connection
+    /// thread until it does.
+    func bridgeResolveConsent(clientName: String, scope: AgentScope, completion: @escaping (Bool) -> Void)
     /// Note a completed agent call on the client's record (for the settings pane).
     func bridgeDidCall(clientName: String, tool: String)
     /// Start an agent-initiated dictation. `completion` (main thread) delivers the
@@ -314,7 +318,7 @@ final class AgentBridgeServer {
 
         case .historyList(let id, let params):
             let clientName = state.clientName // copy out of `inout` for the closures below
-            guard consentGranted(clientName, fd: fd, id: id) else { return true }
+            guard consentGranted(clientName, scope: .history, fd: fd, id: id) else { return true }
             let limit = BridgeRouter.resolvedHistoryLimit(params.limit)
             let entries = onMain { self.host?.bridgeHistory(limit: limit) ?? [] }
             onMain { self.host?.bridgeDidCall(clientName: clientName, tool: "history") }
@@ -323,7 +327,7 @@ final class AgentBridgeServer {
 
         case .dictate(let id, let params):
             let clientName = state.clientName
-            guard consentGranted(clientName, fd: fd, id: id) else { return true }
+            guard consentGranted(clientName, scope: .dictate, fd: fd, id: id) else { return true }
             let timeout = BridgeRouter.resolvedTimeoutSeconds(params.timeoutSeconds)
             switch blockingDictate(clientName: clientName, prompt: params.prompt, timeout: timeout, language: params.language) {
             case .success(let result):
@@ -346,7 +350,7 @@ final class AgentBridgeServer {
 
         case .refine(let id, let params):
             let clientName = state.clientName
-            guard consentGranted(clientName, fd: fd, id: id) else { return true }
+            guard consentGranted(clientName, scope: .refine, fd: fd, id: id) else { return true }
             switch blockingRefine(clientName: clientName, text: params.text, instruction: params.instruction) {
             case .success(let text):
                 onMain { self.host?.bridgeDidCall(clientName: clientName, tool: "refine") }
@@ -439,16 +443,17 @@ final class AgentBridgeServer {
 
     // MARK: - Consent
 
-    /// Synchronously resolve consent for `clientName`, blocking this connection
-    /// thread until the host answers (which may include the user interacting with
-    /// the consent window — up to its 60s timeout). On denial, sends the
-    /// consentDenied error so callers just `guard ... else { return true }`.
-    private func consentGranted(_ clientName: String, fd: Int32, id: BridgeWire.RPCID?) -> Bool {
+    /// Synchronously resolve consent for `clientName` on a specific `scope`,
+    /// blocking this connection thread until the host answers (which may include
+    /// the user interacting with the consent window — up to its 60s timeout). On
+    /// denial, sends the consentDenied error so callers just
+    /// `guard ... else { return true }`.
+    private func consentGranted(_ clientName: String, scope: AgentScope, fd: Int32, id: BridgeWire.RPCID?) -> Bool {
         let granted = blockOnHost(noHost: false) { host, done in
-            host.bridgeResolveConsent(clientName: clientName, completion: done)
+            host.bridgeResolveConsent(clientName: clientName, scope: scope, completion: done)
         }
         if !granted {
-            sendError(fd, id: id, error: .domain(.consentDenied, message: "the user declined this client's access"))
+            sendError(fd, id: id, error: .domain(.consentDenied, message: "the user declined this client's \(scope.rawValue) access"))
         }
         return granted
     }

@@ -121,22 +121,53 @@ struct AgentBridgePane: View {
                     .foregroundColor(.secondary)
             } else {
                 ForEach(appState.agentClients.records, id: \.clientName) { record in
-                    HStack {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(record.clientName).font(.body)
-                            Text(policyLabel(record.policy) + lastCallSuffix(record))
-                                .font(.caption)
-                                .foregroundColor(.secondary)
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(record.clientName).font(.body)
+                                if let last = lastCallSuffix(record) {
+                                    Text(last).font(.caption).foregroundColor(.secondary)
+                                }
+                            }
+                            Spacer()
+                            Button("Revoke") { appState.revokeAgentClient(record.clientName) }
+                                .foregroundColor(.red)
                         }
-                        Spacer()
-                        Button("Revoke") { appState.revokeAgentClient(record.clientName) }
-                            .foregroundColor(.red)
+                        // Per-scope posture: each capability is granted separately.
+                        HStack(spacing: 6) {
+                            ForEach(AgentScope.allCases, id: \.self) { scope in
+                                scopeChip(scope.noun, record.policy(for: scope))
+                            }
+                        }
                     }
+                    .padding(.vertical, 2)
                 }
             }
         } header: {
             Text("Connected agents")
+        } footer: {
+            SettingsFootnote("Each capability is granted separately — approving an agent to ask you a question doesn't let it read your history or use your AI. Revoke clears all of them.")
         }
+    }
+
+    /// A compact per-scope status chip. A nil policy means the scope hasn't been
+    /// decided yet (the agent will be prompted on first use).
+    private func scopeChip(_ label: String, _ policy: AgentConsentPolicy?) -> some View {
+        let (text, color): (String, Color) = {
+            switch policy {
+            case .always:       return ("✓ always", .green)
+            case .whileRunning: return ("✓ this run", .green)
+            case .askEveryTime: return ("asks", .secondary)
+            case .denied:       return ("✗ denied", .red)
+            case nil:           return ("—", .secondary)
+            }
+        }()
+        return Text("\(label): \(text)")
+            .font(.caption2)
+            .padding(.horizontal, 6).padding(.vertical, 2)
+            .background(color.opacity(0.12))
+            .foregroundColor(color)
+            .clipShape(Capsule())
     }
 
     // MARK: Helpers
@@ -145,21 +176,13 @@ struct AgentBridgePane: View {
         Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/openwhisp").path
     }
 
-    private func policyLabel(_ policy: AgentConsentPolicy) -> String {
-        switch policy {
-        case .always: return "Always allowed"
-        case .denied: return "Denied"
-        case .askEveryTime: return "Asks every time"
-        case .whileRunning: return "Allowed while running"
-        }
-    }
-
     private static let relativeFormatter = RelativeDateTimeFormatter()
 
-    private func lastCallSuffix(_ record: AgentClientRecord) -> String {
-        guard let last = record.lastCall else { return "" }
+    /// "Last: 3 min ago · dictate", or nil if the client has never made a call.
+    private func lastCallSuffix(_ record: AgentClientRecord) -> String? {
+        guard let last = record.lastCall else { return nil }
         let tool = record.lastTool.map { " · \($0)" } ?? ""
-        return " · \(Self.relativeFormatter.localizedString(for: last, relativeTo: Date()))\(tool)"
+        return "Last: \(Self.relativeFormatter.localizedString(for: last, relativeTo: Date()))\(tool)"
     }
 
     private func copyToClipboard(_ text: String) {

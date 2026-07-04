@@ -81,8 +81,12 @@ secure field · `64` usage · `65` version mismatch.
 - **Signed clients only.** By default only OpenWhisp's own code-signed CLI and
   adapter may connect (verified by the peer's audit token — no PID-reuse race).
   Enable *Allow unsigned / third-party clients* to write your own.
-- **Consent.** The first time an agent uses the bridge you approve it (always /
-  while running / once / deny); manage or revoke per-client in the settings pane.
+- **Consent, per capability.** Consent is granted **separately for each
+  capability** — dictate, history, and refine. Approving an agent to ask you a
+  question does **not** let it read your dictation history or run your AI; the
+  first call in each capability prompts on its own (always / while running / once
+  / deny). The settings pane shows each agent's per-capability status; Revoke
+  clears them all.
 - **The cloud gate.** If your AI provider is OpenAI (cloud), agent-initiated
   refinement is **blocked** unless you turn on *Allow agents to use cloud AI* —
   so a prompt-injected agent can't exfiltrate text through your key. Local
