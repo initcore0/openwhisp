@@ -79,6 +79,12 @@ xcrun swiftc \
 source "$PROJECT_DIR/scripts/verify-whisperkit-binary.sh"
 verify_whisperkit_binary "$BUILD_DIR/OpenWhisp"
 
+# Build the openwhisp CLI / MCP adapter (separate SwiftPM executable). Bundled
+# into Contents/Helpers and signed inside-out with the hardened runtime below.
+echo "Building openwhisp CLI..."
+swift build -c release --product openwhisp
+CLI_BIN="$(swift build -c release --product openwhisp --show-bin-path)/openwhisp"
+
 echo ""
 echo "Step 2: Creating app bundle..."
 rm -rf "$APP_DIR"
@@ -88,6 +94,8 @@ mkdir -p "$APP_DIR/Contents/Resources/llama"
 mkdir -p "$APP_DIR/Contents/Resources/models"
 
 cp "$BUILD_DIR/OpenWhisp" "$APP_DIR/Contents/MacOS/"
+mkdir -p "$APP_DIR/Contents/Helpers"
+cp "$CLI_BIN" "$APP_DIR/Contents/Helpers/openwhisp"
 cp "$PROJECT_DIR/OpenWhisp/Info.plist" "$APP_DIR/Contents/"
 
 # NOTE: the .entitlements file is a BUILD INPUT (passed to codesign --entitlements
@@ -165,7 +173,7 @@ fi
 # Nested code takes the hardened runtime but NOT the app entitlements.
 NESTED=()
 while IFS= read -r f; do NESTED+=("$f"); done < <(
-    find "$APP_DIR/Contents/Resources" -type f \( -name "*.dylib" -o -perm -111 \) 2>/dev/null
+    find "$APP_DIR/Contents/Resources" "$APP_DIR/Contents/Helpers" -type f \( -name "*.dylib" -o -perm -111 \) 2>/dev/null
 )
 if [ "${#NESTED[@]}" -gt 0 ]; then
     echo "  Signing ${#NESTED[@]} nested libraries/executables..."

@@ -1,0 +1,162 @@
+import Foundation
+import OpenWhispCore
+
+// The `openwhisp` CLI: an agent-callable front-end to OpenWhisp's Agent Bridge.
+//
+// Contract: stdout carries ONLY the result (transcript / refined text / JSON) so
+// verbs compose in shell pipelines (`openwhisp dictate | pbcopy`); all progress
+// and diagnostics go to stderr. Exit codes are uniform across verbs (see below).
+
+// MARK: - Exit codes
+
+enum ExitCode: Int32 {
+    case success = 0
+    case internalError = 1     // engine/LLM/unexpected failure
+    case unreachable = 2       // app not running or bridge disabled
+    case consentDenied = 3
+    case busy = 4
+    case cancelled = 5
+    case timeout = 6
+    case permission = 7        // mic permission / secure field / audio device
+    case usage = 64            // bad arguments
+    case versionMismatch = 65  // CLI newer than the app
+}
+
+func fail(_ message: String, _ code: ExitCode) -> Never {
+    FileHandle.standardError.write(Data("openwhisp: \(message)\n".utf8))
+    exit(code.rawValue)
+}
+
+func emit(_ line: String) {
+    FileHandle.standardOutput.write(Data((line + "\n").utf8))
+}
+
+func emitJSON<T: Encodable>(_ value: T) {
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+    if let data = try? encoder.encode(value), let s = String(data: data, encoding: .utf8) {
+        emit(s)
+    } else {
+        fail("could not encode result", .internalError)
+    }
+}
+
+/// Map a bridge/client error to a message + exit code and terminate.
+func failClient(_ error: Error) -> Never {
+    guard let e = error as? BridgeClient.ClientError else {
+        fail("\(error)", .internalError)
+    }
+    switch e {
+    case .unreachable:
+        fail("OpenWhisp is not running, or Agent Bridge is disabled in Settings → Agent Bridge", .unreachable)
+    case .unsupportedVersion:
+        fail("version mismatch — reinstall OpenWhisp so the bundled CLI matches the app", .versionMismatch)
+    case .protocolError(let m):
+        fail("protocol error: \(m)", .internalError)
+    case .domain(let reason, let message, _):
+        switch reason {
+        case .consentDenied:                          fail(message, .consentDenied)
+        case .busy:                                   fail(message, .busy)
+        case .cancelled:                              fail(message, .cancelled)
+        case .timeout:                                fail(message, .timeout)
+        case .secureField, .micPermissionNeeded, .audioUnavailable:
+            fail(message, .permission)
+        case .unsupportedVersion:                     fail(message, .versionMismatch)
+        default:                                      fail(message, .internalError)
+        }
+    }
+}
+
+// MARK: - Argument helpers
+
+struct Args {
+    private let raw: [String]
+    init(_ raw: [String]) { self.raw = raw }
+    func has(_ flag: String) -> Bool { raw.contains(flag) }
+    func value(_ flag: String) -> String? {
+        guard let i = raw.firstIndex(of: flag), i + 1 < raw.count else { return nil }
+        return raw[i + 1]
+    }
+    /// First non-flag positional argument.
+    var positional: String? { raw.first { !$0.hasPrefix("-") } }
+}
+
+func connectedClient() -> BridgeClient {
+    do {
+        let client = try BridgeClient()
+        try client.handshake(clientName: "openwhisp-cli")
+        return client
+    } catch { failClient(error) }
+}
+
+// MARK: - Verbs
+
+func runStatus(_ args: Args) -> Never {
+    let client = connectedClient()
+    do {
+        let s = try client.call(method: BridgeWire.Method.status.rawValue,
+                                params: BridgeWire.NoParams(), resultType: BridgeWire.StatusResult.self)
+        if args.has("--json") {
+            emitJSON(s)
+        } else {
+            let llm = s.llmConfigured ? "configured" : "unconfigured"
+            let session = s.sessionActive ? "active" : "idle"
+            emit("OpenWhisp \(s.appVersion) · engine=\(s.engine) model=\(s.model) llm=\(llm) session=\(session)")
+        }
+        exit(ExitCode.success.rawValue)
+    } catch { failClient(error) }
+}
+
+func runHistory(_ args: Args) -> Never {
+    let client = connectedClient()
+    let limit = args.value("--limit").flatMap(Int.init)
+    do {
+        let params = BridgeWire.HistoryListParams(limit: limit)
+        let result = try client.call(method: BridgeWire.Method.historyList.rawValue,
+                                     params: params, resultType: BridgeWire.HistoryListResult.self)
+        if args.has("--json") {
+            emitJSON(result)
+        } else {
+            for e in result.entries {
+                let app = e.appName ?? e.appBundleID ?? "—"
+                let text = e.text.replacingOccurrences(of: "\n", with: " ")
+                let clipped = text.count > 120 ? String(text.prefix(120)) + "…" : text
+                emit("\(e.date)\t\(app)\t\(clipped)")
+            }
+        }
+        exit(ExitCode.success.rawValue) // exit 0 even when empty
+    } catch { failClient(error) }
+}
+
+func printUsage() {
+    let usage = """
+    openwhisp — agent-callable front-end to OpenWhisp's Agent Bridge
+
+    USAGE:
+      openwhisp status [--json]           Print app/engine/model/LLM/session state (liveness probe)
+      openwhisp history [--limit N] [--json]   Recent dictation history, newest first
+
+    Requires OpenWhisp running with Agent Bridge enabled (Settings → Agent Bridge).
+    """
+    FileHandle.standardError.write(Data((usage + "\n").utf8))
+}
+
+// MARK: - Dispatch
+
+let argv = Array(CommandLine.arguments.dropFirst())
+guard let verb = argv.first else { printUsage(); exit(ExitCode.usage.rawValue) }
+let rest = Args(Array(argv.dropFirst()))
+
+switch verb {
+case "status":
+    runStatus(rest)
+case "history":
+    runHistory(rest)
+case "-h", "--help", "help":
+    printUsage()
+    exit(ExitCode.success.rawValue)
+default:
+    FileHandle.standardError.write(Data("openwhisp: unknown command '\(verb)'\n".utf8))
+    printUsage()
+    exit(ExitCode.usage.rawValue)
+}

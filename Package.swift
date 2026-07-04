@@ -9,6 +9,13 @@ import PackageDescription
 let package = Package(
     name: "OpenWhispCore",
     platforms: [.macOS(.v13)],
+    products: [
+        // The agent-callable CLI + MCP stdio server. Built by `swift build
+        // --product openwhisp` and bundled into the .app at Contents/Helpers by
+        // package.sh; lives OUTSIDE OpenWhisp/ so build.sh's source glob (which
+        // compiles the GUI app) never picks up its `main`.
+        .executable(name: "openwhisp", targets: ["openwhisp"]),
+    ],
     targets: [
         .target(
             name: "OpenWhispCore",
@@ -56,6 +63,11 @@ let package = Package(
                 "SettingsMigration.swift",
                 "RefineTap.swift"
             ]
+        ),
+        .executableTarget(
+            name: "openwhisp",
+            dependencies: ["OpenWhispCore"],
+            path: "Sources/OpenWhispCLI"
         ),
         .testTarget(
             name: "OpenWhispCoreTests",
