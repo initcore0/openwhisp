@@ -402,6 +402,15 @@ class AppState: ObservableObject {
     @Published var agentClients: AgentClientStore = AgentClientStore()
     /// Clients granted "while running" during this launch (never persisted).
     private var consentGrantedThisRun: Set<String> = []
+    /// The agent's prompt for the current agent-initiated session, shown in the
+    /// overlay ("X asks: …"). nil for user sessions. Published so the overlay can
+    /// render it.
+    @Published private(set) var agentDictatePrompt: String?
+    /// Set when the current agent session was ended by its timeout / by an explicit
+    /// dictate.stop, so the delivered result reports the right `endedBy`.
+    private var agentDictateTimedOut = false
+    private var agentDictateStopped = false
+    private var agentDictateTimeoutTask: Task<Void, Never>?
     /// The control-plane socket server. Lazily constructed (no cost until the
     /// bridge is enabled); owns the socket, per-connection auth, and dispatch.
     private lazy var agentBridgeServer = AgentBridgeServer(host: self)
@@ -1167,6 +1176,15 @@ class AppState: ObservableObject {
         // dictation while a refine is mid-flight).
         if refineFlow.isActive {
             executeRefineEffects(refineFlow.handle(.abort))
+        }
+
+        // The human always wins the mic: if the user presses the hotkey while an
+        // AGENT session is capturing, cancel that session (it gets no transcript,
+        // per the cancel invariant) and start the user's own dictation. Only fires
+        // for a genuine user press — beginAgentDictation() sets the initiator but
+        // has no active session yet, so it never trips this.
+        if sessionActive, sessionInitiator.isAgent {
+            cancelDictation()
         }
 
         guard !isRecording, !isTranscribing else { return }
@@ -2248,7 +2266,9 @@ class AppState: ObservableObject {
         isArming = true
         statusMessage = "Starting..."
         startElapsedTimer()
-        if showOverlay {
+        // Agent-initiated sessions ALWAYS show the overlay (regardless of the
+        // user's showOverlay setting) so agent microphone use is never invisible.
+        if showOverlay || sessionInitiator.isAgent {
             overlayController?.show()
             overlayIsVisible = true
         }
@@ -2500,8 +2520,12 @@ class AppState: ObservableObject {
         streamingText = finalText
 
         // Run a whole-text OpenAI pass for finalOnly OR preview mode when
-        // enhancement is enabled. Otherwise insert once.
+        // enhancement is enabled. Otherwise insert once. Agent sessions never
+        // enhance — they return the raw transcript (the agent calls refine
+        // explicitly), which also keeps bundled-LLM cold-start and the whisper-
+        // server quiesce out of a live agent dictation.
         let enhanceWholeText = shouldEnhanceCurrentSession
+            && !suppressOutput
             && (outputMode == "finalOnly" || outputMode == "preview")
         guard enhanceWholeText else {
             isTranscribing = false
@@ -2960,6 +2984,9 @@ class AppState: ObservableObject {
         sessionInitiator = .user
         suppressOutput = false
         sessionOutcome = nil
+        agentDictatePrompt = nil
+        agentDictateTimeoutTask?.cancel()
+        agentDictateTimeoutTask = nil
         elapsedTimer?.invalidate()
         elapsedTimer = nil
         recordingStartedAt = nil
@@ -3719,7 +3746,104 @@ extension AppState: AgentBridgeHost {
     /// steps 6–7 wire them; advertising only what works keeps agents from calling
     /// unimplemented tools.
     func bridgeCapabilities() -> [String] {
-        [BridgeWire.Capability.history]
+        [BridgeWire.Capability.dictate, BridgeWire.Capability.history]
+    }
+
+    // MARK: Dictate (M8)
+
+    /// Start an agent-initiated dictation. Guards run up front (busy / mic
+    /// permission / secure field) so a failure is delivered immediately; otherwise
+    /// the result is delivered when the session finalizes (via onSessionEnd) or on
+    /// the timeout. Called on the main thread; `completion` fires on the main thread.
+    func bridgeStartDictation(
+        clientName: String, prompt: String?, timeoutSeconds: Int, language: String?,
+        completion: @escaping (Result<BridgeWire.DictateResult, BridgeWire.ErrorObject>) -> Void
+    ) {
+        // Busy: the human (or another agent session) always wins the mic.
+        guard !isRecording, !isTranscribing, !sessionActive else {
+            completion(.failure(.domain(.busy, message: "OpenWhisp is busy with another dictation; try again shortly")))
+            return
+        }
+        // Don't surface the macOS microphone TCC prompt on an agent's behalf.
+        guard AVCaptureDevice.authorizationStatus(for: .audio) == .authorized else {
+            completion(.failure(.domain(.micPermissionNeeded, message: "grant OpenWhisp microphone access in System Settings first")))
+            return
+        }
+        // Refuse if a password field is focused (agent dictation never pastes, but
+        // the user might speak a secret while a secure field has focus).
+        guard !SecureFieldDetector.focusedFieldIsSecure() else {
+            completion(.failure(.domain(.secureField, message: "a password field is focused; dictation refused")))
+            return
+        }
+
+        let started = Date()
+        agentDictateTimedOut = false
+        agentDictateStopped = false
+        agentDictatePrompt = prompt
+        sessionInitiator = .agent(client: clientName, prompt: prompt)
+        onSessionEnd = { [weak self] outcome in
+            guard let self else { return }
+            self.agentDictateTimeoutTask?.cancel()
+            self.agentDictateTimeoutTask = nil
+            let duration = Date().timeIntervalSince(started)
+            let timedOut = self.agentDictateTimedOut
+            let stopped = self.agentDictateStopped
+            switch outcome {
+            case .completed(let text):
+                let endedBy: BridgeWire.DictateEnd = timedOut ? .timeout : (stopped ? .stop : .user)
+                completion(.success(.init(text: text, durationSeconds: duration, timedOut: timedOut, endedBy: endedBy)))
+            case .empty:
+                if timedOut {
+                    completion(.failure(.domain(.timeout, message: "no speech within the time limit")))
+                } else {
+                    completion(.success(.init(text: "", durationSeconds: duration, timedOut: false, endedBy: stopped ? .stop : .user)))
+                }
+            case .secureField:
+                completion(.failure(.domain(.secureField, message: "a password field was focused; dictation refused")))
+            case .cancelled:
+                // Per the cancel invariant: no transcript on a cancel.
+                completion(.failure(.domain(.cancelled, message: "the user declined to answer — do not retry")))
+            case .error(let message):
+                completion(.failure(.domain(.audioUnavailable, message: message)))
+            }
+        }
+
+        // Run the shared start path. Any pre-session bail (e.g. a secure field that
+        // became focused in the last instant) leaves sessionActive false; catch it
+        // so the agent is never left hanging.
+        startDictation()
+        guard sessionActive else {
+            onSessionEnd = nil
+            agentDictatePrompt = nil
+            sessionInitiator = .user
+            completion(.failure(.domain(.internalError, message: "could not start dictation")))
+            return
+        }
+
+        let sid = activeSessionID
+        agentDictateTimeoutTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(max(1, timeoutSeconds)) * 1_000_000_000)
+            guard let self, self.sessionActive, self.activeSessionID == sid else { return }
+            self.agentDictateTimedOut = true
+            self.stopDictation()
+        }
+    }
+
+    /// Agent-signaled "the user said they're done" — finalize this agent session.
+    /// Never affects a user session.
+    func bridgeStopAgentDictation() -> Bool {
+        guard sessionActive, sessionInitiator.isAgent else { return false }
+        agentDictateStopped = true
+        stopDictation()
+        return true
+    }
+
+    /// Cancel this agent session (returns no transcript). Never affects a user
+    /// session — an agent can't stop the human's dictation.
+    func bridgeCancelAgentDictation() -> Bool {
+        guard sessionActive, sessionInitiator.isAgent else { return false }
+        cancelDictation()
+        return true
     }
 
     // MARK: Consent (M8)

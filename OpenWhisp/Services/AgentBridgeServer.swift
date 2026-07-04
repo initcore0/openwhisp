@@ -24,6 +24,18 @@ protocol AgentBridgeHost: AnyObject {
     func bridgeResolveConsent(clientName: String, completion: @escaping (Bool) -> Void)
     /// Note a completed agent call on the client's record (for the settings pane).
     func bridgeDidCall(clientName: String, tool: String)
+    /// Start an agent-initiated dictation. `completion` (main thread) delivers the
+    /// result when the session finalizes or on timeout; the server blocks its
+    /// connection thread until then.
+    func bridgeStartDictation(
+        clientName: String, prompt: String?, timeoutSeconds: Int, language: String?,
+        completion: @escaping (Result<BridgeWire.DictateResult, BridgeWire.ErrorObject>) -> Void
+    )
+    /// Finalize the active agent dictation (agent said the user is done). No-op on
+    /// a user session; returns whether an agent session was stopped.
+    func bridgeStopAgentDictation() -> Bool
+    /// Cancel the active agent dictation (no transcript). No-op on a user session.
+    func bridgeCancelAgentDictation() -> Bool
 }
 
 /// Per-connection state carried across frames on one connection.
@@ -294,15 +306,59 @@ final class AgentBridgeServer {
             send(fd, id: id, result: BridgeWire.HistoryListResult(entries: entries))
             return true
 
-        // Wired in M8 steps 6–7. Until then these aren't advertised in
-        // capabilities, so a well-behaved client won't call them.
-        case .dictate(let id, _), .refine(let id, _):
-            sendError(fd, id: id, error: .domain(.internalError, message: "not available in this build yet"))
+        case .dictate(let id, let params):
+            let clientName = state.clientName
+            guard resolveConsent(clientName: clientName) else {
+                sendError(fd, id: id, error: .domain(.consentDenied, message: "the user declined this client's access"))
+                return true
+            }
+            let timeout = BridgeRouter.resolvedTimeoutSeconds(params.timeoutSeconds)
+            switch blockingDictate(clientName: clientName, prompt: params.prompt, timeout: timeout, language: params.language) {
+            case .success(let result):
+                onMain { self.host?.bridgeDidCall(clientName: clientName, tool: "dictate") }
+                send(fd, id: id, result: result)
+            case .failure(let err):
+                sendError(fd, id: id, error: err)
+            }
             return true
-        case .dictateStop(let id), .dictateCancel(let id):
+
+        case .dictateStop(let id):
+            let stopped = onMain { self.host?.bridgeStopAgentDictation() ?? false }
+            send(fd, id: id, result: BridgeWire.DictateStopResult(stopped: stopped))
+            return true
+
+        case .dictateCancel(let id):
+            let cancelled = onMain { self.host?.bridgeCancelAgentDictation() ?? false }
+            send(fd, id: id, result: BridgeWire.DictateCancelResult(cancelled: cancelled))
+            return true
+
+        // Wired in M8 step 7.
+        case .refine(let id, _):
             sendError(fd, id: id, error: .domain(.internalError, message: "not available in this build yet"))
             return true
         }
+    }
+
+    /// Block this connection thread until an agent dictation finishes (or times
+    /// out). Never called on the main thread, so the wait can't self-deadlock. The
+    /// human always wins the mic — the host busy-rejects if a session is active.
+    private func blockingDictate(
+        clientName: String, prompt: String?, timeout: Int, language: String?
+    ) -> Result<BridgeWire.DictateResult, BridgeWire.ErrorObject> {
+        let sem = DispatchSemaphore(value: 0)
+        var out: Result<BridgeWire.DictateResult, BridgeWire.ErrorObject> =
+            .failure(.domain(.internalError, message: "no host"))
+        DispatchQueue.main.async {
+            guard let host = self.host else { sem.signal(); return }
+            host.bridgeStartDictation(
+                clientName: clientName, prompt: prompt, timeoutSeconds: timeout, language: language
+            ) { result in
+                out = result
+                sem.signal()
+            }
+        }
+        sem.wait()
+        return out
     }
 
     // MARK: - Peer authentication

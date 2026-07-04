@@ -251,7 +251,7 @@ extension BridgeWire.Notification: Equatable where Params: Equatable {}
 
 extension BridgeWire {
 
-    public struct ErrorObject: Codable, Sendable, Equatable {
+    public struct ErrorObject: Codable, Sendable, Equatable, Error {
         /// JSON-RPC numeric code. `-32601` method not found, `-32602` invalid
         /// params, `-32700` parse error, `-32600` invalid request; all domain
         /// failures use `-32000` (server error) with the specifics in ``data``.
