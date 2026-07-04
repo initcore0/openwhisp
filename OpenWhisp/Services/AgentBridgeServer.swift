@@ -497,16 +497,31 @@ final class AgentBridgeServer {
 // MARK: - Peer code-signature verification
 
 /// Verifies that a connected socket peer is signed like us — same Team ID for a
-/// Developer-ID / notarized build, else our own designated requirement (which is
-/// identity-based for a named self-signed dev cert). Uses the peer's **audit
-/// token** (which names one specific process incarnation) rather than its PID, so
-/// there is no PID-reuse / exec race (the class of bug behind CVE-2019-13013 and
-/// similar).
+/// Developer-ID / notarized build, or the same leaf certificate for a self-signed
+/// dev build (NOT the designated requirement, which is identifier-bound and would
+/// reject the differently-identified bundled CLI). Uses the peer's **audit token**
+/// (which names one specific process incarnation) rather than its PID, so there is
+/// no PID-reuse / exec race (the class of bug behind CVE-2019-13013 and similar).
 private enum PeerCodeSignature {
 
     // From <sys/un.h>; not always surfaced as Swift constants.
     private static let SOL_LOCAL_VALUE: Int32 = 0
     private static let LOCAL_PEERTOKEN_VALUE: Int32 = 0x006
+
+    /// How this build admits a same-user peer once its signature is examined.
+    private enum SelfIdentity {
+        /// Developer-ID / notarized: any binary with our Team ID — regardless of
+        /// its own identifier (the bundled CLI has a different one).
+        case teamRequirement(SecRequirement)
+        /// Self-signed dev cert: any binary signed with our exact leaf
+        /// certificate, again identifier-independent. The app's *designated*
+        /// requirement is identifier-bound and would REJECT the differently-
+        /// identified CLI (app `com.openwhisp.app` vs CLI `openwhisp`), so we
+        /// match the certificate directly instead.
+        case leafCertificate(Data)
+        /// Unsigned / ad-hoc: no signature to match — euid alone gates (dev only).
+        case unsigned
+    }
 
     static func verifyPeerMatchesSelf(fd: Int32) -> Bool {
         var token = audit_token_t()
@@ -516,63 +531,90 @@ private enum PeerCodeSignature {
         }
         guard rc == 0, len == socklen_t(MemoryLayout<audit_token_t>.size) else { return false }
 
-        guard let requirement = currentSelfRequirement() else {
-            // We couldn't derive our own requirement — i.e. this is an unsigned /
-            // ad-hoc dev binary. euid already matched, so accept (dev-only path;
-            // signed builds always derive a requirement).
-            return true
-        }
-
         var tokenCopy = token
         let tokenData = Data(bytes: &tokenCopy, count: MemoryLayout<audit_token_t>.size) as CFData
         let attrs = [kSecGuestAttributeAudit as String: tokenData] as CFDictionary
         var guest: SecCode?
         guard SecCodeCopyGuestWithAttributes(nil, attrs, [], &guest) == errSecSuccess,
               let guest else { return false }
-        return SecCodeCheckValidity(guest, [], requirement) == errSecSuccess
+
+        switch currentSelfIdentity() {
+        case .teamRequirement(let requirement):
+            // The requirement (anchor apple generic + our Team ID) validates the
+            // guest's signature chain as well as its team.
+            return SecCodeCheckValidity(guest, [], requirement) == errSecSuccess
+        case .leafCertificate(let ourLeaf):
+            // Confirm the guest is validly signed, then that it's the SAME signer
+            // (identical leaf certificate) as us — independent of its identifier.
+            guard SecCodeCheckValidity(guest, [], nil) == errSecSuccess else { return false }
+            return Self.leafCertificateData(ofCode: guest) == ourLeaf
+        case .unsigned:
+            // We're unsigned/ad-hoc (dev build). euid already matched — admit.
+            return true
+        }
     }
 
     private static let cacheLock = NSLock()
-    private static var cachedRequirement: SecRequirement?
+    private static var cachedIdentity: SelfIdentity?
 
-    /// Our own admission requirement, cached on SUCCESS only — the signature
-    /// can't change for the process lifetime, but a transient derivation failure
-    /// must not be cached as nil: the nil branch above ADMITS peers (dev-build
-    /// path), so caching it would downgrade auth to euid-only for the rest of
-    /// the run. A nil re-derives on the next connection, like the uncached code.
-    private static func currentSelfRequirement() -> SecRequirement? {
+    /// Our admission identity, cached once derived (the signature can't change for
+    /// the process lifetime). A transient derivation failure is NOT cached — it
+    /// falls back to `.unsigned` for that call only (mirroring the dev-build
+    /// admit-on-unknown behavior) and re-derives next connection, so a hiccup
+    /// can't permanently downgrade the gate.
+    private static func currentSelfIdentity() -> SelfIdentity {
         cacheLock.lock(); defer { cacheLock.unlock() }
-        if cachedRequirement == nil { cachedRequirement = selfRequirement() }
-        return cachedRequirement
+        if let cached = cachedIdentity { return cached }
+        if let derived = deriveSelfIdentity() {
+            cachedIdentity = derived
+            return derived
+        }
+        return .unsigned
     }
 
-    /// A Team-ID match when we have one (so the bundled CLI, signed by the same
-    /// team, passes), otherwise our designated requirement. Returns nil when we
-    /// are unsigned/ad-hoc.
-    private static func selfRequirement() -> SecRequirement? {
+    /// Returns nil on a transient SecCode failure; `.unsigned` only when we are
+    /// genuinely unsigned / ad-hoc.
+    private static func deriveSelfIdentity() -> SelfIdentity? {
         var selfCode: SecCode?
         guard SecCodeCopySelf([], &selfCode) == errSecSuccess, let selfCode else { return nil }
         var selfStatic: SecStaticCode?
         guard SecCodeCopyStaticCode(selfCode, [], &selfStatic) == errSecSuccess, let selfStatic else { return nil }
 
-        // Prefer Team ID (admits any same-team binary, e.g. the bundled adapter).
         var info: CFDictionary?
         let flags = SecCSFlags(rawValue: kSecCSSigningInformation)
-        if SecCodeCopySigningInformation(selfStatic, flags, &info) == errSecSuccess,
-           let dict = info as? [String: Any],
-           let team = dict[kSecCodeInfoTeamIdentifier as String] as? String,
-           !team.isEmpty {
+        guard SecCodeCopySigningInformation(selfStatic, flags, &info) == errSecSuccess,
+              let dict = info as? [String: Any] else { return nil }
+
+        // Developer ID / notarized: match Team ID (admits any same-team binary).
+        if let team = dict[kSecCodeInfoTeamIdentifier as String] as? String, !team.isEmpty {
             var req: SecRequirement?
             let reqString = "anchor apple generic and certificate leaf[subject.OU] = \"\(team)\"" as CFString
             if SecRequirementCreateWithString(reqString, [], &req) == errSecSuccess, let req {
-                return req
+                return .teamRequirement(req)
             }
+            return nil // had a team but couldn't build the requirement — treat as transient
         }
 
-        // Fallback: our designated requirement (identity-based for a named
-        // self-signed cert, so a same-identity CLI still passes in dev).
-        var dr: SecRequirement?
-        guard SecCodeCopyDesignatedRequirement(selfStatic, [], &dr) == errSecSuccess else { return nil }
-        return dr
+        // Self-signed: match our exact leaf certificate.
+        if let certs = dict[kSecCodeInfoCertificates as String] as? [SecCertificate],
+           let leaf = certs.first {
+            return .leafCertificate(SecCertificateCopyData(leaf) as Data)
+        }
+
+        // No team, no certificate → genuinely unsigned / ad-hoc.
+        return .unsigned
+    }
+
+    /// The leaf-certificate DER of a live guest SecCode (nil if unsigned/ad-hoc).
+    private static func leafCertificateData(ofCode code: SecCode) -> Data? {
+        var staticCode: SecStaticCode?
+        guard SecCodeCopyStaticCode(code, [], &staticCode) == errSecSuccess, let staticCode else { return nil }
+        var info: CFDictionary?
+        let flags = SecCSFlags(rawValue: kSecCSSigningInformation)
+        guard SecCodeCopySigningInformation(staticCode, flags, &info) == errSecSuccess,
+              let dict = info as? [String: Any],
+              let certs = dict[kSecCodeInfoCertificates as String] as? [SecCertificate],
+              let leaf = certs.first else { return nil }
+        return SecCertificateCopyData(leaf) as Data
     }
 }
