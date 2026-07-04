@@ -188,4 +188,38 @@ final class BridgeWireTests: XCTestCase {
         XCTAssertNil(obj?["id"], "notifications must not carry an id")
         XCTAssertEqual(obj?["method"] as? String, "dictate.state")
     }
+
+    // MARK: Display sanitation (consent window + overlay attribution)
+
+    func testSanitizedForDisplayStripsControlAndBidi() {
+        // Newlines collapse, C0/C1 controls and bidi overrides are stripped — an
+        // agent-supplied name/prompt can't reshape OpenWhisp's own UI text.
+        XCTAssertEqual(BridgeWire.sanitizedForDisplay("a\nb", maxLength: 60), "a b")
+        XCTAssertEqual(BridgeWire.sanitizedForDisplay("a\tb\u{07}c", maxLength: 60), "abc")
+        XCTAssertEqual(BridgeWire.sanitizedForDisplay("a\u{202E}bc", maxLength: 60), "abc")
+    }
+
+    func testSanitizedForDisplayCollapsesUnicodeLineBreaks() {
+        // U+2028/U+2029/NEL are mandatory breaks for CoreText — they must
+        // collapse like \n or a prompt could inject lines that render as
+        // OpenWhisp's own voice in the overlay/consent UI.
+        XCTAssertEqual(BridgeWire.sanitizedForDisplay("a\u{2028}b", maxLength: 60), "a b")
+        XCTAssertEqual(BridgeWire.sanitizedForDisplay("a\u{2029}b", maxLength: 60), "a b")
+        XCTAssertEqual(BridgeWire.sanitizedForDisplay("a\u{85}b", maxLength: 60), "a b")
+    }
+
+    func testSanitizedForDisplayTrimsAndCaps() {
+        XCTAssertEqual(BridgeWire.sanitizedForDisplay("  hi  ", maxLength: 60), "hi")
+        XCTAssertEqual(BridgeWire.sanitizedForDisplay(String(repeating: "x", count: 70), maxLength: 60),
+                       String(repeating: "x", count: 60) + "…")
+        XCTAssertEqual(BridgeWire.sanitizedForDisplay("\u{202E}\n ", maxLength: 60), "")
+    }
+
+    // MARK: Socket location (the server↔client discovery contract)
+
+    func testSocketLocationContract() {
+        XCTAssertEqual(BridgeWire.SocketLocation.socketFileName, "agent.sock")
+        XCTAssertEqual(BridgeWire.SocketLocation.pointerFileName, "agent.sock.path")
+        XCTAssertTrue(BridgeWire.SocketLocation.defaultSocketPath().hasSuffix("OpenWhisp/agent.sock"))
+    }
 }

@@ -18,6 +18,9 @@ protocol AgentBridgeHost: AnyObject {
     /// The capability tokens this build actually implements (grows as dictate /
     /// refine are wired). Advertised in `bridge.hello`.
     func bridgeCapabilities() -> [String]
+    /// The consent posture `clientName` would get right now (stored policy +
+    /// this-run grants), WITHOUT prompting. Advertised in `bridge.hello`.
+    func bridgeConsentSnapshot(clientName: String) -> BridgeWire.ConsentState
     /// Resolve consent for `clientName` (presenting the consent window if the
     /// stored policy requires it). `completion` fires on the main thread with
     /// allow/deny; the server blocks its connection thread until it does.
@@ -141,7 +144,7 @@ final class AgentBridgeServer {
     /// paths (sun_path is only 104 bytes). Returns nil only if even the fallback
     /// overflows.
     static func resolveSocketPath() -> String {
-        let primary = appSupportDir().appendingPathComponent("agent.sock").path
+        let primary = BridgeWire.SocketLocation.defaultSocketPath()
         if primary.utf8.count < 104 { return primary }
         // Fallback: short tmp path keyed by uid.
         let tmp = (ProcessInfo.processInfo.environment["TMPDIR"] ?? NSTemporaryDirectory())
@@ -152,24 +155,20 @@ final class AgentBridgeServer {
         return fallback.utf8.count < 104 ? fallback : primary // best effort
     }
 
-    private static func appSupportDir() -> URL {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-            ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support")
-        return base.appendingPathComponent("OpenWhisp", isDirectory: true)
-    }
-
     /// A pointer file so a client can find the socket when the fallback path is in
     /// use. Always written next to where the socket would nominally live.
     private static func writePointerFile(resolvedPath: String) {
-        let dir = appSupportDir()
+        let dir = BridgeWire.SocketLocation.appSupportDirectory()
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true,
                                                  attributes: [.posixPermissions: 0o700])
-        let pointer = dir.appendingPathComponent("agent.sock.path")
+        let pointer = dir.appendingPathComponent(BridgeWire.SocketLocation.pointerFileName)
         try? resolvedPath.data(using: .utf8)?.write(to: pointer, options: .atomic)
     }
 
     private static func removePointerFile() {
-        try? FileManager.default.removeItem(at: appSupportDir().appendingPathComponent("agent.sock.path"))
+        try? FileManager.default.removeItem(
+            at: BridgeWire.SocketLocation.appSupportDirectory()
+                .appendingPathComponent(BridgeWire.SocketLocation.pointerFileName))
     }
 
     private func makeListeningSocket(at path: String) -> Int32? {
@@ -220,6 +219,9 @@ final class AgentBridgeServer {
                 break
             }
             if !isRunning { close(conn); break }
+            // A peer that vanishes mid-call (Ctrl-C'd CLI, MCP host timeout) must
+            // surface as EPIPE on our write, not as a SIGPIPE that kills the app.
+            _ = fcntl(conn, F_SETNOSIGPIPE, 1)
             Thread.detachNewThread { [weak self] in self?.handleConnection(conn) }
         }
     }
@@ -243,12 +245,6 @@ final class AgentBridgeServer {
             if n <= 0 { break } // EOF or error → connection closed
             buffer.append(contentsOf: chunk[0..<n])
 
-            // A single frame with no newline may not exceed the cap.
-            if buffer.count > BridgeWire.maxFrameBytes {
-                log.notice("Agent Bridge: frame exceeded cap; closing")
-                break
-            }
-
             while let nlIndex = buffer.firstIndex(of: 0x0A) {
                 let lineData = Data(buffer[buffer.startIndex..<nlIndex])
                 buffer.removeSubrange(buffer.startIndex...nlIndex)
@@ -264,6 +260,15 @@ final class AgentBridgeServer {
                     if !execute(intent, fd: fd, state: &state) { return }
                 }
             }
+
+            // After draining complete lines the buffer holds at most one PARTIAL
+            // frame; only that residue is capped. (Checking before the drain
+            // counted the newline and any pipelined next frame, so a maximum-size
+            // frame the router itself accepts would kill the connection.)
+            if buffer.count > BridgeWire.maxFrameBytes {
+                log.notice("Agent Bridge: frame exceeded cap; closing")
+                break
+            }
         }
     }
 
@@ -273,15 +278,21 @@ final class AgentBridgeServer {
         case .hello(let id, let params):
             do {
                 let negotiated = try BridgeWire.negotiatedProtocolVersion(clientProtocolVersion: params.protocolVersion)
-                let caps = onMain { self.host?.bridgeCapabilities() ?? [] }
-                let appVersion = onMain { self.host?.bridgeStatus().appVersion ?? "" }
-                // Consent is not yet gated (step 5); grant on handshake for now.
+                // One main-thread hop for everything the handshake advertises.
+                // The consent field reports the client's CURRENT posture (stored
+                // policy / this-run grant); tool calls still resolve consent —
+                // and may prompt — per call.
+                let (caps, appVersion, consent) = onMain {
+                    (self.host?.bridgeCapabilities() ?? [],
+                     self.host?.bridgeStatus().appVersion ?? "",
+                     self.host?.bridgeConsentSnapshot(clientName: params.clientName) ?? .pending)
+                }
                 let result = BridgeWire.HelloResult(
                     protocolVersion: negotiated,
                     appVersion: appVersion,
                     capabilities: caps,
                     clientId: UUID().uuidString,
-                    consent: .granted
+                    consent: consent
                 )
                 send(fd, id: id, result: result)
                 state.handshaken = true
@@ -303,10 +314,7 @@ final class AgentBridgeServer {
 
         case .historyList(let id, let params):
             let clientName = state.clientName // copy out of `inout` for the closures below
-            guard resolveConsent(clientName: clientName) else {
-                sendError(fd, id: id, error: .domain(.consentDenied, message: "the user declined this client's access"))
-                return true
-            }
+            guard consentGranted(clientName, fd: fd, id: id) else { return true }
             let limit = BridgeRouter.resolvedHistoryLimit(params.limit)
             let entries = onMain { self.host?.bridgeHistory(limit: limit) ?? [] }
             onMain { self.host?.bridgeDidCall(clientName: clientName, tool: "history") }
@@ -315,10 +323,7 @@ final class AgentBridgeServer {
 
         case .dictate(let id, let params):
             let clientName = state.clientName
-            guard resolveConsent(clientName: clientName) else {
-                sendError(fd, id: id, error: .domain(.consentDenied, message: "the user declined this client's access"))
-                return true
-            }
+            guard consentGranted(clientName, fd: fd, id: id) else { return true }
             let timeout = BridgeRouter.resolvedTimeoutSeconds(params.timeoutSeconds)
             switch blockingDictate(clientName: clientName, prompt: params.prompt, timeout: timeout, language: params.language) {
             case .success(let result):
@@ -341,10 +346,7 @@ final class AgentBridgeServer {
 
         case .refine(let id, let params):
             let clientName = state.clientName
-            guard resolveConsent(clientName: clientName) else {
-                sendError(fd, id: id, error: .domain(.consentDenied, message: "the user declined this client's access"))
-                return true
-            }
+            guard consentGranted(clientName, fd: fd, id: id) else { return true }
             switch blockingRefine(clientName: clientName, text: params.text, instruction: params.instruction) {
             case .success(let text):
                 onMain { self.host?.bridgeDidCall(clientName: clientName, tool: "refine") }
@@ -356,16 +358,18 @@ final class AgentBridgeServer {
         }
     }
 
-    /// Block this connection thread until a refine completes. Not called on the
-    /// main thread.
-    private func blockingRefine(
-        clientName: String, text: String, instruction: String
-    ) -> Result<String, BridgeWire.ErrorObject> {
+    /// Block this connection thread until a host completion fires on the main
+    /// thread. The one semaphore bridge every blocking call shares. Never called
+    /// on the main thread, so the wait can't self-deadlock; if the host is gone,
+    /// `noHost` is returned immediately.
+    private func blockOnHost<T>(
+        noHost: T, _ start: @escaping (AgentBridgeHost, @escaping (T) -> Void) -> Void
+    ) -> T {
         let sem = DispatchSemaphore(value: 0)
-        var out: Result<String, BridgeWire.ErrorObject> = .failure(.domain(.internalError, message: "no host"))
+        var out = noHost
         DispatchQueue.main.async {
             guard let host = self.host else { sem.signal(); return }
-            host.bridgeRefine(clientName: clientName, text: text, instruction: instruction) { result in
+            start(host) { result in
                 out = result
                 sem.signal()
             }
@@ -374,26 +378,27 @@ final class AgentBridgeServer {
         return out
     }
 
+    /// Block this connection thread until a refine completes.
+    private func blockingRefine(
+        clientName: String, text: String, instruction: String
+    ) -> Result<String, BridgeWire.ErrorObject> {
+        blockOnHost(noHost: .failure(.domain(.internalError, message: "no host"))) { host, done in
+            host.bridgeRefine(clientName: clientName, text: text, instruction: instruction, completion: done)
+        }
+    }
+
     /// Block this connection thread until an agent dictation finishes (or times
-    /// out). Never called on the main thread, so the wait can't self-deadlock. The
-    /// human always wins the mic — the host busy-rejects if a session is active.
+    /// out). The human always wins the mic — the host busy-rejects if a session
+    /// is active.
     private func blockingDictate(
         clientName: String, prompt: String?, timeout: Int, language: String?
     ) -> Result<BridgeWire.DictateResult, BridgeWire.ErrorObject> {
-        let sem = DispatchSemaphore(value: 0)
-        var out: Result<BridgeWire.DictateResult, BridgeWire.ErrorObject> =
-            .failure(.domain(.internalError, message: "no host"))
-        DispatchQueue.main.async {
-            guard let host = self.host else { sem.signal(); return }
+        blockOnHost(noHost: .failure(.domain(.internalError, message: "no host"))) { host, done in
             host.bridgeStartDictation(
-                clientName: clientName, prompt: prompt, timeoutSeconds: timeout, language: language
-            ) { result in
-                out = result
-                sem.signal()
-            }
+                clientName: clientName, prompt: prompt, timeoutSeconds: timeout, language: language,
+                completion: done
+            )
         }
-        sem.wait()
-        return out
     }
 
     // MARK: - Peer authentication
@@ -436,19 +441,15 @@ final class AgentBridgeServer {
 
     /// Synchronously resolve consent for `clientName`, blocking this connection
     /// thread until the host answers (which may include the user interacting with
-    /// the consent window — up to its 60s timeout). Never called on the main
-    /// thread, so the wait can't self-deadlock.
-    private func resolveConsent(clientName: String) -> Bool {
-        let sem = DispatchSemaphore(value: 0)
-        var granted = false
-        DispatchQueue.main.async {
-            guard let host = self.host else { sem.signal(); return }
-            host.bridgeResolveConsent(clientName: clientName) { decision in
-                granted = decision
-                sem.signal()
-            }
+    /// the consent window — up to its 60s timeout). On denial, sends the
+    /// consentDenied error so callers just `guard ... else { return true }`.
+    private func consentGranted(_ clientName: String, fd: Int32, id: BridgeWire.RPCID?) -> Bool {
+        let granted = blockOnHost(noHost: false) { host, done in
+            host.bridgeResolveConsent(clientName: clientName, completion: done)
         }
-        sem.wait()
+        if !granted {
+            sendError(fd, id: id, error: .domain(.consentDenied, message: "the user declined this client's access"))
+        }
         return granted
     }
 
@@ -515,7 +516,7 @@ private enum PeerCodeSignature {
         }
         guard rc == 0, len == socklen_t(MemoryLayout<audit_token_t>.size) else { return false }
 
-        guard let requirement = selfRequirement() else {
+        guard let requirement = currentSelfRequirement() else {
             // We couldn't derive our own requirement — i.e. this is an unsigned /
             // ad-hoc dev binary. euid already matched, so accept (dev-only path;
             // signed builds always derive a requirement).
@@ -531,9 +532,23 @@ private enum PeerCodeSignature {
         return SecCodeCheckValidity(guest, [], requirement) == errSecSuccess
     }
 
-    /// Our own admission requirement: a Team-ID match when we have one (so the
-    /// bundled CLI, signed by the same team, passes), otherwise our designated
-    /// requirement. Returns nil when we are unsigned/ad-hoc.
+    private static let cacheLock = NSLock()
+    private static var cachedRequirement: SecRequirement?
+
+    /// Our own admission requirement, cached on SUCCESS only — the signature
+    /// can't change for the process lifetime, but a transient derivation failure
+    /// must not be cached as nil: the nil branch above ADMITS peers (dev-build
+    /// path), so caching it would downgrade auth to euid-only for the rest of
+    /// the run. A nil re-derives on the next connection, like the uncached code.
+    private static func currentSelfRequirement() -> SecRequirement? {
+        cacheLock.lock(); defer { cacheLock.unlock() }
+        if cachedRequirement == nil { cachedRequirement = selfRequirement() }
+        return cachedRequirement
+    }
+
+    /// A Team-ID match when we have one (so the bundled CLI, signed by the same
+    /// team, passes), otherwise our designated requirement. Returns nil when we
+    /// are unsigned/ad-hoc.
     private static func selfRequirement() -> SecRequirement? {
         var selfCode: SecCode?
         guard SecCodeCopySelf([], &selfCode) == errSecSuccess, let selfCode else { return nil }

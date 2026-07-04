@@ -114,11 +114,7 @@ private struct AgentConsentView: View {
 
     /// The client name, sanitized for display: single line, trimmed, capped.
     private var displayName: String {
-        let cleaned = clientName
-            .replacingOccurrences(of: "\n", with: " ")
-            .filter { !$0.unicodeScalars.contains(where: { $0.properties.isBidiControl || ($0.value < 0x20) }) }
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        let capped = cleaned.count > 60 ? String(cleaned.prefix(60)) + "…" : cleaned
+        let capped = BridgeWire.sanitizedForDisplay(clientName, maxLength: 60)
         return capped.isEmpty ? "An agent" : capped
     }
 

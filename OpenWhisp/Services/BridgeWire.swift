@@ -519,4 +519,59 @@ extension BridgeWire {
     public static func date(fromISO8601 string: String) -> Date? {
         iso8601.date(from: string)
     }
+
+    // MARK: - Display sanitation
+
+    /// Sanitize an agent-supplied string (client name, dictate prompt) for display
+    /// in OpenWhisp's own UI: collapse ALL line breaks (including U+2028/U+2029/
+    /// NEL, which CoreText honors as mandatory breaks — a raw "\n" check would let
+    /// a prompt inject lines that read as OpenWhisp's own voice), strip control
+    /// and bidi-override characters, trim, and cap the length. Display only —
+    /// never authorization.
+    public static func sanitizedForDisplay(_ raw: String, maxLength: Int) -> String {
+        let cleaned = raw
+            .components(separatedBy: .newlines).joined(separator: " ")
+            .filter { !$0.unicodeScalars.contains(where: {
+                $0.properties.isBidiControl || CharacterSet.controlCharacters.contains($0)
+            }) }
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard cleaned.count > maxLength else { return cleaned }
+        return String(cleaned.prefix(maxLength)) + "…"
+    }
+
+    // MARK: - Socket location
+
+    /// The server↔client socket-discovery contract, defined once for both sides:
+    /// where the control socket nominally lives, and the pointer file the server
+    /// writes so clients can find the `$TMPDIR` fallback used when the home path
+    /// is too long for `sun_path`.
+    public enum SocketLocation {
+        public static let directoryName = "OpenWhisp"
+        public static let socketFileName = "agent.sock"
+        public static let pointerFileName = "agent.sock.path"
+
+        /// `~/Library/Application Support/OpenWhisp`.
+        public static func appSupportDirectory() -> URL {
+            let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+                ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support")
+            return base.appendingPathComponent(directoryName, isDirectory: true)
+        }
+
+        /// The nominal socket path (ignoring the server's long-path fallback).
+        public static func defaultSocketPath() -> String {
+            appSupportDirectory().appendingPathComponent(socketFileName).path
+        }
+
+        /// Client-side discovery: the pointer file's contents if present (covers
+        /// the `$TMPDIR` fallback), else the default path.
+        public static func discoverSocketPath() -> String {
+            let pointer = appSupportDirectory().appendingPathComponent(pointerFileName)
+            if let data = try? Data(contentsOf: pointer),
+               let path = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !path.isEmpty {
+                return path
+            }
+            return defaultSocketPath()
+        }
+    }
 }

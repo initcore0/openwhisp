@@ -63,7 +63,7 @@ struct AgentBridgePane: View {
         } header: {
             Text("Setup")
         } footer: {
-            SettingsFootnote("The MCP adapter (`openwhisp mcp`) and one-command setup (`openwhisp setup <agent>`) arrive with the agent integration. See docs/AGENT_BRIDGE.md.")
+            SettingsFootnote("Or run `openwhisp setup <agent>` for per-agent registration steps (claude-code, cursor, hermes, openclaw). See docs/AGENT_BRIDGE.md.")
         }
     }
 
@@ -139,11 +139,12 @@ struct AgentBridgePane: View {
         }
     }
 
+    private static let relativeFormatter = RelativeDateTimeFormatter()
+
     private func lastCallSuffix(_ record: AgentClientRecord) -> String {
         guard let last = record.lastCall else { return "" }
-        let f = RelativeDateTimeFormatter()
         let tool = record.lastTool.map { " · \($0)" } ?? ""
-        return " · \(f.localizedString(for: last, relativeTo: Date()))\(tool)"
+        return " · \(Self.relativeFormatter.localizedString(for: last, relativeTo: Date()))\(tool)"
     }
 
     private func copyToClipboard(_ text: String) {

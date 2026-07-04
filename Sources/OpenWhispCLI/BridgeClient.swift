@@ -33,29 +33,17 @@ final class BridgeClient {
     /// Recent history from the handshake — capabilities the app advertised.
     private(set) var capabilities: [String] = []
 
-    // MARK: - Socket path
-
-    /// The control socket path: the pointer file's contents if present (handles
-    /// the `$TMPDIR` fallback), else the default App Support location.
-    static func socketPath() -> String {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-            ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support")
-        let dir = base.appendingPathComponent("OpenWhisp", isDirectory: true)
-        let pointer = dir.appendingPathComponent("agent.sock.path")
-        if let data = try? Data(contentsOf: pointer),
-           let path = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !path.isEmpty {
-            return path
-        }
-        return dir.appendingPathComponent("agent.sock").path
-    }
-
     // MARK: - Connect + handshake
 
     init() throws {
-        let path = BridgeClient.socketPath()
+        // Discovery contract (pointer file for the $TMPDIR fallback, default App
+        // Support path) is defined once in BridgeWire.SocketLocation.
+        let path = BridgeWire.SocketLocation.discoverSocketPath()
         let sock = socket(AF_UNIX, SOCK_STREAM, 0)
         guard sock >= 0 else { throw ClientError.unreachable }
+        // If the app dies mid-call, our write must fail with EPIPE, not raise a
+        // SIGPIPE that kills the CLI before it can print a diagnostic.
+        _ = fcntl(sock, F_SETNOSIGPIPE, 1)
 
         var addr = sockaddr_un()
         addr.sun_family = sa_family_t(AF_UNIX)

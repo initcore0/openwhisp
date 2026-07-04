@@ -62,6 +62,19 @@ final class AgentClientStoreTests: XCTestCase {
         XCTAssertNil(store.record(for: "nobody"))
     }
 
+    func testDemoteRunScopedGrants() {
+        // A `.whileRunning` grant dies with the app run that made it; reloaded
+        // rows demote to askEveryTime so the pane never shows an expired grant
+        // as standing consent. Other policies are untouched.
+        var store = AgentClientStore()
+        let now = Date()
+        store.upsert(AgentClientRecord(clientName: "claude-code", policy: .whileRunning, firstSeen: now))
+        store.upsert(AgentClientRecord(clientName: "cursor", policy: .always, firstSeen: now))
+        store.demoteRunScopedGrants()
+        XCTAssertEqual(store.record(for: "claude-code")?.policy, .askEveryTime)
+        XCTAssertEqual(store.record(for: "cursor")?.policy, .always)
+    }
+
     // MARK: Codable round-trip (the on-disk shape)
 
     func testStoreRoundTrips() throws {

@@ -87,6 +87,17 @@ public struct AgentClientStore: Codable, Equatable {
         records.removeAll { $0.clientName == clientName }
     }
 
+    /// Demote `.whileRunning` rows to `.askEveryTime`: that grant dies with the
+    /// app run that made it, and a row loaded from disk would otherwise render
+    /// in the settings pane as a standing grant that no longer exists. (The
+    /// decision logic already treats the two identically once the run-set is
+    /// empty — this keeps what the UI shows in agreement.) Applied on load.
+    public mutating func demoteRunScopedGrants() {
+        for i in records.indices where records[i].policy == .whileRunning {
+            records[i].policy = .askEveryTime
+        }
+    }
+
     // MARK: - Persistence
 
     private static var fileURL: URL {
@@ -100,7 +111,9 @@ public struct AgentClientStore: Codable, Equatable {
     public static func load() -> AgentClientStore {
         guard let data = try? Data(contentsOf: fileURL) else { return AgentClientStore() }
         do {
-            return try JSONDecoder().decode(AgentClientStore.self, from: data)
+            var store = try JSONDecoder().decode(AgentClientStore.self, from: data)
+            store.demoteRunScopedGrants()
+            return store
         } catch {
             // Corrupt / hand-edited / version-skewed: move aside so the next save
             // doesn't overwrite and make the loss permanent.

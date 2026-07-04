@@ -188,9 +188,12 @@ func runMCP() -> Never {
 
 func runSetup(_ args: Args) -> Never {
     let agent = args.positional ?? "claude-code"
-    let cliPath = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/openwhisp").path
-    // The bundled binary path; when run from a dev build, fall back to argv[0].
-    let bin = FileManager.default.fileExists(atPath: cliPath) ? cliPath : (CommandLine.arguments.first ?? "openwhisp")
+    // Our own absolute binary path, as invoked. Deliberately NOT resolving
+    // symlinks: a stable symlink (e.g. /usr/local/bin/openwhisp) should be what
+    // gets registered, not the version-specific target behind it. Note
+    // Bundle.main.bundleURL is unusable here — for a bare CLI executable it is
+    // just the containing directory, so appending Contents/Helpers double-nests.
+    let bin = Bundle.main.executableURL?.path ?? (CommandLine.arguments.first ?? "openwhisp")
     switch agent {
     case "claude-code", "claude":
         emit("# 1. Register the MCP server with Claude Code:")
