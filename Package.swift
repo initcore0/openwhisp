@@ -33,6 +33,7 @@ let package = Package(
                 "OverlayPhase.swift",
                 "LiveChunkPipeline.swift",
                 "ConfigBundle.swift",
+                "BridgeWire.swift",
                 "ConfigPack.swift",
                 "ScriptPostProcessor.swift",
                 "WhisperTask.swift",
