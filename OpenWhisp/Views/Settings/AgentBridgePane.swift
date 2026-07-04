@@ -17,6 +17,7 @@ struct AgentBridgePane: View {
                 if !appState.agentBridgeAllowCloudAI && appState.llmProvider == "openai" {
                     cloudWarningSection
                 }
+                behaviorSection
                 securitySection
                 clientsSection
             }
@@ -73,6 +74,20 @@ struct AgentBridgePane: View {
                 .warning,
                 "Your AI provider is OpenAI (cloud). Agent-initiated AI refinement is blocked so an agent can't send text off your Mac. Turn on \"Allow agents to use cloud AI\" below to permit it, or switch to a local provider in Cleanup."
             )
+        }
+    }
+
+    // MARK: Behavior
+
+    private var behaviorSection: some View {
+        Section {
+            SubtitledToggle(
+                "Stop listening on silence",
+                subtitle: "End an agent-requested dictation automatically once you stop talking, instead of waiting for the time limit. Only applies to agent requests — your own dictation hotkey is unaffected.",
+                isOn: $appState.agentBridgeSilenceAutoStop
+            )
+        } header: {
+            Text("Behavior")
         }
     }
 

@@ -21,6 +21,23 @@ final class MCPServer {
     /// handshake so consent records show the real agent (e.g. "claude-code").
     private var clientName = "mcp-client"
 
+    /// Serializes every stdout frame. `dictate` streams `notifications/progress`
+    /// from a background timer thread while the main loop may also write, so all
+    /// writes go through this lock to avoid interleaved JSON on the wire.
+    private let writeLock = NSLock()
+
+    /// How often to emit a keep-alive progress notification during a blocking
+    /// `dictate`. Kept comfortably under Cursor's ~60s tool-call timeout.
+    /// Overridable via `OPENWHISP_MCP_PROGRESS_INTERVAL` (seconds) for tuning/tests;
+    /// clamped to a sane floor so it can't be set to a busy-loop.
+    private let progressIntervalSeconds: TimeInterval = {
+        if let raw = ProcessInfo.processInfo.environment["OPENWHISP_MCP_PROGRESS_INTERVAL"],
+           let v = Double(raw), v >= 0.1 {
+            return v
+        }
+        return 10
+    }()
+
     func run() {
         logStderr("openwhisp mcp: ready (stdio)")
         while let line = readLine(strippingNewline: true) {
@@ -64,7 +81,10 @@ final class MCPServer {
         case "tools/call":
             let name = params["name"] as? String ?? ""
             let arguments = params["arguments"] as? [String: Any] ?? [:]
-            let result = callTool(name: name, arguments: arguments)
+            // MCP progress: the client MAY pass params._meta.progressToken; if so,
+            // we stream notifications/progress against it while the call runs.
+            let progressToken = (params["_meta"] as? [String: Any])?["progressToken"]
+            let result = callTool(name: name, arguments: arguments, progressToken: progressToken)
             respond(id: id, result: result)
         default:
             if id != nil {
@@ -75,7 +95,7 @@ final class MCPServer {
 
     // MARK: - Tool execution (forward to the bridge)
 
-    private func callTool(name: String, arguments: [String: Any]) -> [String: Any] {
+    private func callTool(name: String, arguments: [String: Any], progressToken: Any? = nil) -> [String: Any] {
         do {
             let client = try BridgeClient()
             try client.handshake(clientName: clientName)
@@ -86,6 +106,17 @@ final class MCPServer {
                     timeoutSeconds: arguments["timeoutSeconds"] as? Int,
                     language: arguments["language"] as? String
                 )
+                // dictate blocks until the user finishes (or the timeout). Emit
+                // keep-alive progress against the client's token so long answers
+                // don't trip an agent's tool-call timeout (Cursor ~60s).
+                let progress = ProgressEmitter(
+                    token: progressToken,
+                    interval: progressIntervalSeconds,
+                    total: params.timeoutSeconds.map(Double.init),
+                    server: self
+                )
+                progress.start()
+                defer { progress.stop() }
                 let r = try client.call(method: BridgeWire.Method.dictate.rawValue,
                                         params: params, resultType: BridgeWire.DictateResult.self)
                 return textContent(r.text.isEmpty ? "(the user said nothing)" : r.text)
@@ -143,7 +174,20 @@ final class MCPServer {
     private func write(_ obj: [String: Any]) {
         guard var data = try? JSONSerialization.data(withJSONObject: obj) else { return }
         data.append(0x0A)
+        // Serialize: a background progress thread and the main loop both write here.
+        writeLock.lock()
+        defer { writeLock.unlock() }
         FileHandle.standardOutput.write(data) // unbuffered — the client sees it immediately
+    }
+
+    /// Emit one `notifications/progress` frame for `token`. `progress` is a
+    /// monotonically increasing value; `total`, when known, is the timeout so a
+    /// client can render a bar. No `id` — it's a notification.
+    fileprivate func sendProgress(token: Any, progress: Double, total: Double?, message: String?) {
+        var params: [String: Any] = ["progressToken": token, "progress": progress]
+        if let total { params["total"] = total }
+        if let message { params["message"] = message }
+        write(["jsonrpc": "2.0", "method": "notifications/progress", "params": params])
     }
 
     // MARK: - Static content
@@ -228,4 +272,55 @@ final class MCPServer {
 
 func logStderr(_ message: String) {
     FileHandle.standardError.write(Data(("openwhisp mcp: " + message + "\n").utf8))
+}
+
+/// Drives periodic MCP `notifications/progress` frames on a background thread
+/// while a blocking bridge call (currently `dictate`) is in flight. A no-op when
+/// the client didn't pass a `progressToken`. `progress` counts elapsed seconds so
+/// it strictly increases (MCP requires monotonic progress); when the dictate
+/// timeout is known it's used as `total` so a client can render a determinate bar.
+private final class ProgressEmitter {
+    private let token: Any?
+    private let interval: TimeInterval
+    private let total: Double?
+    private weak var server: MCPServer?
+    private let queue = DispatchQueue(label: "com.openwhisp.mcp.progress")
+    private var timer: DispatchSourceTimer?
+    private var elapsed: Double = 0
+
+    init(token: Any?, interval: TimeInterval, total: Double?, server: MCPServer) {
+        self.token = token
+        self.interval = interval
+        self.total = total
+        self.server = server
+    }
+
+    func start() {
+        guard let token else { return } // client opted out of progress
+        let t = DispatchSource.makeTimerSource(queue: queue)
+        // First tick after one interval (an immediate 0-progress frame is noise).
+        t.schedule(deadline: .now() + interval, repeating: interval)
+        t.setEventHandler { [weak self] in
+            guard let self else { return }
+            self.elapsed += self.interval
+            // Never report progress ≥ total (that reads as "done"); hold just under.
+            let value: Double
+            if let total = self.total, self.elapsed >= total {
+                value = max(0, total - 0.001)
+            } else {
+                value = self.elapsed
+            }
+            self.server?.sendProgress(
+                token: token, progress: value, total: self.total,
+                message: "listening…"
+            )
+        }
+        timer = t
+        t.resume()
+    }
+
+    func stop() {
+        timer?.cancel()
+        timer = nil
+    }
 }

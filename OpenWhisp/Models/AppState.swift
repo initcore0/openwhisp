@@ -397,6 +397,14 @@ class AppState: ObservableObject {
     @Published var agentBridgeAllowCloudAI: Bool {
         didSet { UserDefaults.standard.set(agentBridgeAllowCloudAI, forKey: "agentBridgeAllowCloudAI") }
     }
+    /// End an agent-initiated dictation automatically once the speaker falls
+    /// silent, instead of waiting for the timeout. Default-ON: the whole point of
+    /// agent dictate is a quick spoken answer, and an agent session has no natural
+    /// finish gesture (the hotkey cancels it). NEVER affects user (hotkey)
+    /// sessions — only sessions the bridge started. See [[SilenceAutoStop]].
+    @Published var agentBridgeSilenceAutoStop: Bool {
+        didSet { UserDefaults.standard.set(agentBridgeSilenceAutoStop, forKey: "agentBridgeSilenceAutoStop") }
+    }
     /// Per-client consent records (persisted to agent-clients.json). Surfaced in
     /// the Agent Bridge settings pane.
     @Published var agentClients: AgentClientStore = AgentClientStore()
@@ -411,6 +419,11 @@ class AppState: ObservableObject {
     private var agentDictateTimedOut = false
     private var agentDictateStopped = false
     private var agentDictateTimeoutTask: Task<Void, Never>?
+    /// Silence detector for the current agent session (nil for user sessions and
+    /// when the feature is off). Fed the same `audioLevel` samples the overlay
+    /// waveform reads; when it fires, the session finishes as if the user tapped
+    /// done (`endedBy: .user`). Reset in `finishSessionUI`.
+    private var agentSilenceDetector: SilenceAutoStop?
     /// The control-plane socket server. Lazily constructed (no cost until the
     /// bridge is enabled); owns the socket, per-connection auth, and dispatch.
     private lazy var agentBridgeServer = AgentBridgeServer(host: self)
@@ -894,6 +907,8 @@ class AppState: ObservableObject {
         agentBridgeEnabled = UserDefaults.standard.bool(forKey: "agentBridgeEnabled")
         agentBridgeAllowUnsignedClients = UserDefaults.standard.bool(forKey: "agentBridgeAllowUnsignedClients")
         agentBridgeAllowCloudAI = UserDefaults.standard.bool(forKey: "agentBridgeAllowCloudAI")
+        // Default-ON (silence auto-stop is the expected agent-dictate UX).
+        agentBridgeSilenceAutoStop = UserDefaults.standard.object(forKey: "agentBridgeSilenceAutoStop") as? Bool ?? true
         agentClients = AgentClientStore.load()
         profiles = AppProfileStore.load()
         history = TranscriptionHistoryStore.load()
@@ -1041,7 +1056,7 @@ class AppState: ObservableObject {
         }
         audioRecorder.onLevelChanged = { [weak self] level in
             Task { @MainActor in
-                self?.audioLevel = level
+                self?.updateAudioLevel(level)
             }
         }
 
@@ -1154,8 +1169,42 @@ class AppState: ObservableObject {
             }
         }
         engine.onLevelChanged = { [weak self] level in
-            Task { @MainActor in self?.audioLevel = level }
+            Task { @MainActor in self?.updateAudioLevel(level) }
         }
+    }
+
+    /// Publish a new audio level for the overlay AND drive the agent-session
+    /// silence detector. The single place both level sources (AVAudioRecorder
+    /// metering + the streaming engine tap) funnel through, so the VAD sees every
+    /// sample regardless of which capture path is live.
+    @MainActor
+    private func updateAudioLevel(_ level: Float) {
+        audioLevel = level
+        // Only agent sessions auto-stop on silence; a user's hotkey dictation ends
+        // on their own gesture and must be untouched. Also require the session to
+        // be genuinely capturing (not still arming) so leading silence during
+        // engine spin-up can't feed the detector.
+        guard agentBridgeSilenceAutoStop,
+              sessionActive, isRecording,
+              sessionInitiator.isAgent,
+              agentSilenceDetector != nil else { return }
+        let now = ProcessInfo.processInfo.systemUptime
+        if agentSilenceDetector?.ingest(level: level, now: now) == true {
+            // The speaker fell silent after speaking — finish exactly as a user
+            // "done" tap would (endedBy: .user), returning whatever was captured.
+            agentSilenceDetector = nil
+            finishAgentDictationOnSilence()
+        }
+    }
+
+    /// Finish the active agent session because silence was detected. Distinct from
+    /// `bridgeStopAgentDictation()` (which marks `endedBy: .stop` for an explicit
+    /// client stop): a silence finish is the user's natural "done", so it leaves
+    /// both the timeout and stop flags clear and resolves as `endedBy: .user`.
+    @MainActor
+    private func finishAgentDictationOnSilence() {
+        guard sessionActive, sessionInitiator.isAgent else { return }
+        stopDictation()
     }
 
     /// Swap the file-transcription backend live (when the user changes the Engine
@@ -3044,6 +3093,7 @@ class AppState: ObservableObject {
         suppressOutput = false
         sessionOutcome = nil
         agentDictatePrompt = nil
+        agentSilenceDetector = nil
         agentDictateTimeoutTask?.cancel()
         agentDictateTimeoutTask = nil
         elapsedTimer?.invalidate()
@@ -3975,6 +4025,11 @@ extension AppState: AgentBridgeHost {
             completion(.failure(.domain(.internalError, message: "could not start dictation")))
             return
         }
+
+        // Arm silence auto-stop (default-on) so the answer ends when the speaker
+        // stops, not only on the timeout. Fed from `updateAudioLevel`. The timeout
+        // below remains the hard ceiling / no-speech fallback.
+        agentSilenceDetector = agentBridgeSilenceAutoStop ? SilenceAutoStop() : nil
 
         let sid = activeSessionID
         agentDictateTimeoutTask = Task { [weak self] in

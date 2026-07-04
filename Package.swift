@@ -43,6 +43,8 @@ let package = Package(
                 "BridgeWire.swift",
                 "BridgeRouter.swift",
                 "DictationSession.swift",
+                "SilenceAutoStop.swift",
+                "AgentSetup.swift",
                 "AgentClientStore.swift",
                 "ConfigPack.swift",
                 "ScriptPostProcessor.swift",
