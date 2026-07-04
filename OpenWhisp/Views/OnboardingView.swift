@@ -204,7 +204,7 @@ struct OnboardingView: View {
             subtitle: "After transcribing, AI can fix punctuation, capitalization, and filler words. You can also refine while dictating: keep holding the dictation key, tap the Refine key, and speak an instruction like “make it a Telegram post.” The built-in option runs fully on your Mac; nothing leaves your machine."
         ) {
             VStack(alignment: .leading, spacing: 14) {
-                Toggle("Refine my text with AI", isOn: $appState.openAIEnhancementEnabled)
+                Toggle("Automatically polish every dictation with AI", isOn: $appState.openAIEnhancementEnabled)
 
                 if appState.openAIEnhancementEnabled {
                     Picker("", selection: $appState.llmProvider) {

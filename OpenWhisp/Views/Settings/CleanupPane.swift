@@ -32,7 +32,8 @@ struct CleanupPane: View {
         Form {
             formattingSection
             vocabularySection
-            aiCleanupSection
+            aiModelSection
+            autoCleanupSection
             refineSection
         }
         .formStyle(.grouped)
@@ -170,16 +171,10 @@ struct CleanupPane: View {
         )
     }
 
-    // MARK: - AI cleanup
+    // MARK: - AI model (shared by automatic cleanup and Refine)
 
-    private var aiCleanupSection: some View {
+    private var aiModelSection: some View {
         Section {
-            SubtitledToggle(
-                "Improve text with AI",
-                subtitle: "Runs the transcript through a language model after transcription. Only edits final text, never live chunks.",
-                isOn: $appState.openAIEnhancementEnabled
-            )
-
             // Consistent, privacy-honest labels on one axis: where it runs.
             Picker("Provider", selection: $appState.llmProvider) {
                 Text("On this Mac (built-in)").tag("bundled")
@@ -188,6 +183,45 @@ struct CleanupPane: View {
             }
 
             SettingsFootnote(providerDescription)
+
+            // Provider fields shown directly — required configuration never
+            // hides behind a disclosure.
+            switch appState.llmProvider {
+            case "bundled": bundledLLMFields
+            case "local":   localLLMFields
+            default:        openAIFields
+            }
+
+            HStack {
+                Button("Test") {
+                    // Clicking a button needn't unfocus the key field; commit
+                    // the draft so the test uses what's typed.
+                    commitOpenAIKey()
+                    appState.testLLMProvider()
+                }
+                Spacer()
+                TestResultLine(
+                    text: appState.translationStatus,
+                    isGood: translationStatusIsGood,
+                    timestamp: testResultTime
+                )
+            }
+        } header: {
+            Text("AI Model")
+        } footer: {
+            SettingsFootnote("One model powers both features below: the automatic pass on every dictation, and on-demand Refine.")
+        }
+    }
+
+    // MARK: - Automatic cleanup
+
+    private var autoCleanupSection: some View {
+        Section {
+            SubtitledToggle(
+                "Improve every dictation automatically",
+                subtitle: "Runs each final transcript through the AI model, with nothing to do while dictating. Only edits final text, never live chunks.",
+                isOn: $appState.openAIEnhancementEnabled
+            )
 
             Picker("Mode", selection: $appState.openAIEnhancementMode) {
                 Text("Rephrase in the same language").tag("rephrase")
@@ -207,36 +241,14 @@ struct CleanupPane: View {
                     Text("Russian").tag("ru")
                 }
             }
-
-            // Provider fields shown directly — required configuration never
-            // hides behind a disclosure.
-            switch appState.llmProvider {
-            case "bundled": bundledLLMFields
-            case "local":   localLLMFields
-            default:        openAIFields
-            }
-
-            HStack {
-                Button("Test") {
-                    // Clicking a button needn't unfocus the key field; commit
-                    // the draft so the test uses what's typed.
-                    commitOpenAIKey()
-                    appState.validateOpenAIKey()
-                }
-                Spacer()
-                TestResultLine(
-                    text: appState.translationStatus,
-                    isGood: translationStatusIsGood,
-                    timestamp: testResultTime
-                )
-            }
         } header: {
-            Text("AI Cleanup")
+            Text("Automatic Cleanup")
         }
     }
 
     private var translationStatusIsGood: Bool {
-        ["OpenAI key valid", "Local LLM reachable", "Rephrased", "Improved"].contains(appState.translationStatus)
+        ["Built-in model working", "Server reachable", "OpenAI key valid",
+         "Local LLM reachable", "Rephrased", "Improved"].contains(appState.translationStatus)
     }
 
     private var providerDescription: String {
@@ -367,7 +379,7 @@ struct CleanupPane: View {
         Section {
             SubtitledToggle(
                 "Refine with a spoken instruction",
-                subtitle: "Tap the refine key mid-dictation and speak an instruction — “make it formal”, “turn into bullet points”. On release, the AI rewrites what you dictated before the tap.",
+                subtitle: "Nothing runs automatically — refine happens only when you ask: tap the refine key mid-dictation and speak an instruction (“make it formal”, “turn into bullet points”). On release, the AI rewrites what you dictated before the tap.",
                 isOn: $appState.instructionChainEnabled
             )
 
@@ -387,19 +399,30 @@ struct CleanupPane: View {
                 )
             }
 
+            // Refine depends on the AI MODEL above (not on the automatic-cleanup
+            // toggle). Offer the direct fix when there is one.
             if appState.instructionChainEnabled && !appState.llmConfigured {
-                SettingsCallout(
-                    .warning,
-                    "Refine needs AI cleanup with a working provider.",
-                    actionLabel: appState.openAIEnhancementEnabled ? nil : "Turn on AI cleanup"
-                ) {
-                    appState.openAIEnhancementEnabled = true
+                if appState.llmProvider == "bundled",
+                   appState.bundledLLMRuntimeAvailable,
+                   !appState.bundledLLMModelInstalled {
+                    SettingsCallout(
+                        .warning,
+                        "Refine needs the AI model above — the built-in model isn't downloaded yet.",
+                        actionLabel: "Download model"
+                    ) {
+                        appState.ensureLLMModelExists()
+                    }
+                } else {
+                    SettingsCallout(
+                        .warning,
+                        "Refine needs the AI model above to be set up first."
+                    )
                 }
             }
         } header: {
-            Text("Refine")
+            Text("Refine (On Demand)")
         } footer: {
-            SettingsFootnote("No fixed phrases — say what you want in plain language, any language. Works in the Preview and Insert-at-end output modes.")
+            SettingsFootnote("No fixed phrases — say what you want in plain language, any language. Works in the Preview and Insert-at-end output modes, whether or not automatic cleanup is on.")
         }
     }
 }
