@@ -71,14 +71,31 @@ func failClient(_ error: Error) -> Never {
 
 struct Args {
     private let raw: [String]
-    init(_ raw: [String]) { self.raw = raw }
+    private let valueFlags: Set<String>
+    init(_ raw: [String],
+         valueFlags: Set<String> = ["--instruction", "-i", "--prompt", "--timeout", "--language", "--limit"]) {
+        self.raw = raw
+        self.valueFlags = valueFlags
+    }
     func has(_ flag: String) -> Bool { raw.contains(flag) }
     func value(_ flag: String) -> String? {
         guard let i = raw.firstIndex(of: flag), i + 1 < raw.count else { return nil }
         return raw[i + 1]
     }
-    /// First non-flag positional argument.
-    var positional: String? { raw.first { !$0.hasPrefix("-") } }
+    /// Positionals, excluding flags and the values that follow value-flags — so
+    /// `refine -i "make formal" "the text"` yields ["the text"].
+    var positionals: [String] {
+        var result: [String] = []
+        var skipNext = false
+        for arg in raw {
+            if skipNext { skipNext = false; continue }
+            if valueFlags.contains(arg) { skipNext = true; continue }
+            if arg.hasPrefix("-") { continue }
+            result.append(arg)
+        }
+        return result
+    }
+    var positional: String? { positionals.first }
 }
 
 func connectedClient() -> BridgeClient {
@@ -128,14 +145,55 @@ func runHistory(_ args: Args) -> Never {
     } catch { failClient(error) }
 }
 
+func runDictate(_ args: Args) -> Never {
+    let client = connectedClient()
+    let params = BridgeWire.DictateParams(
+        prompt: args.value("--prompt"),
+        timeoutSeconds: args.value("--timeout").flatMap(Int.init),
+        language: args.value("--language")
+    )
+    do {
+        let result = try client.call(method: BridgeWire.Method.dictate.rawValue,
+                                     params: params, resultType: BridgeWire.DictateResult.self)
+        if args.has("--json") { emitJSON(result) } else { emit(result.text) } // stdout = transcript only
+        exit(ExitCode.success.rawValue)
+    } catch { failClient(error) }
+}
+
+func runRefine(_ args: Args) -> Never {
+    guard let instruction = args.value("--instruction") ?? args.value("-i") else {
+        fail("refine requires --instruction/-i", .usage)
+    }
+    // Text from a positional argument, else stdin (for pipelines).
+    let text: String
+    if let positional = args.positional {
+        text = positional
+    } else {
+        text = String(data: FileHandle.standardInput.readDataToEndOfFile(), encoding: .utf8) ?? ""
+    }
+    let client = connectedClient()
+    do {
+        let params = BridgeWire.RefineParams(text: text, instruction: instruction)
+        let result = try client.call(method: BridgeWire.Method.refine.rawValue,
+                                     params: params, resultType: BridgeWire.RefineResult.self)
+        if args.has("--json") { emitJSON(result) } else { emit(result.text) }
+        exit(ExitCode.success.rawValue)
+    } catch { failClient(error) }
+}
+
 func printUsage() {
     let usage = """
     openwhisp — agent-callable front-end to OpenWhisp's Agent Bridge
 
     USAGE:
-      openwhisp status [--json]           Print app/engine/model/LLM/session state (liveness probe)
-      openwhisp history [--limit N] [--json]   Recent dictation history, newest first
+      openwhisp status [--json]                         App/engine/model/LLM/session state (liveness probe)
+      openwhisp dictate [--prompt T] [--timeout S] [--language C] [--json]
+                                                        Ask the user to speak; prints the transcript
+      openwhisp refine --instruction T [TEXT | stdin] [--json]
+                                                        Rewrite text with the on-device AI
+      openwhisp history [--limit N] [--json]            Recent dictation history, newest first
 
+    Output is result-only on stdout (composes in pipelines); diagnostics go to stderr.
     Requires OpenWhisp running with Agent Bridge enabled (Settings → Agent Bridge).
     """
     FileHandle.standardError.write(Data((usage + "\n").utf8))
@@ -150,6 +208,10 @@ let rest = Args(Array(argv.dropFirst()))
 switch verb {
 case "status":
     runStatus(rest)
+case "dictate":
+    runDictate(rest)
+case "refine":
+    runRefine(rest)
 case "history":
     runHistory(rest)
 case "-h", "--help", "help":

@@ -3746,7 +3746,90 @@ extension AppState: AgentBridgeHost {
     /// steps 6–7 wire them; advertising only what works keeps agents from calling
     /// unimplemented tools.
     func bridgeCapabilities() -> [String] {
-        [BridgeWire.Capability.dictate, BridgeWire.Capability.history]
+        [BridgeWire.Capability.dictate, BridgeWire.Capability.refine, BridgeWire.Capability.history]
+    }
+
+    // MARK: Refine (M8)
+
+    /// Refine `text` per `instruction` using the user's configured LLM, delivering
+    /// the result to `completion`. Used by the bridge `refine` tool. On failure the
+    /// error carries the original text so an agent can proceed unrefined.
+    func bridgeRefine(
+        clientName: String, text: String, instruction: String,
+        completion: @escaping (Result<String, BridgeWire.ErrorObject>) -> Void
+    ) {
+        refineText(text: text, instruction: instruction, completion: completion)
+    }
+
+    /// The refine primitive: reuses the exact overlay-refine LLM path (InstructionChain
+    /// directive + payload → the user's endpoint/model), bracketed by
+    /// ensureBundledLLMReady. Gated by the cloud-AI toggle and busy-rejected while a
+    /// dictation session is live (quiescing the whisper-server under a session is the
+    /// documented hazard). Fail-open: errors carry `originalText`.
+    func refineText(
+        text: String, instruction: String,
+        completion: @escaping (Result<String, BridgeWire.ErrorObject>) -> Void
+    ) {
+        // Cloud-refine gate: never let an agent send text to OpenAI unless allowed.
+        if llmProvider == "openai" && !agentBridgeAllowCloudAI {
+            completion(.failure(.domain(.cloudRefineDisabled,
+                message: "agent cloud AI is off — enable it in Settings → Agent Bridge, or switch to a local provider",
+                originalText: text)))
+            return
+        }
+        guard llmConfigured else {
+            completion(.failure(.domain(.llmUnavailable,
+                message: "no AI model is configured — set one in Settings → Cleanup", originalText: text)))
+            return
+        }
+        // Busy-reject while dictating: quiesceWhisper would stop a live session's
+        // whisper-server.
+        guard !sessionActive, !isRecording, !isTranscribing else {
+            completion(.failure(.domain(.busy,
+                message: "OpenWhisp is busy dictating; try again shortly", originalText: text)))
+            return
+        }
+
+        let systemDirective = InstructionChain.systemDirective
+        let userPayload = InstructionChain.userPayload(instruction: instruction, text: text)
+        var delivered = false
+        let deliver: (Result<String, BridgeWire.ErrorObject>) -> Void = { result in
+            guard !delivered else { return }
+            delivered = true
+            completion(result)
+        }
+
+        ensureBundledLLMReady(statusWhileLoading: "Refining…", quiesceWhisper: true, work: { [weak self] done in
+            guard let self else {
+                done()
+                deliver(.failure(.domain(.internalError, message: "app deallocated", originalText: text)))
+                return
+            }
+            self.translationService.processFinalText(
+                text: userPayload,
+                mode: "rephrase",
+                targetLanguage: self.translationTargetLanguage,
+                endpoint: self.llmEndpoint,
+                model: self.llmModel,
+                customInstruction: systemDirective
+            ) { [weak self] result in
+                Task { @MainActor in
+                    done() // close the engine bracket on every path
+                    guard let self else {
+                        deliver(.failure(.domain(.internalError, message: "app deallocated", originalText: text)))
+                        return
+                    }
+                    switch result {
+                    case .success(let processedText):
+                        deliver(.success(self.postProcess(processedText)))
+                    case .failure(let error):
+                        deliver(.failure(.domain(.llmUnavailable, message: error.localizedDescription, originalText: text)))
+                    }
+                }
+            }
+        }, fallback: {
+            deliver(.failure(.domain(.llmUnavailable, message: "built-in model unavailable", originalText: text)))
+        })
     }
 
     // MARK: Dictate (M8)

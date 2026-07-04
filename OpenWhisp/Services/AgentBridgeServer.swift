@@ -36,6 +36,13 @@ protocol AgentBridgeHost: AnyObject {
     func bridgeStopAgentDictation() -> Bool
     /// Cancel the active agent dictation (no transcript). No-op on a user session.
     func bridgeCancelAgentDictation() -> Bool
+    /// Refine `text` per `instruction` with the user's LLM. `completion` (main
+    /// thread) delivers the refined text or an error (which carries the original
+    /// text for a fail-open agent). The server blocks its connection thread.
+    func bridgeRefine(
+        clientName: String, text: String, instruction: String,
+        completion: @escaping (Result<String, BridgeWire.ErrorObject>) -> Void
+    )
 }
 
 /// Per-connection state carried across frames on one connection.
@@ -332,11 +339,39 @@ final class AgentBridgeServer {
             send(fd, id: id, result: BridgeWire.DictateCancelResult(cancelled: cancelled))
             return true
 
-        // Wired in M8 step 7.
-        case .refine(let id, _):
-            sendError(fd, id: id, error: .domain(.internalError, message: "not available in this build yet"))
+        case .refine(let id, let params):
+            let clientName = state.clientName
+            guard resolveConsent(clientName: clientName) else {
+                sendError(fd, id: id, error: .domain(.consentDenied, message: "the user declined this client's access"))
+                return true
+            }
+            switch blockingRefine(clientName: clientName, text: params.text, instruction: params.instruction) {
+            case .success(let text):
+                onMain { self.host?.bridgeDidCall(clientName: clientName, tool: "refine") }
+                send(fd, id: id, result: BridgeWire.RefineResult(text: text))
+            case .failure(let err):
+                sendError(fd, id: id, error: err)
+            }
             return true
         }
+    }
+
+    /// Block this connection thread until a refine completes. Not called on the
+    /// main thread.
+    private func blockingRefine(
+        clientName: String, text: String, instruction: String
+    ) -> Result<String, BridgeWire.ErrorObject> {
+        let sem = DispatchSemaphore(value: 0)
+        var out: Result<String, BridgeWire.ErrorObject> = .failure(.domain(.internalError, message: "no host"))
+        DispatchQueue.main.async {
+            guard let host = self.host else { sem.signal(); return }
+            host.bridgeRefine(clientName: clientName, text: text, instruction: instruction) { result in
+                out = result
+                sem.signal()
+            }
+        }
+        sem.wait()
+        return out
     }
 
     /// Block this connection thread until an agent dictation finishes (or times
