@@ -539,6 +539,15 @@ class AppState: ObservableObject {
     private var targetApplication: NSRunningApplication?
     private var overlayIsVisible = false
     private var activeSessionID = UUID()
+    /// The session that last started the AudioRecorder. The recorder's
+    /// onStateChanged callback is wired once (not per-session) and delivers
+    /// through a main-actor Task hop, so a state change from a cancelled
+    /// session can land after the next session already began — e.g. a stale
+    /// `.stopped` clearing the isRecording a new streaming session just set,
+    /// wedging it (its stop would then only set pendingStop, which nothing
+    /// consumes once streaming is live). Comparing this against
+    /// activeSessionID drops those stale transitions.
+    private var recorderSessionID: UUID?
     private var transcriptionRequests: [UUID: TranscriptionRequest] = [:]
     /// Pure ordering/sequencing state machine for live-chunk dictation (sequence
     /// assignment, concurrency cap, out-of-order reorder buffer, insertion queue,
@@ -1011,6 +1020,11 @@ class AppState: ObservableObject {
         audioRecorder.onStateChanged = { [weak self] state in
             Task { @MainActor in
                 guard let self else { return }
+                // Session fence: drop transitions from a recorder run that isn't
+                // the current session's (see recorderSessionID). Without it, a
+                // cancelled session's late `.stopped`/`.recording`/`.error` would
+                // mutate the session that replaced it.
+                guard self.recorderSessionID == self.activeSessionID else { return }
                 switch state {
                 case .recording:
                     // Capture is now genuinely live: leave the arming window so the
@@ -2129,6 +2143,7 @@ class AppState: ObservableObject {
                 if !micID.isEmpty {
                     recorder.selectDevice(micID)
                 }
+                self.recorderSessionID = sessionID
                 recorder.start()
             }
         }
@@ -2211,6 +2226,7 @@ class AppState: ObservableObject {
                         self.enqueueLiveChunk(path)
                     }
                 }
+                self.recorderSessionID = sessionID
                 if self.pauseBasedLiveChunksEnabled {
                     recorder.startStreamingOnSilence(onChunk: onChunk)
                 } else {
