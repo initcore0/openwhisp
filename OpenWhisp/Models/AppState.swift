@@ -370,6 +370,51 @@ class AppState: ObservableObject {
     /// Recent transcriptions (persisted to history.json), newest first.
     @Published var history: [TranscriptionEntry] = []
 
+    // MARK: Agent Bridge (M8)
+
+    /// Expose OpenWhisp as a local MCP server / CLI to coding agents. Default-off:
+    /// when false, no socket and no listener exist (zero cost). Toggling it starts
+    /// or stops the control-plane socket server.
+    @Published var agentBridgeEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(agentBridgeEnabled, forKey: "agentBridgeEnabled")
+            agentBridgeServer.allowUnsignedClients = agentBridgeAllowUnsignedClients
+            if agentBridgeEnabled { agentBridgeServer.start() } else { agentBridgeServer.stop() }
+        }
+    }
+    /// Relax the code-signature admission check so a user's own (unsigned) client
+    /// can connect. Default-off; on-brand escape hatch for the hackable positioning.
+    @Published var agentBridgeAllowUnsignedClients: Bool {
+        didSet {
+            UserDefaults.standard.set(agentBridgeAllowUnsignedClients, forKey: "agentBridgeAllowUnsignedClients")
+            agentBridgeServer.allowUnsignedClients = agentBridgeAllowUnsignedClients
+        }
+    }
+    /// Allow an agent-initiated LLM call to use the CLOUD provider (OpenAI).
+    /// Default-off: a prompt-injected agent must not be able to exfiltrate text
+    /// through the user's OpenAI key. When off and the provider is OpenAI, agent
+    /// `refine` is refused with `cloudRefineDisabled`.
+    @Published var agentBridgeAllowCloudAI: Bool {
+        didSet { UserDefaults.standard.set(agentBridgeAllowCloudAI, forKey: "agentBridgeAllowCloudAI") }
+    }
+    /// Per-client consent records (persisted to agent-clients.json). Surfaced in
+    /// the Agent Bridge settings pane.
+    @Published var agentClients: AgentClientStore = AgentClientStore()
+    /// Clients granted "while running" during this launch (never persisted).
+    private var consentGrantedThisRun: Set<String> = []
+    /// The agent's prompt for the current agent-initiated session, shown in the
+    /// overlay ("X asks: …"). nil for user sessions. Published so the overlay can
+    /// render it.
+    @Published private(set) var agentDictatePrompt: String?
+    /// Set when the current agent session was ended by its timeout / by an explicit
+    /// dictate.stop, so the delivered result reports the right `endedBy`.
+    private var agentDictateTimedOut = false
+    private var agentDictateStopped = false
+    private var agentDictateTimeoutTask: Task<Void, Never>?
+    /// The control-plane socket server. Lazily constructed (no cost until the
+    /// bridge is enabled); owns the socket, per-connection auth, and dispatch.
+    private lazy var agentBridgeServer = AgentBridgeServer(host: self)
+
     /// Bias whisper recognition toward custom terms. Default-on; harmless when
     /// the vocabulary is empty (no prompt is sent).
     @Published var customVocabularyEnabled: Bool {
@@ -511,7 +556,37 @@ class AppState: ObservableObject {
     private var sessionActive = false
     /// Set when a stop arrives before the grant callback has started recording.
     private var pendingStop = false
+    /// Set while a preempt-deferred startDictation is queued (an agent session
+    /// was cancelled this turn; the user's session starts next turn). A stop or
+    /// cancel arriving in that one-turn gap consumes the flag so the deferred
+    /// start no-ops instead of arming a session whose stop already passed.
+    private var pendingPreemptStart = false
     private var openAIEnhancementEnabledForSession = false
+
+    // MARK: Agent Bridge session plumbing (dormant until M8 wires the bridge)
+    //
+    // A dictation session is normally user-initiated and pastes its result. An
+    // agent-initiated session (via the Agent Bridge, M8) instead RETURNS its
+    // transcript to the calling client and pastes nothing. These fields carry
+    // that intent through the existing funnel additively — default `.user` /
+    // false / nil, so a user-initiated session behaves exactly as before.
+
+    /// Who started the current session. Set by the caller BEFORE beginSession()
+    /// (the agent path sets `.agent`; the user hotkey leaves it `.user`) and reset
+    /// to `.user` in finishSessionUI().
+    private var sessionInitiator: SessionInitiator = .user
+    /// Session snapshot of "return the transcript, don't paste it", frozen in
+    /// beginSession() from the initiator (like isPreviewSession) and cleared in
+    /// finishSessionUI(). Read in insertCompletedText().
+    private var suppressOutput = false
+    /// The outcome recorded at the session's terminal point, read once by
+    /// onSessionEnd in finishSessionUI(). Defaults to `.cancelled` if never set
+    /// (abort, or an error terminal that didn't record one).
+    private var sessionOutcome: SessionOutcome?
+    /// Fired exactly once in finishSessionUI() with the session outcome, then
+    /// cleared. nil for user sessions. The Agent Bridge sets this to receive the
+    /// dictation result of an agent-initiated session.
+    private var onSessionEnd: ((SessionOutcome) -> Void)?
 
     // MARK: Instruction chaining (dedicated-key refine flow)
     //
@@ -613,7 +688,11 @@ class AppState: ObservableObject {
     }
 
     private var shouldEnhanceLiveChunks: Bool {
-        shouldEnhanceCurrentSession && outputMode == "liveChunks" && openAIEnhancementMode == "rephrase"
+        // Agent sessions (suppressOutput) never enhance — the transcript goes back
+        // raw and the agent refines explicitly, matching the whole-text gate in
+        // completeFinalText.
+        shouldEnhanceCurrentSession && !suppressOutput
+            && outputMode == "liveChunks" && openAIEnhancementMode == "rephrase"
     }
 
     private var currentInsertionMode: InsertionMode {
@@ -809,6 +888,13 @@ class AppState: ObservableObject {
         scriptPostProcessorPath = UserDefaults.standard.string(forKey: "scriptPostProcessorPath") ?? ""
         perAppModesEnabled = UserDefaults.standard.object(forKey: "perAppModesEnabled") as? Bool ?? false
         historyEnabled = UserDefaults.standard.object(forKey: "historyEnabled") as? Bool ?? true
+        // Agent Bridge (M8) — default off; started at launch via startAgentBridgeIfEnabled().
+        // (Property observers don't fire during init, so the lazy server isn't
+        // touched here — it starts only from the explicit launch call.)
+        agentBridgeEnabled = UserDefaults.standard.bool(forKey: "agentBridgeEnabled")
+        agentBridgeAllowUnsignedClients = UserDefaults.standard.bool(forKey: "agentBridgeAllowUnsignedClients")
+        agentBridgeAllowCloudAI = UserDefaults.standard.bool(forKey: "agentBridgeAllowCloudAI")
+        agentClients = AgentClientStore.load()
         profiles = AppProfileStore.load()
         history = TranscriptionHistoryStore.load()
         customVocabularyEnabled = UserDefaults.standard.object(forKey: "customVocabularyEnabled") as? Bool ?? true
@@ -948,6 +1034,7 @@ class AppState: ObservableObject {
                     self.error = msg
                     self.statusMessage = "Error"
                     self.isRecording = false
+                    self.sessionOutcome = .error(message: msg)
                     self.finishSessionUI()
                 }
             }
@@ -1028,6 +1115,7 @@ class AppState: ObservableObject {
                 self.error = msg
                 self.statusMessage = "Error"
                 self.isTranscribing = false
+                self.sessionOutcome = .error(message: msg)
                 self.finishSessionUI()
             }
         }
@@ -1061,6 +1149,7 @@ class AppState: ObservableObject {
                 self.isRecording = false
                 self.isTranscribing = false
                 self.isAppleSpeechSession = false
+                self.sessionOutcome = .error(message: message)
                 self.finishSessionUI()
             }
         }
@@ -1101,6 +1190,28 @@ class AppState: ObservableObject {
             executeRefineEffects(refineFlow.handle(.abort))
         }
 
+        // The human always wins the mic: if the user presses the hotkey while an
+        // AGENT session is capturing, cancel that session (it gets no transcript,
+        // per the cancel invariant) and start the user's own dictation. Only fires
+        // for a genuine user press — beginAgentDictation() sets the initiator but
+        // has no active session yet, so it never trips this.
+        if sessionActive, sessionInitiator.isAgent {
+            cancelDictation()
+            // Start the user's dictation on the NEXT main-actor turn, not this
+            // one: the cancel above already enqueued the dead session's deferred
+            // recorder/engine hops (.stopped clears isArming/isRecording with no
+            // session fence, and a streaming engine can have a partial in
+            // flight). One deferred turn lets those drain against dead state
+            // instead of clobbering the successor session mid-arming.
+            pendingPreemptStart = true
+            Task { @MainActor in
+                guard self.pendingPreemptStart else { return } // stop/cancel in the gap consumed it
+                self.pendingPreemptStart = false
+                self.startDictation()
+            }
+            return
+        }
+
         guard !isRecording, !isTranscribing else { return }
         // Privacy guard: never dictate into a focused password/secure field. The
         // speech would otherwise be transcribed, typed in, copied to the clipboard
@@ -1132,6 +1243,13 @@ class AppState: ObservableObject {
     }
 
     func stopDictation() {
+        // A hotkey-up landing in the preempt gap (agent session cancelled, the
+        // user's replacement start still queued) means the press is over —
+        // consume the queued start instead of letting it arm an unattended mic.
+        if pendingPreemptStart {
+            pendingPreemptStart = false
+            return
+        }
         // The hotkey-up may arrive before the async permission-grant callback has flipped
         // isRecording true. In that case record the intent and let the grant callback abort.
         guard isRecording else {
@@ -1150,6 +1268,9 @@ class AppState: ObservableObject {
     }
 
     func cancelDictation() {
+        // An Esc (or shutdown) in the preempt gap also cancels the queued
+        // replacement start — the user is backing out entirely.
+        pendingPreemptStart = false
         // Esc while a refine is engaged (waiting for step-1 or the instruction):
         // abort the flow without inserting anything.
         if refineFlow.isActive && !isRecording && !isTranscribing && !sessionActive {
@@ -1181,6 +1302,12 @@ class AppState: ObservableObject {
                 try? FileManager.default.removeItem(at: url)
             }
         }
+        // Clear synchronously: the recorder/engines above are already stopped, but
+        // their state callbacks clear this flag a Task-hop later — too late for a
+        // caller that starts a new session right after this cancel (the hotkey
+        // preempt of an agent session would find isRecording still true and bail,
+        // silently eating the user's press).
+        isRecording = false
         currentSessionText = ""
         streamingText = ""
         statusMessage = "Cancelled"
@@ -1202,9 +1329,18 @@ class AppState: ObservableObject {
 
     func shutdown() {
         cancelDictation()
+        agentBridgeServer.stop()
         whisperEngine.stopServer()
         llamaEngine?.stopServer()
         hotkeyMonitor.stop()
+    }
+
+    /// Start the Agent Bridge socket server if the user has enabled it. Called
+    /// once at launch (property observers don't fire during init).
+    func startAgentBridgeIfEnabled() {
+        guard agentBridgeEnabled else { return }
+        agentBridgeServer.allowUnsignedClients = agentBridgeAllowUnsignedClients
+        agentBridgeServer.start()
     }
 
     func stopWhisperServer() {
@@ -1396,9 +1532,15 @@ class AppState: ObservableObject {
     /// LLM request actually completes (before any early-return guards) — it closes
     /// the engine's in-flight bracket so idle teardown can't kill a live generation.
     /// For non-bundled providers `done` is a no-op.
+    ///
+    /// `boundToSession` (the default) drops the callback when the dictation
+    /// session rotates mid-load — right for session-scoped refines, whose output
+    /// would land in a dead session. Callers that must ALWAYS hear back (the
+    /// Agent Bridge blocks a thread on the completion) pass false.
     private func ensureBundledLLMReady(
         statusWhileLoading: String = "Loading local model…",
         quiesceWhisper: Bool = false,
+        boundToSession: Bool = true,
         work: @escaping (_ done: @escaping () -> Void) -> Void,
         fallback: @escaping () -> Void
     ) {
@@ -1439,7 +1581,7 @@ class AppState: ObservableObject {
         engine.ensureRunning(modelPath: selectedLLMModelPath()) { [weak self] result in
             Task { @MainActor in
                 guard let self else { engine.requestFinished(); return }
-                guard sessionID == self.activeSessionID else {
+                guard !boundToSession || sessionID == self.activeSessionID else {
                     engine.requestFinished()
                     return
                 }
@@ -1824,6 +1966,7 @@ class AppState: ObservableObject {
                 self.error = error.localizedDescription
                 self.statusMessage = "Streaming Error"
                 self.isAppleSpeechSession = false
+                self.sessionOutcome = .error(message: error.localizedDescription)
                 self.finishSessionUI()
             }
         }
@@ -1833,6 +1976,7 @@ class AppState: ObservableObject {
                 guard granted else {
                     self.error = "Microphone access denied. Check System Settings."
                     self.isAppleSpeechSession = false
+                    self.sessionOutcome = .error(message: "microphone access denied")
                     self.finishSessionUI()
                     return
                 }
@@ -1845,6 +1989,7 @@ class AppState: ObservableObject {
                             guard status == .authorized else {
                                 self.error = "Speech recognition access denied. Check System Settings."
                                 self.isAppleSpeechSession = false
+                                self.sessionOutcome = .error(message: "speech recognition access denied")
                                 self.finishSessionUI()
                                 return
                             }
@@ -1893,7 +2038,9 @@ class AppState: ObservableObject {
         // INSTRUCTION — don't type them into the document as live chunks.
         guard refineContentSnapshot == nil else { return }
 
-        guard isLiveChunkSession, !text.isEmpty else { return }
+        // Agent sessions return the transcript over the bridge and must never
+        // type into the frontmost app — the overlay preview above still updates.
+        guard isLiveChunkSession, !suppressOutput, !text.isEmpty else { return }
         let delta = liveDelta(previous: appleLiveInsertedText, current: text)
         guard !delta.isEmpty else { return }
 
@@ -1925,7 +2072,7 @@ class AppState: ObservableObject {
         // Paste the trailing delta here (mirroring handleAppleSpeechPartial) before routing.
         // While a refine is armed the delta is the spoken INSTRUCTION — same guard as the
         // partial handler; completeFinalText consumes it via the snapshot path.
-        if isLiveChunkSession, refineContentSnapshot == nil, !SecureFieldDetector.focusedFieldIsSecure() {
+        if isLiveChunkSession, !suppressOutput, refineContentSnapshot == nil, !SecureFieldDetector.focusedFieldIsSecure() {
             let delta = liveDelta(previous: appleLiveInsertedText, current: finalText)
             if !delta.isEmpty {
                 let insertion = appleLiveInsertedText.isEmpty ? delta : " \(delta)"
@@ -1965,6 +2112,7 @@ class AppState: ObservableObject {
             Task { @MainActor in
                 guard granted else {
                     self.error = "Microphone access denied. Check System Settings."
+                    self.sessionOutcome = .error(message: "microphone access denied")
                     self.finishSessionUI()
                     return
                 }
@@ -2011,6 +2159,7 @@ class AppState: ObservableObject {
                 guard let path = wavPath else {
                     self.isTranscribing = false
                     self.statusMessage = "Ready"
+                    self.sessionOutcome = .empty
                     self.finishSessionUI()
                     return
                 }
@@ -2035,6 +2184,7 @@ class AppState: ObservableObject {
             Task { @MainActor in
                 guard granted else {
                     self.error = "Microphone access denied."
+                    self.sessionOutcome = .error(message: "microphone access denied")
                     self.finishSessionUI()
                     return
                 }
@@ -2153,6 +2303,10 @@ class AppState: ObservableObject {
         isLiveChunkSession = streaming
         // Preview mode captures via the chunk pipeline but defers pasting.
         isPreviewSession = streaming && outputMode == "preview"
+        // Agent-initiated sessions return the transcript to the caller instead of
+        // pasting. Snapshot from the initiator (set by the bridge before this call)
+        // so a mid-session change can't alter the paste-vs-return disposition.
+        suppressOutput = sessionInitiator.isAgent
         audioLevel = 0
         recordingElapsed = 0
         recordingStartedAt = Date()
@@ -2167,7 +2321,9 @@ class AppState: ObservableObject {
         isArming = true
         statusMessage = "Starting..."
         startElapsedTimer()
-        if showOverlay {
+        // Agent-initiated sessions ALWAYS show the overlay (regardless of the
+        // user's showOverlay setting) so agent microphone use is never invisible.
+        if showOverlay || sessionInitiator.isAgent {
             overlayController?.show()
             overlayIsVisible = true
         }
@@ -2369,6 +2525,10 @@ class AppState: ObservableObject {
             return
         }
 
+        // Agent sessions capture like preview: the chunk is accumulated above for
+        // the bridge result and the overlay, but never typed into the frontmost app.
+        guard !suppressOutput else { return }
+
         // Defensive privacy guard: skip the incremental paste if a secure field
         // became focused mid-session. The text stays captured in currentSessionText
         // for the overlay, but is never typed into a password field. Fail-open.
@@ -2409,6 +2569,7 @@ class AppState: ObservableObject {
 
         guard !finalText.isEmpty else {
             isTranscribing = false
+            sessionOutcome = .empty
             statusMessage = "No speech detected"
             finishSessionUI()
             return
@@ -2418,15 +2579,20 @@ class AppState: ObservableObject {
         streamingText = finalText
 
         // Run a whole-text OpenAI pass for finalOnly OR preview mode when
-        // enhancement is enabled. Otherwise insert once.
+        // enhancement is enabled. Otherwise insert once. Agent sessions never
+        // enhance — they return the raw transcript (the agent calls refine
+        // explicitly), which also keeps bundled-LLM cold-start and the whisper-
+        // server quiesce out of a live agent dictation.
         let enhanceWholeText = shouldEnhanceCurrentSession
+            && !suppressOutput
             && (outputMode == "finalOnly" || outputMode == "preview")
         guard enhanceWholeText else {
             isTranscribing = false
             // Paste immediately — refine has its own dedicated key now, so there's
             // no re-press to disambiguate and no reason to hold the paste. Remember
-            // the text so the Refine key can act on "what I just dictated".
-            rememberLastDictation(finalText)
+            // the text so the Refine key can act on "what I just dictated" — but not
+            // for agent sessions, which must not hijack the user's "last dictation".
+            if !suppressOutput { rememberLastDictation(finalText) }
             insertCompletedText(finalText, originalText: finalText)
             return
         }
@@ -2695,10 +2861,25 @@ class AppState: ObservableObject {
         // persist a transcript when a secure field is now focused. Fail-open.
         guard !SecureFieldDetector.focusedFieldIsSecure() else {
             isTranscribing = false
+            sessionOutcome = .secureField
             streamingText = ""
             currentSessionText = ""
             statusMessage = "Won't dictate into a password field"
             finishSessionUI()
+            return
+        }
+
+        // Agent-initiated session: return the transcript to the caller instead of
+        // pasting. Skip the script post-processor, the paste, and the clipboard
+        // write — but still record history so history.list and the tray reflect it.
+        // The result is delivered via onSessionEnd in finishSessionUI().
+        if suppressOutput {
+            streamingText = text
+            sessionOutcome = .completed(text: text)
+            recordHistory(text)
+            recordStats(text)
+            statusMessage = "Done"
+            finishSessionUI(delay: 0.8)
             return
         }
 
@@ -2850,13 +3031,30 @@ class AppState: ObservableObject {
         isLiveChunkSession = false
         isPreviewSession = false
         isStreamingSession = false
+        // Deliver the outcome to an agent-initiated waiter exactly once. This is
+        // the single terminal site for every session path (success, empty, secure
+        // field, cancel, error) — abortSessionBeforeStart() also ends here — so one
+        // fire covers them all. Then reset the agent-session fields so they can
+        // never leak into the next (user) session.
+        if let deliver = onSessionEnd {
+            onSessionEnd = nil
+            deliver(sessionOutcome ?? .cancelled)
+        }
+        sessionInitiator = .user
+        suppressOutput = false
+        sessionOutcome = nil
+        agentDictatePrompt = nil
+        agentDictateTimeoutTask?.cancel()
+        agentDictateTimeoutTask = nil
         elapsedTimer?.invalidate()
         elapsedTimer = nil
         recordingStartedAt = nil
         targetApplication = nil
         audioLevel = 0
 
-        guard showOverlay else { return }
+        // Hide whenever the overlay is up — NOT gated on the showOverlay setting:
+        // agent sessions force-show it regardless of that setting, and gating the
+        // hide symmetrically would leave it stuck on screen for overlay-off users.
         guard overlayIsVisible else { return }
         if delay > 0 {
             Task { @MainActor in
@@ -3565,5 +3763,326 @@ final class ModelDownloader: NSObject, URLSessionDownloadDelegate {
 extension URL {
     func createDirectories() throws {
         try FileManager.default.createDirectory(at: self, withIntermediateDirectories: true, attributes: nil)
+    }
+}
+
+// MARK: - Agent Bridge host (M8)
+
+extension AppState: AgentBridgeHost {
+    /// Called on the main thread by AgentBridgeServer. Builds a read-only status
+    /// snapshot for the `status` control-plane method and the CLI liveness probe.
+    func bridgeStatus() -> BridgeWire.StatusResult {
+        let appVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev"
+        let engine = transcriptionEngine == "whisper" ? whisperBackend : transcriptionEngine
+        return BridgeWire.StatusResult(
+            appVersion: appVersion,
+            engine: engine,
+            model: modelName,
+            sessionActive: isRecording || isTranscribing || sessionActive,
+            llmConfigured: llmConfigured,
+            llmProvider: llmProvider,
+            // Only the cloud (OpenAI) provider leaves the device.
+            sendsTextToCloud: llmProvider == "openai",
+            historyEnabled: historyEnabled
+        )
+    }
+
+    /// Recent dictation history, newest first (the store already inserts at 0),
+    /// mapped to the wire DTO. Empty when history is disabled.
+    func bridgeHistory(limit: Int) -> [BridgeWire.HistoryEntryDTO] {
+        guard historyEnabled else { return [] }
+        return history.prefix(limit).map { e in
+            BridgeWire.HistoryEntryDTO(
+                id: e.id,
+                text: e.text,
+                date: BridgeWire.iso8601String(from: e.date),
+                appBundleID: e.appBundleID,
+                appName: e.appName,
+                initiator: nil // recorded per-entry once the agent path lands (step 6)
+            )
+        }
+    }
+
+    /// Capabilities this build implements. `dictate` and `refine` are added as M8
+    /// steps 6–7 wire them; advertising only what works keeps agents from calling
+    /// unimplemented tools.
+    func bridgeCapabilities() -> [String] {
+        [BridgeWire.Capability.dictate, BridgeWire.Capability.refine, BridgeWire.Capability.history]
+    }
+
+    // MARK: Refine (M8)
+
+    /// Refine `text` per `instruction` using the user's configured LLM, delivering
+    /// the result to `completion`. Used by the bridge `refine` tool. On failure the
+    /// error carries the original text so an agent can proceed unrefined.
+    func bridgeRefine(
+        clientName: String, text: String, instruction: String,
+        completion: @escaping (Result<String, BridgeWire.ErrorObject>) -> Void
+    ) {
+        refineText(text: text, instruction: instruction, completion: completion)
+    }
+
+    /// The refine primitive: reuses the exact overlay-refine LLM path (InstructionChain
+    /// directive + payload → the user's endpoint/model), bracketed by
+    /// ensureBundledLLMReady. Gated by the cloud-AI toggle and busy-rejected while a
+    /// dictation session is live (quiescing the whisper-server under a session is the
+    /// documented hazard). Fail-open: errors carry `originalText`.
+    func refineText(
+        text: String, instruction: String,
+        completion: @escaping (Result<String, BridgeWire.ErrorObject>) -> Void
+    ) {
+        // Cloud-refine gate: never let an agent send text to OpenAI unless allowed.
+        if llmProvider == "openai" && !agentBridgeAllowCloudAI {
+            completion(.failure(.domain(.cloudRefineDisabled,
+                message: "agent cloud AI is off — enable it in Settings → Agent Bridge, or switch to a local provider",
+                originalText: text)))
+            return
+        }
+        guard llmConfigured else {
+            completion(.failure(.domain(.llmUnavailable,
+                message: "no AI model is configured — set one in Settings → Cleanup", originalText: text)))
+            return
+        }
+        // Busy-reject while dictating: quiesceWhisper would stop a live session's
+        // whisper-server.
+        guard !sessionActive, !isRecording, !isTranscribing else {
+            completion(.failure(.domain(.busy,
+                message: "OpenWhisp is busy dictating; try again shortly", originalText: text)))
+            return
+        }
+
+        let systemDirective = InstructionChain.systemDirective
+        let userPayload = InstructionChain.userPayload(instruction: instruction, text: text)
+        var delivered = false
+        let deliver: (Result<String, BridgeWire.ErrorObject>) -> Void = { result in
+            guard !delivered else { return }
+            delivered = true
+            completion(result)
+        }
+
+        // boundToSession: false — an agent refine isn't scoped to a dictation
+        // session, so a user starting a dictation mid-load must not strand the
+        // completion (the server's connection thread blocks on it).
+        ensureBundledLLMReady(statusWhileLoading: "Refining…", quiesceWhisper: true, boundToSession: false, work: { [weak self] done in
+            guard let self else {
+                done()
+                deliver(.failure(.domain(.internalError, message: "app deallocated", originalText: text)))
+                return
+            }
+            self.translationService.processFinalText(
+                text: userPayload,
+                mode: "rephrase",
+                targetLanguage: self.translationTargetLanguage,
+                endpoint: self.llmEndpoint,
+                model: self.llmModel,
+                customInstruction: systemDirective
+            ) { [weak self] result in
+                Task { @MainActor in
+                    done() // close the engine bracket on every path
+                    guard let self else {
+                        deliver(.failure(.domain(.internalError, message: "app deallocated", originalText: text)))
+                        return
+                    }
+                    switch result {
+                    case .success(let processedText):
+                        deliver(.success(self.postProcess(processedText)))
+                    case .failure(let error):
+                        deliver(.failure(.domain(.llmUnavailable, message: error.localizedDescription, originalText: text)))
+                    }
+                }
+            }
+        }, fallback: {
+            deliver(.failure(.domain(.llmUnavailable, message: "built-in model unavailable", originalText: text)))
+        })
+    }
+
+    // MARK: Dictate (M8)
+
+    /// Start an agent-initiated dictation. Guards run up front (busy / mic
+    /// permission / secure field) so a failure is delivered immediately; otherwise
+    /// the result is delivered when the session finalizes (via onSessionEnd) or on
+    /// the timeout. Called on the main thread; `completion` fires on the main thread.
+    func bridgeStartDictation(
+        clientName: String, prompt: String?, timeoutSeconds: Int, language: String?,
+        completion: @escaping (Result<BridgeWire.DictateResult, BridgeWire.ErrorObject>) -> Void
+    ) {
+        // Busy: the human (or another agent session) always wins the mic.
+        guard !isRecording, !isTranscribing, !sessionActive else {
+            completion(.failure(.domain(.busy, message: "OpenWhisp is busy with another dictation; try again shortly")))
+            return
+        }
+        // Don't surface the macOS microphone TCC prompt on an agent's behalf.
+        guard AVCaptureDevice.authorizationStatus(for: .audio) == .authorized else {
+            completion(.failure(.domain(.micPermissionNeeded, message: "grant OpenWhisp microphone access in System Settings first")))
+            return
+        }
+        // Refuse if a password field is focused (agent dictation never pastes, but
+        // the user might speak a secret while a secure field has focus).
+        guard !SecureFieldDetector.focusedFieldIsSecure() else {
+            completion(.failure(.domain(.secureField, message: "a password field is focused; dictation refused")))
+            return
+        }
+
+        let started = Date()
+        agentDictateTimedOut = false
+        agentDictateStopped = false
+        // The overlay attribution line. Sanitized (control/bidi chars stripped,
+        // capped) and always framed as the CLIENT asking — agent-controlled text
+        // must never read as OpenWhisp's own voice.
+        let displayClient = BridgeWire.sanitizedForDisplay(clientName, maxLength: 60)
+        let clientLabel = displayClient.isEmpty ? "An agent" : displayClient
+        if let prompt, !BridgeWire.sanitizedForDisplay(prompt, maxLength: 200).isEmpty {
+            agentDictatePrompt = "\(clientLabel) asks: \(BridgeWire.sanitizedForDisplay(prompt, maxLength: 200))"
+        } else {
+            agentDictatePrompt = "\(clientLabel) asked you to dictate"
+        }
+        sessionInitiator = .agent(client: clientName, prompt: prompt)
+        onSessionEnd = { [weak self] outcome in
+            guard let self else { return }
+            self.agentDictateTimeoutTask?.cancel()
+            self.agentDictateTimeoutTask = nil
+            let duration = Date().timeIntervalSince(started)
+            let timedOut = self.agentDictateTimedOut
+            let stopped = self.agentDictateStopped
+            switch outcome {
+            case .completed(let text):
+                let endedBy: BridgeWire.DictateEnd = timedOut ? .timeout : (stopped ? .stop : .user)
+                completion(.success(.init(text: text, durationSeconds: duration, timedOut: timedOut, endedBy: endedBy)))
+            case .empty:
+                if timedOut {
+                    completion(.failure(.domain(.timeout, message: "no speech within the time limit")))
+                } else {
+                    completion(.success(.init(text: "", durationSeconds: duration, timedOut: false, endedBy: stopped ? .stop : .user)))
+                }
+            case .secureField:
+                completion(.failure(.domain(.secureField, message: "a password field was focused; dictation refused")))
+            case .cancelled:
+                // Per the cancel invariant: no transcript on a cancel.
+                completion(.failure(.domain(.cancelled, message: "the user declined to answer — do not retry")))
+            case .error(let message):
+                completion(.failure(.domain(.audioUnavailable, message: message)))
+            }
+        }
+
+        // Run the shared start path. Any pre-session bail (e.g. a secure field that
+        // became focused in the last instant) leaves sessionActive false; catch it
+        // so the agent is never left hanging.
+        startDictation()
+        guard sessionActive else {
+            onSessionEnd = nil
+            agentDictatePrompt = nil
+            sessionInitiator = .user
+            completion(.failure(.domain(.internalError, message: "could not start dictation")))
+            return
+        }
+
+        let sid = activeSessionID
+        agentDictateTimeoutTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(max(1, timeoutSeconds)) * 1_000_000_000)
+            guard let self, self.sessionActive, self.activeSessionID == sid else { return }
+            self.agentDictateTimedOut = true
+            self.stopDictation()
+        }
+    }
+
+    /// Agent-signaled "the user said they're done" — finalize this agent session.
+    /// Never affects a user session.
+    func bridgeStopAgentDictation() -> Bool {
+        guard sessionActive, sessionInitiator.isAgent else { return false }
+        agentDictateStopped = true
+        stopDictation()
+        return true
+    }
+
+    /// Cancel this agent session (returns no transcript). Never affects a user
+    /// session — an agent can't stop the human's dictation.
+    func bridgeCancelAgentDictation() -> Bool {
+        guard sessionActive, sessionInitiator.isAgent else { return false }
+        cancelDictation()
+        return true
+    }
+
+    // MARK: Consent (M8)
+
+    /// Resolve consent for `clientName`, presenting the consent window when the
+    /// stored policy requires it. Called on the main thread; `completion` fires on
+    /// the main thread with allow/deny. The server bridges the async result back
+    /// to its connection thread.
+    func bridgeResolveConsent(clientName: String, completion: @escaping (Bool) -> Void) {
+        // Policy → decision goes through the tested AgentConsentPolicy.decision
+        // (a persisted `.whileRunning` from an earlier run correctly demotes to
+        // a prompt: the grant itself lives only in this run's set).
+        switch consentDecision(for: clientName) {
+        case .allow:
+            completion(true)
+        case .deny:
+            completion(false)
+        case .prompt:
+            AgentConsentWindowController.shared.present(clientName: clientName) { [weak self] choice in
+                guard let self else { completion(false); return }
+                switch choice {
+                case .always:
+                    self.upsertConsent(clientName, policy: .always)
+                    completion(true)
+                case .whileRunning:
+                    // The run-set is what grants; the record (policy .whileRunning)
+                    // is what makes the client visible — and revocable — in the
+                    // settings pane while the grant stands.
+                    self.upsertConsent(clientName, policy: .whileRunning)
+                    self.consentGrantedThisRun.insert(clientName)
+                    completion(true)
+                case .askEveryTime:
+                    self.upsertConsent(clientName, policy: .askEveryTime)
+                    completion(true)
+                case .deny:
+                    // Explicit Deny → persist a standing deny (fail fast next time).
+                    self.upsertConsent(clientName, policy: .denied)
+                    completion(false)
+                case .dismiss:
+                    // Window closed / timed out → refuse this call only.
+                    completion(false)
+                }
+            }
+        }
+    }
+
+    /// The decision the stored policy + this-run grants yield for `clientName`,
+    /// without prompting. Unknown clients prompt.
+    private func consentDecision(for clientName: String) -> AgentConsentDecision {
+        agentClients.record(for: clientName)?
+            .policy.decision(grantedThisRun: consentGrantedThisRun.contains(clientName)) ?? .prompt
+    }
+
+    /// The consent posture advertised in `bridge.hello` (never prompts).
+    func bridgeConsentSnapshot(clientName: String) -> BridgeWire.ConsentState {
+        switch consentDecision(for: clientName) {
+        case .allow: return .granted
+        case .deny: return .denied
+        case .prompt: return .pending
+        }
+    }
+
+    /// Note a completed agent call on the client's record (for the settings pane).
+    func bridgeDidCall(clientName: String, tool: String) {
+        guard var record = agentClients.record(for: clientName) else { return }
+        record.lastCall = Date()
+        record.lastTool = tool
+        agentClients.upsert(record)
+        agentClients.save()
+    }
+
+    /// Revoke a client's stored consent (from the settings pane).
+    func revokeAgentClient(_ clientName: String) {
+        agentClients.remove(clientName: clientName)
+        consentGrantedThisRun.remove(clientName)
+        agentClients.save()
+    }
+
+    private func upsertConsent(_ clientName: String, policy: AgentConsentPolicy) {
+        var record = agentClients.record(for: clientName)
+            ?? AgentClientRecord(clientName: clientName, policy: policy, firstSeen: Date())
+        record.policy = policy
+        agentClients.upsert(record)
+        agentClients.save()
     }
 }

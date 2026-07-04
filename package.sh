@@ -34,6 +34,14 @@ rm -f "$BUILD_DIR/OpenWhisp"
 source "$PROJECT_DIR/scripts/verify-whisperkit-binary.sh"
 verify_whisperkit_binary "$BUILD_DIR/OpenWhisp"
 
+# Build the openwhisp CLI + MCP adapter (a separate SwiftPM executable, so it
+# never picks up the GUI app's `main`). Bundled into Contents/Helpers below; the
+# app's --deep code-sign seals it for local dev. (build-dmg.sh signs it with the
+# hardened runtime + strict-verify for notarized release.)
+echo "Building openwhisp CLI..."
+swift build -c release --product openwhisp
+CLI_BIN="$(swift build -c release --product openwhisp --show-bin-path)/openwhisp"
+
 # Clean old bundle
 rm -rf "$APP_DIR"
 
@@ -46,6 +54,10 @@ mkdir -p "$APP_DIR/Contents/Resources/models"
 
 # Copy binary
 cp "$BUILD_DIR/OpenWhisp" "$APP_DIR/Contents/MacOS/"
+
+# Bundle the openwhisp CLI / MCP adapter alongside the app.
+mkdir -p "$APP_DIR/Contents/Helpers"
+cp "$CLI_BIN" "$APP_DIR/Contents/Helpers/openwhisp"
 
 # Copy Info.plist
 cp "$PROJECT_DIR/OpenWhisp/Info.plist" "$APP_DIR/Contents/"

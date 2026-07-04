@@ -223,6 +223,21 @@ struct OverlayView: View {
         VStack(spacing: 10) {
             waveformPill
 
+            // Agent Bridge: an agent-initiated session is always attributed — the
+            // client's question (sanitized + client-prefixed by AppState) renders
+            // above the transcript so mic use on an agent's behalf is never
+            // anonymous. nil for ordinary user sessions.
+            if let agentPrompt = appState.agentDictatePrompt {
+                Text(agentPrompt)
+                    .font(.system(size: 12, weight: .semibold, design: .rounded))
+                    .foregroundColor(.white.opacity(0.92))
+                    .multilineTextAlignment(.center)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: 360)
+                    .transition(.opacity)
+            }
+
             if let armingCaption {
                 Text(armingCaption)
                     .font(.system(size: 11, weight: .semibold, design: .rounded))

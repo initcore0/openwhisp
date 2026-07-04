@@ -53,6 +53,9 @@ class OpenWhispApp: NSObject, NSApplicationDelegate {
         // permissions, so it's fine to start before onboarding.
         appState.ensureSelectedEngineModel()
 
+        // Agent Bridge (M8): start the local control-plane socket if enabled.
+        appState.startAgentBridgeIfEnabled()
+
         // First-run onboarding
         showOnboardingIfNeeded()
         print("[OpenWhisp] Ready")
