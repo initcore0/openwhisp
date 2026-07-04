@@ -370,6 +370,30 @@ class AppState: ObservableObject {
     /// Recent transcriptions (persisted to history.json), newest first.
     @Published var history: [TranscriptionEntry] = []
 
+    // MARK: Agent Bridge (M8)
+
+    /// Expose OpenWhisp as a local MCP server / CLI to coding agents. Default-off:
+    /// when false, no socket and no listener exist (zero cost). Toggling it starts
+    /// or stops the control-plane socket server.
+    @Published var agentBridgeEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(agentBridgeEnabled, forKey: "agentBridgeEnabled")
+            agentBridgeServer.allowUnsignedClients = agentBridgeAllowUnsignedClients
+            if agentBridgeEnabled { agentBridgeServer.start() } else { agentBridgeServer.stop() }
+        }
+    }
+    /// Relax the code-signature admission check so a user's own (unsigned) client
+    /// can connect. Default-off; on-brand escape hatch for the hackable positioning.
+    @Published var agentBridgeAllowUnsignedClients: Bool {
+        didSet {
+            UserDefaults.standard.set(agentBridgeAllowUnsignedClients, forKey: "agentBridgeAllowUnsignedClients")
+            agentBridgeServer.allowUnsignedClients = agentBridgeAllowUnsignedClients
+        }
+    }
+    /// The control-plane socket server. Lazily constructed (no cost until the
+    /// bridge is enabled); owns the socket, per-connection auth, and dispatch.
+    private lazy var agentBridgeServer = AgentBridgeServer(host: self)
+
     /// Bias whisper recognition toward custom terms. Default-on; harmless when
     /// the vocabulary is empty (no prompt is sent).
     @Published var customVocabularyEnabled: Bool {
@@ -834,6 +858,11 @@ class AppState: ObservableObject {
         scriptPostProcessorPath = UserDefaults.standard.string(forKey: "scriptPostProcessorPath") ?? ""
         perAppModesEnabled = UserDefaults.standard.object(forKey: "perAppModesEnabled") as? Bool ?? false
         historyEnabled = UserDefaults.standard.object(forKey: "historyEnabled") as? Bool ?? true
+        // Agent Bridge (M8) — default off; started at launch via startAgentBridgeIfEnabled().
+        // (Property observers don't fire during init, so the lazy server isn't
+        // touched here — it starts only from the explicit launch call.)
+        agentBridgeEnabled = UserDefaults.standard.bool(forKey: "agentBridgeEnabled")
+        agentBridgeAllowUnsignedClients = UserDefaults.standard.bool(forKey: "agentBridgeAllowUnsignedClients")
         profiles = AppProfileStore.load()
         history = TranscriptionHistoryStore.load()
         customVocabularyEnabled = UserDefaults.standard.object(forKey: "customVocabularyEnabled") as? Bool ?? true
@@ -1227,9 +1256,18 @@ class AppState: ObservableObject {
 
     func shutdown() {
         cancelDictation()
+        agentBridgeServer.stop()
         whisperEngine.stopServer()
         llamaEngine?.stopServer()
         hotkeyMonitor.stop()
+    }
+
+    /// Start the Agent Bridge socket server if the user has enabled it. Called
+    /// once at launch (property observers don't fire during init).
+    func startAgentBridgeIfEnabled() {
+        guard agentBridgeEnabled else { return }
+        agentBridgeServer.allowUnsignedClients = agentBridgeAllowUnsignedClients
+        agentBridgeServer.start()
     }
 
     func stopWhisperServer() {
@@ -3623,5 +3661,50 @@ final class ModelDownloader: NSObject, URLSessionDownloadDelegate {
 extension URL {
     func createDirectories() throws {
         try FileManager.default.createDirectory(at: self, withIntermediateDirectories: true, attributes: nil)
+    }
+}
+
+// MARK: - Agent Bridge host (M8)
+
+extension AppState: AgentBridgeHost {
+    /// Called on the main thread by AgentBridgeServer. Builds a read-only status
+    /// snapshot for the `status` control-plane method and the CLI liveness probe.
+    func bridgeStatus() -> BridgeWire.StatusResult {
+        let appVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev"
+        let engine = transcriptionEngine == "whisper" ? whisperBackend : transcriptionEngine
+        return BridgeWire.StatusResult(
+            appVersion: appVersion,
+            engine: engine,
+            model: modelName,
+            sessionActive: isRecording || isTranscribing || sessionActive,
+            llmConfigured: llmConfigured,
+            llmProvider: llmProvider,
+            // Only the cloud (OpenAI) provider leaves the device.
+            sendsTextToCloud: llmProvider == "openai",
+            historyEnabled: historyEnabled
+        )
+    }
+
+    /// Recent dictation history, newest first (the store already inserts at 0),
+    /// mapped to the wire DTO. Empty when history is disabled.
+    func bridgeHistory(limit: Int) -> [BridgeWire.HistoryEntryDTO] {
+        guard historyEnabled else { return [] }
+        return history.prefix(limit).map { e in
+            BridgeWire.HistoryEntryDTO(
+                id: e.id,
+                text: e.text,
+                date: BridgeWire.iso8601String(from: e.date),
+                appBundleID: e.appBundleID,
+                appName: e.appName,
+                initiator: nil // recorded per-entry once the agent path lands (step 6)
+            )
+        }
+    }
+
+    /// Capabilities this build implements. `dictate` and `refine` are added as M8
+    /// steps 6–7 wire them; advertising only what works keeps agents from calling
+    /// unimplemented tools.
+    func bridgeCapabilities() -> [String] {
+        [BridgeWire.Capability.history]
     }
 }

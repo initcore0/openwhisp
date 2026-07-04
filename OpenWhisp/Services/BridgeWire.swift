@@ -174,6 +174,15 @@ public enum BridgeWire {
             self.id = id
             self.method = method
         }
+
+        // Tolerant decode: `method` is required, but a client (or a `nc` tester)
+        // that omits `jsonrpc`/`id` is accepted rather than silently closed.
+        public init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            self.method = try c.decode(String.self, forKey: .method)
+            self.jsonrpc = try c.decodeIfPresent(String.self, forKey: .jsonrpc) ?? "2.0"
+            self.id = try c.decodeIfPresent(RPCID.self, forKey: .id)
+        }
     }
 
     /// A typed request. Decode a line with `Params == Never`-shaped stubs by using

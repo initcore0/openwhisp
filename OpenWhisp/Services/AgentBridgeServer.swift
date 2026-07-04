@@ -1,0 +1,433 @@
+import Foundation
+import Darwin
+import Security
+import os
+
+// This file is app-target only (NOT in Package.swift's OpenWhispCore sources):
+// it uses Darwin sockets + the Security framework and calls back into AppState.
+// The pure routing/validation it depends on lives in BridgeRouter (tested).
+
+/// Callbacks the Agent Bridge server invokes **on the main thread** — the server
+/// hops via its main-thread bridge before every call, so implementations may
+/// touch main-only AppState state directly. AppState conforms.
+protocol AgentBridgeHost: AnyObject {
+    /// A read-only status snapshot.
+    func bridgeStatus() -> BridgeWire.StatusResult
+    /// Recent dictation history, newest first, capped to `limit`.
+    func bridgeHistory(limit: Int) -> [BridgeWire.HistoryEntryDTO]
+    /// The capability tokens this build actually implements (grows as dictate /
+    /// refine are wired). Advertised in `bridge.hello`.
+    func bridgeCapabilities() -> [String]
+}
+
+/// The local control-plane server for the Agent Bridge: a UNIX-domain-socket
+/// JSON-RPC 2.0 endpoint the `openwhisp` CLI and MCP adapter connect to.
+///
+/// Default-off: nothing is created until ``start()`` is called, and ``stop()``
+/// tears the socket down completely — so a user who never enables the bridge
+/// pays zero cost. Every connection is authenticated at accept() (same-user
+/// euid + code-signature match) before a single request byte is read; a failing
+/// check closes the connection silently.
+///
+/// **Runtime note:** the socket lifecycle and peer authentication are validated
+/// against the real signed app (see docs/AGENT_BRIDGE_PLAN.md step 3 "manual
+/// verification"); this type is compile-checked and its request routing is
+/// unit-tested via `BridgeRouter`.
+final class AgentBridgeServer {
+
+    private weak var host: AgentBridgeHost?
+    private let log = Logger(subsystem: Bundle.main.bundleIdentifier ?? "OpenWhisp", category: "AgentBridge")
+
+    /// When false (the default), a peer must satisfy our own code-signing
+    /// requirement (same Team ID, or same designated requirement). The Settings
+    /// "Allow unsigned / third-party clients" toggle sets this true.
+    var allowUnsignedClients = false
+
+    private let stateLock = NSLock()
+    private var listenFD: Int32 = -1
+    private var running = false
+    private var boundPath: String?
+
+    /// Lightweight denial throttle: timestamps of recent auth rejections, so a
+    /// burst can be logged (and, once the consent UI lands, surfaced).
+    private var recentDenials: [Date] = []
+
+    init(host: AgentBridgeHost) {
+        self.host = host
+    }
+
+    // MARK: - Lifecycle
+
+    var isRunning: Bool {
+        stateLock.lock(); defer { stateLock.unlock() }
+        return running
+    }
+
+    /// Idempotent. Creates the socket and starts accepting connections.
+    func start() {
+        stateLock.lock()
+        if running { stateLock.unlock(); return }
+        stateLock.unlock()
+
+        let path = Self.resolveSocketPath()
+        guard let fd = makeListeningSocket(at: path) else {
+            log.error("Agent Bridge: failed to open socket at \(path, privacy: .public)")
+            return
+        }
+        Self.writePointerFile(resolvedPath: path)
+
+        stateLock.lock()
+        listenFD = fd
+        boundPath = path
+        running = true
+        stateLock.unlock()
+
+        log.info("Agent Bridge listening at \(path, privacy: .public)")
+        Thread.detachNewThread { [weak self] in self?.acceptLoop(listenFD: fd) }
+    }
+
+    /// Idempotent. Stops accepting, closes the socket, and unlinks it.
+    func stop() {
+        stateLock.lock()
+        guard running else { stateLock.unlock(); return }
+        running = false
+        let fd = listenFD
+        let path = boundPath
+        listenFD = -1
+        boundPath = nil
+        stateLock.unlock()
+
+        if fd >= 0 { close(fd) } // makes the blocked accept() return
+        if let path { unlink(path) }
+        Self.removePointerFile()
+        log.info("Agent Bridge stopped")
+    }
+
+    // MARK: - Socket setup
+
+    /// The socket path: `~/Library/Application Support/OpenWhisp/agent.sock`, or a
+    /// `$TMPDIR/openwhisp-<uid>/bridge.sock` fallback for pathologically long home
+    /// paths (sun_path is only 104 bytes). Returns nil only if even the fallback
+    /// overflows.
+    static func resolveSocketPath() -> String {
+        let primary = appSupportDir().appendingPathComponent("agent.sock").path
+        if primary.utf8.count < 104 { return primary }
+        // Fallback: short tmp path keyed by uid.
+        let tmp = (ProcessInfo.processInfo.environment["TMPDIR"] ?? NSTemporaryDirectory())
+        let dir = URL(fileURLWithPath: tmp).appendingPathComponent("openwhisp-\(geteuid())", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true,
+                                                 attributes: [.posixPermissions: 0o700])
+        let fallback = dir.appendingPathComponent("bridge.sock").path
+        return fallback.utf8.count < 104 ? fallback : primary // best effort
+    }
+
+    private static func appSupportDir() -> URL {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support")
+        return base.appendingPathComponent("OpenWhisp", isDirectory: true)
+    }
+
+    /// A pointer file so a client can find the socket when the fallback path is in
+    /// use. Always written next to where the socket would nominally live.
+    private static func writePointerFile(resolvedPath: String) {
+        let dir = appSupportDir()
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true,
+                                                 attributes: [.posixPermissions: 0o700])
+        let pointer = dir.appendingPathComponent("agent.sock.path")
+        try? resolvedPath.data(using: .utf8)?.write(to: pointer, options: .atomic)
+    }
+
+    private static func removePointerFile() {
+        try? FileManager.default.removeItem(at: appSupportDir().appendingPathComponent("agent.sock.path"))
+    }
+
+    private func makeListeningSocket(at path: String) -> Int32? {
+        let dir = (path as NSString).deletingLastPathComponent
+        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true,
+                                                 attributes: [.posixPermissions: 0o700])
+
+        let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+        guard fd >= 0 else { return nil }
+
+        var addr = sockaddr_un()
+        addr.sun_family = sa_family_t(AF_UNIX)
+        let capacity = MemoryLayout.size(ofValue: addr.sun_path) // 104
+        guard path.utf8.count < capacity else { close(fd); return nil }
+        _ = withUnsafeMutablePointer(to: &addr.sun_path) { p in
+            path.withCString { src in
+                p.withMemoryRebound(to: CChar.self, capacity: capacity) { dst in
+                    strncpy(dst, src, capacity - 1)
+                }
+            }
+        }
+
+        unlink(path) // remove a stale socket from a previous run/crash
+
+        let len = socklen_t(MemoryLayout<sockaddr_un>.size)
+        let bound = withUnsafePointer(to: &addr) { ap -> Int32 in
+            ap.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
+                bind(fd, sa, len)
+            }
+        }
+        guard bound == 0 else {
+            log.error("Agent Bridge: bind failed (errno \(errno))")
+            close(fd); return nil
+        }
+        guard chmod(path, 0o600) == 0 else { close(fd); unlink(path); return nil }
+        guard listen(fd, 8) == 0 else { close(fd); unlink(path); return nil }
+        return fd
+    }
+
+    // MARK: - Accept loop
+
+    private func acceptLoop(listenFD: Int32) {
+        while true {
+            let conn = accept(listenFD, nil, nil)
+            if conn < 0 {
+                if !isRunning { break } // stop() closed the fd
+                if errno == EINTR { continue }
+                break
+            }
+            if !isRunning { close(conn); break }
+            Thread.detachNewThread { [weak self] in self?.handleConnection(conn) }
+        }
+    }
+
+    // MARK: - Per-connection handling
+
+    private func handleConnection(_ fd: Int32) {
+        defer { close(fd) }
+
+        guard authenticatePeer(fd) else {
+            recordDenial()
+            return // silent close — no oracle to a rejected peer
+        }
+
+        var handshaken = false
+        var buffer = Data()
+        var chunk = [UInt8](repeating: 0, count: 16384)
+
+        while isRunning {
+            let n = read(fd, &chunk, chunk.count)
+            if n <= 0 { break } // EOF or error → connection closed
+            buffer.append(contentsOf: chunk[0..<n])
+
+            // A single frame with no newline may not exceed the cap.
+            if buffer.count > BridgeWire.maxFrameBytes {
+                log.notice("Agent Bridge: frame exceeded cap; closing")
+                break
+            }
+
+            while let nlIndex = buffer.firstIndex(of: 0x0A) {
+                let lineData = Data(buffer[buffer.startIndex..<nlIndex])
+                buffer.removeSubrange(buffer.startIndex...nlIndex)
+                if lineData.isEmpty { continue }
+
+                switch BridgeRouter.route(line: lineData, hasHandshaken: handshaken) {
+                case .close(let reason):
+                    log.notice("Agent Bridge: closing — \(reason, privacy: .public)")
+                    return
+                case .error(let id, let err):
+                    sendError(fd, id: id, error: err)
+                case .intent(let intent):
+                    if !execute(intent, fd: fd, handshaken: &handshaken) { return }
+                }
+            }
+        }
+    }
+
+    /// Execute a routed intent. Returns false to close the connection.
+    private func execute(_ intent: BridgeRouter.Intent, fd: Int32, handshaken: inout Bool) -> Bool {
+        switch intent {
+        case .hello(let id, let params):
+            do {
+                let negotiated = try BridgeWire.negotiatedProtocolVersion(clientProtocolVersion: params.protocolVersion)
+                let caps = onMain { self.host?.bridgeCapabilities() ?? [] }
+                let appVersion = onMain { self.host?.bridgeStatus().appVersion ?? "" }
+                // Consent is not yet gated (step 5); grant on handshake for now.
+                let result = BridgeWire.HelloResult(
+                    protocolVersion: negotiated,
+                    appVersion: appVersion,
+                    capabilities: caps,
+                    clientId: UUID().uuidString,
+                    consent: .granted
+                )
+                send(fd, id: id, result: result)
+                handshaken = true
+                return true
+            } catch {
+                sendError(fd, id: id, error: BridgeWire.ErrorObject.domain(
+                    .unsupportedVersion,
+                    message: "client protocol \(params.protocolVersion) is newer than this app supports (\(BridgeWire.protocolVersion)); update OpenWhisp"
+                ))
+                return false // can't proceed without a shared protocol
+            }
+
+        case .status(let id):
+            let result = onMain { self.host?.bridgeStatus() }
+            if let result { send(fd, id: id, result: result) }
+            else { sendError(fd, id: id, error: .domain(.internalError, message: "status unavailable")) }
+            return true
+
+        case .historyList(let id, let params):
+            let limit = BridgeRouter.resolvedHistoryLimit(params.limit)
+            let entries = onMain { self.host?.bridgeHistory(limit: limit) ?? [] }
+            send(fd, id: id, result: BridgeWire.HistoryListResult(entries: entries))
+            return true
+
+        // Wired in M8 steps 6–7. Until then these aren't advertised in
+        // capabilities, so a well-behaved client won't call them.
+        case .dictate(let id, _), .refine(let id, _):
+            sendError(fd, id: id, error: .domain(.internalError, message: "not available in this build yet"))
+            return true
+        case .dictateStop(let id), .dictateCancel(let id):
+            sendError(fd, id: id, error: .domain(.internalError, message: "not available in this build yet"))
+            return true
+        }
+    }
+
+    // MARK: - Peer authentication
+
+    private func authenticatePeer(_ fd: Int32) -> Bool {
+        // Layer 1: same-user. Kernel-guaranteed; kills the cross-user case.
+        var uid = uid_t(); var gid = gid_t()
+        guard getpeereid(fd, &uid, &gid) == 0 else {
+            log.notice("Agent Bridge: getpeereid failed; denying")
+            return false
+        }
+        guard uid == geteuid() else {
+            log.notice("Agent Bridge: peer euid \(uid) != \(geteuid()); denying")
+            return false
+        }
+
+        // Layer 2: code signature (unless the user opted into unsigned clients).
+        if allowUnsignedClients { return true }
+        guard PeerCodeSignature.verifyPeerMatchesSelf(fd: fd) else {
+            log.notice("Agent Bridge: peer code-signature check failed; denying")
+            return false
+        }
+        return true
+    }
+
+    private func recordDenial() {
+        stateLock.lock()
+        let now = Date()
+        recentDenials.append(now)
+        recentDenials.removeAll { now.timeIntervalSince($0) > 60 }
+        let count = recentDenials.count
+        stateLock.unlock()
+        if count >= 3 {
+            log.error("Agent Bridge: \(count) connection denials in the last minute")
+            // The user-facing notification is wired with the consent UI (step 5).
+        }
+    }
+
+    // MARK: - Main-thread hop
+
+    /// Synchronously run `body` on the main thread and return its value. Called
+    /// only from connection threads (never the main thread), so the wait can't
+    /// self-deadlock.
+    private func onMain<T>(_ body: @escaping () -> T) -> T {
+        var result: T!
+        let sem = DispatchSemaphore(value: 0)
+        DispatchQueue.main.async {
+            result = body()
+            sem.signal()
+        }
+        sem.wait()
+        return result
+    }
+
+    // MARK: - Writing responses
+
+    private func send<R: Codable & Sendable>(_ fd: Int32, id: BridgeWire.RPCID?, result: R) {
+        writeJSON(fd, BridgeWire.Response(id: id, result: result))
+    }
+
+    private func sendError(_ fd: Int32, id: BridgeWire.RPCID?, error: BridgeWire.ErrorObject) {
+        writeJSON(fd, BridgeWire.Response<BridgeWire.NoParams>(id: id, error: error))
+    }
+
+    private func writeJSON<T: Encodable>(_ fd: Int32, _ value: T) {
+        guard var data = try? JSONEncoder().encode(value) else { return }
+        data.append(0x0A) // NDJSON frame terminator
+        data.withUnsafeBytes { raw in
+            guard let base = raw.bindMemory(to: UInt8.self).baseAddress else { return }
+            var offset = 0
+            while offset < data.count {
+                let written = write(fd, base + offset, data.count - offset)
+                if written <= 0 { break }
+                offset += written
+            }
+        }
+    }
+}
+
+// MARK: - Peer code-signature verification
+
+/// Verifies that a connected socket peer is signed like us — same Team ID for a
+/// Developer-ID / notarized build, else our own designated requirement (which is
+/// identity-based for a named self-signed dev cert). Uses the peer's **audit
+/// token** (which names one specific process incarnation) rather than its PID, so
+/// there is no PID-reuse / exec race (the class of bug behind CVE-2019-13013 and
+/// similar).
+private enum PeerCodeSignature {
+
+    // From <sys/un.h>; not always surfaced as Swift constants.
+    private static let SOL_LOCAL_VALUE: Int32 = 0
+    private static let LOCAL_PEERTOKEN_VALUE: Int32 = 0x006
+
+    static func verifyPeerMatchesSelf(fd: Int32) -> Bool {
+        var token = audit_token_t()
+        var len = socklen_t(MemoryLayout<audit_token_t>.size)
+        let rc = withUnsafeMutablePointer(to: &token) { tp -> Int32 in
+            getsockopt(fd, SOL_LOCAL_VALUE, LOCAL_PEERTOKEN_VALUE, tp, &len)
+        }
+        guard rc == 0, len == socklen_t(MemoryLayout<audit_token_t>.size) else { return false }
+
+        guard let requirement = selfRequirement() else {
+            // We couldn't derive our own requirement — i.e. this is an unsigned /
+            // ad-hoc dev binary. euid already matched, so accept (dev-only path;
+            // signed builds always derive a requirement).
+            return true
+        }
+
+        var tokenCopy = token
+        let tokenData = Data(bytes: &tokenCopy, count: MemoryLayout<audit_token_t>.size) as CFData
+        let attrs = [kSecGuestAttributeAudit as String: tokenData] as CFDictionary
+        var guest: SecCode?
+        guard SecCodeCopyGuestWithAttributes(nil, attrs, [], &guest) == errSecSuccess,
+              let guest else { return false }
+        return SecCodeCheckValidity(guest, [], requirement) == errSecSuccess
+    }
+
+    /// Our own admission requirement: a Team-ID match when we have one (so the
+    /// bundled CLI, signed by the same team, passes), otherwise our designated
+    /// requirement. Returns nil when we are unsigned/ad-hoc.
+    private static func selfRequirement() -> SecRequirement? {
+        var selfCode: SecCode?
+        guard SecCodeCopySelf([], &selfCode) == errSecSuccess, let selfCode else { return nil }
+        var selfStatic: SecStaticCode?
+        guard SecCodeCopyStaticCode(selfCode, [], &selfStatic) == errSecSuccess, let selfStatic else { return nil }
+
+        // Prefer Team ID (admits any same-team binary, e.g. the bundled adapter).
+        var info: CFDictionary?
+        let flags = SecCSFlags(rawValue: kSecCSSigningInformation)
+        if SecCodeCopySigningInformation(selfStatic, flags, &info) == errSecSuccess,
+           let dict = info as? [String: Any],
+           let team = dict[kSecCodeInfoTeamIdentifier as String] as? String,
+           !team.isEmpty {
+            var req: SecRequirement?
+            let reqString = "anchor apple generic and certificate leaf[subject.OU] = \"\(team)\"" as CFString
+            if SecRequirementCreateWithString(reqString, [], &req) == errSecSuccess, let req {
+                return req
+            }
+        }
+
+        // Fallback: our designated requirement (identity-based for a named
+        // self-signed cert, so a same-identity CLI still passes in dev).
+        var dr: SecRequirement?
+        guard SecCodeCopyDesignatedRequirement(selfStatic, [], &dr) == errSecSuccess else { return nil }
+        return dr
+    }
+}

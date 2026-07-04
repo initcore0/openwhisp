@@ -34,6 +34,7 @@ let package = Package(
                 "LiveChunkPipeline.swift",
                 "ConfigBundle.swift",
                 "BridgeWire.swift",
+                "BridgeRouter.swift",
                 "DictationSession.swift",
                 "ConfigPack.swift",
                 "ScriptPostProcessor.swift",
