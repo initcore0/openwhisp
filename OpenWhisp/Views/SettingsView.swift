@@ -17,6 +17,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
     case cleanup
     case output
     case profiles
+    case agentBridge
     case privacy
     case advanced
 
@@ -24,27 +25,29 @@ enum SettingsPane: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .general:   return "General"
-        case .dictation: return "Dictation"
-        case .models:    return "Models"
-        case .cleanup:   return "Cleanup"
-        case .output:    return "Output"
-        case .profiles:  return "Per-App Profiles"
-        case .privacy:   return "Privacy & Permissions"
-        case .advanced:  return "Advanced"
+        case .general:     return "General"
+        case .dictation:   return "Dictation"
+        case .models:      return "Models"
+        case .cleanup:     return "Cleanup"
+        case .output:      return "Output"
+        case .profiles:    return "Per-App Profiles"
+        case .agentBridge: return "Agent Bridge"
+        case .privacy:     return "Privacy & Permissions"
+        case .advanced:    return "Advanced"
         }
     }
 
     var symbol: String {
         switch self {
-        case .general:   return "gearshape"
-        case .dictation: return "mic"
-        case .models:    return "cpu"
-        case .cleanup:   return "wand.and.stars"
-        case .output:    return "text.cursor"
-        case .profiles:  return "square.grid.2x2"
-        case .privacy:   return "lock.shield"
-        case .advanced:  return "wrench.and.screwdriver"
+        case .general:     return "gearshape"
+        case .dictation:   return "mic"
+        case .models:      return "cpu"
+        case .cleanup:     return "wand.and.stars"
+        case .output:      return "text.cursor"
+        case .profiles:    return "square.grid.2x2"
+        case .agentBridge: return "point.3.connected.trianglepath.dotted"
+        case .privacy:     return "lock.shield"
+        case .advanced:    return "wrench.and.screwdriver"
         }
     }
 }
@@ -98,6 +101,7 @@ struct SettingsView: View {
         case .cleanup:   CleanupPane(appState: appState)
         case .output:    OutputPane(appState: appState)
         case .profiles:  ProfilesPane(appState: appState)
+        case .agentBridge: AgentBridgePane(appState: appState)
         case .privacy:   PrivacyPane(appState: appState)
         case .advanced:  AdvancedPane(appState: appState)
         }

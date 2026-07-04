@@ -390,6 +390,18 @@ class AppState: ObservableObject {
             agentBridgeServer.allowUnsignedClients = agentBridgeAllowUnsignedClients
         }
     }
+    /// Allow an agent-initiated LLM call to use the CLOUD provider (OpenAI).
+    /// Default-off: a prompt-injected agent must not be able to exfiltrate text
+    /// through the user's OpenAI key. When off and the provider is OpenAI, agent
+    /// `refine` is refused with `cloudRefineDisabled`.
+    @Published var agentBridgeAllowCloudAI: Bool {
+        didSet { UserDefaults.standard.set(agentBridgeAllowCloudAI, forKey: "agentBridgeAllowCloudAI") }
+    }
+    /// Per-client consent records (persisted to agent-clients.json). Surfaced in
+    /// the Agent Bridge settings pane.
+    @Published var agentClients: AgentClientStore = AgentClientStore()
+    /// Clients granted "while running" during this launch (never persisted).
+    private var consentGrantedThisRun: Set<String> = []
     /// The control-plane socket server. Lazily constructed (no cost until the
     /// bridge is enabled); owns the socket, per-connection auth, and dispatch.
     private lazy var agentBridgeServer = AgentBridgeServer(host: self)
@@ -863,6 +875,8 @@ class AppState: ObservableObject {
         // touched here — it starts only from the explicit launch call.)
         agentBridgeEnabled = UserDefaults.standard.bool(forKey: "agentBridgeEnabled")
         agentBridgeAllowUnsignedClients = UserDefaults.standard.bool(forKey: "agentBridgeAllowUnsignedClients")
+        agentBridgeAllowCloudAI = UserDefaults.standard.bool(forKey: "agentBridgeAllowCloudAI")
+        agentClients = AgentClientStore.load()
         profiles = AppProfileStore.load()
         history = TranscriptionHistoryStore.load()
         customVocabularyEnabled = UserDefaults.standard.object(forKey: "customVocabularyEnabled") as? Bool ?? true
@@ -3706,5 +3720,70 @@ extension AppState: AgentBridgeHost {
     /// unimplemented tools.
     func bridgeCapabilities() -> [String] {
         [BridgeWire.Capability.history]
+    }
+
+    // MARK: Consent (M8)
+
+    /// Resolve consent for `clientName`, presenting the consent window when the
+    /// stored policy requires it. Called on the main thread; `completion` fires on
+    /// the main thread with allow/deny. The server bridges the async result back
+    /// to its connection thread.
+    func bridgeResolveConsent(clientName: String, completion: @escaping (Bool) -> Void) {
+        // Granted "while running" earlier this launch → fast allow.
+        if consentGrantedThisRun.contains(clientName) { completion(true); return }
+        switch agentClients.record(for: clientName)?.policy {
+        case .always:
+            completion(true)
+        case .denied:
+            completion(false)
+        case .askEveryTime, .whileRunning, .none:
+            // (A persisted `.whileRunning` never happens — those live only in the
+            // run-set — but treat it as "ask" defensively.)
+            AgentConsentWindowController.shared.present(clientName: clientName) { [weak self] choice in
+                guard let self else { completion(false); return }
+                switch choice {
+                case .always:
+                    self.upsertConsent(clientName, policy: .always)
+                    completion(true)
+                case .whileRunning:
+                    self.consentGrantedThisRun.insert(clientName)
+                    completion(true)
+                case .askEveryTime:
+                    self.upsertConsent(clientName, policy: .askEveryTime)
+                    completion(true)
+                case .deny:
+                    // Explicit Deny → persist a standing deny (fail fast next time).
+                    self.upsertConsent(clientName, policy: .denied)
+                    completion(false)
+                case .dismiss:
+                    // Window closed / timed out → refuse this call only.
+                    completion(false)
+                }
+            }
+        }
+    }
+
+    /// Note a completed agent call on the client's record (for the settings pane).
+    func bridgeDidCall(clientName: String, tool: String) {
+        guard var record = agentClients.record(for: clientName) else { return }
+        record.lastCall = Date()
+        record.lastTool = tool
+        agentClients.upsert(record)
+        agentClients.save()
+    }
+
+    /// Revoke a client's stored consent (from the settings pane).
+    func revokeAgentClient(_ clientName: String) {
+        agentClients.remove(clientName: clientName)
+        consentGrantedThisRun.remove(clientName)
+        agentClients.save()
+    }
+
+    private func upsertConsent(_ clientName: String, policy: AgentConsentPolicy) {
+        var record = agentClients.record(for: clientName)
+            ?? AgentClientRecord(clientName: clientName, policy: policy, firstSeen: Date())
+        record.policy = policy
+        agentClients.upsert(record)
+        agentClients.save()
     }
 }

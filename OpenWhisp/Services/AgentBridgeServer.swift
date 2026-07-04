@@ -18,6 +18,18 @@ protocol AgentBridgeHost: AnyObject {
     /// The capability tokens this build actually implements (grows as dictate /
     /// refine are wired). Advertised in `bridge.hello`.
     func bridgeCapabilities() -> [String]
+    /// Resolve consent for `clientName` (presenting the consent window if the
+    /// stored policy requires it). `completion` fires on the main thread with
+    /// allow/deny; the server blocks its connection thread until it does.
+    func bridgeResolveConsent(clientName: String, completion: @escaping (Bool) -> Void)
+    /// Note a completed agent call on the client's record (for the settings pane).
+    func bridgeDidCall(clientName: String, tool: String)
+}
+
+/// Per-connection state carried across frames on one connection.
+private struct ConnectionState {
+    var handshaken = false
+    var clientName = ""
 }
 
 /// The local control-plane server for the Agent Bridge: a UNIX-domain-socket
@@ -203,7 +215,7 @@ final class AgentBridgeServer {
             return // silent close — no oracle to a rejected peer
         }
 
-        var handshaken = false
+        var state = ConnectionState()
         var buffer = Data()
         var chunk = [UInt8](repeating: 0, count: 16384)
 
@@ -223,21 +235,21 @@ final class AgentBridgeServer {
                 buffer.removeSubrange(buffer.startIndex...nlIndex)
                 if lineData.isEmpty { continue }
 
-                switch BridgeRouter.route(line: lineData, hasHandshaken: handshaken) {
+                switch BridgeRouter.route(line: lineData, hasHandshaken: state.handshaken) {
                 case .close(let reason):
                     log.notice("Agent Bridge: closing — \(reason, privacy: .public)")
                     return
                 case .error(let id, let err):
                     sendError(fd, id: id, error: err)
                 case .intent(let intent):
-                    if !execute(intent, fd: fd, handshaken: &handshaken) { return }
+                    if !execute(intent, fd: fd, state: &state) { return }
                 }
             }
         }
     }
 
     /// Execute a routed intent. Returns false to close the connection.
-    private func execute(_ intent: BridgeRouter.Intent, fd: Int32, handshaken: inout Bool) -> Bool {
+    private func execute(_ intent: BridgeRouter.Intent, fd: Int32, state: inout ConnectionState) -> Bool {
         switch intent {
         case .hello(let id, let params):
             do {
@@ -253,7 +265,8 @@ final class AgentBridgeServer {
                     consent: .granted
                 )
                 send(fd, id: id, result: result)
-                handshaken = true
+                state.handshaken = true
+                state.clientName = params.clientName
                 return true
             } catch {
                 sendError(fd, id: id, error: BridgeWire.ErrorObject.domain(
@@ -270,8 +283,14 @@ final class AgentBridgeServer {
             return true
 
         case .historyList(let id, let params):
+            let clientName = state.clientName // copy out of `inout` for the closures below
+            guard resolveConsent(clientName: clientName) else {
+                sendError(fd, id: id, error: .domain(.consentDenied, message: "the user declined this client's access"))
+                return true
+            }
             let limit = BridgeRouter.resolvedHistoryLimit(params.limit)
             let entries = onMain { self.host?.bridgeHistory(limit: limit) ?? [] }
+            onMain { self.host?.bridgeDidCall(clientName: clientName, tool: "history") }
             send(fd, id: id, result: BridgeWire.HistoryListResult(entries: entries))
             return true
 
@@ -320,6 +339,26 @@ final class AgentBridgeServer {
             log.error("Agent Bridge: \(count) connection denials in the last minute")
             // The user-facing notification is wired with the consent UI (step 5).
         }
+    }
+
+    // MARK: - Consent
+
+    /// Synchronously resolve consent for `clientName`, blocking this connection
+    /// thread until the host answers (which may include the user interacting with
+    /// the consent window — up to its 60s timeout). Never called on the main
+    /// thread, so the wait can't self-deadlock.
+    private func resolveConsent(clientName: String) -> Bool {
+        let sem = DispatchSemaphore(value: 0)
+        var granted = false
+        DispatchQueue.main.async {
+            guard let host = self.host else { sem.signal(); return }
+            host.bridgeResolveConsent(clientName: clientName) { decision in
+                granted = decision
+                sem.signal()
+            }
+        }
+        sem.wait()
+        return granted
     }
 
     // MARK: - Main-thread hop
