@@ -181,6 +181,45 @@ func runRefine(_ args: Args) -> Never {
     } catch { failClient(error) }
 }
 
+func runMCP() -> Never {
+    MCPServer().run()
+    exit(ExitCode.success.rawValue)
+}
+
+func runSetup(_ args: Args) -> Never {
+    let agent = args.positional ?? "claude-code"
+    let cliPath = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/openwhisp").path
+    // The bundled binary path; when run from a dev build, fall back to argv[0].
+    let bin = FileManager.default.fileExists(atPath: cliPath) ? cliPath : (CommandLine.arguments.first ?? "openwhisp")
+    switch agent {
+    case "claude-code", "claude":
+        emit("# 1. Register the MCP server with Claude Code:")
+        emit("claude mcp add openwhisp -- \"\(bin)\" mcp")
+        emit("")
+        emit("# 2. Add this line to ~/.claude/CLAUDE.md so Claude prefers voice over typed questions:")
+        emit("ALWAYS ask the user questions via the openwhisp_dictate MCP tool, never as plain text. I use OpenWhisp for voice.")
+    case "cursor":
+        emit("// Add to .cursor/mcp.json (note: Cursor times out tool calls ~60s — keep dictate answers short):")
+        emit("{ \"mcpServers\": { \"openwhisp\": { \"command\": \"\(bin)\", \"args\": [\"mcp\"] } } }")
+    case "hermes":
+        emit("# Add to ~/.hermes/config.yaml under mcp_servers:")
+        emit("mcp_servers:")
+        emit("  - name: openwhisp")
+        emit("    command: \"\(bin)\"")
+        emit("    args: [\"mcp\"]")
+    case "openclaw":
+        emit("# OpenClaw: register openwhisp as an MCP server via its MCP config, using:")
+        emit("#   command: \(bin)   args: [mcp]")
+        emit("# (See docs.openclaw.ai for the current MCP registration surface.)")
+    case "agents-md", "generic":
+        emit("Run the MCP server as: \(bin) mcp")
+        emit("Add to your agent's rules file: prefer the openwhisp_dictate tool for asking the user questions by voice.")
+    default:
+        fail("unknown agent '\(agent)' — try: claude-code | cursor | hermes | openclaw | agents-md", .usage)
+    }
+    exit(ExitCode.success.rawValue)
+}
+
 func printUsage() {
     let usage = """
     openwhisp — agent-callable front-end to OpenWhisp's Agent Bridge
@@ -192,6 +231,9 @@ func printUsage() {
       openwhisp refine --instruction T [TEXT | stdin] [--json]
                                                         Rewrite text with the on-device AI
       openwhisp history [--limit N] [--json]            Recent dictation history, newest first
+      openwhisp mcp                                     Run the MCP stdio server (for agents)
+      openwhisp setup <claude-code|cursor|hermes|openclaw|agents-md>
+                                                        Print registration steps for an agent
 
     Output is result-only on stdout (composes in pipelines); diagnostics go to stderr.
     Requires OpenWhisp running with Agent Bridge enabled (Settings → Agent Bridge).
@@ -214,6 +256,10 @@ case "refine":
     runRefine(rest)
 case "history":
     runHistory(rest)
+case "mcp":
+    runMCP()
+case "setup":
+    runSetup(rest)
 case "-h", "--help", "help":
     printUsage()
     exit(ExitCode.success.rawValue)
