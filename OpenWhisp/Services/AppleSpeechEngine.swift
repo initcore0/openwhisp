@@ -6,7 +6,7 @@ final class AppleSpeechEngine: StreamingTranscriptionEngine {
     var onPartial: ((String) -> Void)?
     var onFinal: ((String) -> Void)?
     var onError: ((String) -> Void)?
-    var onLevelChanged: ((Float) -> Void)?
+    var onLevelChanged: ((_ display: Float, _ vad: Float) -> Void)?
     
     private var audioEngine: AVAudioEngine?
     private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
@@ -156,7 +156,8 @@ final class AppleSpeechEngine: StreamingTranscriptionEngine {
         let rms = sqrt(sum / divisor)
         let normalized = AudioLevel.fromRMS(rms)
         DispatchQueue.main.async {
-            self.onLevelChanged?(normalized)
+            // fromRMS is the absolute curve, so display and VAD levels coincide.
+            self.onLevelChanged?(normalized, normalized)
         }
     }
 }

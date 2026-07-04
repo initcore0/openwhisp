@@ -106,17 +106,24 @@ final class MCPServer {
                     timeoutSeconds: arguments["timeoutSeconds"] as? Int,
                     language: arguments["language"] as? String
                 )
-                // dictate blocks until the user finishes (or the timeout). Emit
-                // keep-alive progress against the client's token so long answers
-                // don't trip an agent's tool-call timeout (Cursor ~60s).
-                let progress = ProgressEmitter(
-                    token: progressToken,
-                    interval: progressIntervalSeconds,
-                    total: params.timeoutSeconds.map(Double.init),
-                    server: self
-                )
-                progress.start()
-                defer { progress.stop() }
+                // dictate blocks until the user finishes (or the timeout). When the
+                // client passed a progressToken, emit keep-alive progress against
+                // it so long answers don't trip an agent's tool-call timeout
+                // (Cursor ~60s). No token → no emitter at all.
+                var progress: ProgressEmitter?
+                if let progressToken {
+                    progress = ProgressEmitter(
+                        token: progressToken,
+                        interval: progressIntervalSeconds,
+                        total: params.timeoutSeconds.map(Double.init),
+                        server: self
+                    )
+                    progress?.start()
+                }
+                // stop() BEFORE the result is returned/written, and it drains any
+                // in-flight tick — the response must be the last frame for this
+                // request (no progress after completion).
+                defer { progress?.stop() }
                 let r = try client.call(method: BridgeWire.Method.dictate.rawValue,
                                         params: params, resultType: BridgeWire.DictateResult.self)
                 return textContent(r.text.isEmpty ? "(the user said nothing)" : r.text)
@@ -275,20 +282,22 @@ func logStderr(_ message: String) {
 }
 
 /// Drives periodic MCP `notifications/progress` frames on a background thread
-/// while a blocking bridge call (currently `dictate`) is in flight. A no-op when
-/// the client didn't pass a `progressToken`. `progress` counts elapsed seconds so
-/// it strictly increases (MCP requires monotonic progress); when the dictate
-/// timeout is known it's used as `total` so a client can render a determinate bar.
+/// while a blocking bridge call (currently `dictate`) is in flight. `progress`
+/// reports monotonic elapsed seconds measured from `start()` — a wall-clock
+/// quantity, so it strictly increases per notification (an MCP requirement)
+/// even under timer coalescing, and may exceed `total` briefly while the final
+/// transcription runs. When the dictate timeout is known it's sent as `total`
+/// so a client can render a determinate bar.
 private final class ProgressEmitter {
-    private let token: Any?
+    private let token: Any
     private let interval: TimeInterval
     private let total: Double?
     private weak var server: MCPServer?
     private let queue = DispatchQueue(label: "com.openwhisp.mcp.progress")
     private var timer: DispatchSourceTimer?
-    private var elapsed: Double = 0
+    private var startedAt: DispatchTime = .now()
 
-    init(token: Any?, interval: TimeInterval, total: Double?, server: MCPServer) {
+    init(token: Any, interval: TimeInterval, total: Double?, server: MCPServer) {
         self.token = token
         self.interval = interval
         self.total = total
@@ -296,22 +305,19 @@ private final class ProgressEmitter {
     }
 
     func start() {
-        guard let token else { return } // client opted out of progress
+        startedAt = .now()
         let t = DispatchSource.makeTimerSource(queue: queue)
         // First tick after one interval (an immediate 0-progress frame is noise).
-        t.schedule(deadline: .now() + interval, repeating: interval)
+        // Generous leeway: a keep-alive that arrives at 10.8s instead of 10.0s is
+        // equally alive, and coalesced wakeups are cheaper on battery.
+        t.schedule(deadline: .now() + interval, repeating: interval,
+                   leeway: .milliseconds(Int(interval * 100)))
         t.setEventHandler { [weak self] in
             guard let self else { return }
-            self.elapsed += self.interval
-            // Never report progress ≥ total (that reads as "done"); hold just under.
-            let value: Double
-            if let total = self.total, self.elapsed >= total {
-                value = max(0, total - 0.001)
-            } else {
-                value = self.elapsed
-            }
+            let elapsed = Double(DispatchTime.now().uptimeNanoseconds
+                                 - self.startedAt.uptimeNanoseconds) / 1_000_000_000
             self.server?.sendProgress(
-                token: token, progress: value, total: self.total,
+                token: self.token, progress: elapsed, total: self.total,
                 message: "listening…"
             )
         }
@@ -319,8 +325,12 @@ private final class ProgressEmitter {
         t.resume()
     }
 
+    /// Cancels the timer AND waits out any tick already running on the queue, so
+    /// after stop() returns no further progress frame can be written — the
+    /// caller's response is guaranteed to be the last frame for the request.
     func stop() {
         timer?.cancel()
         timer = nil
+        queue.sync {}
     }
 }

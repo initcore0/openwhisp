@@ -250,7 +250,22 @@ enum WhisperKitBridge {
             decodingOptions: options,
             useVAD: true,                 // skip silence — don't transcribe dead air
             stateChangeCallback: { _, new in
-                let snapshot = WhisperKitStreamState(from: new)
+                // Absolute-scale level for the silence VAD. `bufferEnergy` is
+                // RELATIVE to WhisperKit's rolling 2s silence floor — right for a
+                // lively waveform, structurally wrong for fixed VAD gates (during
+                // sustained speech the floor rises and levels collapse, reading
+                // ongoing talk as silence). `audioEnergy.avg` is the raw
+                // per-buffer RMS; fromRMS puts it on the same absolute dB curve
+                // the recorder and Apple Speech feed the detector.
+                // (audioEnergy lives on the concrete AudioProcessor; the protocol
+                // only exposes the relative view. WhisperKit's default processor
+                // is always AudioProcessor; on a custom one vadLevel degrades to
+                // nil and the engine falls back to the display level.)
+                let absoluteRMS = (kit.audioProcessor as? AudioProcessor)?.audioEnergy.last?.avg
+                let snapshot = WhisperKitStreamState(
+                    from: new,
+                    vadLevel: absoluteRMS.map { AudioLevel.fromRMS($0) }
+                )
                 handle.latest = snapshot      // keep the newest for `fullText()` at stop
                 onState(snapshot)
             }
@@ -268,6 +283,11 @@ struct WhisperKitStreamState {
     let fullText: String
     /// Peak relative mic energy in the latest buffer (0–1), for the waveform.
     let peakEnergy: Float?
+    /// The latest buffer's level on the ABSOLUTE AudioLevel curve (fromRMS), for
+    /// the silence auto-stop — `peakEnergy`'s silence-referenced scale can't
+    /// carry fixed thresholds. Instantaneous (no trailing-window max-hold, which
+    /// would stretch every blip 0.3s into a silence run).
+    let vadLevel: Float?
     /// How many buffer samples the realtime loop had decoded as of this state —
     /// anything beyond it in the audio buffer is captured but NOT transcribed
     /// yet. Read at stop to decide whether a final flush decode is needed.
@@ -276,7 +296,7 @@ struct WhisperKitStreamState {
     /// from here, mirroring the realtime loop's own windowing.
     let confirmedEndSeconds: Float
 
-    init(from state: AudioStreamTranscriber.State) {
+    init(from state: AudioStreamTranscriber.State, vadLevel: Float?) {
         let confirmed = state.confirmedSegments.map(\.text).joined(separator: " ")
         let unconfirmed = state.unconfirmedSegments.map(\.text).joined(separator: " ")
         self.confirmedText = confirmed
@@ -288,6 +308,7 @@ struct WhisperKitStreamState {
         // freezes the bars) and map it with the relative-energy curve (NOT fromRMS,
         // which double-compresses the already-0…1 value). See AudioLevel.
         self.peakEnergy = AudioLevel.liveLevel(fromEnergyHistory: state.bufferEnergy)
+        self.vadLevel = vadLevel
     }
 }
 

@@ -59,44 +59,81 @@ final class AgentSetupTests: XCTestCase {
         (try? JSONSerialization.jsonObject(with: data) as? [String: Any]) ?? [:]
     }
 
+    /// Unwrap the `.write` payload, failing the test on any other outcome.
+    private func writtenData(_ result: AgentSetup.CursorMergeResult,
+                             file: StaticString = #filePath, line: UInt = #line) -> Data {
+        guard case .write(let data) = result else {
+            XCTFail("expected .write, got \(result)", file: file, line: line)
+            return Data()
+        }
+        return data
+    }
+
     func testCursorFreshFileWritesServer() {
-        let out = AgentSetup.cursorMcpJSON(existing: nil, binaryPath: "/bin/openwhisp")
-        XCTAssertNotNil(out)
-        let root = decode(out!)
-        let servers = root["mcpServers"] as? [String: Any]
+        let out = writtenData(AgentSetup.cursorMcpJSON(existing: nil, binaryPath: "/bin/openwhisp"))
+        let servers = decode(out)["mcpServers"] as? [String: Any]
         let ow = servers?["openwhisp"] as? [String: Any]
         XCTAssertEqual(ow?["command"] as? String, "/bin/openwhisp")
         XCTAssertEqual(ow?["args"] as? [String], ["mcp"])
+        // .withoutEscapingSlashes: paths must stay human-readable in the config.
+        XCTAssertTrue(String(data: out, encoding: .utf8)!.contains("/bin/openwhisp"))
     }
 
     func testCursorPreservesOtherServers() {
         let existing = """
         { "mcpServers": { "other": { "command": "/x", "args": ["y"] } } }
         """.data(using: .utf8)!
-        let out = AgentSetup.cursorMcpJSON(existing: existing, binaryPath: "/bin/openwhisp")!
+        let out = writtenData(AgentSetup.cursorMcpJSON(existing: existing, binaryPath: "/bin/openwhisp"))
         let servers = decode(out)["mcpServers"] as? [String: Any]
         XCTAssertNotNil(servers?["other"], "existing servers must be preserved")
         XCTAssertNotNil(servers?["openwhisp"])
     }
 
     func testCursorIdempotentWhenIdentical() {
-        let first = AgentSetup.cursorMcpJSON(existing: nil, binaryPath: "/bin/openwhisp")!
+        let first = writtenData(AgentSetup.cursorMcpJSON(existing: nil, binaryPath: "/bin/openwhisp"))
         let second = AgentSetup.cursorMcpJSON(existing: first, binaryPath: "/bin/openwhisp")
-        XCTAssertNil(second, "identical entry → no rewrite")
+        XCTAssertEqual(second, .alreadyConfigured, "identical entry → no rewrite")
     }
 
     func testCursorUpdatesWhenPathChanged() {
-        let first = AgentSetup.cursorMcpJSON(existing: nil, binaryPath: "/old/openwhisp")!
-        let second = AgentSetup.cursorMcpJSON(existing: first, binaryPath: "/new/openwhisp")
-        XCTAssertNotNil(second, "a changed binary path must rewrite")
-        let ow = (decode(second!)["mcpServers"] as? [String: Any])?["openwhisp"] as? [String: Any]
+        let first = writtenData(AgentSetup.cursorMcpJSON(existing: nil, binaryPath: "/old/openwhisp"))
+        let second = writtenData(AgentSetup.cursorMcpJSON(existing: first, binaryPath: "/new/openwhisp"))
+        let ow = (decode(second)["mcpServers"] as? [String: Any])?["openwhisp"] as? [String: Any]
         XCTAssertEqual(ow?["command"] as? String, "/new/openwhisp")
     }
 
-    func testCursorMalformedExistingStartsFresh() {
+    func testCursorUnparseableExistingIsRefusedNotClobbered() {
+        // Cursor tolerates JSONC (comments, trailing commas); JSONSerialization
+        // doesn't. An unparseable file must be REFUSED — "starting fresh" would
+        // silently destroy every other server the user configured.
+        let jsonc = """
+        { "mcpServers": { /* my servers */ "other": { "command": "/x" }, } }
+        """.data(using: .utf8)!
+        XCTAssertEqual(AgentSetup.cursorMcpJSON(existing: jsonc, binaryPath: "/bin/openwhisp"),
+                       .unparseable)
         let garbage = "not json at all".data(using: .utf8)!
-        let out = AgentSetup.cursorMcpJSON(existing: garbage, binaryPath: "/bin/openwhisp")
-        XCTAssertNotNil(out, "malformed existing file should not throw; start fresh")
-        XCTAssertNotNil((decode(out!)["mcpServers"] as? [String: Any])?["openwhisp"])
+        XCTAssertEqual(AgentSetup.cursorMcpJSON(existing: garbage, binaryPath: "/bin/openwhisp"),
+                       .unparseable)
+    }
+
+    func testCursorEmptyExistingWritesFresh() {
+        // An EMPTY file is not user data — writing fresh is fine.
+        let out = AgentSetup.cursorMcpJSON(existing: Data(), binaryPath: "/bin/openwhisp")
+        XCTAssertNotNil((decode(writtenData(out))["mcpServers"] as? [String: Any])?["openwhisp"])
+    }
+
+    // MARK: - claude mcp add command line
+
+    func testClaudeMcpAddCommandLineMatchesArguments() {
+        // The printed command is derived from the executed arguments — quoting
+        // only where needed — so the two can't drift.
+        XCTAssertEqual(
+            AgentSetup.claudeMcpAddCommandLine(binaryPath: "/Apps/OpenWhisp.app/Contents/Helpers/openwhisp"),
+            "claude mcp add openwhisp -- /Apps/OpenWhisp.app/Contents/Helpers/openwhisp mcp"
+        )
+        XCTAssertEqual(
+            AgentSetup.claudeMcpAddCommandLine(binaryPath: "/App Store/openwhisp"),
+            "claude mcp add openwhisp -- \"/App Store/openwhisp\" mcp"
+        )
     }
 }

@@ -42,21 +42,44 @@ public enum AgentSetup {
         ["mcp", "add", "openwhisp", "--", binaryPath, "mcp"]
     }
 
+    /// The same registration as a copy-pasteable command line — derived from
+    /// ``claudeMcpAddArguments`` so the command we TELL users to run is, by
+    /// construction, the command `setup` runs.
+    public static func claudeMcpAddCommandLine(binaryPath: String) -> String {
+        let rendered = claudeMcpAddArguments(binaryPath: binaryPath)
+            .map { $0.contains(" ") ? "\"\($0)\"" : $0 }
+            .joined(separator: " ")
+        return "claude " + rendered
+    }
+
     // MARK: - Cursor (.cursor/mcp.json)
+
+    /// Outcome of merging the `openwhisp` entry into a Cursor `mcp.json`.
+    public enum CursorMergeResult: Equatable {
+        /// Write these bytes (entry added, or its binary path updated).
+        case write(Data)
+        /// An identical entry is already present — nothing to do.
+        case alreadyConfigured
+        /// The file exists but doesn't parse as a JSON object (JSONC comments,
+        /// trailing commas, hand edits). NEVER overwrite it — that would silently
+        /// destroy the user's other servers.
+        case unparseable
+    }
 
     /// Merge an `openwhisp` MCP server entry into a Cursor `mcp.json`, preserving
     /// any servers the user already configured. Takes the existing file's bytes
-    /// (nil if absent) and returns the bytes to write, or nil if an identical
-    /// `openwhisp` entry is already present (idempotent no-op).
-    ///
-    /// Tolerant of a malformed/empty existing file: if it can't be parsed as the
-    /// expected shape, we start fresh rather than throw (the caller warns).
-    public static func cursorMcpJSON(existing: Data?, binaryPath: String) -> Data? {
+    /// (nil if absent).
+    public static func cursorMcpJSON(existing: Data?, binaryPath: String) -> CursorMergeResult {
         let desiredServer: [String: Any] = ["command": binaryPath, "args": ["mcp"]]
 
         var root: [String: Any] = [:]
-        if let existing, !existing.isEmpty,
-           let parsed = try? JSONSerialization.jsonObject(with: existing) as? [String: Any] {
+        if let existing, !existing.isEmpty {
+            // A present-but-unparseable file is a refusal, not a fresh start:
+            // Cursor tolerates JSONC where JSONSerialization doesn't, and
+            // "starting fresh" would atomically delete every other server.
+            guard let parsed = try? JSONSerialization.jsonObject(with: existing) as? [String: Any] else {
+                return .unparseable
+            }
             root = parsed
         }
         var servers = (root["mcpServers"] as? [String: Any]) ?? [:]
@@ -65,13 +88,17 @@ public enum AgentSetup {
         if let current = servers["openwhisp"] as? [String: Any],
            (current["command"] as? String) == binaryPath,
            (current["args"] as? [String]) == ["mcp"] {
-            return nil
+            return .alreadyConfigured
         }
 
         servers["openwhisp"] = desiredServer
         root["mcpServers"] = servers
-        return try? JSONSerialization.data(
-            withJSONObject: root, options: [.prettyPrinted, .sortedKeys]
-        )
+        guard let data = try? JSONSerialization.data(
+            withJSONObject: root,
+            // .withoutEscapingSlashes: the command is a file path in a config the
+            // user reads and edits (same choice as ConfigBundle's writer).
+            options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        ) else { return .unparseable }
+        return .write(data)
     }
 }

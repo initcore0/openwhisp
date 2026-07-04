@@ -38,18 +38,18 @@ final class SilenceAutoStopTests: XCTestCase {
         // ~0.5s of speech at 30 Hz → arms.
         _ = drive(&d, level: 0.5, count: 15, dt: 0.033, start: 0)
         XCTAssertTrue(d.isArmed)
-        // Then silence; last speech was at t = 14*0.033 ≈ 0.462. It should fire
-        // once (now − lastSpeech) ≥ 1.0.
+        // Then silence starting at t=0.5. The hangover is anchored at the START of
+        // the continuous silence run, so it fires once (now − 0.5) ≥ 1.0.
         var firedAt: TimeInterval?
         for i in 0..<100 {
             let now = 0.5 + Double(i) * 0.033
             if d.ingest(level: 0.0, now: now) { firedAt = now; break }
         }
         XCTAssertNotNil(firedAt)
-        // Fired no earlier than 1.0s after the last speech sample (~0.462).
-        XCTAssertGreaterThanOrEqual(firedAt! - 0.462, 1.0)
+        // Fired no earlier than 1.0s of continuous silence...
+        XCTAssertGreaterThanOrEqual(firedAt! - 0.5, 1.0)
         // ...and not egregiously late (within one sample period of the threshold).
-        XCTAssertLessThan(firedAt! - 0.462, 1.0 + 0.05)
+        XCTAssertLessThan(firedAt! - 0.5, 1.0 + 0.05)
     }
 
     func testShortBlipDoesNotArm() {
@@ -89,15 +89,38 @@ final class SilenceAutoStopTests: XCTestCase {
         XCTAssertNil(fired)
     }
 
+    func testDeadBandTimeDoesNotCountTowardTheHangover() {
+        // A speaker trailing off in the dead band for longer than silenceToStop,
+        // then one quiet dip: the dip must START the silence run, not fire
+        // instantly off time retroactively counted as silence.
+        var d = SilenceAutoStop(config: makeConfig(silenceToStop: 1.0))
+        _ = drive(&d, level: 0.5, count: 15, dt: 0.033, start: 0)     // arm
+        _ = drive(&d, level: 0.13, count: 60, dt: 0.033, start: 0.5)  // ~2s in band
+        XCTAssertFalse(d.ingest(level: 0.05, now: 2.5), "first silence sample starts the run — must not fire")
+        XCTAssertFalse(d.ingest(level: 0.05, now: 3.4), "0.9s of silence < 1.0s")
+        XCTAssertTrue(d.ingest(level: 0.05, now: 3.5), "1.0s of continuous silence → fire")
+    }
+
+    func testSparseCadenceGapDoesNotArmOffOneBlip() {
+        // Silence, a callback gap, then ONE loud transient: the gap interval must
+        // not be credited as speech, so the blip cannot satisfy minSpeechToArm.
+        var d = SilenceAutoStop(config: makeConfig(minSpeechToArm: 0.3))
+        _ = drive(&d, level: 0.0, count: 10, dt: 0.033, start: 0)   // ambient
+        _ = d.ingest(level: 0.9, now: 1.0)                          // blip after ~0.7s gap
+        XCTAssertFalse(d.isArmed, "a lone transient after a gap must not arm")
+        let fired = drive(&d, level: 0.0, count: 100, dt: 0.033, start: 1.1)
+        XCTAssertNil(fired)
+    }
+
     func testFiresOnlyOnceWorthOfDecision() {
-        // After the firing sample, the caller is expected to stop; but verify the
-        // boundary: the sample exactly at the threshold fires, and it's the first
-        // one that does.
+        // Verify the boundary: the silence sample exactly at silenceToStop after
+        // the run began fires, and it's the first one that does.
         var d = SilenceAutoStop(config: makeConfig(silenceToStop: 1.0, minSpeechToArm: 0.0))
         _ = d.ingest(level: 0.5, now: 0.0)   // speech at t=0, arms immediately (min=0)
         XCTAssertTrue(d.isArmed)
-        XCTAssertFalse(d.ingest(level: 0.0, now: 0.99)) // 0.99 < 1.0 → no
-        XCTAssertTrue(d.ingest(level: 0.0, now: 1.00))  // exactly 1.0 → fire
+        XCTAssertFalse(d.ingest(level: 0.0, now: 0.5))  // run starts at 0.5
+        XCTAssertFalse(d.ingest(level: 0.0, now: 1.49)) // 0.99 of silence < 1.0 → no
+        XCTAssertTrue(d.ingest(level: 0.0, now: 1.50))  // exactly 1.0 → fire
     }
 
     func testNonMonotonicClockDoesNotUnderflow() {

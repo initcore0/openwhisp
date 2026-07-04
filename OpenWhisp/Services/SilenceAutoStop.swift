@@ -31,11 +31,11 @@ public struct SilenceAutoStop {
         /// detector, and resets the silence run).
         var speechLevel: Float
         /// Normalized level at/below which a sample counts as silence. Kept below
-        /// `speechLevel` for hysteresis; a sample between the two is treated as a
-        /// continuation of the current run (neither clearly speech nor silence).
+        /// `speechLevel` for hysteresis; a sample between the two is neither — it
+        /// breaks a silence run without counting as speech.
         var silenceLevel: Float
-        /// How long continuous silence must persist *after* speech before the
-        /// detector fires.
+        /// How long a CONTINUOUS run of silence samples must persist *after*
+        /// speech before the detector fires.
         var silenceToStop: TimeInterval
         /// A floor on how much speech must accrue before a stop is allowed, so a
         /// single stray click can't arm-then-immediately-fire on the next quiet
@@ -59,15 +59,32 @@ public struct SilenceAutoStop {
 
     private let config: Config
 
-    /// Whether we've seen enough speech to be allowed to fire.
-    public private(set) var isArmed = false
-    /// Cumulative time attributed to speech samples (for `minSpeechToArm`).
+    /// Per-sample cap on speech credit, so a sparse callback cadence (or a stalled
+    /// main actor delivering queued samples late) can't inflate the accrued speech
+    /// time across gaps that were mostly not speech.
+    private static let maxSampleCredit: TimeInterval = 0.25
+
+    /// Cumulative time attributed to contiguous speech (for `minSpeechToArm`).
     private var speechAccumulated: TimeInterval = 0
     /// Timestamp of the last sample classified as speech; nil until first speech.
     private var lastSpeechAt: TimeInterval?
+    /// Start of the current CONTINUOUS run of silence samples; nil whenever the
+    /// run is broken — by speech or by the hysteresis dead band. This anchors the
+    /// hangover: firing requires `silenceToStop` of actual silence samples, not
+    /// merely elapsed time since the last loud one (a speaker trailing off in the
+    /// dead band must not have that time counted as silence retroactively).
+    private var silenceRunStartedAt: TimeInterval?
+    /// Whether the previous sample was speech — the interval ending at a speech
+    /// sample only counts toward arming when it was speech throughout.
+    private var previousWasSpeech = false
     /// Timestamp of the previous sample, to measure inter-sample intervals without
     /// assuming a fixed cadence (the level stream is ~30 Hz but not guaranteed).
     private var lastSampleAt: TimeInterval?
+
+    /// Whether we've seen enough speech to be allowed to fire.
+    public var isArmed: Bool {
+        lastSpeechAt != nil && speechAccumulated >= config.minSpeechToArm
+    }
 
     public init(config: Config = .default) {
         self.config = config
@@ -80,27 +97,35 @@ public struct SilenceAutoStop {
     /// `now` must be monotonic (e.g. `ProcessInfo.processInfo.systemUptime`);
     /// wall-clock time is fine in tests but must be non-decreasing.
     public mutating func ingest(level: Float, now: TimeInterval) -> Bool {
-        defer { lastSampleAt = now }
         // Interval since the previous sample (0 on the first one). Guard against a
         // non-monotonic clock by clamping negatives to 0.
         let dt = lastSampleAt.map { max(0, now - $0) } ?? 0
+        lastSampleAt = now
 
         if level >= config.speechLevel {
-            // Speech: (re)arm once enough has accrued, and reset the silence run.
-            speechAccumulated += dt
-            lastSpeechAt = now
-            if speechAccumulated >= config.minSpeechToArm {
-                isArmed = true
+            // Speech: credit the interval toward arming only when the previous
+            // sample was also speech (capped) — a lone transient after a gap must
+            // not inherit the whole gap as "speech time" and defeat minSpeechToArm.
+            if previousWasSpeech {
+                speechAccumulated += min(dt, Self.maxSampleCredit)
             }
+            previousWasSpeech = true
+            lastSpeechAt = now
+            silenceRunStartedAt = nil
             return false
+        }
+        previousWasSpeech = false
+
+        if level <= config.silenceLevel {
+            guard isArmed else { return false }
+            let runStart = silenceRunStartedAt ?? now
+            silenceRunStartedAt = runStart
+            return (now - runStart) >= config.silenceToStop
         }
 
-        // Not clearly speech. Only *silence* (below the lower gate) advances the
-        // stop timer; the in-between band neither arms nor counts as silence, so a
-        // level hovering at the threshold can't accumulate a false stop.
-        guard isArmed, level <= config.silenceLevel, let lastSpeech = lastSpeechAt else {
-            return false
-        }
-        return (now - lastSpeech) >= config.silenceToStop
+        // Hysteresis dead band: neither speech nor silence. It breaks a silence
+        // run (the hangover requires continuous silence) without arming anything.
+        silenceRunStartedAt = nil
+        return false
     }
 }

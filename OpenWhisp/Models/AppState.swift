@@ -1056,7 +1056,8 @@ class AppState: ObservableObject {
         }
         audioRecorder.onLevelChanged = { [weak self] level in
             Task { @MainActor in
-                self?.updateAudioLevel(level)
+                // Recorder levels are already on the absolute fromDB/fromRMS curve.
+                self?.updateAudioLevel(level, vadLevel: level)
             }
         }
 
@@ -1168,28 +1169,32 @@ class AppState: ObservableObject {
                 self.finishSessionUI()
             }
         }
-        engine.onLevelChanged = { [weak self] level in
-            Task { @MainActor in self?.updateAudioLevel(level) }
+        engine.onLevelChanged = { [weak self] display, vad in
+            Task { @MainActor in self?.updateAudioLevel(display, vadLevel: vad) }
         }
     }
 
     /// Publish a new audio level for the overlay AND drive the agent-session
-    /// silence detector. The single place both level sources (AVAudioRecorder
-    /// metering + the streaming engine tap) funnel through, so the VAD sees every
-    /// sample regardless of which capture path is live.
+    /// silence detector. The single place every level source (AVAudioRecorder
+    /// metering + the streaming engine taps) funnels through, so the VAD sees
+    /// every sample regardless of which capture path is live. `vadLevel` is the
+    /// sample on the ABSOLUTE AudioLevel curve — WhisperKit's display level is
+    /// silence-referenced and would make the fixed gates meaningless.
     @MainActor
-    private func updateAudioLevel(_ level: Float) {
+    private func updateAudioLevel(_ level: Float, vadLevel: Float) {
         audioLevel = level
         // Only agent sessions auto-stop on silence; a user's hotkey dictation ends
-        // on their own gesture and must be untouched. Also require the session to
-        // be genuinely capturing (not still arming) so leading silence during
-        // engine spin-up can't feed the detector.
-        guard agentBridgeSilenceAutoStop,
+        // on their own gesture and must be untouched. The detector-nil test comes
+        // first so the dominant case (user sessions, where it is always nil) pays
+        // one check per tick. Also require the session to be genuinely capturing
+        // (not still arming) so leading silence during engine spin-up can't feed
+        // the detector.
+        guard agentSilenceDetector != nil,
+              agentBridgeSilenceAutoStop,
               sessionActive, isRecording,
-              sessionInitiator.isAgent,
-              agentSilenceDetector != nil else { return }
+              sessionInitiator.isAgent else { return }
         let now = ProcessInfo.processInfo.systemUptime
-        if agentSilenceDetector?.ingest(level: level, now: now) == true {
+        if agentSilenceDetector?.ingest(level: vadLevel, now: now) == true {
             // The speaker fell silent after speaking — finish exactly as a user
             // "done" tap would (endedBy: .user), returning whatever was captured.
             agentSilenceDetector = nil
@@ -1204,6 +1209,12 @@ class AppState: ObservableObject {
     @MainActor
     private func finishAgentDictationOnSilence() {
         guard sessionActive, sessionInitiator.isAgent else { return }
+        // The finish is decided NOW; kill the timeout before finalization begins.
+        // Transcribing a long utterance can outlast the deadline, and a timeout
+        // firing in that window would flip the delivered endedBy to .timeout (or
+        // turn an empty capture into a timeout error).
+        agentDictateTimeoutTask?.cancel()
+        agentDictateTimeoutTask = nil
         stopDictation()
     }
 
@@ -4034,6 +4045,11 @@ extension AppState: AgentBridgeHost {
         let sid = activeSessionID
         agentDictateTimeoutTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(max(1, timeoutSeconds)) * 1_000_000_000)
+            // Cancellation makes Task.sleep THROW EARLY (and try? swallows it) —
+            // without this check, the cancel issued by a silence/stop finish would
+            // wake the task immediately, mid-finalization (sessionActive still
+            // true, same sid), and flip the very endedBy it tried to protect.
+            guard !Task.isCancelled else { return }
             guard let self, self.sessionActive, self.activeSessionID == sid else { return }
             self.agentDictateTimedOut = true
             self.stopDictation()
@@ -4045,6 +4061,10 @@ extension AppState: AgentBridgeHost {
     func bridgeStopAgentDictation() -> Bool {
         guard sessionActive, sessionInitiator.isAgent else { return false }
         agentDictateStopped = true
+        // Same as the silence finish: the stop is decided now, so the timeout must
+        // not fire during finalization and misreport endedBy as .timeout.
+        agentDictateTimeoutTask?.cancel()
+        agentDictateTimeoutTask = nil
         stopDictation()
         return true
     }
