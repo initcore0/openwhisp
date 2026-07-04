@@ -20,25 +20,28 @@ Three tools, exposed over the [Model Context Protocol](https://modelcontextproto
 ## Setup
 
 The bundled `openwhisp` command lives at
-`OpenWhisp.app/Contents/Helpers/openwhisp`. Print per-agent registration with
-`openwhisp setup <agent>`:
+`OpenWhisp.app/Contents/Helpers/openwhisp`. `openwhisp setup <agent>` performs
+the registration for you (it **writes config** — idempotent, safe to re-run):
 
 ```sh
-# Claude Code
-claude mcp add openwhisp -- "/Applications/OpenWhisp.app/Contents/Helpers/openwhisp" mcp
-# then add to ~/.claude/CLAUDE.md:
-#   ALWAYS ask the user questions via the openwhisp_dictate MCP tool, never as plain text.
+# Claude Code — runs `claude mcp add` and appends the guidance line to ~/.claude/CLAUDE.md
+openwhisp setup claude-code
+# Cursor — merges openwhisp into ./.cursor/mcp.json (keeps your other servers)
+openwhisp setup cursor
+# Hermes / OpenClaw — prints the stanza to add (no safe auto-writer yet)
+openwhisp setup hermes
+openwhisp setup openclaw
+```
+
+Pass `--print` (or `--dry-run`) to only show the steps without changing anything:
+
+```sh
+openwhisp setup claude-code --print
 ```
 
 (The CLAUDE.md line matters — like Spokenly's, the dictate tool fires reliably
 only when a standing instruction tells the agent to prefer it over typed
-questions.)
-
-```sh
-"$(/Applications/OpenWhisp.app/Contents/Helpers/openwhisp setup cursor)"    # Cursor
-openwhisp setup hermes                                                        # Hermes
-openwhisp setup openclaw                                                      # OpenClaw
-```
+questions. `setup claude-code` adds it for you.)
 
 Optionally symlink the CLI onto your PATH:
 
@@ -53,9 +56,18 @@ Result-only on stdout (composes in shell pipelines); diagnostics on stderr.
 ```sh
 openwhisp status                         # liveness probe
 openwhisp dictate --prompt "Which branch?"
+openwhisp dictate --stop                 # finish a running dictation now (from another shell)
+openwhisp dictate --cancel               # discard a running dictation (returns no transcript)
 pbpaste | openwhisp refine -i "make it formal" | pbcopy
 openwhisp history --limit 5 --json
 ```
+
+**Finishing a dictation.** `dictate` blocks until the utterance ends. It ends
+when (whichever comes first): you **stop talking** (silence auto-stop, on by
+default — see below); a client calls `dictate.stop` (or you run `openwhisp
+dictate --stop` from another shell), which returns whatever was captured; or the
+timeout elapses. Pressing your dictation **hotkey** *cancels* an agent dictation
+(the human reclaiming the mic) — it does not finish it.
 
 Exit codes: `0` ok · `1` internal · `2` app unreachable / bridge off · `3`
 consent denied · `4` busy · `5` cancelled · `6` timeout · `7` permission /
@@ -82,10 +94,15 @@ secure field · `64` usage · `65` version mismatch.
 
 ## Notes
 
+- **Silence auto-stop.** An agent dictation ends automatically once you stop
+  talking, so a spoken answer returns promptly instead of waiting out the
+  timeout. On by default; toggle it in **Settings → Agent Bridge → Behavior →
+  Stop listening on silence**. It applies **only** to agent-requested dictation —
+  your own dictation hotkey is unaffected.
+- **Progress during `dictate`.** While a `dictate` call is blocked waiting for
+  the user, the MCP adapter streams `notifications/progress` (about every 10s) if
+  the client passed a `progressToken`. This keeps agents with short tool-call
+  timeouts alive — **Cursor** caps tool calls near 60s. Claude Code's stdio tool
+  timeout is effectively unlimited.
 - The MCP adapter speaks MCP's newline-delimited JSON-RPC 2.0 stdio transport
   directly (no third-party SDK dependency).
-- Long-running `dictate` blocks until the user answers. Claude Code's stdio tool
-  timeout is effectively unlimited; **Cursor** caps tool calls near 60s, so keep
-  dictate answers short there.
-- Progress notifications during `dictate` and one-command `setup` that writes the
-  config for you are planned follow-ups.

@@ -99,8 +99,14 @@ protocol StreamingTranscriptionEngine: AnyObject {
     var onFinal: ((String) -> Void)? { get set }
     /// A recognition error message.
     var onError: ((String) -> Void)? { get set }
-    /// Normalized (0–1) live audio level for the waveform.
-    var onLevelChanged: ((Float) -> Void)? { get set }
+    /// Normalized (0–1) live audio levels. `display` drives the waveform and may
+    /// be on an engine-tuned scale (WhisperKit's is RELATIVE to a rolling silence
+    /// floor, which keeps the bars lively). `vad` MUST be on the absolute
+    /// `AudioLevel.fromDB`/`fromRMS` curve — it feeds the fixed-threshold silence
+    /// auto-stop, where a self-referencing scale would make the gates meaningless
+    /// (the floor rises during speech, reading ongoing talk as "silence").
+    /// Engines whose display level is already absolute pass the same value twice.
+    var onLevelChanged: ((_ display: Float, _ vad: Float) -> Void)? { get set }
 
     /// Begin streaming recognition for `language` ("auto" = current locale).
     func start(language: String) throws

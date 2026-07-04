@@ -16,7 +16,7 @@ final class WhisperKitStreamingEngine: StreamingTranscriptionEngine {
     var onPartial: ((String) -> Void)?
     var onFinal: ((String) -> Void)?
     var onError: ((String) -> Void)?
-    var onLevelChanged: ((Float) -> Void)?
+    var onLevelChanged: ((_ display: Float, _ vad: Float) -> Void)?
 
     /// WhisperKit model id (its own namespace). Defaults to the staged `small`
     /// (multilingual EN+RU) — the same model the file engine uses.
@@ -161,7 +161,10 @@ final class WhisperKitStreamingEngine: StreamingTranscriptionEngine {
     @MainActor
     private func handleState(_ state: WhisperKitStreamState) {
         if let level = state.peakEnergy {
-            onLevelChanged?(level)
+            // vadLevel is the absolute-curve reading; the display level's
+            // silence-referenced scale must never reach the fixed VAD gates.
+            // (Fallback only for the rare startup tick before audioEnergy fills.)
+            onLevelChanged?(level, state.vadLevel ?? level)
         }
         // Emit the FULL current transcript (confirmed + unconfirmed) as the live
         // partial. WhisperKit only promotes segments to `confirmedSegments` after

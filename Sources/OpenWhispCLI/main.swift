@@ -96,6 +96,18 @@ struct Args {
         return result
     }
     var positional: String? { positionals.first }
+
+    /// Like `has(_:)`, but skips the value slots of value-flags — so a --prompt
+    /// whose VALUE happens to be "--stop" can't be misread as the --stop verb.
+    func hasFlag(_ flag: String) -> Bool {
+        var skipNext = false
+        for arg in raw {
+            if skipNext { skipNext = false; continue }
+            if valueFlags.contains(arg) { skipNext = true; continue }
+            if arg == flag { return true }
+        }
+        return false
+    }
 }
 
 func connectedClient() -> BridgeClient {
@@ -146,6 +158,15 @@ func runHistory(_ args: Args) -> Never {
 }
 
 func runDictate(_ args: Args) -> Never {
+    // Finish/abort verbs run from a SECOND terminal (or a `&`-backgrounded first
+    // one): the `dictate` call blocks until the session ends, so the human's
+    // "I'm done" / "never mind" has to come in on its own connection.
+    //   openwhisp dictate --stop     finish now, return what was captured (endedBy=stop)
+    //   openwhisp dictate --cancel    discard — return NO transcript (Esc equivalent)
+    // (hasFlag, not has: a --prompt VALUE of "--stop" must not become the verb.)
+    if args.hasFlag("--stop") { runDictateStop(args) }
+    if args.hasFlag("--cancel") { runDictateCancel(args) }
+
     let client = connectedClient()
     let params = BridgeWire.DictateParams(
         prompt: args.value("--prompt"),
@@ -158,6 +179,39 @@ func runDictate(_ args: Args) -> Never {
         if args.has("--json") { emitJSON(result) } else { emit(result.text) } // stdout = transcript only
         exit(ExitCode.success.rawValue)
     } catch { failClient(error) }
+}
+
+/// Shared plumbing for the two finish verbs: call `method`, emit JSON on --json,
+/// warn on stderr when nothing was listening (stdout stays result-only; exit 0
+/// either way — "nothing to do" is not a failure for an idempotent verb).
+private func runDictateFinishVerb<R: Codable & Sendable>(
+    _ args: Args, method: BridgeWire.Method, resultType: R.Type, wasActive: (R) -> Bool
+) -> Never {
+    let client = connectedClient()
+    do {
+        let result = try client.call(method: method.rawValue,
+                                     params: BridgeWire.NoParams(), resultType: resultType)
+        if args.has("--json") {
+            emitJSON(result)
+        } else if !wasActive(result) {
+            FileHandle.standardError.write(Data("openwhisp: no agent dictation is active\n".utf8))
+        }
+        exit(ExitCode.success.rawValue)
+    } catch { failClient(error) }
+}
+
+/// `openwhisp dictate --stop`: finish an in-flight agent dictation and let it
+/// return the captured transcript. No-op (stopped:false) if nothing is listening.
+func runDictateStop(_ args: Args) -> Never {
+    runDictateFinishVerb(args, method: .dictateStop,
+                         resultType: BridgeWire.DictateStopResult.self) { $0.stopped }
+}
+
+/// `openwhisp dictate --cancel`: abort an in-flight agent dictation. Per the
+/// cancel invariant the blocked `dictate` call returns NO transcript.
+func runDictateCancel(_ args: Args) -> Never {
+    runDictateFinishVerb(args, method: .dictateCancel,
+                         resultType: BridgeWire.DictateCancelResult.self) { $0.cancelled }
 }
 
 func runRefine(_ args: Args) -> Never {
@@ -186,41 +240,265 @@ func runMCP() -> Never {
     exit(ExitCode.success.rawValue)
 }
 
+/// `openwhisp setup <agent>` — perform the adoption for a known agent (the
+/// one-command path). By default it WRITES config (registers the MCP server,
+/// appends the CLAUDE.md guidance line); `--print`/`--dry-run` restores the
+/// old print-only behavior for agents/setups we can't safely automate.
+///
+/// Setup output is human-facing, so unlike the other verbs it prints progress to
+/// STDOUT (there's no machine-readable result to keep clean); errors still exit
+/// non-zero.
 func runSetup(_ args: Args) -> Never {
     let agent = args.positional ?? "claude-code"
+    let printOnly = args.has("--print") || args.has("--dry-run")
     // Our own absolute binary path, as invoked. Deliberately NOT resolving
     // symlinks: a stable symlink (e.g. /usr/local/bin/openwhisp) should be what
     // gets registered, not the version-specific target behind it. Note
     // Bundle.main.bundleURL is unusable here — for a bare CLI executable it is
     // just the containing directory, so appending Contents/Helpers double-nests.
     let bin = Bundle.main.executableURL?.path ?? (CommandLine.arguments.first ?? "openwhisp")
+
+    var ok = true
     switch agent {
     case "claude-code", "claude":
-        emit("# 1. Register the MCP server with Claude Code:")
-        emit("claude mcp add openwhisp -- \"\(bin)\" mcp")
-        emit("")
-        emit("# 2. Add this line to ~/.claude/CLAUDE.md so Claude prefers voice over typed questions:")
-        emit("ALWAYS ask the user questions via the openwhisp_dictate MCP tool, never as plain text. I use OpenWhisp for voice.")
+        if printOnly { printClaudeSetup(bin: bin) } else { ok = writeClaudeSetup(bin: bin) }
     case "cursor":
-        emit("// Add to .cursor/mcp.json (note: Cursor times out tool calls ~60s — keep dictate answers short):")
-        emit("{ \"mcpServers\": { \"openwhisp\": { \"command\": \"\(bin)\", \"args\": [\"mcp\"] } } }")
+        if printOnly { printCursorSetup(bin: bin) } else { ok = writeCursorSetup(bin: bin) }
     case "hermes":
-        emit("# Add to ~/.hermes/config.yaml under mcp_servers:")
-        emit("mcp_servers:")
-        emit("  - name: openwhisp")
-        emit("    command: \"\(bin)\"")
-        emit("    args: [\"mcp\"]")
+        // No stable, safe on-disk target to merge into here — print the stanza.
+        printHermesSetup(bin: bin)
+        if !printOnly { note("hermes has no auto-writer yet — the stanza above is ready to paste.") }
     case "openclaw":
-        emit("# OpenClaw: register openwhisp as an MCP server via its MCP config, using:")
-        emit("#   command: \(bin)   args: [mcp]")
-        emit("# (See docs.openclaw.ai for the current MCP registration surface.)")
+        printOpenClawSetup(bin: bin)
+        if !printOnly { note("openclaw has no auto-writer yet — register openwhisp via its MCP config.") }
     case "agents-md", "generic":
-        emit("Run the MCP server as: \(bin) mcp")
-        emit("Add to your agent's rules file: prefer the openwhisp_dictate tool for asking the user questions by voice.")
+        printGenericSetup(bin: bin)
     default:
         fail("unknown agent '\(agent)' — try: claude-code | cursor | hermes | openclaw | agents-md", .usage)
     }
-    exit(ExitCode.success.rawValue)
+    // A write path that accomplished nothing must be visible to scripts
+    // (`openwhisp setup X && …`), not just as prose on stdout.
+    exit(ok ? ExitCode.success.rawValue : ExitCode.internalError.rawValue)
+}
+
+// MARK: setup — print (legacy / unsupported-writer agents)
+
+private func printClaudeSetup(bin: String) {
+    emit("# 1. Register the MCP server with Claude Code:")
+    emit(AgentSetup.claudeMcpAddCommandLine(binaryPath: bin))
+    emit("")
+    emit("# 2. Add this line to ~/.claude/CLAUDE.md so Claude prefers voice over typed questions:")
+    emit(AgentSetup.claudeGuidanceLine())
+}
+private func printCursorSetup(bin: String) {
+    emit("// Add to .cursor/mcp.json (note: Cursor times out tool calls ~60s — keep dictate answers short):")
+    // Rendered by the same merge logic the writer uses, so the printed shape can
+    // never drift from the written one.
+    if case .write(let data) = AgentSetup.cursorMcpJSON(existing: nil, binaryPath: bin),
+       let json = String(data: data, encoding: .utf8) {
+        emit(json)
+    }
+}
+private func printHermesSetup(bin: String) {
+    emit("# Add to ~/.hermes/config.yaml under mcp_servers:")
+    emit("mcp_servers:")
+    emit("  - name: openwhisp")
+    emit("    command: \"\(bin)\"")
+    emit("    args: [\"mcp\"]")
+}
+private func printOpenClawSetup(bin: String) {
+    emit("# OpenClaw: register openwhisp as an MCP server via its MCP config, using:")
+    emit("#   command: \(bin)   args: [mcp]")
+    emit("# (See docs.openclaw.ai for the current MCP registration surface.)")
+}
+private func printGenericSetup(bin: String) {
+    emit("Run the MCP server as: \(bin) mcp")
+    emit("Add to your agent's rules file: prefer the openwhisp_dictate tool for asking the user questions by voice.")
+}
+
+// MARK: setup — write (the one-command adoption path)
+
+/// A short status line to stdout (setup is interactive/human-facing).
+private func step(_ ok: Bool, _ message: String) {
+    emit("\(ok ? "✓" : "•") \(message)")
+}
+private func note(_ message: String) {
+    emit("  \(message)")
+}
+
+/// Returns false when a write path failed to accomplish its step.
+private func writeClaudeSetup(bin: String) -> Bool {
+    var ok = true
+
+    // 1. Register the MCP server via the Claude CLI (repairing a stale path).
+    switch registerClaudeMCP(bin: bin) {
+    case .added:        step(true, "Registered the openwhisp MCP server with Claude Code.")
+    case .updated:      step(true, "Updated the openwhisp MCP registration to point at \(bin).")
+    case .alreadyThere: step(true, "openwhisp MCP server already registered with Claude Code.")
+    case .cliMissing:
+        ok = false
+        step(false, "The `claude` CLI isn't on your PATH — register manually:")
+        note(AgentSetup.claudeMcpAddCommandLine(binaryPath: bin))
+    case .failed(let msg):
+        ok = false
+        step(false, "`claude mcp add` failed: \(msg)")
+        note("Run it yourself: \(AgentSetup.claudeMcpAddCommandLine(binaryPath: bin))")
+    }
+
+    // 2. Append the guidance line to ~/.claude/CLAUDE.md (idempotent). Resolve
+    // symlinks first so a dotfiles-managed CLAUDE.md is edited in place — an
+    // atomic write to the symlink path would replace the link with a plain file.
+    let claudeMd = URL(fileURLWithPath: expandTilde("~/.claude/CLAUDE.md"))
+        .resolvingSymlinksInPath().path
+    let fm = FileManager.default
+    let existingData = fm.contents(atPath: claudeMd)
+    if fm.fileExists(atPath: claudeMd),
+       existingData.flatMap({ String(data: $0, encoding: .utf8) }) == nil {
+        // Exists but unreadable (permissions) or not UTF-8: treating it as absent
+        // would OVERWRITE the user's file with just our line. Refuse.
+        ok = false
+        step(false, "~/.claude/CLAUDE.md exists but couldn't be read — add this line yourself:")
+        note(AgentSetup.claudeGuidanceLine())
+    } else if let updated = AgentSetup.claudeMdAppending(
+        to: existingData.flatMap({ String(data: $0, encoding: .utf8) })) {
+        if writeFileCreatingParents(path: claudeMd, contents: updated) {
+            step(true, "Added the voice-first guidance line to ~/.claude/CLAUDE.md.")
+        } else {
+            ok = false
+            step(false, "Couldn't write ~/.claude/CLAUDE.md — add this line yourself:")
+            note(AgentSetup.claudeGuidanceLine())
+        }
+    } else {
+        step(true, "~/.claude/CLAUDE.md already has the voice-first guidance line.")
+    }
+
+    emit("")
+    emit(ok ? "Done. Start a new Claude Code session (or `claude mcp list`) to pick up openwhisp."
+            : "Setup incomplete — finish the steps marked • above.")
+    return ok
+}
+
+/// Returns false when the write failed or was refused.
+private func writeCursorSetup(bin: String) -> Bool {
+    // Cursor reads a project-local .cursor/mcp.json; write it in the CWD, merging.
+    // Print the ABSOLUTE path so it's obvious which project (or, from $HOME, the
+    // global config) was just configured.
+    let path = FileManager.default.currentDirectoryPath + "/.cursor/mcp.json"
+    let existing = FileManager.default.contents(atPath: path)
+    switch AgentSetup.cursorMcpJSON(existing: existing, binaryPath: bin) {
+    case .write(let data):
+        if writeFileCreatingParents(path: path, data: data) {
+            step(true, "Wrote openwhisp into \(path) (existing servers preserved).")
+            note("Cursor times out tool calls ~60s — dictate streams progress to stay alive.")
+            return true
+        }
+        step(false, "Couldn't write \(path) — add it manually:")
+        printCursorSetup(bin: bin)
+        return false
+    case .alreadyConfigured:
+        step(true, "\(path) already has the openwhisp server.")
+        return true
+    case .unparseable:
+        // Cursor tolerates JSONC; we don't. Never overwrite what we can't parse —
+        // that would silently destroy the user's other servers.
+        step(false, "\(path) exists but couldn't be parsed as JSON — left untouched. Merge manually:")
+        printCursorSetup(bin: bin)
+        return false
+    }
+}
+
+// MARK: setup — I/O helpers
+
+private enum ClaudeRegisterResult {
+    case added, updated, alreadyThere, cliMissing
+    case failed(String)
+}
+
+/// Register the MCP server with Claude Code, idempotently: probe with
+/// `claude mcp get openwhisp`; skip the add only when the existing registration
+/// still points at THIS binary — a stale path (moved/updated app) is repaired
+/// with remove + add, since re-running setup is the documented fix for that.
+private func registerClaudeMCP(bin: String) -> ClaudeRegisterResult {
+    guard let claude = resolveExecutable("claude") else { return .cliMissing }
+    let probe = runProcess(claude, ["mcp", "get", "openwhisp"])
+    if probe.status == 0 {
+        if probe.combinedOutput.contains(bin) { return .alreadyThere }
+        // Stale (or unrecognizably formatted) registration: repair via remove +
+        // add — but only proceed past a SUCCESSFUL remove. Removing a working
+        // entry and then failing the add would leave the user worse off than
+        // doing nothing.
+        let removed = runProcess(claude, ["mcp", "remove", "openwhisp"])
+        guard removed.status == 0 else {
+            let detail = removed.combinedOutput.trimmingCharacters(in: .whitespacesAndNewlines)
+            return .failed("couldn't replace the existing registration: \(detail.isEmpty ? "exit \(removed.status)" : detail)")
+        }
+        let re = runProcess(claude, AgentSetup.claudeMcpAddArguments(binaryPath: bin))
+        if re.status == 0 { return .updated }
+        let detail = re.combinedOutput.trimmingCharacters(in: .whitespacesAndNewlines)
+        return .failed(detail.isEmpty ? "exit \(re.status)" : detail)
+    }
+    let add = runProcess(claude, AgentSetup.claudeMcpAddArguments(binaryPath: bin))
+    if add.status == 0 { return .added }
+    // Some `claude` versions exit non-zero on a duplicate; treat that as success.
+    if add.combinedOutput.lowercased().contains("already exists") { return .alreadyThere }
+    let detail = add.combinedOutput.trimmingCharacters(in: .whitespacesAndNewlines)
+    return .failed(detail.isEmpty ? "exit \(add.status)" : detail)
+}
+
+private func expandTilde(_ path: String) -> String {
+    (path as NSString).expandingTildeInPath
+}
+
+/// Write string contents, creating parent directories. Returns success.
+private func writeFileCreatingParents(path: String, contents: String) -> Bool {
+    writeFileCreatingParents(path: path, data: Data(contents.utf8))
+}
+private func writeFileCreatingParents(path: String, data: Data) -> Bool {
+    let url = URL(fileURLWithPath: path)
+    do {
+        try FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(), withIntermediateDirectories: true
+        )
+        try data.write(to: url, options: .atomic)
+        return true
+    } catch {
+        return false
+    }
+}
+
+/// Locate an executable on PATH (or accept an absolute path as-is). Returns nil
+/// if not found — we never shell out through `/bin/sh` to avoid quoting hazards.
+private func resolveExecutable(_ name: String) -> String? {
+    if name.hasPrefix("/") {
+        return FileManager.default.isExecutableFile(atPath: name) ? name : nil
+    }
+    let path = ProcessInfo.processInfo.environment["PATH"] ?? "/usr/local/bin:/usr/bin:/bin"
+    for dir in path.split(separator: ":") {
+        let candidate = String(dir) + "/" + name
+        if FileManager.default.isExecutableFile(atPath: candidate) { return candidate }
+    }
+    return nil
+}
+
+private struct ProcessResult { var status: Int32; var combinedOutput: String }
+
+/// Run `executable args...`, capturing merged stdout+stderr. No shell involved.
+private func runProcess(_ executable: String, _ args: [String]) -> ProcessResult {
+    let proc = Process()
+    proc.executableURL = URL(fileURLWithPath: executable)
+    proc.arguments = args
+    let pipe = Pipe()
+    proc.standardOutput = pipe
+    proc.standardError = pipe
+    do {
+        try proc.run()
+    } catch {
+        return ProcessResult(status: -1, combinedOutput: "\(error)")
+    }
+    let data = pipe.fileHandleForReading.readDataToEndOfFile()
+    proc.waitUntilExit()
+    return ProcessResult(status: proc.terminationStatus,
+                         combinedOutput: String(data: data, encoding: .utf8) ?? "")
 }
 
 func printUsage() {
@@ -231,12 +509,15 @@ func printUsage() {
       openwhisp status [--json]                         App/engine/model/LLM/session state (liveness probe)
       openwhisp dictate [--prompt T] [--timeout S] [--language C] [--json]
                                                         Ask the user to speak; prints the transcript
+      openwhisp dictate --stop                          Finish a running dictation now (from another shell)
+      openwhisp dictate --cancel                        Discard a running dictation (returns no transcript)
       openwhisp refine --instruction T [TEXT | stdin] [--json]
                                                         Rewrite text with the on-device AI
       openwhisp history [--limit N] [--json]            Recent dictation history, newest first
       openwhisp mcp                                     Run the MCP stdio server (for agents)
-      openwhisp setup <claude-code|cursor|hermes|openclaw|agents-md>
-                                                        Print registration steps for an agent
+      openwhisp setup <claude-code|cursor|hermes|openclaw|agents-md> [--print]
+                                                        Register OpenWhisp with an agent (writes config;
+                                                        --print/--dry-run only shows the steps)
 
     Output is result-only on stdout (composes in pipelines); diagnostics go to stderr.
     Requires OpenWhisp running with Agent Bridge enabled (Settings → Agent Bridge).
