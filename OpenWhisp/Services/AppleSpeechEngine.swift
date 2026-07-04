@@ -17,10 +17,13 @@ final class AppleSpeechEngine: StreamingTranscriptionEngine {
     /// True once onFinal has fired for the current session (genuine or
     /// synthesized) — the stop() fallback checks it before synthesizing.
     private var finalDelivered = false
-    /// Session generation, bumped on every start(). stop(cancel: false) leaves
-    /// the recognition task running so it can deliver its genuine final; the
-    /// generation check keeps that orphaned task's late callbacks (and the
-    /// synthesized-final fallback) from leaking into the next session.
+    /// Session generation, bumped on every start() AND on stop(cancel: true).
+    /// stop(cancel: false) leaves the recognition task running so it can deliver
+    /// its genuine final; the generation check keeps that orphaned task's late
+    /// callbacks (and the synthesized-final fallback) from leaking into the next
+    /// session. The cancel-time bump matters because a cancelled task can still
+    /// dispatch a result between the cancel and the next start() — without it,
+    /// that callback would pass the gate and be attributed to the new session.
     private var generation = 0
     
     static func requestAuthorization(_ completion: @escaping (SFSpeechRecognizerAuthorizationStatus) -> Void) {
@@ -111,6 +114,10 @@ final class AppleSpeechEngine: StreamingTranscriptionEngine {
         }
         
         if cancel {
+            // Invalidate the session NOW, not at the next start(): the cancelled
+            // task's already-dispatched callbacks (and any main-queue hops still
+            // in flight) must fail the generation gate immediately.
+            generation += 1
             recognitionTask?.cancel()
         } else {
             recognitionRequest?.endAudio()

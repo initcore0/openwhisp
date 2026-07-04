@@ -41,6 +41,14 @@ final class WhisperKitStreamingEngine: StreamingTranscriptionEngine {
     @MainActor private var lastConfirmedText: String = ""
     @MainActor private var didFinish: Bool = false
 
+    /// Stream generation, bumped when a stream starts (runStart) and when one is
+    /// torn down (runStop). Each stream's state callback captures its own
+    /// generation and drops itself once superseded — otherwise a state diff
+    /// already hopping to the main actor when stop ran would land in the NEXT
+    /// session (didFinish alone can't catch that: start() resets it to false
+    /// before the stale hop is delivered).
+    @MainActor private var generation = 0
+
     /// Serialized lifecycle: every start/stop is appended to this chain, so a stop's
     /// mic/AVAudioEngine teardown ALWAYS completes before the next start's
     /// `installTap` runs. Replaces the old fire-and-forget stopTask + 150ms magic
@@ -75,12 +83,17 @@ final class WhisperKitStreamingEngine: StreamingTranscriptionEngine {
     private func runStart(task: WhisperKitTaskMapper.Resolved) async {
         do {
             let kit = try await ensureLoaded()
+            generation += 1
+            let myGeneration = generation
             let handle = try WhisperKitBridge.makeStreamHandle(
                 kit: kit,
                 task: task,
                 languageOverride: nil
             ) { [weak self] newState in
-                Task { @MainActor in self?.handleState(newState) }
+                Task { @MainActor in
+                    guard let self, self.generation == myGeneration else { return }
+                    self.handleState(newState)
+                }
             }
             transcriber = handle
             // `start()` runs the realtime loop until stopped; it returns when the
@@ -126,6 +139,11 @@ final class WhisperKitStreamingEngine: StreamingTranscriptionEngine {
         let handle = transcriber
         transcriber = nil
         didFinish = true
+        // Supersede the stream's generation so state callbacks it already
+        // dispatched are dropped — they must not fire onPartial into whatever
+        // session starts next. The final below is unaffected: it's computed
+        // directly from the handle, not delivered through the state callback.
+        generation += 1
         await handle?.stop()
         if !cancel {
             // Flush the undecoded tail first: the realtime loop only decodes once
