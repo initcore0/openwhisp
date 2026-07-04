@@ -513,6 +513,31 @@ class AppState: ObservableObject {
     private var pendingStop = false
     private var openAIEnhancementEnabledForSession = false
 
+    // MARK: Agent Bridge session plumbing (dormant until M8 wires the bridge)
+    //
+    // A dictation session is normally user-initiated and pastes its result. An
+    // agent-initiated session (via the Agent Bridge, M8) instead RETURNS its
+    // transcript to the calling client and pastes nothing. These fields carry
+    // that intent through the existing funnel additively — default `.user` /
+    // false / nil, so a user-initiated session behaves exactly as before.
+
+    /// Who started the current session. Set by the caller BEFORE beginSession()
+    /// (the agent path sets `.agent`; the user hotkey leaves it `.user`) and reset
+    /// to `.user` in finishSessionUI().
+    private var sessionInitiator: SessionInitiator = .user
+    /// Session snapshot of "return the transcript, don't paste it", frozen in
+    /// beginSession() from the initiator (like isPreviewSession) and cleared in
+    /// finishSessionUI(). Read in insertCompletedText().
+    private var suppressOutput = false
+    /// The outcome recorded at the session's terminal point, read once by
+    /// onSessionEnd in finishSessionUI(). Defaults to `.cancelled` if never set
+    /// (abort, or an error terminal that didn't record one).
+    private var sessionOutcome: SessionOutcome?
+    /// Fired exactly once in finishSessionUI() with the session outcome, then
+    /// cleared. nil for user sessions. The Agent Bridge sets this to receive the
+    /// dictation result of an agent-initiated session.
+    private var onSessionEnd: ((SessionOutcome) -> Void)?
+
     // MARK: Instruction chaining (dedicated-key refine flow)
     //
     // Refine is triggered by a DEDICATED chord (Fn+Ctrl by default) — separate
@@ -2153,6 +2178,10 @@ class AppState: ObservableObject {
         isLiveChunkSession = streaming
         // Preview mode captures via the chunk pipeline but defers pasting.
         isPreviewSession = streaming && outputMode == "preview"
+        // Agent-initiated sessions return the transcript to the caller instead of
+        // pasting. Snapshot from the initiator (set by the bridge before this call)
+        // so a mid-session change can't alter the paste-vs-return disposition.
+        suppressOutput = sessionInitiator.isAgent
         audioLevel = 0
         recordingElapsed = 0
         recordingStartedAt = Date()
@@ -2409,6 +2438,7 @@ class AppState: ObservableObject {
 
         guard !finalText.isEmpty else {
             isTranscribing = false
+            sessionOutcome = .empty
             statusMessage = "No speech detected"
             finishSessionUI()
             return
@@ -2425,8 +2455,9 @@ class AppState: ObservableObject {
             isTranscribing = false
             // Paste immediately — refine has its own dedicated key now, so there's
             // no re-press to disambiguate and no reason to hold the paste. Remember
-            // the text so the Refine key can act on "what I just dictated".
-            rememberLastDictation(finalText)
+            // the text so the Refine key can act on "what I just dictated" — but not
+            // for agent sessions, which must not hijack the user's "last dictation".
+            if !suppressOutput { rememberLastDictation(finalText) }
             insertCompletedText(finalText, originalText: finalText)
             return
         }
@@ -2695,10 +2726,25 @@ class AppState: ObservableObject {
         // persist a transcript when a secure field is now focused. Fail-open.
         guard !SecureFieldDetector.focusedFieldIsSecure() else {
             isTranscribing = false
+            sessionOutcome = .secureField
             streamingText = ""
             currentSessionText = ""
             statusMessage = "Won't dictate into a password field"
             finishSessionUI()
+            return
+        }
+
+        // Agent-initiated session: return the transcript to the caller instead of
+        // pasting. Skip the script post-processor, the paste, and the clipboard
+        // write — but still record history so history.list and the tray reflect it.
+        // The result is delivered via onSessionEnd in finishSessionUI().
+        if suppressOutput {
+            streamingText = text
+            sessionOutcome = .completed(text: text)
+            recordHistory(text)
+            recordStats(text)
+            statusMessage = "Done"
+            finishSessionUI(delay: 0.8)
             return
         }
 
@@ -2850,6 +2896,18 @@ class AppState: ObservableObject {
         isLiveChunkSession = false
         isPreviewSession = false
         isStreamingSession = false
+        // Deliver the outcome to an agent-initiated waiter exactly once. This is
+        // the single terminal site for every session path (success, empty, secure
+        // field, cancel, error) — abortSessionBeforeStart() also ends here — so one
+        // fire covers them all. Then reset the agent-session fields so they can
+        // never leak into the next (user) session.
+        if let deliver = onSessionEnd {
+            onSessionEnd = nil
+            deliver(sessionOutcome ?? .cancelled)
+        }
+        sessionInitiator = .user
+        suppressOutput = false
+        sessionOutcome = nil
         elapsedTimer?.invalidate()
         elapsedTimer = nil
         recordingStartedAt = nil
