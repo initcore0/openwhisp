@@ -158,6 +158,24 @@ struct OverlayView: View {
         )
     }
 
+    /// Amber "your turn" tint for an agent-initiated session. Distinct from the
+    /// cyan capture accent and the magenta refine accent so an agent handing the
+    /// mic to the human is unmistakable at a glance.
+    private static let agentWaitAccent = Color(red: 0.98, green: 0.74, blue: 0.30)
+
+    /// True while an agent is actively waiting on the human to speak — an
+    /// agent-attributed session (`agentDictatePrompt` set) that is still live
+    /// (listening or speaking, not yet finalizing/errored). The pill breathes an
+    /// amber halo in this state to pull attention; refine sessions keep their own
+    /// magenta identity and are excluded.
+    private var agentWaitingActive: Bool {
+        guard appState.agentDictatePrompt != nil, !appState.refineArmed else { return false }
+        switch phase {
+        case .arming, .listening, .speaking: return true
+        case .finalizing, .error:            return false
+        }
+    }
+
     private var transcriptText: String {
         appState.streamingText.trimmingCharacters(in: .whitespacesAndNewlines)
     }
@@ -230,7 +248,10 @@ struct OverlayView: View {
             if let agentPrompt = appState.agentDictatePrompt {
                 Text(agentPrompt)
                     .font(.system(size: 12, weight: .semibold, design: .rounded))
-                    .foregroundColor(.white.opacity(0.92))
+                    // Warms to amber while the agent is actively waiting so the
+                    // attribution line is part of the same "your turn" signal as the
+                    // pulsing halo; falls back to plain white once capture finalizes.
+                    .foregroundColor(agentWaitingActive ? Self.agentWaitAccent : .white.opacity(0.92))
                     .multilineTextAlignment(.center)
                     .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
@@ -389,13 +410,52 @@ struct OverlayView: View {
                     }
                 }
                 .overlay {
-                    // Hairline edge.
+                    // Hairline edge. On an agent-waiting session it warms to amber and
+                    // thickens so the pill's rim reads "your turn" even before the halo
+                    // registers.
                     Capsule(style: .continuous)
-                        .stroke(Color.white.opacity(0.10), lineWidth: 0.8)
+                        .stroke(
+                            agentWaitingActive ? Self.agentWaitAccent.opacity(0.85) : Color.white.opacity(0.10),
+                            lineWidth: agentWaitingActive ? 1.4 : 0.8
+                        )
                 }
         }
+        // A breathing amber halo layered UNDER the pill, cast by a matching capsule
+        // so the bloom is pill-shaped (same trick as the energy glow). It animates on
+        // its own clock via TimelineView, so it keeps pulsing while the human is
+        // silent — which is exactly when the agent is waiting on them to start.
+        .background { agentWaitGlow }
+        .animation(.easeInOut(duration: 0.25), value: agentWaitingActive)
         .animation(.easeInOut(duration: 0.18), value: phase)
         .animation(.easeOut(duration: 0.08), value: appState.audioLevel)
+    }
+
+    /// The pulsing "agent is waiting for you" halo. Rendered only for agent-waiting
+    /// sessions; a soft amber capsule shadow whose opacity + radius breathe on a
+    /// ~1.8s sine (repeatForever via TimelineView's animation clock). Reduce Motion
+    /// swaps the breathing for a steady, slightly stronger halo so the signal
+    /// survives without motion.
+    @ViewBuilder private var agentWaitGlow: some View {
+        if agentWaitingActive {
+            if reduceMotion {
+                Capsule(style: .continuous)
+                    .fill(Color.clear)
+                    .shadow(color: Self.agentWaitAccent.opacity(0.55), radius: 22, x: 0, y: 0)
+            } else {
+                TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { timeline in
+                    let now = timeline.date.timeIntervalSinceReferenceDate
+                    // 0…1 breathing on a ~1.8s period (2π / 1.8 ≈ 3.49 rad/s).
+                    let breath = sin(now * 3.49) * 0.5 + 0.5
+                    Capsule(style: .continuous)
+                        .fill(Color.clear)
+                        .shadow(
+                            color: Self.agentWaitAccent.opacity(0.30 + breath * 0.45),
+                            radius: 14 + breath * 16,
+                            x: 0, y: 0
+                        )
+                }
+            }
+        }
     }
 
     // MARK: Transcript
