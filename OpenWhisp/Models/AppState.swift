@@ -408,10 +408,10 @@ class AppState: ObservableObject {
     /// Per-client consent records (persisted to agent-clients.json). Surfaced in
     /// the Agent Bridge settings pane.
     @Published var agentClients: AgentClientStore = AgentClientStore()
-    /// `(client, scope)` pairs granted "while running" during this launch (never
+    /// Scopes granted "while running" during this launch, per client (never
     /// persisted). Keyed per-scope so a while-running grant for one capability
     /// doesn't silently cover another.
-    private var consentGrantedThisRun: Set<ClientScopeKey> = []
+    private var consentGrantedThisRun: [String: Set<AgentScope>] = [:]
     /// The agent's prompt for the current agent-initiated session, shown in the
     /// overlay ("X asks: …"). nil for user sessions. Published so the overlay can
     /// render it.
@@ -4097,12 +4097,6 @@ extension AppState: AgentBridgeHost {
 
     // MARK: Consent (M8)
 
-    /// A `(client, scope)` identity for the this-run grant set.
-    private struct ClientScopeKey: Hashable {
-        let client: String
-        let scope: AgentScope
-    }
-
     /// Resolve consent for `clientName` on a specific `scope`, presenting the
     /// consent window when that scope's stored policy requires it. Called on the
     /// main thread; `completion` fires on the main thread with allow/deny. The
@@ -4117,7 +4111,16 @@ extension AppState: AgentBridgeHost {
         case .deny:
             completion(false)
         case .prompt:
-            AgentConsentWindowController.shared.present(clientName: clientName, scope: scope) { [weak self] choice in
+            AgentConsentWindowController.shared.present(
+                clientName: clientName, scope: scope,
+                // Re-checked at presentation: while this request sat queued behind
+                // another prompt, the user may have already decided this exact
+                // (client, scope) — presenting again would invite them to
+                // contradict, and overwrite, that fresh decision.
+                revalidate: { [weak self] in
+                    self?.consentDecision(for: clientName, scope: scope) ?? .deny
+                }
+            ) { [weak self] choice in
                 guard let self else { completion(false); return }
                 switch choice {
                 case .always:
@@ -4128,7 +4131,7 @@ extension AppState: AgentBridgeHost {
                     // is what makes the client visible — and revocable — in the
                     // settings pane while the grant stands.
                     self.upsertConsent(clientName, scope: scope, policy: .whileRunning)
-                    self.consentGrantedThisRun.insert(ClientScopeKey(client: clientName, scope: scope))
+                    self.consentGrantedThisRun[clientName, default: []].insert(scope)
                     completion(true)
                 case .askEveryTime:
                     self.upsertConsent(clientName, scope: scope, policy: .askEveryTime)
@@ -4137,6 +4140,12 @@ extension AppState: AgentBridgeHost {
                     // Explicit Deny → persist a standing deny for THIS scope only
                     // (fail fast next time; other scopes are unaffected).
                     self.upsertConsent(clientName, scope: scope, policy: .denied)
+                    completion(false)
+                case .grantedWhileQueued:
+                    // Decided while queued (e.g. the user just clicked "Always
+                    // allow" on the identical prompt) — nothing to persist.
+                    completion(true)
+                case .deniedWhileQueued:
                     completion(false)
                 case .dismiss:
                     // Window closed / timed out → refuse this call only.
@@ -4149,19 +4158,41 @@ extension AppState: AgentBridgeHost {
     /// The decision the stored per-scope policy + this-run grants yield for
     /// `(clientName, scope)`, without prompting. An unrecorded scope prompts.
     private func consentDecision(for clientName: String, scope: AgentScope) -> AgentConsentDecision {
-        let grantedThisRun = consentGrantedThisRun.contains(ClientScopeKey(client: clientName, scope: scope))
-        guard let policy = agentClients.record(for: clientName)?.policy(for: scope) else { return .prompt }
+        consentDecision(record: agentClients.record(for: clientName), clientName: clientName, scope: scope)
+    }
+
+    /// Same, with the record already fetched — bridge.hello resolves every scope
+    /// at once and must not re-scan the records array once per scope.
+    private func consentDecision(
+        record: AgentClientRecord?, clientName: String, scope: AgentScope
+    ) -> AgentConsentDecision {
+        guard let policy = record?.policy(for: scope) else { return .prompt }
+        let grantedThisRun = consentGrantedThisRun[clientName]?.contains(scope) ?? false
         return policy.decision(grantedThisRun: grantedThisRun)
     }
 
-    /// The OVERALL posture advertised in `bridge.hello` (never prompts): granted
-    /// only if EVERY scope is already allowed, denied only if every scope is
-    /// denied, else pending. A summary — per-scope resolution happens per call.
-    func bridgeConsentSnapshot(clientName: String) -> BridgeWire.ConsentState {
-        let decisions = AgentScope.allCases.map { consentDecision(for: clientName, scope: $0) }
-        if decisions.allSatisfy({ $0 == .allow }) { return .granted }
-        if decisions.allSatisfy({ $0 == .deny }) { return .denied }
-        return .pending
+    /// The posture advertised in `bridge.hello` (never prompts): a per-scope map
+    /// plus a summary scalar — `.granted` only if EVERY scope is already allowed,
+    /// `.denied` only if every scope is denied, else `.pending`. The scalar alone
+    /// is too lossy for real clients (a dictate-only agent with an explicit deny
+    /// would read "pending" forever); adapters that care which capability is
+    /// usable read the map. Prompting still happens per call.
+    func bridgeConsentSnapshot(clientName: String) -> (summary: BridgeWire.ConsentState, scopes: [String: BridgeWire.ConsentState]) {
+        let record = agentClients.record(for: clientName)
+        var scopes: [String: BridgeWire.ConsentState] = [:]
+        var allAllow = true
+        var allDeny = true
+        for scope in AgentScope.allCases {
+            let decision = consentDecision(record: record, clientName: clientName, scope: scope)
+            switch decision {
+            case .allow:  scopes[scope.rawValue] = .granted
+            case .deny:   scopes[scope.rawValue] = .denied
+            case .prompt: scopes[scope.rawValue] = .pending
+            }
+            allAllow = allAllow && decision == .allow
+            allDeny = allDeny && decision == .deny
+        }
+        return (allAllow ? .granted : (allDeny ? .denied : .pending), scopes)
     }
 
     /// Note a completed agent call on the client's record (for the settings pane).
@@ -4178,15 +4209,18 @@ extension AppState: AgentBridgeHost {
     /// scope prompts fresh.
     func revokeAgentClient(_ clientName: String) {
         agentClients.remove(clientName: clientName)
-        consentGrantedThisRun = consentGrantedThisRun.filter { $0.client != clientName }
+        consentGrantedThisRun.removeValue(forKey: clientName)
         agentClients.save()
     }
 
     /// Record `policy` for a single `scope` of `clientName`, leaving the client's
-    /// other scopes intact.
+    /// other scopes intact. Skips the full-store rewrite when nothing changed —
+    /// an ask-every-time client would otherwise re-save a byte-identical file on
+    /// every consented call (right before bridgeDidCall saves again).
     private func upsertConsent(_ clientName: String, scope: AgentScope, policy: AgentConsentPolicy) {
         var record = agentClients.record(for: clientName)
             ?? AgentClientRecord(clientName: clientName, scopePolicies: [:], firstSeen: Date())
+        guard record.scopePolicies[scope] != policy else { return }
         record.scopePolicies[scope] = policy
         agentClients.upsert(record)
         agentClients.save()

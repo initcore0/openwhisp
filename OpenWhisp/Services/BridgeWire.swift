@@ -327,17 +327,26 @@ extension BridgeWire {
         public var appVersion: String
         public var capabilities: [String]
         public var clientId: String
+        /// Summary posture across every scope: `.granted` only when ALL scopes
+        /// are already allowed, `.denied` only when all are denied, else
+        /// `.pending`. Too lossy on its own once consent is per-scope — read
+        /// ``consentScopes`` for the actionable state.
         public var consent: ConsentState
+        /// Per-scope posture, keyed by scope name ("dictate"/"history"/"refine").
+        /// Additive (older servers omit it; tolerant decode makes that nil).
+        public var consentScopes: [String: ConsentState]?
 
         public init(
             protocolVersion: Int, appVersion: String, capabilities: [String],
-            clientId: String, consent: ConsentState
+            clientId: String, consent: ConsentState,
+            consentScopes: [String: ConsentState]? = nil
         ) {
             self.protocolVersion = protocolVersion
             self.appVersion = appVersion
             self.capabilities = capabilities
             self.clientId = clientId
             self.consent = consent
+            self.consentScopes = consentScopes
         }
     }
 

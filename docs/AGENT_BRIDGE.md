@@ -86,7 +86,10 @@ secure field · `64` usage · `65` version mismatch.
   question does **not** let it read your dictation history or run your AI; the
   first call in each capability prompts on its own (always / while running / once
   / deny). The settings pane shows each agent's per-capability status; Revoke
-  clears them all.
+  clears them all. One caveat: `dictate.stop` / `dictate.cancel` are session
+  controls, not capabilities — any admitted (signed, same-user) client can end
+  the current agent dictation, because `openwhisp dictate --stop` from your own
+  second shell must always work. They never start anything or read any text.
 - **The cloud gate.** If your AI provider is OpenAI (cloud), agent-initiated
   refinement is **blocked** unless you turn on *Allow agents to use cloud AI* —
   so a prompt-injected agent can't exfiltrate text through your key. Local

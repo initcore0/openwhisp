@@ -18,12 +18,13 @@ protocol AgentBridgeHost: AnyObject {
     /// The capability tokens this build actually implements (grows as dictate /
     /// refine are wired). Advertised in `bridge.hello`.
     func bridgeCapabilities() -> [String]
-    /// The OVERALL consent posture `clientName` would get right now across all
-    /// scopes (stored per-scope policies + this-run grants), WITHOUT prompting.
-    /// Advertised in `bridge.hello` as a single summary: `.granted` only if every
-    /// scope is already allowed, `.denied` only if every scope is denied, else
-    /// `.pending`. Per-scope resolution happens per call in `bridgeResolveConsent`.
-    func bridgeConsentSnapshot(clientName: String) -> BridgeWire.ConsentState
+    /// The consent posture `clientName` would get right now (stored per-scope
+    /// policies + this-run grants), WITHOUT prompting: a per-scope map plus a
+    /// summary scalar (`.granted` only if every scope is already allowed,
+    /// `.denied` only if every scope is denied, else `.pending`). Advertised in
+    /// `bridge.hello`; per-scope resolution happens per call in
+    /// `bridgeResolveConsent`.
+    func bridgeConsentSnapshot(clientName: String) -> (summary: BridgeWire.ConsentState, scopes: [String: BridgeWire.ConsentState])
     /// Resolve consent for `clientName` for a SPECIFIC `scope` (presenting the
     /// consent window if that scope's stored policy requires it). `completion`
     /// fires on the main thread with allow/deny; the server blocks its connection
@@ -289,14 +290,16 @@ final class AgentBridgeServer {
                 let (caps, appVersion, consent) = onMain {
                     (self.host?.bridgeCapabilities() ?? [],
                      self.host?.bridgeStatus().appVersion ?? "",
-                     self.host?.bridgeConsentSnapshot(clientName: params.clientName) ?? .pending)
+                     self.host?.bridgeConsentSnapshot(clientName: params.clientName)
+                        ?? (summary: .pending, scopes: [:]))
                 }
                 let result = BridgeWire.HelloResult(
                     protocolVersion: negotiated,
                     appVersion: appVersion,
                     capabilities: caps,
                     clientId: UUID().uuidString,
-                    consent: consent
+                    consent: consent.summary,
+                    consentScopes: consent.scopes
                 )
                 send(fd, id: id, result: result)
                 state.handshaken = true
@@ -321,7 +324,7 @@ final class AgentBridgeServer {
             guard consentGranted(clientName, scope: .history, fd: fd, id: id) else { return true }
             let limit = BridgeRouter.resolvedHistoryLimit(params.limit)
             let entries = onMain { self.host?.bridgeHistory(limit: limit) ?? [] }
-            onMain { self.host?.bridgeDidCall(clientName: clientName, tool: "history") }
+            onMain { self.host?.bridgeDidCall(clientName: clientName, tool: AgentScope.history.rawValue) }
             send(fd, id: id, result: BridgeWire.HistoryListResult(entries: entries))
             return true
 
@@ -331,7 +334,7 @@ final class AgentBridgeServer {
             let timeout = BridgeRouter.resolvedTimeoutSeconds(params.timeoutSeconds)
             switch blockingDictate(clientName: clientName, prompt: params.prompt, timeout: timeout, language: params.language) {
             case .success(let result):
-                onMain { self.host?.bridgeDidCall(clientName: clientName, tool: "dictate") }
+                onMain { self.host?.bridgeDidCall(clientName: clientName, tool: AgentScope.dictate.rawValue) }
                 send(fd, id: id, result: result)
             case .failure(let err):
                 sendError(fd, id: id, error: err)
@@ -353,7 +356,7 @@ final class AgentBridgeServer {
             guard consentGranted(clientName, scope: .refine, fd: fd, id: id) else { return true }
             switch blockingRefine(clientName: clientName, text: params.text, instruction: params.instruction) {
             case .success(let text):
-                onMain { self.host?.bridgeDidCall(clientName: clientName, tool: "refine") }
+                onMain { self.host?.bridgeDidCall(clientName: clientName, tool: AgentScope.refine.rawValue) }
                 send(fd, id: id, result: BridgeWire.RefineResult(text: text))
             case .failure(let err):
                 sendError(fd, id: id, error: err)

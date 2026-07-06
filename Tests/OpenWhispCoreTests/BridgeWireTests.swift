@@ -116,6 +116,25 @@ final class BridgeWireTests: XCTestCase {
         XCTAssertEqual(try roundTrip(result), result)
     }
 
+    func testHelloConsentScopesRoundTripAndAdditive() throws {
+        // The per-scope posture map round-trips...
+        let result = BridgeWire.HelloResult(
+            protocolVersion: 1, appVersion: "0.9.0", capabilities: [],
+            clientId: "c-1", consent: .pending,
+            consentScopes: ["dictate": .granted, "history": .pending, "refine": .denied]
+        )
+        XCTAssertEqual(try roundTrip(result), result)
+
+        // ...and is ADDITIVE: a hello from an older server (no consentScopes key)
+        // still decodes, with the map nil.
+        let oldWire = Data("""
+        {"protocolVersion":1,"appVersion":"0.8.0","capabilities":[],"clientId":"c","consent":"granted"}
+        """.utf8)
+        let decoded = try JSONDecoder().decode(BridgeWire.HelloResult.self, from: oldWire)
+        XCTAssertEqual(decoded.consent, .granted)
+        XCTAssertNil(decoded.consentScopes)
+    }
+
     func testDictateResultOmitsCancel() {
         // Compile-time guarantee that DictateEnd has no `cancelled` case — a
         // cancelled dictate can only surface as an error, never a result.

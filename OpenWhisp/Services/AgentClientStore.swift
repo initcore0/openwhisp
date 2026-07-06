@@ -38,6 +38,26 @@ public enum AgentScope: String, Codable, Equatable, Sendable, CaseIterable {
         case .refine:  return "Refine"
         }
     }
+
+    /// SF Symbol for the consent window's header.
+    public var icon: String {
+        switch self {
+        case .dictate: return "mic.badge.plus"
+        case .history: return "clock.arrow.circlepath"
+        case .refine:  return "wand.and.stars"
+        }
+    }
+
+    /// The privacy-relevant sentence describing what granting THIS scope exposes.
+    /// Load-bearing consent copy — kept here, next to the scope definition, so a
+    /// new scope cannot ship without deciding its disclosure text.
+    public var detail: String {
+        switch self {
+        case .dictate: return "It opens your voice overlay so you can speak an answer; the transcript goes back to the agent."
+        case .history: return "It can read the text of your recent dictations and which apps they went to."
+        case .refine:  return "It can send text to your configured AI model to rewrite it."
+        }
+    }
 }
 
 /// How OpenWhisp should treat future requests from a given agent client.
@@ -74,6 +94,12 @@ public struct AgentClientRecord: Codable, Equatable, Sendable {
     public var clientName: String
     /// Per-scope consent policies. A missing scope means "no decision yet" (prompt).
     public var scopePolicies: [AgentScope: AgentConsentPolicy]
+    /// Version-skewed `scopePolicies` entries this build can't interpret (unknown
+    /// scope key, or unknown policy value from a newer build). Carried verbatim
+    /// and re-encoded on save, so switching app versions never silently erases a
+    /// decision the user made elsewhere — the quarantine idiom protects the FILE;
+    /// this protects individual entries without nuking every client's consent.
+    public var unknownScopeEntries: [String: String] = [:]
     public var firstSeen: Date
     public var lastCall: Date?
     public var lastTool: String?
@@ -126,12 +152,24 @@ public struct AgentClientRecord: Codable, Equatable, Sendable {
         self.signingID = try c.decodeIfPresent(String.self, forKey: .signingID)
 
         // On the wire `scopePolicies` is keyed by the scope's RAW STRING (a
-        // readable JSON object). We bridge to the typed [AgentScope:...] here —
-        // NOT by declaring the property `[AgentScope: ...]` directly, because
-        // Swift encodes a dictionary with a non-String/Int key as a flat
-        // [k,v,k,v] array, which would be neither readable nor stable.
-        if let raw = try c.decodeIfPresent([String: AgentConsentPolicy].self, forKey: .scopePolicies) {
-            self.scopePolicies = Self.typed(from: raw)
+        // readable JSON object). Decode as [String: String] and bridge PER ENTRY:
+        // an entry whose key or value this build can't interpret (a newer build's
+        // scope or policy) is carried in `unknownScopeEntries` and re-encoded
+        // verbatim — never dropped, and never allowed to throw (a throw here
+        // would quarantine the WHOLE store, wiping every client's standing
+        // denies over one version-skewed value).
+        if let raw = try c.decodeIfPresent([String: String].self, forKey: .scopePolicies) {
+            var typed: [AgentScope: AgentConsentPolicy] = [:]
+            var unknown: [String: String] = [:]
+            for (k, v) in raw {
+                if let scope = AgentScope(rawValue: k), let policy = AgentConsentPolicy(rawValue: v) {
+                    typed[scope] = policy
+                } else {
+                    unknown[k] = v
+                }
+            }
+            self.scopePolicies = typed
+            self.unknownScopeEntries = unknown
         } else if let legacy = try c.decodeIfPresent(AgentConsentPolicy.self, forKey: .policy) {
             // MIGRATION: a v1 record carried a single `policy` covering everything.
             // Apply it to ALL scopes so an existing grant stays byte-identical —
@@ -147,24 +185,26 @@ public struct AgentClientRecord: Codable, Equatable, Sendable {
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(clientName, forKey: .clientName)
-        // Encode scopes keyed by raw string (readable object); never the legacy
-        // `policy` key — a re-saved record is always in the new shape.
-        try c.encode(Self.raw(from: scopePolicies), forKey: .scopePolicies)
+        // Scopes keyed by raw string (readable object), with any version-skewed
+        // entries merged back verbatim so they survive a round trip.
+        var raw = Dictionary(uniqueKeysWithValues: scopePolicies.map { ($0.key.rawValue, $0.value.rawValue) })
+        raw.merge(unknownScopeEntries) { ours, _ in ours }
+        try c.encode(raw, forKey: .scopePolicies)
+        // Rollback bridge: when the record is still expressible in the v1 shape
+        // (one policy uniformly covering every scope, nothing unknown), also write
+        // the legacy `policy` key — a downgraded build then decodes this record
+        // instead of quarantining the store. Never written for a heterogeneous
+        // record: v1 would apply one scope's policy to all of them (widening).
+        if unknownScopeEntries.isEmpty,
+           Set(scopePolicies.keys) == Set(AgentScope.allCases),
+           let uniform = scopePolicies.values.first,
+           scopePolicies.values.allSatisfy({ $0 == uniform }) {
+            try c.encode(uniform, forKey: .policy)
+        }
         try c.encode(firstSeen, forKey: .firstSeen)
         try c.encodeIfPresent(lastCall, forKey: .lastCall)
         try c.encodeIfPresent(lastTool, forKey: .lastTool)
         try c.encodeIfPresent(signingID, forKey: .signingID)
-    }
-
-    private static func typed(from raw: [String: AgentConsentPolicy]) -> [AgentScope: AgentConsentPolicy] {
-        var out: [AgentScope: AgentConsentPolicy] = [:]
-        for (k, v) in raw {
-            if let scope = AgentScope(rawValue: k) { out[scope] = v } // unknown scope keys ignored
-        }
-        return out
-    }
-    private static func raw(from typed: [AgentScope: AgentConsentPolicy]) -> [String: AgentConsentPolicy] {
-        Dictionary(uniqueKeysWithValues: typed.map { ($0.key.rawValue, $0.value) })
     }
 }
 
@@ -203,9 +243,8 @@ public struct AgentClientStore: Codable, Equatable {
     /// empty — this keeps what the UI shows in agreement.) Applied on load.
     public mutating func demoteRunScopedGrants() {
         for i in records.indices {
-            for scope in records[i].scopePolicies.keys where records[i].scopePolicies[scope] == .whileRunning {
-                records[i].scopePolicies[scope] = .askEveryTime
-            }
+            records[i].scopePolicies = records[i].scopePolicies
+                .mapValues { $0 == .whileRunning ? .askEveryTime : $0 }
         }
     }
 
