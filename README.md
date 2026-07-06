@@ -7,6 +7,8 @@ OpenWhisp is a menu‑bar dictation app for macOS. Hold a key, speak, release �
 
 Transcription runs locally with [whisper.cpp](https://github.com/ggerganov/whisper.cpp); optional text cleanup can run **fully locally** against your own LLM server, or via OpenAI if you choose.
 
+**Website:** [openwhisp.app](https://openwhisp.app) · mirror (for regions where the main site is blocked): [initcore0.github.io/openwhisp-mirror](https://initcore0.github.io/openwhisp-mirror/)
+
 > **Status:** early but functional. Open‑source (MIT). Apple Silicon, macOS 14+.
 
 ---
