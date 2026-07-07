@@ -86,6 +86,16 @@ struct AgentBridgePane: View {
                 subtitle: "End an agent-requested dictation automatically once you stop talking, instead of waiting for the time limit. Only applies to agent requests — your own dictation hotkey is unaffected.",
                 isOn: $appState.agentBridgeSilenceAutoStop
             )
+            SubtitledToggle(
+                "Chime when an agent asks",
+                subtitle: "Play a short sound when an agent opens a dictation, so you notice it even when you're not looking at the overlay.",
+                isOn: $appState.agentBridgeChimeEnabled
+            )
+            SubtitledToggle(
+                "Read the question aloud",
+                subtitle: "Speak the agent's question using your Mac's built-in voice (nothing leaves the device), so you can answer without reading the overlay. Long questions are shortened to the first sentence.",
+                isOn: $appState.agentBridgeSpeakQuestionEnabled
+            )
         } header: {
             Text("Behavior")
         }

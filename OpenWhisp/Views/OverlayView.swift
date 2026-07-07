@@ -27,9 +27,10 @@ final class OverlayWindowController {
             #if OPENWHISP_INSTRUMENTATION
             let size = NSSize(width: 440, height: 340)
             #else
-            // Tall enough for pill + caption + transcript box + the refine
-            // instruction row; unused space is transparent.
-            let size = NSSize(width: 440, height: 208)
+            // Tall enough for pill + the agent-question hero card (up to 5 lines) +
+            // transcript box + the refine instruction row; unused space is
+            // transparent, so ordinary user sessions just show the pill near the top.
+            let size = NSSize(width: 440, height: 300)
             #endif
             let panel = NSPanel(
                 contentRect: NSRect(origin: .zero, size: size),
@@ -158,6 +159,27 @@ struct OverlayView: View {
         )
     }
 
+    /// Amber "your turn" tint for an agent-initiated session. Distinct from the
+    /// cyan capture accent and the magenta refine accent so an agent handing the
+    /// mic to the human is unmistakable at a glance.
+    private static let agentWaitAccent = Color(red: 0.98, green: 0.74, blue: 0.30)
+
+    /// True while an agent is actively waiting on the human to speak — an
+    /// agent-attributed session (`agentDictatePrompt` set) that is still live
+    /// (listening or speaking, not yet finalizing/errored). The pill breathes an
+    /// amber halo in this state to pull attention; refine sessions keep their own
+    /// magenta identity and are excluded.
+    private var agentWaitingActive: Bool {
+        guard appState.agentDictatePrompt != nil, !appState.refineArmed else { return false }
+        // While the question is being read, capture hasn't begun — but this is
+        // still very much a "your turn is coming" moment, so keep the amber skin.
+        if appState.agentDictateReadingQuestion { return true }
+        switch phase {
+        case .arming, .listening, .speaking: return true
+        case .finalizing, .error:            return false
+        }
+    }
+
     private var transcriptText: String {
         appState.streamingText.trimmingCharacters(in: .whitespacesAndNewlines)
     }
@@ -198,11 +220,21 @@ struct OverlayView: View {
         appState.isTranscribing ? appState.statusMessage : nil
     }
 
+    /// While the agent's question is being read aloud, the mic is intentionally
+    /// held (so the app's own speech isn't captured) — tell the human to wait so
+    /// they don't answer into a dead mic and lose their first words. Takes
+    /// precedence over the generic arming cue.
+    private var readingQuestionCaption: String? {
+        appState.agentDictateReadingQuestion ? "Reading question — please wait" : nil
+    }
+
     /// While arming, tell the user capture isn't live yet so they don't speak into
     /// the startup gap (which would lose the first word). Shown as a small pill
     /// label since there's no transcript yet.
     private var armingCaption: String? {
-        phase == .arming ? "Starting — wait to speak" : nil
+        // Suppressed while the question is being read — that state has its own cue.
+        guard !appState.agentDictateReadingQuestion else { return nil }
+        return phase == .arming ? "Starting — wait to speak" : nil
     }
 
     /// During finalization (recording stopped, transcribing), show a status caption
@@ -223,18 +255,20 @@ struct OverlayView: View {
         VStack(spacing: 10) {
             waveformPill
 
-            // Agent Bridge: an agent-initiated session is always attributed — the
-            // client's question (sanitized + client-prefixed by AppState) renders
-            // above the transcript so mic use on an agent's behalf is never
-            // anonymous. nil for ordinary user sessions.
-            if let agentPrompt = appState.agentDictatePrompt {
-                Text(agentPrompt)
-                    .font(.system(size: 12, weight: .semibold, design: .rounded))
-                    .foregroundColor(.white.opacity(0.92))
-                    .multilineTextAlignment(.center)
-                    .lineLimit(2)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: 360)
+            // Agent Bridge: an agent-initiated session is always attributed. The
+            // question is the CONTENT the human has to answer, so it's the hero —
+            // a small "who asks" eyebrow over the full, readable question. Falls
+            // back to a one-line label when the agent gave no prompt. nil for
+            // ordinary user sessions.
+            if appState.agentDictatePrompt != nil {
+                agentQuestionPanel
+                    .transition(.opacity)
+            }
+
+            if let readingQuestionCaption {
+                Text(readingQuestionCaption)
+                    .font(.system(size: 11, weight: .semibold, design: .rounded))
+                    .foregroundColor(Self.agentWaitAccent.opacity(0.95))
                     .transition(.opacity)
             }
 
@@ -286,6 +320,7 @@ struct OverlayView: View {
         .animation(.easeInOut(duration: 0.18), value: appState.refineArmed)
         .animation(.easeInOut(duration: 0.18), value: appState.clipboardFallbackActive)
         .animation(.easeInOut(duration: 0.18), value: appState.isTranscribing)
+        .animation(.easeInOut(duration: 0.18), value: appState.agentDictateReadingQuestion)
         #if OPENWHISP_INSTRUMENTATION
         .onAppear { if appState.debugOverlayEnabled { debugSnapshot = appState.debugHUDSnapshot() } }
         .onReceive(debugTimer) { _ in if appState.debugOverlayEnabled { debugSnapshot = appState.debugHUDSnapshot() } }
@@ -389,13 +424,120 @@ struct OverlayView: View {
                     }
                 }
                 .overlay {
-                    // Hairline edge.
+                    // Same liquid-glass pill as ordinary dictation — the ONLY agent
+                    // detail is the edge: the hairline warms to amber (and the
+                    // breathing halo below pulses). No opaque fill; the body stays
+                    // the shared glass so agent mode reads as the same overlay.
                     Capsule(style: .continuous)
-                        .stroke(Color.white.opacity(0.10), lineWidth: 0.8)
+                        .stroke(
+                            agentWaitingActive ? Self.agentWaitAccent.opacity(0.9) : Color.white.opacity(0.10),
+                            lineWidth: agentWaitingActive ? 1.2 : 0.8
+                        )
                 }
         }
+        // A breathing amber halo layered UNDER the pill, cast by a matching capsule
+        // so the bloom is pill-shaped (same trick as the energy glow). It animates on
+        // its own clock via TimelineView, so it keeps pulsing while the human is
+        // silent — which is exactly when the agent is waiting on them to start.
+        .background { agentWaitGlow }
+        .animation(.easeInOut(duration: 0.25), value: agentWaitingActive)
         .animation(.easeInOut(duration: 0.18), value: phase)
         .animation(.easeOut(duration: 0.08), value: appState.audioLevel)
+    }
+
+    /// The pulsing "agent is waiting for you" halo. Rendered only for agent-waiting
+    /// sessions; a soft amber capsule shadow whose opacity + radius breathe on a
+    /// ~1.8s sine (repeatForever via TimelineView's animation clock). Reduce Motion
+    /// swaps the breathing for a steady, slightly stronger halo so the signal
+    /// survives without motion.
+    @ViewBuilder private var agentWaitGlow: some View {
+        if agentWaitingActive {
+            if reduceMotion {
+                Capsule(style: .continuous)
+                    .fill(Color.clear)
+                    .shadow(color: Self.agentWaitAccent.opacity(0.55), radius: 22, x: 0, y: 0)
+            } else {
+                TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { timeline in
+                    let now = timeline.date.timeIntervalSinceReferenceDate
+                    // 0…1 breathing on a ~1.8s period (2π / 1.8 ≈ 3.49 rad/s).
+                    let breath = sin(now * 3.49) * 0.5 + 0.5
+                    Capsule(style: .continuous)
+                        .fill(Color.clear)
+                        .shadow(
+                            color: Self.agentWaitAccent.opacity(0.30 + breath * 0.45),
+                            radius: 14 + breath * 16,
+                            x: 0, y: 0
+                        )
+                }
+            }
+        }
+    }
+
+    // MARK: Agent question (hero)
+
+    /// The agent's question, promoted to the primary content: a small amber
+    /// "CLIENT asks" eyebrow over the full, readable question in its own tinted
+    /// card. When the agent supplied no prompt, it degrades to a single quiet
+    /// attribution line. The card only wears the amber "your turn" skin while the
+    /// agent is actively waiting; once capture finalizes it cools to neutral.
+    @ViewBuilder private var agentQuestionPanel: some View {
+        if let question = appState.agentDictateQuestion {
+            VStack(alignment: .leading, spacing: 5) {
+                // Who's asking — quiet, uppercase, small (same treatment as the
+                // transcript's phase caption). Amber only while waiting.
+                Text("\(appState.agentDictateClientLabel ?? "An agent") asks")
+                    .font(.system(size: 10, weight: .semibold))
+                    .textCase(.uppercase)
+                    .foregroundColor(agentWaitingActive ? Self.agentWaitAccent.opacity(0.9) : .white.opacity(0.55))
+
+                // The question — same font family as the live transcript, just a
+                // touch larger and readable in full (up to 5 lines). No heavy card,
+                // no centered hero: it reads like the transcript, amber-edged.
+                Text(question)
+                    .font(.system(size: 14, weight: .regular, design: .rounded))
+                    .foregroundColor(.white.opacity(0.9))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .multilineTextAlignment(.leading)
+                    .lineLimit(5)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.horizontal, 18)
+            .padding(.vertical, 12)
+            .frame(width: 360, alignment: .leading)
+            // Same glass panel as the live transcript (cornerRadius 16, HUD glass,
+            // hairline, drop shadow) — agent mode is the SAME dictation overlay,
+            // not a different component. The ONLY difference is the edge: amber
+            // while waiting, the normal white hairline otherwise.
+            .background {
+                ZStack {
+                    if reduceTransparency {
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .fill(Color(red: 0.06, green: 0.06, blue: 0.07))
+                    } else {
+                        VisualEffectView()
+                            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    }
+                }
+                .overlay {
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .stroke(
+                            agentWaitingActive ? Self.agentWaitAccent.opacity(0.9) : Color.white.opacity(0.08),
+                            lineWidth: agentWaitingActive ? 1.2 : 0.8
+                        )
+                }
+                .shadow(color: Color.black.opacity(0.30), radius: 16, x: 0, y: 8)
+            }
+        } else {
+            // No question supplied — a plain attribution line ("X asked you to
+            // dictate"), warmed to amber while waiting.
+            Text(appState.agentDictatePrompt ?? "")
+                .font(.system(size: 12, weight: .semibold, design: .rounded))
+                .foregroundColor(agentWaitingActive ? Self.agentWaitAccent : .white.opacity(0.92))
+                .multilineTextAlignment(.center)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: 360)
+        }
     }
 
     // MARK: Transcript
