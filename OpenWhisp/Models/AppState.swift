@@ -405,6 +405,19 @@ class AppState: ObservableObject {
     @Published var agentBridgeSilenceAutoStop: Bool {
         didSet { UserDefaults.standard.set(agentBridgeSilenceAutoStop, forKey: "agentBridgeSilenceAutoStop") }
     }
+    /// Play a short chime when an agent opens a dictation so you notice it even
+    /// when you're not looking at that corner of the screen. Agent sessions only.
+    @Published var agentBridgeChimeEnabled: Bool {
+        didSet { UserDefaults.standard.set(agentBridgeChimeEnabled, forKey: "agentBridgeChimeEnabled") }
+    }
+    /// Read the agent's question aloud (on-device, no network) when it opens a
+    /// dictation, so you can answer without reading the overlay. Agent sessions only.
+    @Published var agentBridgeSpeakQuestionEnabled: Bool {
+        didSet { UserDefaults.standard.set(agentBridgeSpeakQuestionEnabled, forKey: "agentBridgeSpeakQuestionEnabled") }
+    }
+    /// Audible cues (chime + spoken question) for agent-initiated dictation.
+    /// On-device; gated by the two settings above.
+    private let agentAnnouncer = AgentAnnouncer()
     /// Per-client consent records (persisted to agent-clients.json). Surfaced in
     /// the Agent Bridge settings pane.
     @Published var agentClients: AgentClientStore = AgentClientStore()
@@ -416,6 +429,20 @@ class AppState: ObservableObject {
     /// overlay ("X asks: …"). nil for user sessions. Published so the overlay can
     /// render it.
     @Published private(set) var agentDictatePrompt: String?
+    /// The agent's identity for the current session ("claude-code", "An agent"),
+    /// rendered as the overlay's small eyebrow above the question. Sanitized.
+    /// nil for user sessions. Split out from `agentDictatePrompt` so the question
+    /// can be the hero and the "who" a quiet label.
+    @Published private(set) var agentDictateClientLabel: String?
+    /// The agent's raw question for the current session, sanitized for display but
+    /// WITHOUT the "X asks:" framing — the overlay renders this as the large,
+    /// fully-readable hero text. nil when the agent supplied no prompt.
+    @Published private(set) var agentDictateQuestion: String?
+    /// True while the agent's question is being READ ALOUD, before the mic goes
+    /// live. The overlay shows a "reading question — please wait" cue so the human
+    /// doesn't answer into a dead mic (capture is intentionally held until speech
+    /// ends, so the TTS isn't captured and returned as the answer).
+    @Published private(set) var agentDictateReadingQuestion = false
     /// Set when the current agent session was ended by its timeout / by an explicit
     /// dictate.stop, so the delivered result reports the right `endedBy`.
     private var agentDictateTimedOut = false
@@ -920,6 +947,11 @@ class AppState: ObservableObject {
         agentBridgeAllowCloudAI = UserDefaults.standard.bool(forKey: "agentBridgeAllowCloudAI")
         // Default-ON (silence auto-stop is the expected agent-dictate UX).
         agentBridgeSilenceAutoStop = UserDefaults.standard.object(forKey: "agentBridgeSilenceAutoStop") as? Bool ?? true
+        // Default-ON: the chime and spoken question are the whole point of an
+        // agent handing you the mic — you should notice and be able to answer
+        // without staring at the overlay. Users can turn either off.
+        agentBridgeChimeEnabled = UserDefaults.standard.object(forKey: "agentBridgeChimeEnabled") as? Bool ?? true
+        agentBridgeSpeakQuestionEnabled = UserDefaults.standard.object(forKey: "agentBridgeSpeakQuestionEnabled") as? Bool ?? true
         agentClients = AgentClientStore.load()
         profiles = AppProfileStore.load()
         history = TranscriptionHistoryStore.load()
@@ -1354,6 +1386,16 @@ class AppState: ObservableObject {
             syncRefineUI()
             statusMessage = "Cancelled"
             finishSessionUI()
+            return
+        }
+        // Esc while the agent's question is still being read (mic not yet live):
+        // stop the speech and tear down before capture ever starts. The MCP thread
+        // is blocked on onSessionEnd, so deliver a cancel through the normal path.
+        if agentDictateReadingQuestion && !isRecording && !isTranscribing && !sessionActive {
+            agentAnnouncer.stopSpeaking()
+            sessionOutcome = .cancelled
+            finishSessionUI()
+            statusMessage = "Cancelled"
             return
         }
         guard isRecording || isTranscribing || sessionActive else { return }
@@ -3087,6 +3129,10 @@ class AppState: ObservableObject {
     private func finishSessionUI(delay: TimeInterval = 0) {
         sessionActive = false
         pendingStop = false
+        // Never let a spoken question run past the session — if it's still being
+        // read when capture finalizes (short question, fast answer), cut it so the
+        // app isn't talking over the user or into the next session.
+        agentAnnouncer.stopSpeaking()
         // A refine armed mid-session that never reached completeFinalText (error
         // terminations: engine onError, recorder .error, empty-WAV, final-kind
         // failure) must not leak into the next dictation — a stale snapshot would
@@ -3122,6 +3168,9 @@ class AppState: ObservableObject {
         suppressOutput = false
         sessionOutcome = nil
         agentDictatePrompt = nil
+        agentDictateClientLabel = nil
+        agentDictateQuestion = nil
+        agentDictateReadingQuestion = false
         agentSilenceDetector = nil
         agentDictateTimeoutTask?.cancel()
         agentDictateTimeoutTask = nil
@@ -4010,11 +4059,17 @@ extension AppState: AgentBridgeHost {
         // must never read as OpenWhisp's own voice.
         let displayClient = BridgeWire.sanitizedForDisplay(clientName, maxLength: 60)
         let clientLabel = displayClient.isEmpty ? "An agent" : displayClient
-        if let prompt, !BridgeWire.sanitizedForDisplay(prompt, maxLength: 200).isEmpty {
-            agentDictatePrompt = "\(clientLabel) asks: \(BridgeWire.sanitizedForDisplay(prompt, maxLength: 200))"
+        let displayQuestion = prompt.map { BridgeWire.sanitizedForDisplay($0, maxLength: 200) } ?? ""
+        if !displayQuestion.isEmpty {
+            agentDictatePrompt = "\(clientLabel) asks: \(displayQuestion)"
         } else {
             agentDictatePrompt = "\(clientLabel) asked you to dictate"
         }
+        // Split pieces for the hero overlay: the question is the content, the
+        // client the quiet attribution. `agentDictateQuestion` is nil (not empty)
+        // when the agent gave no prompt, so the overlay falls back cleanly.
+        agentDictateClientLabel = clientLabel
+        agentDictateQuestion = displayQuestion.isEmpty ? nil : displayQuestion
         sessionInitiator = .agent(client: clientName, prompt: prompt)
         onSessionEnd = { [weak self] outcome in
             guard let self else { return }
@@ -4043,34 +4098,92 @@ extension AppState: AgentBridgeHost {
             }
         }
 
-        // Run the shared start path. Any pre-session bail (e.g. a secure field that
-        // became focused in the last instant) leaves sessionActive false; catch it
-        // so the agent is never left hanging.
-        startDictation()
-        guard sessionActive else {
-            onSessionEnd = nil
-            agentDictatePrompt = nil
-            sessionInitiator = .user
-            completion(.failure(.domain(.internalError, message: "could not start dictation")))
-            return
+        // "Go live": actually open the mic and arm the session guards. Deferred
+        // until AFTER any spoken question finishes — otherwise the mic captures the
+        // app's own TTS and returns it to the agent as the human's answer (an
+        // acoustic feedback loop). Runs exactly once; a `fired` latch dedups the
+        // TTS-completion callback against the watchdog fallback.
+        var fired = false
+        let goLive: () -> Void = { [weak self] in
+            guard let self, !fired else { return }
+            fired = true
+            self.agentDictateReadingQuestion = false
+
+            // A cancel/decline can arrive while the question is still being read
+            // (the overlay's Esc, a superseding session). Don't open the mic on a
+            // session that's already been torn down.
+            guard self.sessionInitiator.isAgent, self.onSessionEnd != nil else { return }
+
+            // Run the shared start path. Any pre-session bail (e.g. a secure field
+            // that became focused in the last instant) leaves sessionActive false;
+            // catch it so the agent is never left hanging.
+            self.startDictation()
+            guard self.sessionActive else {
+                let done = self.onSessionEnd
+                self.onSessionEnd = nil
+                self.agentDictatePrompt = nil
+                self.agentDictateClientLabel = nil
+                self.agentDictateQuestion = nil
+                self.sessionInitiator = .user
+                // Deliver the failure directly — the session never began, so
+                // finishSessionUI's normal delivery won't run.
+                if done != nil {
+                    completion(.failure(.domain(.internalError, message: "could not start dictation")))
+                }
+                return
+            }
+
+            // Arm silence auto-stop (default-on) so the answer ends when the speaker
+            // stops, not only on the timeout. Fed from `updateAudioLevel`. The
+            // timeout below remains the hard ceiling / no-speech fallback.
+            self.agentSilenceDetector = self.agentBridgeSilenceAutoStop ? SilenceAutoStop() : nil
+
+            let sid = self.activeSessionID
+            self.agentDictateTimeoutTask = Task { [weak self] in
+                try? await Task.sleep(nanoseconds: UInt64(max(1, timeoutSeconds)) * 1_000_000_000)
+                // Cancellation makes Task.sleep THROW EARLY (and try? swallows it) —
+                // without this check, the cancel issued by a silence/stop finish
+                // would wake the task immediately, mid-finalization (sessionActive
+                // still true, same sid), and flip the very endedBy it tried to protect.
+                guard !Task.isCancelled else { return }
+                guard let self, self.sessionActive, self.activeSessionID == sid else { return }
+                self.agentDictateTimedOut = true
+                self.stopDictation()
+            }
         }
 
-        // Arm silence auto-stop (default-on) so the answer ends when the speaker
-        // stops, not only on the timeout. Fed from `updateAudioLevel`. The timeout
-        // below remains the hard ceiling / no-speech fallback.
-        agentSilenceDetector = agentBridgeSilenceAutoStop ? SilenceAutoStop() : nil
-
-        let sid = activeSessionID
-        agentDictateTimeoutTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: UInt64(max(1, timeoutSeconds)) * 1_000_000_000)
-            // Cancellation makes Task.sleep THROW EARLY (and try? swallows it) —
-            // without this check, the cancel issued by a silence/stop finish would
-            // wake the task immediately, mid-finalization (sessionActive still
-            // true, same sid), and flip the very endedBy it tried to protect.
-            guard !Task.isCancelled else { return }
-            guard let self, self.sessionActive, self.activeSessionID == sid else { return }
-            self.agentDictateTimedOut = true
-            self.stopDictation()
+        // Audible "your turn" cues (both opt-out). The chime fires first as a
+        // distinct attention ping. If the question is read aloud, we hold capture
+        // until speech ends (via the completion callback) and show a "reading —
+        // wait" cue meanwhile. With no spoken question (TTS off, or nothing
+        // speakable, or chime-only), go live immediately.
+        if agentBridgeChimeEnabled {
+            agentAnnouncer.chime()
+        }
+        if agentBridgeSpeakQuestionEnabled, let prompt,
+           !AgentAnnouncer.spokenForm(of: prompt).isEmpty {
+            agentDictateReadingQuestion = true
+            // Show the overlay NOW (normally beginSession does this, but capture —
+            // and beginSession — is held until speech ends). It renders the
+            // "Reading question — wait" cue and the question hero, and gives the
+            // user an Esc target to back out before the mic ever opens.
+            if showOverlay || sessionInitiator.isAgent {
+                overlayController?.show()
+                overlayIsVisible = true
+            }
+            agentAnnouncer.speak(prompt, onFinish: goLive)
+            // Watchdog: if the speech-finished callback never arrives (engine
+            // stall, delegate never fires), open the mic anyway a few seconds past
+            // the longest realistic read of the 240-char cap so the agent is never
+            // left hanging in "reading" forever.
+            Task { [weak self] in
+                try? await Task.sleep(nanoseconds: 30 * 1_000_000_000)
+                guard let self, !fired else { return }
+                self.agentAnnouncer.stopSpeaking()
+                goLive()
+            }
+        } else {
+            goLive()
         }
     }
 
