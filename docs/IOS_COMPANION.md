@@ -15,8 +15,10 @@
 > Group container. Everything below follows from that.
 
 All load-bearing platform claims here were fact-checked (2026-07-08 deep-research
-run, 24/25 claims confirmed 3-0 against primary Apple sources; 1 refuted). Cited
-inline; sources listed at the end.
+run, 24/25 claims confirmed 3-0 against primary Apple sources; 1 refuted). A
+same-day PR-review pass added three more verified constraints ([C9]–[C11]) that
+reshape the capture-trigger UX (§2) and the risk plan (§8). Cited inline; sources
+listed at the end.
 
 ---
 
@@ -101,21 +103,49 @@ foreground memory budget, not the punishing extension jetsam limit.
 ### The UX problem this creates (and how to solve it)
 
 Because the mic is in the host app, tapping the keyboard's mic button can't just
-silently record — the **host app must become active to capture**. Options, best-first:
+silently record — the **host app must become active to capture**. And two more
+platform walls stand between "tap mic key" and "host records", both verified:
 
-1. **Live Activity / Dynamic Island capture (recommended).** Keyboard taps a
-   button → host app is woken and records; a Live Activity + Dynamic Island shows
-   the waveform and "listening…" while the user stays in the target app. On stop
-   (silence auto-stop, reusing our `SilenceAutoStop.swift`), host writes the
-   transcript to the App Group; keyboard inserts it. This is the closest thing to
-   "it just works without leaving the app." Feasibility of *fully* backgrounded
-   capture must be validated — audio recording has background modes, but a
-   keyboard-initiated wake is the delicate part. **This is the #1 prototype risk
-   to burn down first.**
-2. **Quick app-switch.** Keyboard mic button deep-links into the host app's
-   compact "dictation sheet"; user speaks; on finish the host hands back to the
-   previous app (or the user swipes back) and the keyboard inserts. Less seamless,
-   but bulletproof and App-Store-safe. Ship this as the guaranteed fallback.
+- **A keyboard extension has no supported way to open its containing app.**
+  `extensionContext.open(_:)` is documented to work **only from Today widgets**;
+  Apple's QA1924 explicitly calls the responder-chain `openURL:` workaround "not
+  allowed." Keyboards that do this ship on an unsupported hack that Apple has
+  broken before and can break/reject again. [C9]
+- **An app cannot *start* mic capture from the background.** The audio background
+  mode only lets a *foreground-started* session continue; attempts to activate a
+  recording session from the background fail (the system denies recording-start
+  to backgrounded processes). So even if the keyboard could wake the host, a
+  backgrounded host still couldn't begin recording. [C10]
+- Corollary: a Live Activity can't paper over this — Live Activities are started
+  by the foreground app (or an ActivityKit push), not by an extension.
+
+There *is* one sanctioned crack in the wall: **`AudioRecordingIntent` (iOS 18+)**,
+the App Intent Apple added precisely so recording can start from the **Action
+button or a Control Center control** without foregrounding the app (this is how
+modern voice-memo apps do it), surfaced with a Live Activity while recording.
+A keyboard extension cannot invoke it — but the user's finger can. [C11]
+
+Options, best-first:
+
+1. **Action button / Control Center capture + Live Activity (hero, iOS 18+).**
+   User triggers OpenWhisp's `AudioRecordingIntent` from the Action button or a
+   Control Center control; the host records without an app switch, Dynamic Island
+   shows "listening…"; on stop (silence auto-stop, reusing our
+   `SilenceAutoStop.swift`) the host writes the transcript to the App Group and
+   the keyboard inserts it at the caret. Honest trade-off: the trigger lives on
+   the Action button/Control Center, **not on the keyboard's mic key** — the mic
+   key becomes a teaching affordance ("set up the Action button") plus the
+   fallback below. Real-device validation of intent-initiated capture is still
+   **the #1 prototype risk to burn down first** — reports exist of background
+   errors when the intent fires from some surfaces. [C10, C11]
+2. **Quick app-switch (the floor).** Keyboard mic key sends the user to the host
+   app's compact "dictation sheet"; user speaks; user returns via the status-bar
+   back-breadcrumb (there is **no API for the host to programmatically return** to
+   the previous app) and the keyboard, on reappearing, inserts the pending
+   transcript from the App Group. Caveat inside the caveat: because of [C9] even
+   this "tap to switch" needs either the unsupported openURL hack or a UX that
+   asks the user to switch apps themselves — prototype both and decide with eyes
+   open. Less seamless, but App-Store-safe in its manual form.
 3. **"Dictate here" in-app.** Inside the OpenWhisp host app itself, dictation is
    trivial (normal app mic access) — good for composing longer notes to copy out.
 
@@ -170,8 +200,10 @@ Two targets in one app, plus optional widgets:
 
 Feature parity worth carrying over from the Mac (all core-backed, so cheap):
 smart formatting (default-on), custom vocabulary + substitutions, spoken
-punctuation, voice commands, transcription history, per-app modes (on iOS, keyed
-by the *host* app when discoverable), and the local-LLM refine step.
+punctuation, voice commands, transcription history, per-app modes (caveat: a
+keyboard extension has **no supported API to identify its host app**, so iOS
+"per-app" modes likely degrade to a user-picked mode on the keyboard or
+text-content heuristics), and the local-LLM refine step.
 
 ---
 
@@ -310,14 +342,25 @@ Other review realities:
 
 ## 8. Effort, risk, and a staged plan
 
-**Risk-burndown first — validate the one thing that can kill the hero UX:**
+**Risk-burndown first — validate the two things that can kill the hero UX
+(decomposed, because they fail independently):**
 
-- **R0 (do this before anything): keyboard-triggered host capture.** Prove that a
-  keyboard mic tap can wake/activate the host app, capture mic audio, and hand a
-  transcript back to the keyboard for insertion — ideally via Live Activity without
-  a jarring app switch. If only the app-switch fallback (§2 option 2) is viable,
-  that's still shippable, but we must know before committing to the hero framing.
-  *This is the highest-uncertainty item in the whole plan.*
+- **R0a: capture-start without foregrounding.** Prove `AudioRecordingIntent`
+  (Action button / Control Center) reliably starts host-app capture on a real
+  device with the app backgrounded or not running, with a Live Activity showing
+  state. Known reports of background-start errors from some trigger surfaces make
+  this genuinely uncertain. [C10, C11] If it fails, the hero UX degrades to
+  app-switch — shippable, but we must know before committing to the hero framing.
+- **R0b: keyboard→host trigger.** Measure how bad the sanctioned path is (user
+  switches apps / taps the back-breadcrumb) vs. the unsupported responder-chain
+  openURL hack [C9] — and whether the hack survives current iOS + App Review.
+  Decide the mic key's real behavior from data, not hope.
+- **R0c: the return-trip insert.** Verify the keyboard reliably learns of and
+  inserts a pending transcript when it reappears (App Group read on
+  `viewWillAppear` + Darwin notification while alive) across the app-switch
+  round-trip.
+
+*R0a is the highest-uncertainty item in the whole plan.*
 
 **Then, incremental milestones (each shippable/testable):**
 
@@ -325,7 +368,7 @@ Other review realities:
 |---|---|---|---|
 | iM0 | **Host app skeleton + WhisperKit on iPhone.** In-app "dictate & copy". Benchmark `tiny`/`base`/`small` peak memory + latency + thermals on real devices. | `OpenWhispCore`, WhisperKit engine | SwiftUI host app, iOS audio capture adapter |
 | iM1 | **Real keyboard extension** (no dictation yet) — passes 4.4.1 as a plain keyboard. | — | Keyboard UI, `UITextDocumentProxy` insertion |
-| iM2 | **Dictation hand-off** — App Group container, mic key → host capture → insert. Ship app-switch fallback; layer Live Activity if R0 proved it. | SmartFormatter, Vocabulary, SilenceAutoStop | App Group plumbing, Live Activity |
+| iM2 | **Dictation hand-off** — App Group container, capture → transcript → keyboard insert on reappear (Darwin notification + `viewWillAppear` read). Ship app-switch fallback; layer `AudioRecordingIntent` + Live Activity if R0a proved it. | SmartFormatter, Vocabulary, SilenceAutoStop | App Group plumbing, App Intent, Live Activity |
 | iM3 | **Local-first sync (Tier A P2P)** of vocab/history/packs/profiles via Network framework, reusing the bridge wire. | `ConfigBundle/Pack`, `BridgeWire/Router` | `NWListener`/`NWBrowser`, QR pairing, TLS |
 | iM4 | **MCP client → Mac hub** over the paired link; phone drives Mac dictate/refine/history; optional voice-answer-to-agent. | Agent Bridge auth + consent model, MCP SDK | TLS transport for the bridge, phone MCP UI |
 | iM5 | **Polish** — per-app modes, refine key (last-dictation), CloudKit opt-in (Tier B) with the honest caveat, prompt packs. | core profiles/refine | CloudKit schema, settings parity |
@@ -345,8 +388,11 @@ audio adapter + the P2P transport — bounded, well-understood work.
 1. **Accept the thin-keyboard/host-engine architecture** — it's not a compromise,
    it's the only correct design, and it *keeps the model and mic in the host app*
    where privacy and memory are easiest to reason about.
-2. **Prototype R0 immediately** (keyboard→host capture). It's the only thing that
-   can change the product's shape.
+2. **Prototype R0a/R0b immediately** (`AudioRecordingIntent` capture-start;
+   keyboard→host trigger). They're the only things that can change the product's
+   shape — and note the hero trigger is the **Action button / Control Center**,
+   not the keyboard's mic key, because a keyboard cannot wake its host app and a
+   backgrounded host cannot start recording. [C9, C10, C11]
 3. **Ship the on-device keyboard first**, with dictation as the Full-Access-gated
    enhancement, so review is clean and the privacy story is airtight.
 4. **Make Tier A P2P sync the headline** ("nothing leaves your devices"), CloudKit
@@ -364,8 +410,11 @@ values — a private keyboard in a category built on distrust.
 
 1. Peak WhisperKit memory (`tiny`/`base`/`small`) in the **host app** on low-RAM
    iPhones — does even the host risk jetsam during transcription? [caveat]
-2. Can the host capture while the keyboard is frontmost via Live Activity, or is
-   an app-switch mandatory? (Defines the hero vs. fallback UX.) [openQ]
+2. Does `AudioRecordingIntent` reliably start capture with the host backgrounded
+   / not running, from Action button *and* Control Center? (Defines the hero vs.
+   fallback UX — R0a.) [C11, openQ]
+2a. Does the responder-chain openURL hack still work on current iOS, and does it
+   pass review? (Defines the mic key's behavior — R0b.) [C9, openQ]
 3. How does the Tier-A Bonjour peer behave when the phone locks/backgrounds — is
    sync strictly foreground/on-launch? (Expected: yes.) [openQ]
 4. Exactly what must the mandatory "functional without Full Access" degraded mode
@@ -400,6 +449,22 @@ values — a private keyboard in a category built on distrust.
 - **[C8]** Guideline 4.4.1: keyboard must remain functional without Full Access;
   data collection limited to on-device keyboard enhancement: Apple *App Review
   Guidelines*. Full-access clause 3-0.
+- **[C9]** Keyboard extensions cannot open their containing app:
+  `extensionContext.open(_:)` is supported **only in Today widgets**; Apple QA1924
+  (*Opening Keyboard Settings from a Keyboard Extension*) states the
+  responder-chain `openURL:` workaround "is not allowed"; Apple Forums
+  thread/65621. *(Added 2026-07-08 PR review pass.)*
+- **[C10]** Apps cannot *start* mic capture from the background: background audio
+  mode only continues foreground-started sessions; recording-session activation
+  from background is denied by the system (Apple Forums thread/120038,
+  thread/756507 — "client … in the background doesn't have the entitlement to
+  start recording"). *(Added 2026-07-08 PR review pass.)*
+- **[C11]** `AudioRecordingIntent` (App Intents, iOS 18+) is the sanctioned way to
+  start/stop recording from the Action button / Control Center without
+  foregrounding the app: Apple Developer Documentation *AudioRecordingIntent*;
+  community reports of background-start errors from some trigger surfaces
+  (hackingwithswift.com forums thread 29100) — hence R0a. *(Added 2026-07-08 PR
+  review pass.)*
 
 *Related: [[product-positioning]], [[roadmap]], [[phase-2.5-progress]],
 [[phase-3-progress]], [[ai-native-feature-research]], [[agent-bridge-followups]],
