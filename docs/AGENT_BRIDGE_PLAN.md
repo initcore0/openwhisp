@@ -363,9 +363,16 @@ tools with progress/cancellation/instructions; the adoption kit; refactor steps 
   bundle-ID exclusion denylist** and a **per-client history window** (last N or last 24 h). The `appBundleID`
   metadata is already recorded — use it for policy. Consider an "agent sees only agent-initiated entries"
   mode.
-- **Rate limiting on allowed clients:** deny-cooldowns aren't enough — an always-allowed client can chain
-  max-length dictate sessions forever (overlay-visible but effectively continuous listening). Add a
-  per-client session cooldown / sessions-per-hour cap.
+- **Rate limiting on allowed clients (shipped, MAK-10):** deny-cooldowns aren't enough — an always-allowed
+  client can chain max-length dictate sessions forever (overlay-visible but effectively continuous
+  listening). `AgentRateLimiter` (pure, unit-tested) enforces a per-client **cooldown from each session's
+  end**, a **sessions-per-hour cap**, and a **listening-seconds-per-hour budget** (the budget is what
+  actually bounds mic time — with 300s max sessions, a session count alone can't; the cooldown runs from
+  the end because start-to-start it would never force a gap), checked in `AppState.bridgeStartDictation` after the
+  busy/permission/secure-field guards (those aren't the client's fault, so they don't consume budget) and
+  keyed on the same `clientName` consent uses. Only accepted starts are recorded. A trip returns a distinct
+  `rateLimited` reason (not `busy`) with a `retryAfterSeconds` hint so a well-behaved agent backs off; the
+  CLI maps it to the busy exit code. Revoking a client clears its budget.
 - **App update / quit mid-call:** `package.sh --install` `pkill`s the running app and `rm -rf`s the bundle,
   leaving a held `openwhisp mcp` process against a stale inode. Specify drain-on-quit (refuse new requests,
   resolve in-flight `dictate` with an "app quitting" error, `unlink` the socket in

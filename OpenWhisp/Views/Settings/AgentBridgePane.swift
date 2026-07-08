@@ -156,7 +156,7 @@ struct AgentBridgePane: View {
         } header: {
             Text("Connected agents")
         } footer: {
-            SettingsFootnote("Each capability is granted separately — approving an agent to ask you a question doesn't let it read your history or use your AI. Revoke clears all of them.")
+            SettingsFootnote("Each capability is granted separately — approving an agent to ask you a question doesn't let it read your history or use your AI. Revoke clears all of them. Even an always-allowed agent is rate-limited so it can't hold the mic continuously.")
         }
     }
 

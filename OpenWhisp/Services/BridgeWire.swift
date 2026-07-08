@@ -90,6 +90,12 @@ public enum BridgeWire {
         /// A session (user- or agent-initiated) is already active; the human
         /// always wins the mic. No queueing — the caller may retry after waiting.
         case busy
+        /// This client has hit its dictation rate limit (a per-client cooldown
+        /// between sessions and/or a sessions-per-hour cap). Distinct from
+        /// ``busy``: nothing else is using the mic — this client is deliberately
+        /// throttled so an always-allowed agent can't hold the mic continuously.
+        /// ``ErrorData/retryAfterSeconds`` carries when it may try again.
+        case rateLimited
         /// The user pressed Esc / the client called `dictate.cancel`. Per the
         /// cancel invariant, a cancelled dictate returns NO transcript text.
         case cancelled
@@ -274,12 +280,13 @@ extension BridgeWire {
 
         /// Build a domain error (`serverError` code + a `reason`).
         public static func domain(
-            _ reason: ErrorCode, message: String, originalText: String? = nil
+            _ reason: ErrorCode, message: String,
+            originalText: String? = nil, retryAfterSeconds: Int? = nil
         ) -> ErrorObject {
             ErrorObject(
                 code: serverError,
                 message: message,
-                data: ErrorData(reason: reason, originalText: originalText)
+                data: ErrorData(reason: reason, originalText: originalText, retryAfterSeconds: retryAfterSeconds)
             )
         }
     }
@@ -290,10 +297,31 @@ extension BridgeWire {
         /// proceed unrefined (mirrors the overlay's insert-unrefined fallback).
         /// NEVER used to smuggle a cancelled dictation's transcript.
         public var originalText: String?
+        /// On a ``ErrorCode/rateLimited`` refusal, whole seconds the client should
+        /// wait before retrying `dictate` (ceil of the true wait, so a retry after
+        /// this many seconds is guaranteed past the limit). Absent otherwise.
+        public var retryAfterSeconds: Int?
 
-        public init(reason: ErrorCode? = nil, originalText: String? = nil) {
+        public init(reason: ErrorCode? = nil, originalText: String? = nil, retryAfterSeconds: Int? = nil) {
             self.reason = reason
             self.originalText = originalText
+            self.retryAfterSeconds = retryAfterSeconds
+        }
+
+        /// Lenient decoding: a `reason` string this build doesn't know (a newer
+        /// app introducing a new ``ErrorCode``) decodes as nil instead of failing
+        /// the whole response — an old CLI must still surface the app's `message`
+        /// (falling back to a generic exit code) rather than dying with
+        /// "undecodable response".
+        public init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            reason = (try c.decodeIfPresent(String.self, forKey: .reason)).flatMap(ErrorCode.init(rawValue:))
+            originalText = try c.decodeIfPresent(String.self, forKey: .originalText)
+            retryAfterSeconds = try c.decodeIfPresent(Int.self, forKey: .retryAfterSeconds)
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case reason, originalText, retryAfterSeconds
         }
     }
 

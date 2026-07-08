@@ -99,6 +99,26 @@ final class BridgeWireTests: XCTestCase {
         XCTAssertEqual(decoded.error?.data?.originalText, "raw text")
     }
 
+    func testErrorDataToleratesUnknownReason() throws {
+        // Forward-compat: a reason string a NEWER app introduces (rateLimited was
+        // the first) must decode as nil on an older client, not fail the whole
+        // response — the client still gets `message` and a generic exit code.
+        let line = Data(#"{"reason":"someFutureCode","originalText":"kept","retryAfterSeconds":7}"#.utf8)
+        let data = try JSONDecoder().decode(BridgeWire.ErrorData.self, from: line)
+        XCTAssertNil(data.reason)
+        XCTAssertEqual(data.originalText, "kept")
+        XCTAssertEqual(data.retryAfterSeconds, 7)
+    }
+
+    func testErrorDataRateLimitedRoundTrips() throws {
+        let obj = BridgeWire.ErrorObject.domain(
+            .rateLimited, message: "too frequent", retryAfterSeconds: 42
+        )
+        let decoded = try JSONDecoder().decode(BridgeWire.ErrorObject.self, from: JSONEncoder().encode(obj))
+        XCTAssertEqual(decoded.data?.reason, .rateLimited)
+        XCTAssertEqual(decoded.data?.retryAfterSeconds, 42)
+    }
+
     // MARK: Payload round-trips + wire-key stability
 
     func testHelloRoundTrip() throws {

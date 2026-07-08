@@ -46,6 +46,7 @@ let package = Package(
                 "SilenceAutoStop.swift",
                 "AgentSetup.swift",
                 "AgentClientStore.swift",
+                "AgentRateLimiter.swift",
                 "ConfigPack.swift",
                 "ScriptPostProcessor.swift",
                 "WhisperTask.swift",

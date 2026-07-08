@@ -56,7 +56,7 @@ func failClient(_ error: Error) -> Never {
     case .domain(let reason, let message, _):
         switch reason {
         case .consentDenied:                          fail(message, .consentDenied)
-        case .busy:                                   fail(message, .busy)
+        case .busy, .rateLimited:                     fail(message, .busy)
         case .cancelled:                              fail(message, .cancelled)
         case .timeout:                                fail(message, .timeout)
         case .secureField, .micPermissionNeeded, .audioUnavailable:
