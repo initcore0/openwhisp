@@ -4071,7 +4071,7 @@ extension AppState: AgentBridgeHost {
             )))
             return
         }
-        agentRateLimiter.record(clientName: clientName, now: now)
+        agentRateLimiter.recordStart(clientName: clientName, now: now)
 
         let started = now
         agentDictateTimedOut = false
@@ -4097,6 +4097,10 @@ extension AppState: AgentBridgeHost {
             guard let self else { return }
             self.agentDictateTimeoutTask?.cancel()
             self.agentDictateTimeoutTask = nil
+            // Close the rate-limit entry: the listening-time budget charges actual
+            // mic time, and the cooldown runs from the session's END (a gap
+            // between sessions), not its start.
+            self.agentRateLimiter.recordEnd(clientName: clientName, now: Date())
             let duration = Date().timeIntervalSince(started)
             let timedOut = self.agentDictateTimedOut
             let stopped = self.agentDictateStopped

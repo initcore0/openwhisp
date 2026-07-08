@@ -307,6 +307,22 @@ extension BridgeWire {
             self.originalText = originalText
             self.retryAfterSeconds = retryAfterSeconds
         }
+
+        /// Lenient decoding: a `reason` string this build doesn't know (a newer
+        /// app introducing a new ``ErrorCode``) decodes as nil instead of failing
+        /// the whole response — an old CLI must still surface the app's `message`
+        /// (falling back to a generic exit code) rather than dying with
+        /// "undecodable response".
+        public init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            reason = (try c.decodeIfPresent(String.self, forKey: .reason)).flatMap(ErrorCode.init(rawValue:))
+            originalText = try c.decodeIfPresent(String.self, forKey: .originalText)
+            retryAfterSeconds = try c.decodeIfPresent(Int.self, forKey: .retryAfterSeconds)
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case reason, originalText, retryAfterSeconds
+        }
     }
 
     // MARK: - bridge.hello

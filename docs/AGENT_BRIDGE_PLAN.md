@@ -365,8 +365,10 @@ tools with progress/cancellation/instructions; the adoption kit; refactor steps 
   mode.
 - **Rate limiting on allowed clients (shipped, MAK-10):** deny-cooldowns aren't enough — an always-allowed
   client can chain max-length dictate sessions forever (overlay-visible but effectively continuous
-  listening). `AgentRateLimiter` (pure, unit-tested) enforces a per-client **cooldown between dictation
-  starts** *and* a **sessions-per-hour cap**, checked in `AppState.bridgeStartDictation` after the
+  listening). `AgentRateLimiter` (pure, unit-tested) enforces a per-client **cooldown from each session's
+  end**, a **sessions-per-hour cap**, and a **listening-seconds-per-hour budget** (the budget is what
+  actually bounds mic time — with 300s max sessions, a session count alone can't; the cooldown runs from
+  the end because start-to-start it would never force a gap), checked in `AppState.bridgeStartDictation` after the
   busy/permission/secure-field guards (those aren't the client's fault, so they don't consume budget) and
   keyed on the same `clientName` consent uses. Only accepted starts are recorded. A trip returns a distinct
   `rateLimited` reason (not `busy`) with a `retryAfterSeconds` hint so a well-behaved agent backs off; the
