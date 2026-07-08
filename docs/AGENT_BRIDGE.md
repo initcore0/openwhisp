@@ -98,6 +98,12 @@ secure field · `64` usage · `65` version mismatch.
   session cancels it (the agent gets nothing) and starts your own. Agent
   microphone use always shows the overlay. Password fields are never dictated
   into.
+- **Rate limited.** Even a client you've *always* allowed can't hold the mic
+  continuously: each client is throttled to a short cooldown between dictations
+  and a cap per hour. A throttled `dictate` fails fast (exit code `4`, same as
+  busy) with a `retryAfterSeconds` hint telling the agent how long to wait — it's
+  a distinct `rateLimited` reason on the wire, so a well-behaved agent backs off
+  instead of hammering. Belt-and-suspenders on top of consent and the overlay.
 
 ## Notes
 

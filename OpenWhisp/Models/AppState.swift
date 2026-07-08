@@ -425,6 +425,12 @@ class AppState: ObservableObject {
     /// persisted). Keyed per-scope so a while-running grant for one capability
     /// doesn't silently cover another.
     private var consentGrantedThisRun: [String: Set<AgentScope>] = [:]
+    /// Per-client `dictate` rate limiter (MAK-10). Belt-and-suspenders on top of
+    /// consent + the always-visible overlay: an always-allowed client still can't
+    /// chain sessions to hold the mic continuously. In-memory only (a fresh budget
+    /// each launch), keyed by the same clientName consent uses. Only accepted
+    /// starts are recorded, in `bridgeStartDictation`.
+    private var agentRateLimiter = AgentRateLimiter()
     /// The agent's prompt for the current agent-initiated session, shown in the
     /// overlay ("X asks: …"). nil for user sessions. Published so the overlay can
     /// render it.
@@ -4050,8 +4056,24 @@ extension AppState: AgentBridgeHost {
             completion(.failure(.domain(.secureField, message: "a password field is focused; dictation refused")))
             return
         }
+        // Per-client rate limit (MAK-10): even an always-allowed client can't hold
+        // the mic continuously. Checked AFTER busy/permission/secure-field — those
+        // aren't the client's fault, so they mustn't consume its budget — and only
+        // once we're committed to starting (all synchronous guards passed), so the
+        // recorded start matches a session that actually opens the mic.
+        let now = Date()
+        if case .throttled(let retryAfter) = agentRateLimiter.check(clientName: clientName, now: now) {
+            let secs = Int(retryAfter.rounded(.up))
+            completion(.failure(.domain(
+                .rateLimited,
+                message: "this client is dictating too frequently; retry in about \(secs)s",
+                retryAfterSeconds: max(1, secs)
+            )))
+            return
+        }
+        agentRateLimiter.record(clientName: clientName, now: now)
 
-        let started = Date()
+        let started = now
         agentDictateTimedOut = false
         agentDictateStopped = false
         // The overlay attribution line. Sanitized (control/bidi chars stripped,
@@ -4323,6 +4345,7 @@ extension AppState: AgentBridgeHost {
     func revokeAgentClient(_ clientName: String) {
         agentClients.remove(clientName: clientName)
         consentGrantedThisRun.removeValue(forKey: clientName)
+        agentRateLimiter.forget(clientName: clientName)
         agentClients.save()
     }
 
