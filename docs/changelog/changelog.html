@@ -162,6 +162,76 @@
   }
   .foot a { color: var(--speak); text-decoration: none; }
   .foot a:hover { text-decoration: underline; }
+
+  /* ---- expandable how-to (features only) ---- */
+  details.entry { display: block; padding: 0; }
+  details.entry > summary {
+    display: grid; grid-template-columns: 1fr auto; gap: .35rem 1rem;
+    padding: 1rem 1.15rem; cursor: pointer; list-style: none; align-items: center;
+    border-radius: 12px;
+  }
+  details.entry > summary::-webkit-details-marker { display: none; }
+  details.entry > summary h3 { margin: 0; }
+  details.entry > summary p { grid-column: 1 / 2; margin: .15rem 0 0; }
+  details.entry .sum-left { grid-column: 1 / 2; min-width: 0; }
+  details.entry .sum-right {
+    grid-row: 1 / 2; grid-column: 2 / 3; align-self: center;
+    display: flex; align-items: center; gap: .55rem;
+  }
+  .howto-caret {
+    width: 1.15rem; height: 1.15rem; flex: none; color: var(--muted);
+    transition: transform .2s ease;
+  }
+  details[open] .howto-caret { transform: rotate(90deg); color: var(--speak); }
+  .try {
+    font-family: var(--font-mono); font-size: .66rem; letter-spacing: .04em;
+    text-transform: uppercase; color: var(--speak);
+    display: inline-flex; align-items: center; gap: .3rem; white-space: nowrap;
+  }
+  details[open] .try { opacity: .5; }
+
+  .guide {
+    border-top: 1px solid var(--line); margin: 0 1.15rem;
+    padding: 1.05rem 0 1.2rem;
+    display: flex; flex-direction: column; gap: 1rem;
+  }
+  .guide .avail {
+    display: inline-flex; align-items: center; gap: .45rem; align-self: flex-start;
+    font-family: var(--font-mono); font-size: .68rem; letter-spacing: .04em;
+    padding: .22rem .6rem; border-radius: 999px;
+  }
+  .avail.live { color: var(--speak); background: color-mix(in srgb, var(--speak) 12%, transparent);
+                border: 1px solid color-mix(in srgb, var(--speak) 30%, transparent); }
+  .avail.soon { color: var(--refine); background: color-mix(in srgb, var(--refine) 12%, transparent);
+                border: 1px solid color-mix(in srgb, var(--refine) 30%, transparent); }
+  .avail::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+
+  .guide .g-sum { font-weight: 600; font-size: .96rem; margin: 0; color: var(--ink); }
+  .guide ol { margin: 0; padding-left: 1.3rem; display: flex; flex-direction: column; gap: .5rem; }
+  .guide ol li { color: var(--muted); font-size: .92rem; text-wrap: pretty; }
+  .guide ol li::marker { color: var(--speak); font-variant-numeric: tabular-nums; }
+
+  .say-block .say-label {
+    font-family: var(--font-mono); font-size: .68rem; letter-spacing: .08em;
+    text-transform: uppercase; color: var(--muted); margin: 0 0 .55rem;
+  }
+  .say-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: .4rem; }
+  .say-list li {
+    display: flex; align-items: baseline; gap: .6rem;
+    background: var(--raised); border: 1px solid var(--line); border-radius: 8px;
+    padding: .5rem .7rem; font-size: .9rem; color: var(--ink);
+  }
+  .say-list li::before {
+    content: "▸"; color: var(--speak); font-size: .8em; flex: none;
+  }
+  .guide .g-note {
+    font-size: .84rem; color: var(--muted); text-wrap: pretty;
+    padding-left: .85rem; border-left: 2px solid var(--line); line-height: 1.5;
+  }
+  @media (max-width: 560px) {
+    details.entry > summary { grid-template-columns: 1fr; }
+    details.entry .sum-right { grid-row: auto; grid-column: 1; justify-content: flex-start; margin-top: .5rem; }
+  }
 </style>
 
 <div class="wrap">
@@ -186,30 +256,143 @@
       <span class="count">5 shipped</span>
     </div>
     <ul class="entries">
-      <li class="entry">
-        <h3>Adjustable AI cleanup, from a light touch to a full polish</h3>
-        <p>Pick how much the AI reshapes your words — None, Low, Medium, or High — and OpenWhisp always keeps your raw transcript so you can revert to exactly what you said in one click.</p>
-        <div class="receipts"><span class="tag ticket">MAK-35</span><span class="tag pr">#121</span></div>
+      <li>
+        <details class="entry">
+          <summary>
+            <div class="sum-left">
+              <h3>Adjustable AI cleanup, from a light touch to a full polish</h3>
+              <p>Pick how much the AI reshapes your words — None, Low, Medium, or High — and OpenWhisp always keeps your raw transcript so you can revert to exactly what you said in one click.</p>
+            </div>
+            <div class="sum-right">
+              <span class="try">How to use<svg class="howto-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span>
+              <div class="receipts"><span class="tag ticket">MAK-35</span><span class="tag pr">#121</span></div>
+            </div>
+          </summary>
+          <div class="guide">
+            <span class="avail soon">Landing next</span>
+            <p class="g-sum">Choose a cleanup level in Settings; revert to your exact words anytime.</p>
+            <ol>
+              <li>Open Settings › Cleanup and pick a level: None (verbatim), Low (fixes caps, punctuation, spelling), Medium (also removes fillers and lightly rephrases), or High (also resolves spoken self-corrections like “3, no wait, 4” → “4”).</li>
+              <li>Dictate as usual — the level you chose is applied automatically.</li>
+              <li>In History or the overlay, hit “revert to original” to swap the cleaned text back to your raw words.</li>
+            </ol>
+            <p class="g-note">The four levels and the raw-transcript revert are built and tested. The Settings dial and the revert button are landing next — today the older on/off “Improve every dictation” toggle is still what's live.</p>
+          </div>
+        </details>
       </li>
-      <li class="entry">
-        <h3>Voice editing — "scratch that", "delete last sentence", "undo"</h3>
-        <p>Fix a misspoken phrase without deleting and re-dictating. A deterministic, offline command layer edits the in-progress text before it's committed. No AI required.</p>
-        <div class="receipts"><span class="tag ticket">MAK-19</span><span class="tag pr">#117</span></div>
+      <li>
+        <details class="entry">
+          <summary>
+            <div class="sum-left">
+              <h3>Voice editing — “scratch that”, “delete last sentence”, “undo”</h3>
+              <p>Fix a misspoken phrase without deleting and re-dictating. A deterministic, offline command layer edits the in-progress text before it's committed. No AI required.</p>
+            </div>
+            <div class="sum-right">
+              <span class="try">How to use<svg class="howto-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span>
+              <div class="receipts"><span class="tag ticket">MAK-19</span><span class="tag pr">#117</span></div>
+            </div>
+          </summary>
+          <div class="guide">
+            <span class="avail soon">Landing next</span>
+            <p class="g-sum">Mid-dictation, just say the command as its own phrase.</p>
+            <ol>
+              <li>Start dictation as usual (hold Fn/Globe, or Control+Space).</li>
+              <li>Pause and say a command on its own — it must be the whole phrase, so ordinary speech like “scratch the surface” is never mistaken for a command.</li>
+              <li>Release to insert the edited text.</li>
+            </ol>
+            <div class="say-block">
+              <p class="say-label">Say</p>
+              <ul class="say-list">
+                <li>“scratch that” — drop the last thing you said</li>
+                <li>“delete last word” / “delete last sentence”</li>
+                <li>“new paragraph” / “new line”</li>
+                <li>“undo” — reverse the last edit</li>
+              </ul>
+            </div>
+            <p class="g-note">The command parser (case- and punctuation-tolerant, including … and curly quotes) is shipped and tested. Connecting it to live dictation is the next step — until then, these phrases are typed literally rather than acted on.</p>
+          </div>
+        </details>
       </li>
-      <li class="entry">
-        <h3>A self-learning dictionary that tunes itself</h3>
-        <p>When you type over a transcription to correct it, OpenWhisp notices the fix and proposes it as a vocabulary term — learning your jargon on your machine, never on someone's server.</p>
-        <div class="receipts"><span class="tag ticket">MAK-41</span><span class="tag pr">#120</span></div>
+      <li>
+        <details class="entry">
+          <summary>
+            <div class="sum-left">
+              <h3>A self-learning dictionary that tunes itself</h3>
+              <p>When you type over a transcription to correct it, OpenWhisp notices the fix and proposes it as a vocabulary term — learning your jargon on your machine, never on someone's server.</p>
+            </div>
+            <div class="sum-right">
+              <span class="try">How to use<svg class="howto-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span>
+              <div class="receipts"><span class="tag ticket">MAK-41</span><span class="tag pr">#120</span></div>
+            </div>
+          </summary>
+          <div class="guide">
+            <span class="avail soon">Landing next</span>
+            <p class="g-sum">Just fix a mistyped word once; OpenWhisp offers to remember it.</p>
+            <ol>
+              <li>Dictate; OpenWhisp inserts the text.</li>
+              <li>Type over a single misheard word to correct it (e.g. “kubernetis” → “kubernetes”).</li>
+              <li>OpenWhisp proposes that fix as a vocabulary rule — accept it, and every future transcription auto-corrects that mishearing.</li>
+              <li>Star your most-used rules to keep them at the top of the Substitutions list.</li>
+            </ol>
+            <p class="g-note">The detection logic (only proposes clean single-word fixes, never whole rewrites) and the star/frequency model are shipped and tested. The watcher that captures your corrections and the star/sort editor are the next step — for now, add terms manually in Settings › Cleanup › Substitutions.</p>
+          </div>
+        </details>
       </li>
-      <li class="entry">
-        <h3>Richer local formatting — numbers, lists, and markdown</h3>
-        <p>Opt-in rules turn spoken structure into clean text: "bullet…" into a list, "twenty twenty-six" into 2026, "bold that" into markdown — all deterministic, all off by default so nothing surprises you.</p>
-        <div class="receipts"><span class="tag ticket">MAK-20</span><span class="tag pr">#119</span></div>
+      <li>
+        <details class="entry">
+          <summary>
+            <div class="sum-left">
+              <h3>Richer local formatting — numbers, lists, and markdown</h3>
+              <p>Opt-in rules turn spoken structure into clean text: “bullet…” into a list, “twenty twenty-six” into 2026, “bold that” into markdown — all deterministic, all off by default so nothing surprises you.</p>
+            </div>
+            <div class="sum-right">
+              <span class="try">How to use<svg class="howto-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span>
+              <div class="receipts"><span class="tag ticket">MAK-20</span><span class="tag pr">#119</span></div>
+            </div>
+          </summary>
+          <div class="guide">
+            <span class="avail soon">Landing next</span>
+            <p class="g-sum">Turn on the rule groups you want, then just speak the structure.</p>
+            <ol>
+              <li>In Settings › Smart Formatting, enable the groups you want (they're independent and off by default).</li>
+              <li>Dictate naturally — the rules rewrite structure locally, on-device, no LLM.</li>
+            </ol>
+            <div class="say-block">
+              <p class="say-label">Say</p>
+              <ul class="say-list">
+                <li>“five dollars” → $5,&nbsp;&nbsp;“ten cents” → 10¢</li>
+                <li>“twenty twenty six” → 2026&nbsp;&nbsp;(spoken times like “ten thirty” are left alone)</li>
+                <li>“bullet buy milk” → - buy milk,&nbsp;&nbsp;“number one …” → 1. …</li>
+                <li>“heading intro” → # intro,&nbsp;&nbsp;“bold ship it” → **ship it**</li>
+              </ul>
+            </div>
+            <p class="g-note">The rules are shipped, tested, and deliberately off by default so they never touch ordinary prose. The Settings toggles to switch each group on are landing next.</p>
+          </div>
+        </details>
       </li>
-      <li class="entry">
-        <h3>Send dictations beyond the focused app</h3>
-        <p>Foundational plumbing for routing a transcript somewhere other than the app you're in — a file, a Shortcut, a webhook. Built to fail open: if a target can't take it, your text still lands where it always did. Never dropped.</p>
-        <div class="receipts"><span class="tag ticket">MAK-11</span><span class="tag pr">#122</span></div>
+      <li>
+        <details class="entry">
+          <summary>
+            <div class="sum-left">
+              <h3>Send dictations beyond the focused app</h3>
+              <p>Foundational plumbing for routing a transcript somewhere other than the app you're in — a file, a Shortcut, a webhook. Built to fail open: if a target can't take it, your text still lands where it always did. Never dropped.</p>
+            </div>
+            <div class="sum-right">
+              <span class="try">How to use<svg class="howto-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span>
+              <div class="receipts"><span class="tag ticket">MAK-11</span><span class="tag pr">#122</span></div>
+            </div>
+          </summary>
+          <div class="guide">
+            <span class="avail soon">Landing next</span>
+            <p class="g-sum">Route a dictation to a file, Shortcut, or webhook — chosen per app.</p>
+            <ol>
+              <li>In Settings, pick an output target for an app or profile (e.g. your notes app → a Markdown file).</li>
+              <li>Dictate into that app — the text goes to the target instead of being typed in.</li>
+              <li>Everything else keeps typing into the focused app, exactly as before.</li>
+            </ol>
+            <p class="g-note">The routing protocol and its fail-open safety net (if a target fails, your words still land in the focused app — never dropped) are shipped and tested. The Settings picker and the actual file / Shortcut / webhook destinations are the next tickets (MAK-12/13/14).</p>
+          </div>
+        </details>
       </li>
     </ul>
   </section>

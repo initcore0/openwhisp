@@ -35,7 +35,15 @@ build (or an agent) can render into a public changelog page.
           "headline": "user-facing title — what they GET, not the commit subject",
           "body": "1–2 sentences, plain language, active voice",
           "tickets": ["MAK-35"],   // Linear issue IDs (the receipts)
-          "prs": [121]              // merged GitHub PR numbers
+          "prs": [121],             // merged GitHub PR numbers
+
+          "howTo": {                // OPTIONAL — usually only on features
+            "availability": "live" | "coming-soon",  // is it usable in the app TODAY?
+            "summary": "one line: how you use it",
+            "steps": ["step 1", "step 2"],            // ordered how-to
+            "say": ["“scratch that” — drop the last thing you said"], // spoken phrases, if any (omit if none)
+            "note": "optional caveat — e.g. what's still landing, or a manual workaround for now"
+          }
         }
       ]
     }
@@ -63,6 +71,30 @@ When a batch of work merges to `main`:
    ticket/PR tags as mono "receipts"). Keep it self-contained, theme-aware
    (light/dark), and in the openwhisp.app palette (deep-teal ground, cyan "speak"
    accent — see the committed HTML for the exact tokens).
+
+## How-to guides (`howTo`)
+
+Features carry an optional `howTo` block so the changelog can *teach* the feature,
+not just announce it — in a dictation app, that's usually "say X" or "toggle Y in
+Settings." The site renders each feature as an expandable row: the headline is the
+summary; the guide (steps, spoken phrases, availability) reveals on click.
+
+**The `availability` field is a truth contract, not a marketing label.** Set it from
+what the *running app* actually does today, verified in the code — never from what
+the PR intends:
+
+- `"live"` — a user can do this in the shipping app right now.
+- `"coming-soon"` — the engine is built and tested but not yet wired to the UI /
+  live path. (Most of OpenWhisp's core-first features start here: the tested logic
+  ships, the Settings toggle or session wiring lands in a follow-up.) When a feature
+  is `coming-soon`, the `note` must say so plainly and, where possible, give the
+  manual workaround that *is* available today.
+
+Getting this wrong is worse than omitting the guide: a how-to that says *"say
+'scratch that'"* for a feature that isn't wired yet would have the app type the
+literal words instead. Before writing a guide, confirm the invocation path exists
+(grep the app for the call site); if it doesn't, mark it `coming-soon` and be honest
+in the `note`.
 
 ## Rendering it elsewhere (the website)
 
