@@ -138,6 +138,85 @@ final class AgentRateLimiterTests: XCTestCase {
         XCTAssertEqual(limiter.sessionCount(clientName: "c", now: t0), 0)
     }
 
+    // MARK: Long session straddling the window edge (MAK-31)
+    //
+    // A session's `start` (the clock the cap and budget age-outs use) can predate
+    // the window while its `lastActivity` (`start + seconds`, the cooldown clock)
+    // still falls inside it, so `pruned()` keeps it. The age-out math must never go
+    // negative in that case, and cap membership must follow the same clock.
+
+    func testCapAgeOutFlooredWhenStraddlingSessionStartPredatesWindow() {
+        // windowSeconds 3600. A single very long session: starts at t0, holds the
+        // mic for 3300s, so lastActivity = t0+3300. The cap is 1, so this session
+        // alone fills it.
+        var limiter = AgentRateLimiter(
+            cooldownSeconds: 1, maxSessionsPerHour: 1,
+            maxListeningSecondsPerHour: 0, windowSeconds: 3600
+        )
+        limiter.recordStart(clientName: "c", now: t0)
+        limiter.recordEnd(clientName: "c", now: t0.addingTimeInterval(3300))
+
+        // At t0+3601 the start (t0) already predates the window (cutoff t0+1), but
+        // lastActivity (t0+3300) survives pruning, so the session is still counted
+        // as in-window membership — matching the cooldown clock.
+        let now = t0.addingTimeInterval(3601)
+        XCTAssertEqual(limiter.sessionCount(clientName: "c", now: now), 1)
+
+        // The cap is full (1/1), so the cap branch runs with oldest.start = t0,
+        // which is *before* the window: the raw age-out is 3600 - 3601 = -1. The
+        // floor pins it to 0, so the cap contributes no wait and — the cooldown
+        // having long expired — the client is allowed. The invariant we lock: the
+        // decision is never a *negative* throttle, and here it resolves to .allow.
+        switch limiter.check(clientName: "c", now: now) {
+        case .allow:
+            break
+        case .throttled(let retry):
+            XCTAssertGreaterThanOrEqual(retry, 0, "cap age-out must never be negative")
+        }
+    }
+
+    func testCapAgeOutUsesStartClockForInWindowStraddlingSession() {
+        // Same straddling shape, but checked while the start is still *inside* the
+        // window, so the age-out is legitimately positive and its exact value pins
+        // that the cap measures from `start` (not `lastActivity`).
+        var limiter = AgentRateLimiter(
+            cooldownSeconds: 0, maxSessionsPerHour: 1,
+            maxListeningSecondsPerHour: 0, windowSeconds: 3600
+        )
+        limiter.recordStart(clientName: "c", now: t0)                       // start = t0
+        limiter.recordEnd(clientName: "c", now: t0.addingTimeInterval(3000)) // lastActivity = t0+3000
+
+        // At t0+3100: start (t0) is 3100s old, lastActivity (t0+3000) is 100s old.
+        // Cap is full → wait for the start to age out at t0+3600, i.e. 500s. A
+        // lastActivity-keyed age-out would instead say 3600 - 100 = 3500 (wrong).
+        guard case .throttled(let retry) = limiter.check(clientName: "c", now: t0.addingTimeInterval(3100)) else {
+            return XCTFail("expected throttled — cap is full")
+        }
+        XCTAssertEqual(retry, 500, accuracy: 0.001) // 3600 - 3100, keyed on start
+    }
+
+    func testBudgetWaitFlooredWhenStraddlingSessionStartPredatesWindow() {
+        // A long session that alone exhausts the listening budget and whose start
+        // predates the window at check time.
+        var limiter = AgentRateLimiter(
+            cooldownSeconds: 1, maxSessionsPerHour: 0,
+            maxListeningSecondsPerHour: 600, windowSeconds: 3600
+        )
+        limiter.recordStart(clientName: "c", now: t0)
+        limiter.recordEnd(clientName: "c", now: t0.addingTimeInterval(3300)) // 3300s > 600 budget
+
+        // At t0+3601: start predates the window, lastActivity (t0+3300) keeps the
+        // session alive, budget is exhausted → the wait loop runs. Pre-fix it would
+        // compute 3600 - 3601 = -1; the floor keeps it >= 0.
+        let now = t0.addingTimeInterval(3601)
+        switch limiter.check(clientName: "c", now: now) {
+        case .allow:
+            break
+        case .throttled(let retry):
+            XCTAssertGreaterThanOrEqual(retry, 0, "budget wait must never be negative")
+        }
+    }
+
     // MARK: forget / count
 
     func testForgetClearsBudget() {

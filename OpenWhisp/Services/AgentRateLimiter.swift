@@ -92,8 +92,11 @@ public struct AgentRateLimiter: Equatable, Sendable {
         }
 
         // Per-window cap: full window → wait for the oldest start to age out.
+        // Floored at 0: a long session can survive pruning on its `lastActivity`
+        // (the cooldown clock) while its `start` (the cap clock) already predates
+        // the window, which would otherwise make this age-out negative.
         if maxSessionsPerHour > 0, recent.count >= maxSessionsPerHour, let oldest = recent.first {
-            let ageOut = windowSeconds - now.timeIntervalSince(oldest.start)
+            let ageOut = max(0, windowSeconds - now.timeIntervalSince(oldest.start))
             retryAfter = max(retryAfter, ageOut)
         }
 
@@ -105,7 +108,10 @@ public struct AgentRateLimiter: Equatable, Sendable {
                 var freed: TimeInterval = 0
                 var wait: TimeInterval = 0
                 for session in recent {
-                    wait = windowSeconds - now.timeIntervalSince(session.start)
+                    // Floored at 0 for the same reason as the cap above: a session
+                    // kept alive by its `lastActivity` can have a `start` that
+                    // already predates the window.
+                    wait = max(0, windowSeconds - now.timeIntervalSince(session.start))
                     freed += session.seconds
                     if total - freed < maxListeningSecondsPerHour { break }
                 }
