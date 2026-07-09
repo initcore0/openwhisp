@@ -132,7 +132,12 @@ struct SmartFormatter: PostProcessor {
         }
 
         if options.capitalizeSentences && englishLike {
-            s = Self.capitalizeSentences(s)
+            // The list/heading-lead skip is only meaningful when a structural rule
+            // group can produce those leads. Gate it so the DEFAULT pipeline (both
+            // flags off) is byte-for-byte unchanged — otherwise a plain "- foo"
+            // line would silently capitalize its first word.
+            let structuralLeadsPossible = options.spokenLists || options.basicMarkdown
+            s = Self.capitalizeSentences(s, skipStructuralLeads: structuralLeadsPossible)
             s = Self.capitalizeStandaloneI(s)
         }
 
@@ -232,7 +237,16 @@ struct SmartFormatter: PostProcessor {
 
     // MARK: - Capitalization
 
-    private static func capitalizeSentences(_ text: String) -> String {
+    /// Capitalize the first letter of each sentence.
+    ///
+    /// `skipStructuralLeads` controls the list/heading/emphasis-lead handling:
+    /// when true, a leading marker ("-", "#", "*", ">") at a line start is
+    /// transparent so the first *word* of the item is capitalized ("- buy" ->
+    /// "- Buy"). This is ONLY passed when the opt-in `spokenLists`/`basicMarkdown`
+    /// groups are on — those are the rules that can produce such leads. With the
+    /// default pipeline it is false, so a literal "- foo" is left byte-for-byte
+    /// unchanged (the marker consumes the pending capitalization, as before).
+    private static func capitalizeSentences(_ text: String, skipStructuralLeads: Bool) -> String {
         guard !text.isEmpty else { return text }
         var result = ""
         result.reserveCapacity(text.count)
@@ -251,14 +265,13 @@ struct SmartFormatter: PostProcessor {
                     capitalizeNext = true
                 } else if c.isWhitespace {
                     // keep waiting
-                } else if capitalizeNext && Self.listOrMarkdownLead.contains(c) {
+                } else if skipStructuralLeads && capitalizeNext && Self.listOrMarkdownLead.contains(c) {
                     // A leading list/heading/emphasis marker (from the opt-in
                     // structural rules) is transparent: it does not consume the
                     // pending capitalization, so the first *word* of the item is
                     // still capitalized ("- buy" -> "- Buy"). We only skip these
                     // while a capitalization is already pending — i.e. at a line
-                    // start — so a stray marker mid-sentence is never affected and
-                    // default behavior is unchanged.
+                    // start — so a stray marker mid-sentence is never affected.
                 } else {
                     capitalizeNext = false
                 }
@@ -348,7 +361,15 @@ struct SmartFormatter: PostProcessor {
         while i < words.count {
             // Determine the numeric value preceding a currency unit.
             let (amount, consumed) = leadingNumber(from: Array(words[i...]))
-            if let amount = amount {
+            // If the number token itself ends a sentence ("5." / "5!" / "5?"),
+            // it is a boundary — the following word starts a NEW sentence and is
+            // not the currency unit for this number. Fusing here would delete the
+            // period and swallow the next word ("It scored 5. Dollars matter" ->
+            // "It scored $5 matter"). So only fuse when the number does not carry
+            // sentence-ending punctuation.
+            let numberEndsSentence = consumed > 0
+                && endsSentence(words[i + consumed - 1])
+            if let amount = amount, !numberEndsSentence {
                 let unitIndex = i + consumed
                 if unitIndex < words.count {
                     let token = words[unitIndex]
@@ -373,6 +394,14 @@ struct SmartFormatter: PostProcessor {
             i += 1
         }
         return out.joined(separator: " ")
+    }
+
+    /// True when a token ends with sentence-terminating punctuation (. ! ?),
+    /// meaning it closes a sentence rather than continuing into a following unit.
+    /// A trailing comma is NOT a boundary here ("5, dollars" is malformed anyway).
+    private static func endsSentence(_ token: Substring) -> Bool {
+        guard let last = token.last else { return false }
+        return last == "." || last == "!" || last == "?"
     }
 
     /// Trailing punctuation (.,!?) of a token, as a String (may be empty).
@@ -437,7 +466,11 @@ struct SmartFormatter: PostProcessor {
                 continue
             }
             // Case 2: spelled number directly before a counter noun.
-            if let parsed = parseSpelledNumber(Array(words[i...])) {
+            // Value 1 is excluded (require >= 2): "one" reads as ordinary English
+            // far more often than as the digit, and several counter nouns are also
+            // idiom heads — "one day I will", "give me one second", "one thing",
+            // "one word", "one minute" — that must NOT become "1 day" / "1 second".
+            if let parsed = parseSpelledNumber(Array(words[i...])), parsed.value >= 2 {
                 let nounIndex = i + parsed.consumed
                 if nounIndex < words.count,
                    isCounterNoun(words[nounIndex]) {
@@ -453,17 +486,24 @@ struct SmartFormatter: PostProcessor {
     }
 
     /// Recognize a spoken-year pair: "<X hundred> " isn't handled, but
-    /// "twenty twenty", "twenty twenty six", "nineteen ninety nine" are. Each
-    /// half must be a two-word-or-less spelled number in 10–99; combine as
-    /// firstHalf*100 + secondHalf and accept only 1000–2099.
+    /// "twenty twenty", "twenty twenty six", "nineteen ninety nine" are.
+    ///
+    /// The first half is restricted to 19 or 20 (years 1900–2099). This is the
+    /// key guard against mangling spoken clock times: "ten thirty" (10 + 30) and
+    /// "eleven forty five" (11 + 45) are exactly how people say times, and a
+    /// looser 10–20 range would turn them into "1030" / "1145". Genuine spoken
+    /// years all lead with "nineteen" or "twenty", so pinning firstHalf to those
+    /// two century leads keeps years while leaving every teen/tens time alone.
+    /// The second half is 0–99; combine as firstHalf*100 + secondHalf.
     private static func parseYearPair(_ words: [Substring]) -> (value: Int, consumed: Int)? {
         guard let firstHalf = parseSpelledNumber(words) else { return nil }
-        guard firstHalf.value >= 10, firstHalf.value <= 20 else { return nil }
+        // Only 19xx / 20xx read unambiguously as years; teen/tens leads are times.
+        guard firstHalf.value == 19 || firstHalf.value == 20 else { return nil }
         let rest = Array(words[firstHalf.consumed...])
         guard let secondHalf = parseSpelledNumber(rest) else { return nil }
         guard secondHalf.value >= 0, secondHalf.value <= 99 else { return nil }
         let year = firstHalf.value * 100 + secondHalf.value
-        guard year >= 1000, year <= 2099 else { return nil }
+        guard year >= 1900, year <= 2099 else { return nil }
         return (year, firstHalf.consumed + secondHalf.consumed)
     }
 
@@ -499,7 +539,12 @@ struct SmartFormatter: PostProcessor {
             let body = line.dropFirst(leading.count)
 
             // "bullet X" / "bullet point X" -> "- X"
-            if let rest = matchLeadingWord(body, "bullet point") ?? matchLeadingWord(body, "bullet") ?? matchLeadingWord(body, "dash") {
+            // NOTE: no "dash" branch here. Spoken "dash" is already mapped to
+            // " - " by applySpokenPunctuation (on by default), which runs before
+            // this pass — so a "dash" literal never reaches applySpokenLists in
+            // the normal pipeline. A branch for it would be dead code, so the
+            // dash-list path is owned entirely by spoken punctuation.
+            if let rest = matchLeadingWord(body, "bullet point") ?? matchLeadingWord(body, "bullet") {
                 return "\(leading)- \(rest)"
             }
 

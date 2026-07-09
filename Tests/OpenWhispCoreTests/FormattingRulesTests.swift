@@ -52,6 +52,21 @@ final class FormattingRulesTests: XCTestCase {
         XCTAssertEqual(plain.format("twenty twenty six", language: "en"), "Twenty twenty six")
     }
 
+    func testDefaultPipelineDoesNotCapitalizeAfterDashLead() {
+        // Regression for the capitalize list/heading-lead skip leaking into the
+        // DEFAULT pipeline. Spoken "dash" maps to " - " by default; a "-" lead must
+        // then CONSUME the pending capitalization (default behavior), so the word
+        // after it stays lowercase. The skip only applies when spokenLists /
+        // basicMarkdown are on.
+        XCTAssertEqual(
+            plain.format("new line dash second point", language: "en"),
+            "- second point")
+        // Enabling a structural group flips the lead to transparent again.
+        XCTAssertEqual(
+            formatter(lists: true).format("new line dash second point", language: "en"),
+            "- Second point")
+    }
+
     // MARK: - Currency
 
     func testCurrencyDollars() {
@@ -83,6 +98,20 @@ final class FormattingRulesTests: XCTestCase {
         XCTAssertEqual(f.format("it was five dollars. thanks", language: "en"), "It was $5. Thanks")
     }
 
+    func testCurrencyDoesNotFuseAcrossSentenceBoundary() {
+        let f = formatter(currency: true)
+        // A digit token that ends a sentence ("5.") is a boundary, not an amount:
+        // the following "Dollars" begins a NEW sentence. The period must survive
+        // and "Dollars" must not be consumed.
+        XCTAssertEqual(
+            f.format("it scored 5. dollars matter though", language: "en"),
+            "It scored 5. Dollars matter though")
+        // Same for ! and ? boundaries.
+        XCTAssertEqual(
+            f.format("we won 3! dollars are secondary", language: "en"),
+            "We won 3! Dollars are secondary")
+    }
+
     func testCurrencyLeavesNonNumberDollarsAlone() {
         let f = formatter(currency: true)
         // "dollars" with no preceding number is ordinary prose.
@@ -104,6 +133,22 @@ final class FormattingRulesTests: XCTestCase {
         XCTAssertEqual(f.format("the year twenty twenty", language: "en"), "The year 2020")
     }
 
+    func testNumberYearPairFromNineteenAndTwentyLeads() {
+        let f = formatter(numbers: true)
+        // Only 19xx / 20xx read as years; both century leads convert.
+        XCTAssertEqual(f.format("in twenty twenty six", language: "en"), "In 2026")
+        XCTAssertEqual(f.format("nineteen ninety nine was wild", language: "en"), "1999 was wild")
+    }
+
+    func testNumberDoesNotConvertSpokenClockTimes() {
+        let f = formatter(numbers: true)
+        // Clock times share the "<tens/teen> <ones/tens>" shape but must NOT be
+        // treated as years — firstHalf 10/11 is not a 19xx/20xx century lead.
+        XCTAssertEqual(f.format("meet at ten thirty", language: "en"), "Meet at ten thirty")
+        XCTAssertEqual(f.format("eleven forty five works", language: "en"), "Eleven forty five works")
+        XCTAssertEqual(f.format("call me at twelve fifteen", language: "en"), "Call me at twelve fifteen")
+    }
+
     func testNumberBeforeCounterNoun() {
         let f = formatter(numbers: true)
         XCTAssertEqual(f.format("add five items", language: "en"), "Add 5 items")
@@ -116,6 +161,20 @@ final class FormattingRulesTests: XCTestCase {
         // "one" / "a" in ordinary prose must NOT become a digit.
         XCTAssertEqual(f.format("i have one idea", language: "en"), "I have one idea")
         XCTAssertEqual(f.format("give me a minute to think", language: "en"), "Give me a minute to think")
+    }
+
+    func testNumberLeavesOnePlusCounterNounAlone() {
+        let f = formatter(numbers: true)
+        // "one" before a counter noun is still ordinary English (idiom heads like
+        // day/second/thing/minute/word/time) — value 1 is excluded from the
+        // counter-noun path, so these stay spelled.
+        XCTAssertEqual(f.format("one day I will", language: "en"), "One day I will")
+        XCTAssertEqual(f.format("give me one second", language: "en"), "Give me one second")
+        XCTAssertEqual(f.format("just one thing", language: "en"), "Just one thing")
+        XCTAssertEqual(f.format("wait one minute", language: "en"), "Wait one minute")
+        // But >= 2 before the same nouns still converts.
+        XCTAssertEqual(f.format("give me two seconds", language: "en"), "Give me 2 seconds")
+        XCTAssertEqual(f.format("wait five minutes", language: "en"), "Wait 5 minutes")
     }
 
     func testNumberLeavesSpelledNumbersInProseAlone() {
@@ -178,6 +237,20 @@ final class FormattingRulesTests: XCTestCase {
     func testListOffIsNoOp() {
         let f = formatter(lists: false)
         XCTAssertEqual(f.format("bullet buy milk", language: "en"), "Bullet buy milk")
+    }
+
+    func testDashListIsOwnedBySpokenPunctuation() {
+        // The dash->list path lives entirely in applySpokenPunctuation (default on):
+        // "dash" becomes " - " before applySpokenLists runs. With punctuation OFF,
+        // there is no separate "dash" branch in applySpokenLists (it was dead code),
+        // so a literal "dash" lead is left as prose.
+        let punctOff = SmartFormatter(options: SmartFormatter.Options(
+            removeFillers: true,
+            applySpokenPunctuation: false,
+            capitalizeSentences: true,
+            ensureTerminalPunctuation: false,
+            spokenLists: true))
+        XCTAssertEqual(punctOff.format("dash buy milk", language: "en"), "Dash buy milk")
     }
 
     // MARK: - Basic markdown
