@@ -24,6 +24,7 @@ let package = Package(
                 "SmartFormatter.swift",
                 "JSONStore.swift",
                 "Vocabulary.swift",
+                "CorrectionLearner.swift",
                 "LanguageResolver.swift",
                 "ProfileResolver.swift",
                 "MetaInstructionStripper.swift",
