@@ -38,11 +38,11 @@ build (or an agent) can render into a public changelog page.
           "prs": [121],             // merged GitHub PR numbers
 
           "howTo": {                // OPTIONAL — usually only on features
-            "availability": "live" | "coming-soon",  // is it usable in the app TODAY?
+            "availability": "shipped" | "coming-soon",  // is it usable in the app TODAY?
             "summary": "one line: how you use it",
-            "steps": ["step 1", "step 2"],            // ordered how-to
-            "say": ["“scratch that” — drop the last thing you said"], // spoken phrases, if any (omit if none)
-            "note": "optional caveat — e.g. what's still landing, or a manual workaround for now"
+            "steps": ["step 1", "step 2"],            // ordered how-to (HIDDEN in the render when coming-soon)
+            "say": ["“scratch that” — drop the last thing you said"], // spoken phrases (also hidden when coming-soon)
+            "note": "for coming-soon: what's still pending + any manual workaround. for shipped: usage caveats"
           }
         }
       ]
@@ -83,12 +83,21 @@ summary; the guide (steps, spoken phrases, availability) reveals on click.
 what the *running app* actually does today, verified in the code — never from what
 the PR intends:
 
-- `"live"` — a user can do this in the shipping app right now.
+- `"shipped"` — a user can do this in the running app right now. The render shows
+  the full guide: an "Available now" pill, the steps, and any `say` list.
 - `"coming-soon"` — the engine is built and tested but not yet wired to the UI /
   live path. (Most of OpenWhisp's core-first features start here: the tested logic
   ships, the Settings toggle or session wiring lands in a follow-up.) When a feature
   is `coming-soon`, the `note` must say so plainly and, where possible, give the
   manual workaround that *is* available today.
+
+**The render enforces this so `steps` can't mislead.** For a `coming-soon` guide the
+HTML **hides the `steps` and `say` list** (they'd read as live instructions) and
+shows only the availability pill + `summary` + `note`. Write the `summary` of a
+`coming-soon` feature in future/conditional voice ("When it ships, you'll…"). When
+the feature actually lands, flip `availability` to `"shipped"` and correct the
+`steps` to the real UI location — the steps then become visible with no rewrite of
+the JSON's structure. (See the `.guide.pending` CSS rule in `changelog.html`.)
 
 Getting this wrong is worse than omitting the guide: a how-to that says *"say
 'scratch that'"* for a feature that isn't wired yet would have the app type the

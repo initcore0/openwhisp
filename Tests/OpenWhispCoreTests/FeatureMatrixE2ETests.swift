@@ -260,6 +260,77 @@ final class FeatureMatrixE2ETests: XCTestCase {
         XCTAssertNotEqual(tText, gText)
     }
 
+    // MARK: - (3) MAK-20 structural formatting, wired end-to-end
+    //
+    // The Settings toggles set AppState flags that flow into TranscriptCleaner.Config
+    // (normalizeNumbers / normalizeCurrency / spokenListsEnabled / basicMarkdownEnabled)
+    // and on into SmartFormatter.Options. These drive fixture audio through the real
+    // pipeline with each group ON, proving the wiring actually produces the transform —
+    // and that with the groups OFF (the default) the same spoken text passes through.
+
+    /// A config with smart formatting on and all four structural groups enabled —
+    /// the state the Settings toggles put the app in.
+    private func structuralConfig() -> TranscriptCleaner.Config {
+        var cfg = TranscriptCleaner.Config.plain
+        cfg.smartFormattingEnabled = true
+        cfg.normalizeNumbers = true
+        cfg.normalizeCurrency = true
+        cfg.spokenListsEnabled = true
+        cfg.basicMarkdownEnabled = true
+        return cfg
+    }
+
+    func testStructuralFormattingNumbersWiredThroughPipeline() throws {
+        let out = try driveCleaned(
+            fixture: "plain_speech.wav",
+            transcript: "the year is twenty twenty six",
+            config: structuralConfig())
+        XCTAssertTrue(out.contains("2026"), "year-pair not normalized: \(out)")
+    }
+
+    func testStructuralFormattingCurrencyWiredThroughPipeline() throws {
+        let out = try driveCleaned(
+            fixture: "plain_speech.wav",
+            transcript: "it costs five dollars",
+            config: structuralConfig())
+        XCTAssertTrue(out.contains("$5"), "currency not normalized: \(out)")
+    }
+
+    func testStructuralFormattingSpokenListWiredThroughPipeline() throws {
+        let out = try driveCleaned(
+            fixture: "plain_speech.wav",
+            transcript: "bullet buy milk",
+            config: structuralConfig())
+        // The list marker is applied; sentence-capitalization then uppercases the
+        // first item word ("- Buy milk"), which is expected downstream behavior.
+        XCTAssertTrue(out.hasPrefix("- "), "spoken list marker not applied: \(out)")
+        XCTAssertTrue(out.lowercased().contains("- buy milk"), "list body wrong: \(out)")
+    }
+
+    func testStructuralFormattingMarkdownWiredThroughPipeline() throws {
+        let out = try driveCleaned(
+            fixture: "plain_speech.wav",
+            transcript: "bold ship it",
+            config: structuralConfig())
+        // The ** wrap is applied; capitalization then uppercases the wrapped word
+        // ("**Ship it**"), which is expected.
+        XCTAssertTrue(out.hasPrefix("**") && out.contains("**"), "bold wrap not applied: \(out)")
+        XCTAssertTrue(out.lowercased().contains("**ship it**"), "bold body wrong: \(out)")
+    }
+
+    func testStructuralFormattingOffByDefaultLeavesSpokenFormsAlone() throws {
+        // The default (.plain, groups off) — the same spoken text is NOT transformed,
+        // so the toggles are genuinely opt-in and don't touch prose when off.
+        var cfg = TranscriptCleaner.Config.plain
+        cfg.smartFormattingEnabled = true   // formatting on, but the structural groups OFF
+        let out = try driveCleaned(
+            fixture: "plain_speech.wav",
+            transcript: "it costs five dollars and the year is twenty twenty six",
+            config: cfg)
+        XCTAssertFalse(out.contains("$5"), "currency should be untouched when off: \(out)")
+        XCTAssertFalse(out.contains("2026"), "numbers should be untouched when off: \(out)")
+    }
+
     // MARK: - Helper (local to this suite; not one of the shared doubles)
 
     /// Drive one fixture through the real FileAudioCapture → LiveChunkPipeline →

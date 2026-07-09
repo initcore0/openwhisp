@@ -7,12 +7,14 @@
       "id": "2026-07",
       "title": "July 2026",
       "date": "2026-07-09",
-      "summary": "A batch of new features, fixes, and under-the-hood hardening — all landed on main, all covered by tests, all running on your machine.",
+      "summary": "A batch of new features, fixes, and under-the-hood hardening — all landed on main, all covered by tests, all on your machine. Two new features (rich local formatting, agent-CLI cleanup) are live in Settings today; four more shipped their tested engine with the UI landing next — each is marked below.",
       "stats": {
         "changesShipped": 15,
-        "newFeatures": 6,
-        "testsPassing": 776,
-        "onDevicePercent": 100
+        "newFeatures": 2,
+        "testsPassing": 781,
+        "onDevicePercent": 100,
+        "newFeaturesLive": 2,
+        "newFeaturesCorePending": 4
       },
       "entries": [
         {
@@ -22,7 +24,7 @@
           "tickets": ["MAK-44"],
           "prs": [130],
           "howTo": {
-            "availability": "live",
+            "availability": "shipped",
             "summary": "Point OpenWhisp at a local agent CLI (e.g. claude -p) and it cleans up each dictation using your own subscription.",
             "steps": [
               "Open Settings › Cleanup › AI Model and set Provider to “Agent CLI (Claude / Codex)”.",
@@ -37,8 +39,12 @@
           "category": "feature",
           "headline": "Adjustable AI cleanup, from a light touch to a full polish",
           "body": "Pick how much the AI reshapes your words — None, Low, Medium, or High — and OpenWhisp always keeps your raw transcript so you can revert to exactly what you said in one click.",
-          "tickets": ["MAK-35"],
-          "prs": [121],
+          "tickets": [
+            "MAK-35"
+          ],
+          "prs": [
+            121
+          ],
           "howTo": {
             "availability": "coming-soon",
             "summary": "Choose a cleanup level in Settings; revert to your exact words anytime.",
@@ -54,8 +60,12 @@
           "category": "feature",
           "headline": "Voice editing — “scratch that”, “delete last sentence”, “undo”",
           "body": "Fix a misspoken phrase without deleting and re-dictating. A deterministic, offline command layer edits the in-progress text before it's committed. No AI required.",
-          "tickets": ["MAK-19"],
-          "prs": [117],
+          "tickets": [
+            "MAK-19"
+          ],
+          "prs": [
+            117
+          ],
           "howTo": {
             "availability": "coming-soon",
             "summary": "Mid-dictation, just say the command as its own phrase.",
@@ -77,8 +87,12 @@
           "category": "feature",
           "headline": "A self-learning dictionary that tunes itself",
           "body": "When you type over a transcription to correct it, OpenWhisp notices the fix and proposes it as a vocabulary term — learning your jargon on your machine, never on someone's server.",
-          "tickets": ["MAK-41"],
-          "prs": [120],
+          "tickets": [
+            "MAK-41"
+          ],
+          "prs": [
+            120
+          ],
           "howTo": {
             "availability": "coming-soon",
             "summary": "Just fix a mistyped word once; OpenWhisp offers to remember it.",
@@ -95,13 +109,17 @@
           "category": "feature",
           "headline": "Richer local formatting — numbers, lists, and markdown",
           "body": "Opt-in rules turn spoken structure into clean text: \"bullet…\" into a list, \"twenty twenty-six\" into 2026, \"bold that\" into markdown — all deterministic, all off by default so nothing surprises you.",
-          "tickets": ["MAK-20"],
-          "prs": [119],
+          "tickets": [
+            "MAK-20"
+          ],
+          "prs": [
+            119
+          ],
           "howTo": {
-            "availability": "coming-soon",
-            "summary": "Turn on the rule groups you want, then just speak the structure.",
+            "availability": "shipped",
+            "summary": "Turn on the rule groups you want in Settings, then just speak the structure.",
             "steps": [
-              "In Settings › Smart Formatting, enable the groups you want (they're independent and off by default).",
+              "In Settings › Cleanup › Formatting, turn on the groups you want — Numbers and years, Currency, Spoken lists, Markdown commands. They're independent and off by default.",
               "Dictate naturally — the rules rewrite structure locally, on-device, no LLM."
             ],
             "say": [
@@ -110,15 +128,19 @@
               "“bullet buy milk” → - buy milk,  “number one …” → 1. …",
               "“heading intro” → # intro,  “bold ship it” → **ship it**"
             ],
-            "note": "The rules are shipped, tested, and deliberately off by default so they never touch ordinary prose. The Settings toggles to switch each group on are landing next."
+            "note": "Live now. Each group is off by default so it never touches ordinary prose until you turn it on."
           }
         },
         {
           "category": "feature",
           "headline": "Send dictations beyond the focused app",
           "body": "Foundational plumbing for routing a transcript somewhere other than the app you're in — a file, a Shortcut, a webhook. Built to fail open: if a target can't take it, your text still lands where it always did. Never dropped.",
-          "tickets": ["MAK-11"],
-          "prs": [122],
+          "tickets": [
+            "MAK-11"
+          ],
+          "prs": [
+            122
+          ],
           "howTo": {
             "availability": "coming-soon",
             "summary": "Route a dictation to a file, Shortcut, or webhook — chosen per app.",
@@ -134,64 +156,102 @@
           "category": "fix",
           "headline": "Silence no longer errors on one backend but not the other",
           "body": "Dictating nothing now quietly produces nothing on both whisper backends — no more stray error toast depending on which engine you'd picked in Advanced settings.",
-          "tickets": ["MAK-23"],
-          "prs": [123]
+          "tickets": [
+            "MAK-23"
+          ],
+          "prs": [
+            123
+          ]
         },
         {
           "category": "fix",
           "headline": "OpenWhisp can't accidentally kill your other whisper servers",
           "body": "The engine now checks a process is one it actually launched — by full path, not just name — before signaling it, so your own Homebrew or hand-built whisper-server is safe. Plus a fix for a startup port race.",
-          "tickets": ["MAK-27", "MAK-28"],
-          "prs": [118]
+          "tickets": [
+            "MAK-27",
+            "MAK-28"
+          ],
+          "prs": [
+            118
+          ]
         },
         {
           "category": "fix",
           "headline": "A data race in Apple Speech dictation, closed",
           "body": "Session state is now confined to a single context, so a late recognition callback can never leak a partial from one dictation into the next.",
-          "tickets": ["MAK-29"],
-          "prs": [116]
+          "tickets": [
+            "MAK-29"
+          ],
+          "prs": [
+            116
+          ]
         },
         {
           "category": "fix",
           "headline": "Agent rate limiting counts sessions on one honest clock",
           "body": "The per-client session cap could be bypassed by a long-running session straddling the window edge. It now measures membership and expiry on the same clock, so the cap holds.",
-          "tickets": ["MAK-31"],
-          "prs": [112]
+          "tickets": [
+            "MAK-31"
+          ],
+          "prs": [
+            112
+          ]
         },
         {
           "category": "fix",
           "headline": "Post-processing scripts clean up after themselves",
           "body": "Timed-out post-processing scripts now reap reliably — honest about best-effort process-group isolation, with a guarded kill that can never signal OpenWhisp's own processes.",
-          "tickets": ["MAK-30"],
-          "prs": [115]
+          "tickets": [
+            "MAK-30"
+          ],
+          "prs": [
+            115
+          ]
         },
         {
           "category": "fix",
           "headline": "The audio-device watcher tears down cleanly",
           "body": "The CoreAudio listener that notices when you plug in a mic now removes itself symmetrically — no lingering, unremovable observer.",
-          "tickets": ["MAK-33"],
-          "prs": [114]
+          "tickets": [
+            "MAK-33"
+          ],
+          "prs": [
+            114
+          ]
         },
         {
           "category": "improvement",
           "headline": "One place for text transforms",
           "body": "The dictation pipeline now runs through a single, ordered post-processing chain — the groundwork that lets new transforms and output targets drop in cleanly, with behavior verified byte-for-byte against the old path.",
-          "tickets": ["MAK-15"],
-          "prs": [124]
+          "tickets": [
+            "MAK-15"
+          ],
+          "prs": [
+            124
+          ]
         },
         {
           "category": "improvement",
           "headline": "Corrupt settings files can't take the app down",
           "body": "All five on-device data stores now share one hardened loader: a bad file is quarantined and the app carries on with sane defaults, instead of a fix living in only one of them.",
-          "tickets": ["MAK-22"],
-          "prs": [113]
+          "tickets": [
+            "MAK-22"
+          ],
+          "prs": [
+            113
+          ]
         },
         {
           "category": "improvement",
           "headline": "End-to-end audio testing, so features stay working",
-          "body": "A full regression suite now feeds pre-recorded audio through the whole pipeline — the reason \"757 tests passing\" is more than a number. Every feature above ships with coverage.",
+          "body": "A full regression suite now feeds pre-recorded audio through the whole pipeline — the reason \"762 tests passing\" is more than a number. Every feature above ships with coverage.",
           "tickets": [],
-          "prs": [107, 108, 109, 110]
+          "prs": [
+            107,
+            108,
+            109,
+            110
+          ]
         }
       ]
     }
