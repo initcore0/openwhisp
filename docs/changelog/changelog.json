@@ -19,6 +19,23 @@
       "entries": [
         {
           "category": "feature",
+          "headline": "Send your dictation straight into a macOS Shortcut",
+          "body": "Route the final transcript into any Shortcut you've built — add it to Things or Reminders, append to a note, fire a webhook, run AppleScript. One OS-level integration reaches the whole Shortcuts ecosystem, and if the shortcut can't run, your text falls back to normal insertion so nothing is ever lost.",
+          "tickets": ["MAK-13"],
+          "prs": [0],
+          "howTo": {
+            "availability": "coming-soon",
+            "summary": "Pick a Shortcut per app; OpenWhisp runs it with your transcript as the input.",
+            "steps": [
+              "Build a Shortcut in Shortcuts.app that starts with “Receive input” (text) and does whatever you want with it.",
+              "In Settings, choose that Shortcut as the output target for an app (picker landing next — see note).",
+              "Dictate as usual — OpenWhisp runs `shortcuts run <name>` with your transcript on stdin and hands the text off."
+            ],
+            "note": "The Shortcut sink is built and tested (transcript in → `shortcuts run` invoked; on any error or timeout it fails open to normal insertion). The per-app Settings picker to choose which Shortcut runs is a follow-up. Until it lands there's no in-app way to select a Shortcut, so this target isn't yet reachable from the running app."
+          }
+        },
+        {
+          "category": "feature",
           "headline": "Adjustable AI cleanup, from a light touch to a full polish",
           "body": "Pick how much the AI reshapes your words — None, Low, Medium, or High — and OpenWhisp always keeps your raw transcript so you can revert to exactly what you said in one click.",
           "tickets": [

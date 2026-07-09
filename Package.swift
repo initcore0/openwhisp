@@ -41,6 +41,7 @@ let package = Package(
                 "OutputTarget.swift",
                 "FileOutputFormatter.swift",
                 "WebhookRequest.swift",
+                "ShortcutInvocation.swift",
                 "HotkeyControlling.swift",
                 "TranscriptionEngine.swift",
                 "AudioCapture.swift",
