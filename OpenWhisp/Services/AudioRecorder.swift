@@ -130,9 +130,19 @@ class AudioRecorder: NSObject, AVAudioRecorderDelegate, AudioCapture {
         case .systemDefault:
             break
         case .useDevice(let uid):
-            if let device = AudioInputRouter.resolve(uid: uid) {
-                let override = AudioInputRouter.DefaultInputOverride()
-                if override.engage(device) { legacyDefaultOverride = override }
+            // Re-resolve (canResolve above can race a disconnect) and require the
+            // default switch to take — both failures surface as errors, same rule.
+            guard let device = AudioInputRouter.resolve(uid: uid) else {
+                onStateChanged?(.error(AudioInputRoutingPolicy.unresolvedMessage(uid: uid)))
+                return
+            }
+            let override = AudioInputRouter.DefaultInputOverride()
+            switch override.engage(device) {
+            case .switched: legacyDefaultOverride = override
+            case .alreadyDefault: break
+            case .failed:
+                onStateChanged?(.error(AudioInputRoutingPolicy.unresolvedMessage(uid: uid)))
+                return
             }
         case .unresolved(let uid):
             onStateChanged?(.error(AudioInputRoutingPolicy.unresolvedMessage(uid: uid)))

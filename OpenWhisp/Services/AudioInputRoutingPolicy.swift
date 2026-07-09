@@ -18,8 +18,8 @@ enum AudioInputRoutingPolicy {
         /// This is the intended behavior for an empty `microphoneID`, and it must NOT
         /// be reached as a silent fallback when a pinned device fails to resolve.
         case systemDefault
-        /// Route capture to the resolved device (carrying its opaque platform id so
-        /// the caller doesn't re-resolve).
+        /// Route capture to the pinned device (carrying the trimmed UID; the caller
+        /// re-resolves it to a live device at application time).
         case useDevice(uid: String)
         /// A device WAS pinned but couldn't be resolved (disconnected, or its UID no
         /// longer matches any enumerated input). The caller must surface this — never

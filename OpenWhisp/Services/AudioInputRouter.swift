@@ -14,9 +14,9 @@ import CoreAudio
 ///   sets the device per-engine; the AVAudioRecorder file path captures the default
 ///   only, so it swaps + restores the system default.
 /// - `AppleSpeechEngine`: sets the device on its own AVAudioEngine input node.
-/// - `WhisperKitStreamingEngine`: WhisperKit 1.0.0's `AudioStreamTranscriber` owns
-///   the mic and exposes no per-engine device seam, so it swaps + restores the
-///   system default around stream start (capture-and-restore).
+/// - `WhisperKitStreamingEngine`: resolves the UID here and passes the concrete
+///   `AudioDeviceID` into `AudioStreamTranscriber(inputDeviceID:)` (our fork
+///   backports upstream #503) — no system-default mutation.
 ///
 /// `AudioInputRoutingPolicy` (in OpenWhispCore) holds the pure decision logic;
 /// this holds the platform calls it can't.
@@ -92,26 +92,32 @@ enum AudioInputRouter {
     }
 
     /// A live swap of the system default input device that remembers the previous
-    /// default so it can be restored. Used by capture stacks that can only record
-    /// the system default (AVAudioRecorder) or that own the mic through a dependency
-    /// with no per-engine device seam (WhisperKit's AudioStreamTranscriber).
+    /// default so it can be restored. Used by the one capture stack that can only
+    /// record the system default: the legacy AVAudioRecorder file path.
     ///
     /// `restore()` is idempotent and safe to call from any teardown/error path.
     final class DefaultInputOverride {
         private var previous: AudioDeviceID?
         private(set) var applied = false
 
+        enum EngageResult {
+            /// The default was switched to `device`; `restore()` will undo it.
+            case switched
+            /// `device` is already the system default — nothing to do or restore.
+            case alreadyDefault
+            /// CoreAudio refused the switch; capture would target the WRONG device,
+            /// so the caller must surface an error rather than record the default.
+            case failed
+        }
+
         /// Switch the system default input to `device`, remembering the prior default.
-        /// Returns true if the switch took effect. A no-op (returns false) if the
-        /// selected device is ALREADY the default — nothing to restore later.
-        @discardableResult
-        func engage(_ device: AudioDevice) -> Bool {
+        func engage(_ device: AudioDevice) -> EngageResult {
             let prior = AudioInputRouter.currentDefaultInput()
-            if prior == device.deviceID { return false }   // already default; leave it
-            guard AudioInputRouter.setDefaultInput(device.deviceID) else { return false }
+            if prior == device.deviceID { return .alreadyDefault }
+            guard AudioInputRouter.setDefaultInput(device.deviceID) else { return .failed }
             previous = prior
             applied = true
-            return true
+            return .switched
         }
 
         /// Restore the previous system default input, if this override changed it.
