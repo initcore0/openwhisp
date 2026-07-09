@@ -57,6 +57,7 @@ let package = Package(
                 "ScriptPostProcessor.swift",
                 "WhisperTask.swift",
                 "InstructionChain.swift",
+                "CleanupIntensity.swift",
                 "VoiceEditCommand.swift",
                 "RefineFlow.swift",
                 "RefineKey.swift",
