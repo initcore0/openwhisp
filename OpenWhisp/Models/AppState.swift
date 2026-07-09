@@ -371,6 +371,45 @@ class AppState: ObservableObject {
         didSet { UserDefaults.standard.set(scriptPostProcessorPath, forKey: "scriptPostProcessorPath") }
     }
 
+    /// Output target (M9 / MAK-11..14): where a FINAL dictation is delivered. A
+    /// GLOBAL selection (v1) — one destination for every app — plus the three sink
+    /// configs. `.focusedApp` is the default so nothing changes until the user opts
+    /// in. Persisted as one JSON blob under `outputTargetSettings`; each mutation
+    /// re-saves. The router is rebuilt fresh at each final insert from this value,
+    /// so a config edit takes effect on the next dictation with no extra plumbing.
+    @Published var outputTargetSettings: OutputTargetSettings {
+        didSet { persistOutputTargetSettings() }
+    }
+
+    /// Convenience projections so the Settings UI can bind directly to each field of
+    /// `outputTargetSettings` (SwiftUI can't bind into a nested struct's members via
+    /// a `@Published` aggregate without these). Each setter writes back through the
+    /// aggregate, which persists.
+    var outputTargetKind: OutputTargetKind {
+        get { outputTargetSettings.kind }
+        set { outputTargetSettings.kind = newValue }
+    }
+    var fileOutputPath: String {
+        get { outputTargetSettings.file.path }
+        set { outputTargetSettings.file.path = newValue }
+    }
+    var fileOutputTemplate: String {
+        get { outputTargetSettings.file.template ?? "" }
+        set { outputTargetSettings.file.template = newValue.isEmpty ? nil : newValue }
+    }
+    var fileOutputMode: FileOutputMode {
+        get { outputTargetSettings.file.mode }
+        set { outputTargetSettings.file.mode = newValue }
+    }
+    var webhookURL: String {
+        get { outputTargetSettings.webhook.url }
+        set { outputTargetSettings.webhook.url = newValue }
+    }
+    var shortcutOutputName: String {
+        get { outputTargetSettings.shortcutName }
+        set { outputTargetSettings.shortcutName = newValue }
+    }
+
     /// Apply per-app profile overrides (language / output mode / AI cleanup)
     /// based on the frontmost app when a dictation starts.
     @Published var perAppModesEnabled: Bool {
@@ -1003,6 +1042,7 @@ class AppState: ObservableObject {
         instructionChainEnabled = UserDefaults.standard.object(forKey: "instructionChainEnabled") as? Bool ?? true
         scriptPostProcessorEnabled = UserDefaults.standard.object(forKey: "scriptPostProcessorEnabled") as? Bool ?? false
         scriptPostProcessorPath = UserDefaults.standard.string(forKey: "scriptPostProcessorPath") ?? ""
+        outputTargetSettings = Self.loadOutputTargetSettings()
         perAppModesEnabled = UserDefaults.standard.object(forKey: "perAppModesEnabled") as? Bool ?? false
         historyEnabled = UserDefaults.standard.object(forKey: "historyEnabled") as? Bool ?? true
         // Agent Bridge (M8) — default off; started at launch via startAgentBridgeIfEnabled().
@@ -3115,16 +3155,39 @@ class AppState: ObservableObject {
         let pastesWholeOnce = !isLiveChunkSession || isPreviewSession
         if pastesWholeOnce {
             let insertion = addTrailingSpace ? "\(text) " : text
-            textOutput.insert(
-                insertion,
-                mode: currentInsertionMode,
-                restoreClipboard: restoreClipboard
-            ) { [weak self] outcome in
-                // If the insert couldn't be confirmed, the text was left on the
-                // clipboard — tell the user so it isn't silently lost. (Arrives after
-                // the success status below; overrides it only on fallback.)
-                guard let self, outcome == .copiedToClipboard else { return }
-                self.showClipboardFallbackNotice()
+            // Output target (MAK-11..14): when the user has selected AND configured a
+            // non-focused sink (file / Shortcut / webhook), route the FINAL text
+            // there; otherwise keep the exact historical focused-app insert. Keeping
+            // the default path a bare `textOutput.insert` (not wrapped in the router)
+            // means the common case is byte-for-byte unchanged — no regression.
+            let effectiveKind = OutputTargetResolver.effectiveKind(outputTargetSettings)
+            if effectiveKind == .focusedApp {
+                textOutput.insert(
+                    insertion,
+                    mode: currentInsertionMode,
+                    restoreClipboard: restoreClipboard
+                ) { [weak self] outcome in
+                    // If the insert couldn't be confirmed, the text was left on the
+                    // clipboard — tell the user so it isn't silently lost. (Arrives after
+                    // the success status below; overrides it only on fallback.)
+                    guard let self, outcome == .copiedToClipboard else { return }
+                    self.showClipboardFallbackNotice()
+                }
+            } else {
+                // A configured sink is selected. Build a fresh router (default =
+                // focused-app insert that still surfaces the clipboard-fallback
+                // notice) + the sink, and route the payload. On any sink failure the
+                // router fails open to that same focused-app insert — matching the
+                // never-drop-text guarantee. The sink receives the un-spaced text; a
+                // trailing space belongs to the focused-app insert path only.
+                let router = buildOutputRouter(effectiveKind: effectiveKind, focusedAppInsertion: insertion)
+                let payload = OutputPayload(
+                    text: text,
+                    language: outputLanguageForCleaning,
+                    targetAppBundleID: targetApplication?.bundleIdentifier,
+                    isLiveChunk: false
+                )
+                router.route(payload) { _ in }
             }
         } else {
             // liveChunks: the text was already pasted incrementally (no trailing space).
@@ -3157,6 +3220,72 @@ class AppState: ObservableObject {
             ? "Enhanced: \(text.prefix(50))..."
             : "Done: \(originalText.prefix(50))..."
         finishSessionUI(delay: 0.8)
+    }
+
+    // MARK: - Output target routing (MAK-11..14)
+
+    /// Build a fresh `OutputRouter` for a final delivery whose effective (configured)
+    /// kind is a non-focused sink. The default target is a focused-app insert that
+    /// mirrors the historical path — including the "couldn't insert — text is on the
+    /// clipboard" notice — so a sink fail-open behaves exactly like a normal insert.
+    ///
+    /// - Parameters:
+    ///   - effectiveKind: the already-resolved sink kind (never `.focusedApp` here;
+    ///     the caller handles that case with the bare insert).
+    ///   - focusedAppInsertion: the exact string the focused-app path would insert
+    ///     (i.e. `text` plus any trailing space), used by the default/fallback target.
+    private func buildOutputRouter(effectiveKind: OutputTargetKind, focusedAppInsertion: String) -> OutputRouter {
+        let defaultTarget = FocusedAppInsertTarget(
+            insertion: focusedAppInsertion,
+            mode: currentInsertionMode,
+            restoreClipboard: restoreClipboard,
+            insert: { [weak self] insertion, mode, restore, completion in
+                self?.textOutput.insert(insertion, mode: mode, restoreClipboard: restore) { outcome in
+                    if outcome == .copiedToClipboard { self?.showClipboardFallbackNotice() }
+                    completion()
+                }
+            }
+        )
+
+        var sinks: [OutputTarget] = []
+        switch effectiveKind {
+        case .focusedApp:
+            break   // handled by the caller; nothing extra to register.
+        case .file:
+            sinks.append(FileOutputTarget(config: outputTargetSettings.file))
+        case .webhook:
+            sinks.append(WebhookOutputTarget(config: outputTargetSettings.webhook))
+        case .shortcut:
+            sinks.append(ShortcutOutputTarget(shortcutName: outputTargetSettings.shortcutName))
+        }
+
+        // Global selection (v1): apply the effective kind to whatever app is
+        // frontmost so the router keys on the current bundle. (`nil` bundle → the
+        // router resolves to the default focused-app insert, which is fine.)
+        let selections: [OutputTargetSelection]
+        if let bundleID = targetApplication?.bundleIdentifier {
+            selections = [OutputTargetSelection(appBundleID: bundleID, kind: effectiveKind)]
+        } else {
+            selections = []
+        }
+        return OutputRouter(defaultTarget: defaultTarget, targets: sinks, selections: selections)
+    }
+
+    // MARK: - Output target persistence
+
+    /// Persist the whole output-target settings blob as JSON under one key.
+    private func persistOutputTargetSettings() {
+        guard let data = try? JSONEncoder().encode(outputTargetSettings) else { return }
+        UserDefaults.standard.set(data, forKey: "outputTargetSettings")
+    }
+
+    /// Load the persisted output-target settings, defaulting to focused-app (today's
+    /// behavior) when absent or unreadable.
+    private static func loadOutputTargetSettings() -> OutputTargetSettings {
+        guard let data = UserDefaults.standard.data(forKey: "outputTargetSettings"),
+              let decoded = try? JSONDecoder().decode(OutputTargetSettings.self, from: data)
+        else { return OutputTargetSettings() }
+        return decoded
     }
 
     /// Local transcript cleanup. Delegates to TranscriptCleaner (in OpenWhispCore)
@@ -3479,6 +3608,7 @@ class AppState: ObservableObject {
         addTrailingSpace = false
         scriptPostProcessorEnabled = false
         scriptPostProcessorPath = ""
+        outputTargetSettings = OutputTargetSettings()   // back to focused-app default
 
         showOverlay = true
         voiceIndicatorStyle = .defaultStyle
