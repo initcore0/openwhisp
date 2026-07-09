@@ -9,12 +9,29 @@
       "date": "2026-07-09",
       "summary": "A batch of new features, fixes, and under-the-hood hardening — all landed on main, all covered by tests, all running on your machine.",
       "stats": {
-        "changesShipped": 14,
-        "newFeatures": 5,
-        "testsPassing": 757,
+        "changesShipped": 15,
+        "newFeatures": 6,
+        "testsPassing": 776,
         "onDevicePercent": 100
       },
       "entries": [
+        {
+          "category": "feature",
+          "headline": "Use your Claude or Codex CLI as the AI cleanup engine",
+          "body": "Pipe your dictation through a coding-agent CLI you already have installed — claude, codex, or any command that reads stdin — and reuse the subscription you already pay for as the cleanup model. No separate API key, no extra service: it's the inverse of Agent Bridge, consuming an agent as the refine engine.",
+          "tickets": ["MAK-44"],
+          "prs": [127],
+          "howTo": {
+            "availability": "coming-soon",
+            "summary": "Point OpenWhisp at a local agent CLI (e.g. claude -p) and it cleans up each dictation using your own subscription.",
+            "steps": [
+              "Pick a preset — Claude Code (claude -p), Codex (codex exec), or a custom command that reads stdin and writes the cleaned text to stdout.",
+              "OpenWhisp feeds your transcript to the CLI on stdin (never on the command line, so nothing you say can be interpreted as a command) and uses its output as the refined text.",
+              "If the CLI is missing, errors, times out, or returns nothing, OpenWhisp keeps your original words — you never lose a dictation."
+            ],
+            "note": "The provider engine — argv builder, stdin-only injection safety, timeout, and fail-open-to-original — is built and tested. The Settings provider-picker that lets you select it as your refine engine is landing next; today the on/off script post-processor (Settings › a custom executable over stdin/stdout) is the manual way to wire an agent CLI in."
+          }
+        },
         {
           "category": "feature",
           "headline": "Adjustable AI cleanup, from a light touch to a full polish",
