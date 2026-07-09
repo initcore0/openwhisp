@@ -141,23 +141,34 @@ final class AppleSpeechEngine: StreamingTranscriptionEngine {
             // touching ANY session state — that is what makes the generation gate and
             // the lastPartial store race-free (MAK-29). `text` is the only value that
             // crosses the thread boundary; the shared fields never do.
+            //
+            // The hop uses DispatchQueue.main.async, not an unstructured Task: the main
+            // queue preserves submission order (FIFO), so partials are applied in the
+            // same order SFSpeechRecognizer delivers them from its serial callback.
+            // (Separately-created Tasks carry no ordering guarantee — a reordered pair
+            // could let lastPartial regress and make the 0.8s stop-fallback synthesize a
+            // final from a stale partial.) The main queue IS the MainActor executor, so
+            // MainActor.assumeIsolated inside it is sound and lets the body touch the
+            // @MainActor session state synchronously.
             let text = result?.bestTranscription.formattedString
             let isFinal = result?.isFinal ?? false
             let errorDescription = error?.localizedDescription
-            Task { @MainActor in
-                guard let self, self.generation == myGeneration else { return }
+            DispatchQueue.main.async { [weak self] in
+                MainActor.assumeIsolated {
+                    guard let self, self.generation == myGeneration else { return }
 
-                if let text {
-                    self.lastPartial = text
-                    self.onPartial?(text)
-                    if isFinal, !self.finalDelivered {
-                        self.finalDelivered = true
-                        self.onFinal?(text)
+                    if let text {
+                        self.lastPartial = text
+                        self.onPartial?(text)
+                        if isFinal, !self.finalDelivered {
+                            self.finalDelivered = true
+                            self.onFinal?(text)
+                        }
                     }
-                }
 
-                if let errorDescription, !self.didStop {
-                    self.onError?(errorDescription)
+                    if let errorDescription, !self.didStop {
+                        self.onError?(errorDescription)
+                    }
                 }
             }
         }
