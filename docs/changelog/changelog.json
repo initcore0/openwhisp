@@ -135,6 +135,24 @@
           }
         },
         {
+          "category": "feature",
+          "headline": "Dictate straight into a Markdown or text file",
+          "body": "Point OpenWhisp at a file — an Obsidian daily note, a Logseq journal, a scratch .md — and your dictation gets appended there instead of typed into the focused app. Add a dated heading if you like, or overwrite for a rolling \"last dictation\" buffer. All local; if the file can't be written, your words still land in the focused app — never dropped.",
+          "tickets": ["MAK-12"],
+          "prs": [127],
+          "howTo": {
+            "availability": "coming-soon",
+            "summary": "Choose a file as an app's output target; each dictation is appended with an optional dated heading.",
+            "steps": [
+              "Pick the file to write to (any .md or .txt — e.g. your vault's daily note).",
+              "Optionally set a heading template with {{date}}, {{time}}, or {{datetime}} tokens (e.g. \"## {{datetime}}\") to stamp each entry.",
+              "Choose append (add each dictation to the end, blank-line separated) or overwrite (keep only the latest).",
+              "Dictate — the final text is written to the file; live partials are ignored so you get one clean entry."
+            ],
+            "note": "The file writer and its entry formatter (heading tokens, append separators, overwrite, empty-dictation handling) are built and tested, and it fails open to normal insertion on any write error. The Settings picker to select a file target per app is the next step — until it lands, there's no in-app way to turn this on yet."
+          }
+        },
+        {
           "category": "fix",
           "headline": "Silence no longer errors on one backend but not the other",
           "body": "Dictating nothing now quietly produces nothing on both whisper backends — no more stray error toast depending on which engine you'd picked in Advanced settings.",
