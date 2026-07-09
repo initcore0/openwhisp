@@ -18,15 +18,61 @@ struct Vocabulary: Codable, Equatable {
         var id: UUID
         var from: String
         var to: String
+        /// Star-for-priority: user-flagged as important. Surfaces to the top of the
+        /// editor and can be used to bias ordering. Defaults to `false` so existing
+        /// stored files (written before this field existed) still decode.
+        var starred: Bool
+        /// How many times this substitution has fired against transcribed text.
+        /// Drives sort-by-usage-frequency in the editor. Defaults to `0` for the
+        /// same backward-compatibility reason.
+        var usageCount: Int
 
-        init(id: UUID = UUID(), from: String, to: String) {
+        init(id: UUID = UUID(), from: String, to: String,
+             starred: Bool = false, usageCount: Int = 0) {
             self.id = id
             self.from = from
             self.to = to
+            self.starred = starred
+            self.usageCount = usageCount
+        }
+
+        // Custom decoding so an OLD substitution JSON that predates `starred` /
+        // `usageCount` still decodes: the two new keys are optional and fall back
+        // to their defaults. `id` is likewise defensively defaulted (a hand-edited
+        // file could omit it) rather than failing the whole load.
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            self.id = try c.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+            self.from = try c.decode(String.self, forKey: .from)
+            self.to = try c.decode(String.self, forKey: .to)
+            self.starred = try c.decodeIfPresent(Bool.self, forKey: .starred) ?? false
+            self.usageCount = try c.decodeIfPresent(Int.self, forKey: .usageCount) ?? 0
         }
     }
 
     static let empty = Vocabulary(terms: [], substitutions: [])
+
+    /// Substitutions ordered for the editor: starred first, then by descending
+    /// usage frequency, with a stable `from` tiebreak so equal-weight rows keep a
+    /// deterministic order. Pure — does not mutate the stored order.
+    func substitutionsByFrequency() -> [Substitution] {
+        substitutions.sorted { a, b in
+            if a.starred != b.starred { return a.starred }        // starred float to top
+            if a.usageCount != b.usageCount { return a.usageCount > b.usageCount }
+            return a.from.localizedCaseInsensitiveCompare(b.from) == .orderedAscending
+        }
+    }
+
+    /// Increment the usage count of the substitution with the given id, returning
+    /// a new Vocabulary (value-semantic; safe to call from anywhere). No-op if no
+    /// substitution matches.
+    func incrementingUsage(of id: Substitution.ID) -> Vocabulary {
+        var copy = self
+        if let idx = copy.substitutions.firstIndex(where: { $0.id == id }) {
+            copy.substitutions[idx].usageCount += 1
+        }
+        return copy
+    }
 
     /// The initial-prompt string passed to whisper to bias recognition.
     /// whisper.cpp treats the prompt as prior context, so a comma-separated list
