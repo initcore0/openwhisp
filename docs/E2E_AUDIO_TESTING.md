@@ -2,16 +2,17 @@
 
 **Goal:** regression-test every shipped feature by feeding pre-recorded audio through the full pipeline — capture → chunking/VAD → transcription → voice actions/formatting → post-processing → output/history/bridge — without a human speaking into a microphone.
 
-**Status:** partially implemented (2026-07-08). Tier 1 (fixtures + `FileAudioCapture`
-+ core pipeline suite) is built and runs in the existing `swift test` CI job.
-Tier 2 (real-WhisperKit runner + BlackHole smoke) is scripted for local/nightly.
-See **Implementation status** below.
+**Status:** implemented (2026-07-08), Tiers 1–2 + the Phase-B feature matrix.
+Everything deterministic runs in the plain `swift test` CI job; the real-engine and
+BlackHole checks are scripted for local/nightly. See **Implementation status** below,
+and **[How to add a test for a new feature](#how-to-add-a-test-for-a-new-feature)**
+before shipping the next feature.
 
 ---
 
 ## Implementation status (2026-07-08)
 
-Landed (branch `feat/e2e-audio-testing`):
+**Tier 1 — in-process fixture replay (branch `feat/e2e-audio-testing`):**
 
 - **Fixtures** — `Tests/Fixtures/audio/` holds 5 checked-in 16 kHz mono 16-bit WAVs
   (plain speech, numbers/dates, speech+silence tail, two-utterance pause split,
@@ -19,7 +20,7 @@ Landed (branch `feat/e2e-audio-testing`):
   `scripts/gen-audio-fixtures.sh` (`say` + `afconvert`, pinned voice/rate;
   `--check` is a format-drift guard). Checked in — not from the whisper.cpp
   submodule, which CI doesn't fetch.
-- **`FileAudioCapture`** (`OpenWhisp/Services/FileAudioCapture.swift`, in
+- **`FileAudioCapture`** ([FileAudioCapture.swift](../OpenWhisp/Services/FileAudioCapture.swift), in
   `OpenWhispCore`) — a Foundation-only fixture-replaying `AudioCapture` that
   reproduces `AudioRecorder`'s RMS + pause-based VAD and writes real chunk WAVs.
   Ships with a tiny `WAVFile` RIFF reader/writer so no AVFoundation leaks into
@@ -28,17 +29,91 @@ Landed (branch `feat/e2e-audio-testing`):
   drives fixtures through the real `LiveChunkPipeline` + `TranscriptCleaner` +
   spy `TextOutput` + history, with a `ScriptedFileEngine` (canned text) for
   deterministic, exact assertions. Runs in the **existing** `ci.yml` `swift test`
-  job — no CI changes needed for Tier 1.
-- **Tier 2 scripts** — `scripts/e2e-smoke.sh` (BlackHole virtual-mic, drives the
-  app via `openwhisp dictate`) and `scripts/e2e-whisperkit.sh` +
-  `scripts/e2e/whisperkit-harness.swift` (compiles a harness linked against the
-  real WhisperKit engine and transcribes every fixture). The latter runs nightly,
-  non-blocking, via `.github/workflows/e2e-nightly.yml`.
+  job — no CI changes needed.
 
-Not yet done (see **Build plan** Phase B): AppState constructor injection of
-`AudioCapture`, the AppKit-linked `xcodebuild test` lane, and the full
-feature-matrix suite (voice actions / refine / settings-profiles / agent-bridge
-end-to-end) require app-level DI and are the next phase.
+**Phase B — feature matrix (branch `feat/e2e-phase-b-feature-matrix`):**
+
+- **Resolvers extracted to core** — the thin app-only session-setting decision
+  logic is now pure and testable: [`LanguageResolver`](../OpenWhisp/Services/LanguageResolver.swift)
+  (translate/auto/appleSpeech matrix) and [`ProfileResolver`](../OpenWhisp/Services/ProfileResolver.swift)
+  (per-app-profile `"en"`→translate remap + inherit/override). `AppState` delegates
+  to both; `ResolverTests.swift` covers them.
+- **AppState DI seam widened** — `AppState.init` now accepts `audioCapture:` and
+  `fileEngine:` (defaults keep the `.shared` singleton unchanged), so a future
+  full-app harness can inject `FileAudioCapture` + a scripted engine.
+- **Feature-matrix suite** — `Tests/OpenWhispCoreTests/FeatureMatrixE2ETests.swift`
+  (41 tests) drives fixture audio through each shipped feature: **script
+  post-processor** (real `/bin/sh` via `Process` → `ScriptPostProcessor`), **LLM
+  refine** (`RefineFlow` state machine + stub LLM), **output + SecureFieldPolicy**,
+  **agent bridge** (`BridgeRouter` dictate routing + `AgentRateLimiter`), and
+  **multilingual/profiles** (resolver-driven behavior differences). All in the fast
+  core CI job.
+
+**Tier 2 — reality check (local/nightly, non-blocking):**
+
+- `scripts/e2e-smoke.sh` (BlackHole virtual-mic; sets the **system default** input
+  to BlackHole and drives the app via `openwhisp dictate`) and
+  `scripts/e2e-whisperkit.sh` + `scripts/e2e/whisperkit-harness.swift` (compiles a
+  harness linked against the real WhisperKit engine; auto-picks a staged model to
+  run offline). The WhisperKit runner is wired nightly via
+  `.github/workflows/e2e-nightly.yml`.
+
+**Still deferred:** a full-app raw-swiftc harness that links `AppState` itself
+(compiles the 4368-line `@MainActor` class + ~40 deps) — most feature *logic* is
+already core-testable via the extracted resolvers + state machines, so this is only
+needed if a future feature's behavior lives *entirely* in AppState's async session
+glue and can't be extracted. See **[How to add a test for a new feature](#how-to-add-a-test-for-a-new-feature)**.
+
+---
+
+## How to add a test for a new feature
+
+When you ship a feature that touches the dictation pipeline, add its regression
+test here so it's covered by fixture audio. Follow the seam it lives on:
+
+**1. Is the feature's logic pure (or extractable)?** Prefer this — it's the fast
+`swift test` path.
+- If the logic is already in a Foundation-only type in `OpenWhispCore` (a formatter,
+  a state machine, a resolver, a policy), test it directly, and add an **integration**
+  test in `FeatureMatrixE2ETests.swift` that drives it *from fixture audio* through
+  `LiveChunkDriver` so it's proven to compose, not just work in isolation.
+- If the logic is inline on `AppState` (like `applyProfileForFrontmostApp` was),
+  **extract the decision logic into a pure core type first** (as `ProfileResolver` /
+  `LanguageResolver` did — take inputs, return the resolved result; leave the
+  effectful parts on AppState), then test the resolver. This is the same move that
+  split `SecureFieldPolicy` out of `SecureFieldDetector`. It keeps `AppState` and the
+  tests from drifting and avoids the AppState-linking tax.
+
+**2. Write the integration test.** In `FeatureMatrixE2ETests.swift`, reuse the shared
+doubles (do **not** redefine them):
+
+| Helper | What it does |
+|---|---|
+| `FileAudioCaptureTests.fixture("name.wav")` | Resolves a checked-in fixture URL. |
+| `FileAudioCapture(fixtureURL:outputDirectory:)` | Replays a fixture through the real `AudioCapture` contract (chunking + VAD). |
+| `ScriptedFileEngine(constant:)` / `(byOrdinal:completionOrder:)` | A `FileTranscriptionEngine` returning canned text per chunk — deterministic, exact. |
+| `SpyTextOutput` | A `TextOutput` recording `.insertions` / `.clipboardWrites`. |
+| `LiveChunkDriver(fixture:engine:output:outputDir:chunkDuration:mode:cleanerConfig:finalTranscript:maxConcurrent:)` | Wires `FileAudioCapture → LiveChunkPipeline → engine → TranscriptCleaner → SpyTextOutput → TranscriptionEntry`; exposes `.chunkCount`, `.errors`, `.historyEntries`. |
+
+Pattern: construct a temp `outputDir`, drive a fixture with a `ScriptedFileEngine`
+returning text that exercises your feature, run the driver, and assert on
+`output.insertions` / `driver.historyEntries` / your feature's observable effect.
+Keep assertions **fuzzy** for anything a real engine would produce (WER/containment,
+never exact) — but a scripted engine's text flowing through formatting can be exact.
+
+**3. Need a new fixture?** Add a clip + expected `.txt` to `scripts/gen-audio-fixtures.sh`
+(spoken text that triggers your feature — a voice command, a number, a non-English
+phrase), run it, and check the `.wav`/`.txt` in. Re-run `./scripts/gen-audio-fixtures.sh --check`
+to confirm format.
+
+**4. Real-engine / real-capture coverage (optional).** If the feature only matters
+with the *real* engine or the *real* mic, add a case to `scripts/e2e-whisperkit.sh`
+(real WhisperKit) or `scripts/e2e-smoke.sh` (BlackHole). These are nightly/local, not
+blocking CI.
+
+**Rule of thumb:** every pipeline feature gets at least one `FeatureMatrixE2ETests`
+case driven from a fixture. If you find yourself unable to write one without linking
+`AppState`, that's the signal to extract the logic into core first.
 
 ---
 
@@ -147,18 +222,18 @@ Test flow: launch the packaged app → write `microphoneID` = BlackHole UID into
 
 ## Build plan (phased)
 
-**Phase A — foundations (biggest value, no app restructuring):**
-1. Fixture set + expected transcripts in `Tests/Fixtures/audio/`, with a generation script.
-2. `FileAudioCapture` in `OpenWhispCore` (promote/extend the existing `FakeAudioCapture`).
-3. Core-level pipeline tests: `FileAudioCapture` → `LiveChunkPipeline`/`DictationSession` → real `WhisperKitEngine` → assert transcripts (fuzzy). Add silence-auto-stop and both-engine matrix tests.
-4. CI job: runs on macOS runner via `swift test` (WhisperKit model cached between runs).
+**Phase A — foundations (biggest value, no app restructuring): ✅ DONE**
+1. ✅ Fixture set + expected transcripts in `Tests/Fixtures/audio/`, with a generation script.
+2. ✅ `FileAudioCapture` in `OpenWhispCore` (promoted/extended the existing `FakeAudioCapture`).
+3. ✅ Core-level pipeline tests: `FileAudioCapture` → `LiveChunkPipeline` → engine → assert transcripts. Silence-auto-stop + ordering covered. (Real `WhisperKitEngine` runs via the nightly `scripts/e2e-whisperkit.sh` rather than in `swift test`, since it's app-target-only behind `-D WHISPERKIT`.)
+4. ✅ CI: the existing `swift test` job on macos-14 covers Tiers 1 + the Phase-B matrix.
 
-**Phase B — full-app integration:**
-5. Constructor injection of `AudioCapture` (+ engines) into `AppState`; new AppKit-linked test target + `xcodebuild test` lane.
-6. Feature-matrix suite from the table above (voice actions, refine, history, output, settings/profiles, agent bridge end-to-end via CLI).
+**Phase B — feature matrix: ✅ DONE (approach revised)**
+5. ✅ Constructor injection of `AudioCapture` (+ engine) into `AppState`. **Revised:** rather than a new AppKit-linked `xcodebuild test` lane (high friction — no `.xcodeproj` exists), the thin app-only decision logic was **extracted into pure core resolvers** (`LanguageResolver`, `ProfileResolver`) — continuing Phase 2.5 — so the feature matrix is `swift test`-able without linking AppState. A full raw-swiftc AppState harness remains available if a future feature's behavior can't be extracted.
+6. ✅ Feature-matrix suite (`FeatureMatrixE2ETests.swift`, 41 tests): script post-processor, refine, output/SecureFieldPolicy, agent-bridge routing + rate limiting, multilingual/profiles — all driven from fixture audio.
 
-**Phase C — real-hardware smoke:**
-7. `scripts/e2e-smoke.sh` implementing the BlackHole recipe; run locally/nightly; optional non-blocking GH Actions job.
+**Phase C — real-hardware smoke: ✅ DONE**
+7. ✅ `scripts/e2e-smoke.sh` implementing the BlackHole recipe (routes via the **system default input** so OpenWhisp captures BlackHole); runs locally/nightly. Plus `scripts/e2e-whisperkit.sh` for the real WhisperKit engine over fixtures, wired non-blocking in `.github/workflows/e2e-nightly.yml`.
 
 **Explicit non-goals:** custom AudioServerPlugIn driver; CMIOExtension virtual mic (camera-only); XCUITest-driven permission dialogs (flaky; TCC pre-seeding is more reliable).
 
