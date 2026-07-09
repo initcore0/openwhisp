@@ -20,35 +20,97 @@
           "headline": "Adjustable AI cleanup, from a light touch to a full polish",
           "body": "Pick how much the AI reshapes your words — None, Low, Medium, or High — and OpenWhisp always keeps your raw transcript so you can revert to exactly what you said in one click.",
           "tickets": ["MAK-35"],
-          "prs": [121]
+          "prs": [121],
+          "howTo": {
+            "availability": "coming-soon",
+            "summary": "Choose a cleanup level in Settings; revert to your exact words anytime.",
+            "steps": [
+              "Open Settings › Cleanup and pick a level: None (verbatim), Low (fixes caps, punctuation, spelling), Medium (also removes fillers and lightly rephrases), or High (also resolves spoken self-corrections like “3, no wait, 4” → “4”).",
+              "Dictate as usual — the level you chose is applied automatically.",
+              "In History or the overlay, hit “revert to original” to swap the cleaned text back to your raw words."
+            ],
+            "note": "The four levels and the raw-transcript revert are built and tested. The Settings dial and the revert button are landing next — today the older on/off “Improve every dictation” toggle is still what's live."
+          }
         },
         {
           "category": "feature",
-          "headline": "Voice editing — \"scratch that\", \"delete last sentence\", \"undo\"",
+          "headline": "Voice editing — “scratch that”, “delete last sentence”, “undo”",
           "body": "Fix a misspoken phrase without deleting and re-dictating. A deterministic, offline command layer edits the in-progress text before it's committed. No AI required.",
           "tickets": ["MAK-19"],
-          "prs": [117]
+          "prs": [117],
+          "howTo": {
+            "availability": "coming-soon",
+            "summary": "Mid-dictation, just say the command as its own phrase.",
+            "steps": [
+              "Start dictation as usual (hold Fn/Globe, or Control+Space).",
+              "Pause and say a command on its own — it must be the whole phrase, so ordinary speech like “scratch the surface” is never mistaken for a command.",
+              "Release to insert the edited text."
+            ],
+            "say": [
+              "“scratch that” — drop the last thing you said",
+              "“delete last word” / “delete last sentence”",
+              "“new paragraph” / “new line”",
+              "“undo” — reverse the last edit"
+            ],
+            "note": "The command parser (case- and punctuation-tolerant, including … and curly quotes) is shipped and tested. Connecting it to live dictation is the next step — until then, these phrases are typed literally rather than acted on."
+          }
         },
         {
           "category": "feature",
           "headline": "A self-learning dictionary that tunes itself",
           "body": "When you type over a transcription to correct it, OpenWhisp notices the fix and proposes it as a vocabulary term — learning your jargon on your machine, never on someone's server.",
           "tickets": ["MAK-41"],
-          "prs": [120]
+          "prs": [120],
+          "howTo": {
+            "availability": "coming-soon",
+            "summary": "Just fix a mistyped word once; OpenWhisp offers to remember it.",
+            "steps": [
+              "Dictate; OpenWhisp inserts the text.",
+              "Type over a single misheard word to correct it (e.g. “kubernetis” → “kubernetes”).",
+              "OpenWhisp proposes that fix as a vocabulary rule — accept it, and every future transcription auto-corrects that mishearing.",
+              "Star your most-used rules to keep them at the top of the Substitutions list."
+            ],
+            "note": "The detection logic (only proposes clean single-word fixes, never whole rewrites) and the star/frequency model are shipped and tested. The watcher that captures your corrections and the star/sort editor are the next step — for now, add terms manually in Settings › Cleanup › Substitutions."
+          }
         },
         {
           "category": "feature",
           "headline": "Richer local formatting — numbers, lists, and markdown",
           "body": "Opt-in rules turn spoken structure into clean text: \"bullet…\" into a list, \"twenty twenty-six\" into 2026, \"bold that\" into markdown — all deterministic, all off by default so nothing surprises you.",
           "tickets": ["MAK-20"],
-          "prs": [119]
+          "prs": [119],
+          "howTo": {
+            "availability": "coming-soon",
+            "summary": "Turn on the rule groups you want, then just speak the structure.",
+            "steps": [
+              "In Settings › Smart Formatting, enable the groups you want (they're independent and off by default).",
+              "Dictate naturally — the rules rewrite structure locally, on-device, no LLM."
+            ],
+            "say": [
+              "“five dollars” → $5,  “ten cents” → 10¢",
+              "“twenty twenty six” → 2026  (spoken times like “ten thirty” are left alone)",
+              "“bullet buy milk” → - buy milk,  “number one …” → 1. …",
+              "“heading intro” → # intro,  “bold ship it” → **ship it**"
+            ],
+            "note": "The rules are shipped, tested, and deliberately off by default so they never touch ordinary prose. The Settings toggles to switch each group on are landing next."
+          }
         },
         {
           "category": "feature",
           "headline": "Send dictations beyond the focused app",
           "body": "Foundational plumbing for routing a transcript somewhere other than the app you're in — a file, a Shortcut, a webhook. Built to fail open: if a target can't take it, your text still lands where it always did. Never dropped.",
           "tickets": ["MAK-11"],
-          "prs": [122]
+          "prs": [122],
+          "howTo": {
+            "availability": "coming-soon",
+            "summary": "Route a dictation to a file, Shortcut, or webhook — chosen per app.",
+            "steps": [
+              "In Settings, pick an output target for an app or profile (e.g. your notes app → a Markdown file).",
+              "Dictate into that app — the text goes to the target instead of being typed in.",
+              "Everything else keeps typing into the focused app, exactly as before."
+            ],
+            "note": "The routing protocol and its fail-open safety net (if a target fails, your words still land in the focused app — never dropped) are shipped and tested. The Settings picker and the actual file / Shortcut / webhook destinations are the next tickets (MAK-12/13/14)."
+          }
         },
         {
           "category": "fix",
