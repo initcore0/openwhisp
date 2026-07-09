@@ -69,7 +69,8 @@ let package = Package(
                 "PermissionBannerPolicy.swift",
                 "ModelStorage.swift",
                 "SettingsMigration.swift",
-                "RefineTap.swift"
+                "RefineTap.swift",
+                "ServerProcessIdentity.swift"
             ]
         ),
         .executableTarget(
