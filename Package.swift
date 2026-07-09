@@ -74,7 +74,8 @@ let package = Package(
                 "SettingsMigration.swift",
                 "RefineTap.swift",
                 "ServerProcessIdentity.swift",
-                "ServerLaunchRetry.swift"
+                "ServerLaunchRetry.swift",
+                "WhisperResponseClassifier.swift"
             ]
         ),
         .executableTarget(

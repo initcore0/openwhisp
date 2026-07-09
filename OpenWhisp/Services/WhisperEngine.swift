@@ -306,14 +306,24 @@ class WhisperEngine: FileTranscriptionEngine {
             throw WhisperWorkerError.unavailable
         }
 
-        let text = try postInference(wavPath: wavPath, language: language, prompt: prompt)
-        guard !text.isEmpty else {
-            throw WhisperWorkerError.emptyTranscript
-        }
+        // Classify the server's answer. A 200 whose transcript is empty/
+        // whitespace-only is NOT an error — it's the "no speech detected" case,
+        // and we return "" so the caller delivers it via onTranscriptionComplete
+        // exactly like the CLI path's no-op (MAK-23). Only genuine failures
+        // (non-200, malformed body) throw. Transport-level errors (network,
+        // no HTTPURLResponse) are thrown from postInference before we get here.
+        let outcome = try postInference(wavPath: wavPath, language: language, prompt: prompt)
         if deleteWhenDone {
             try? FileManager.default.removeItem(atPath: wavPath)
         }
-        return text
+        switch outcome {
+        case .cleanEmpty:
+            return ""
+        case .transcript(let text):
+            return text
+        case .error(let message):
+            throw WhisperWorkerError.serverError(message)
+        }
     }
 
     /// Ensures a healthy whisper-server is running for `modelPath`, retrying
@@ -666,7 +676,7 @@ class WhisperEngine: FileTranscriptionEngine {
         return ok
     }
 
-    private func postInference(wavPath: String, language: String, prompt: String = "") throws -> String {
+    private func postInference(wavPath: String, language: String, prompt: String = "") throws -> WhisperResponseClassifier.Outcome {
         let port = currentPort
         guard let url = URL(string: "http://127.0.0.1:\(port)/inference") else {
             throw WhisperWorkerError.invalidURL
@@ -708,8 +718,13 @@ class WhisperEngine: FileTranscriptionEngine {
             throw WhisperWorkerError.emptyResponse
         }
 
-        guard http.statusCode == 200 else {
-            let message = String(data: resultData, encoding: .utf8) ?? "HTTP \(http.statusCode)"
+        // Classify the (status, body) pair with the pure, unit-tested core. It
+        // distinguishes a real transcript, a clean "no speech" empty, and a
+        // genuine failure (non-200 or malformed body) — see MAK-23.
+        let outcome = WhisperResponseClassifier.classify(statusCode: http.statusCode, body: resultData)
+
+        switch outcome {
+        case .error(let message):
             // Avoid persisting full response bodies: on some servers an error
             // body can echo back request content (potentially transcript text).
             #if DEBUG
@@ -717,20 +732,18 @@ class WhisperEngine: FileTranscriptionEngine {
             #else
             log("Server API HTTP \(http.statusCode) (\(resultData.count) bytes)")
             #endif
-            throw WhisperWorkerError.serverError(message)
+        case .cleanEmpty:
+            // Server ran fine but heard no speech — a clean no-op, not an error.
+            log("Server API response HTTP \(http.statusCode), textLen=0 (no speech)")
+            print("[WhisperEngine] worker result: \"\" (len=0, no speech)")
+        case .transcript(let text):
+            // Do NOT log the raw body: it contains the transcript and is written
+            // to a persistent, never-rotated cache log. Only record the length.
+            log("Server API response HTTP \(http.statusCode), textLen=\(text.count)")
+            print("[WhisperEngine] worker result: \"\(text)\" (len=\(text.count))")
         }
 
-        struct InferenceResponse: Decodable {
-            let text: String?
-        }
-
-        let decoded = try JSONDecoder().decode(InferenceResponse.self, from: resultData)
-        let text = decoded.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        // Do NOT log the raw body: it contains the transcript and is written to
-        // a persistent, never-rotated cache log. Only record the length.
-        log("Server API response HTTP \(http.statusCode), textLen=\(text.count)")
-        print("[WhisperEngine] worker result: \"\(text)\" (len=\(text.count))")
-        return text
+        return outcome
     }
 
     private func multipartBody(boundary: String, wavPath: String, language: String, prompt: String = "") throws -> Data {
@@ -945,7 +958,12 @@ enum WhisperWorkerError: LocalizedError {
     case emptyResponse
     case serverError(String)
     case unavailable
-    case emptyTranscript
+    // NOTE: `.emptyTranscript` was removed in MAK-23. An empty/whitespace-only
+    // transcript from a healthy 200 is no longer an error — it is a clean
+    // "no speech detected" empty (classified as `.cleanEmpty` and delivered via
+    // onTranscriptionComplete(requestID, "")), matching the CLI path's no-op.
+    // `.emptyResponse` still covers a genuinely absent HTTP response (no body /
+    // no HTTPURLResponse), which IS a transport failure.
 
     var errorDescription: String? {
         switch self {
@@ -957,8 +975,6 @@ enum WhisperWorkerError: LocalizedError {
             return message
         case .unavailable:
             return "whisper-server could not be started or did not become healthy."
-        case .emptyTranscript:
-            return "whisper-server returned an empty transcript. Check language/model settings or the log file."
         }
     }
 }
