@@ -110,20 +110,28 @@ final class ShortcutOutputTarget: OutputTarget {
             stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
         }
 
+        var timedOut = false
         let waitGroup = DispatchGroup()
         DispatchQueue.global(qos: .userInitiated).async(group: waitGroup) {
             process.waitUntilExit()
         }
         if waitGroup.wait(timeout: .now() + timeout) == .timedOut {
-            process.terminate()
-            _ = waitGroup.wait(timeout: .now() + 0.25)
+            timedOut = true
+            process.terminate()                        // SIGTERM
+            if waitGroup.wait(timeout: .now() + 0.25) == .timedOut {
+                kill(process.processIdentifier, SIGKILL)
+                _ = waitGroup.wait(timeout: .now() + 0.25)
+            }
         }
         if readGroup.wait(timeout: .now() + 0.5) == .timedOut {
             try? stdoutPipe.fileHandleForReading.close()
             readGroup.wait()
         }
 
-        guard process.terminationStatus == 0 else { return [] }
+        // On timeout, return before touching `terminationStatus`: reading it while
+        // the child could still be running (a SIGTERM-ignoring child, or the brief
+        // window before SIGKILL is delivered) raises NSInvalidArgumentException.
+        guard !timedOut, process.terminationStatus == 0 else { return [] }
         return ShortcutInvocation.parseList(String(data: stdoutData, encoding: .utf8))
     }
 
