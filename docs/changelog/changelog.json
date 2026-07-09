@@ -98,7 +98,7 @@
             119
           ],
           "howTo": {
-            "availability": "shipped",
+            "availability": "live",
             "summary": "Turn on the rule groups you want in Settings, then just speak the structure.",
             "steps": [
               "In Settings › Cleanup › Formatting, turn on the groups you want — Numbers and years, Currency, Spoken lists, Markdown commands. They're independent and off by default.",
