@@ -7,16 +7,45 @@
       "id": "2026-07",
       "title": "July 2026",
       "date": "2026-07-09",
-      "summary": "A batch of new features, fixes, and under-the-hood hardening — all landed on main, all covered by tests, all on your machine. Six new features are live in Settings today — rich local formatting, agent-CLI cleanup, plus output targets (route a dictation to a file, a macOS Shortcut, or a webhook); three more shipped their tested engine with the UI landing next — each is marked below.",
+      "summary": "A batch of new features, fixes, and under-the-hood hardening — all landed on main, all covered by tests, all on your machine. Seven new features are live in Settings today — rich local formatting, spoken-filename @-mentions for code editors, agent-CLI cleanup, plus output targets (route a dictation to a file, a macOS Shortcut, or a webhook); three more shipped their tested engine with the UI landing next — each is marked below.",
       "stats": {
-        "changesShipped": 15,
-        "newFeatures": 6,
-        "testsPassing": 870,
+        "changesShipped": 16,
+        "newFeatures": 7,
+        "testsPassing": 923,
         "onDevicePercent": 100,
-        "newFeaturesLive": 6,
+        "newFeaturesLive": 7,
         "newFeaturesCorePending": 3
       },
       "entries": [
+        {
+          "category": "feature",
+          "headline": "Say a filename, get an @-mention — hands-free file references in Cursor & Windsurf",
+          "body": "Speak a file the way you'd read it aloud — “main dot t s”, “at main”, “index dot j s x” — and OpenWhisp writes @main.ts / @main / @index.jsx so your editor's own file autocomplete pops up. It's a pure, offline text transform, and it's deliberately timid: only clear filename forms are rewritten, so ordinary speech (“I ate lunch”, “the main point”, “at noon”) is never touched.",
+          "tickets": [
+            "MAK-48"
+          ],
+          "prs": [
+            131
+          ],
+          "howTo": {
+            "availability": "live",
+            "summary": "Turn it on once in Settings, then say the filename in Cursor or Windsurf; the “dot <ext>” or leading “at” cue becomes an @-mention.",
+            "steps": [
+              "Turn it on: Settings › Cleanup › Formatting › “Enable file tagging in code editors” (off by default).",
+              "Dictate into Cursor or Windsurf and say the filename the way you'd read it: the name, the word “dot”, then the extension spelled out letter-by-letter (“main dot t s”) or as a whole word (“main dot swift”).",
+              "Or lead with “at” for a bare mention: “at main” → @main.",
+              "The @-mention lands in your editor and its file autocomplete disambiguates the rest."
+            ],
+            "say": [
+              "“main dot t s” → @main.ts",
+              "“index dot j s x” → @index.jsx",
+              "“main dot swift” → @main.swift",
+              "“at main” → @main",
+              "“open main dot t s and fix it” → open @main.ts and fix it"
+            ],
+            "note": "Works in Cursor and Windsurf when the Settings toggle is on — OpenWhisp only converts spoken filenames while one of those editors is frontmost, so ordinary dictation everywhere else (chat, docs) is never touched. Off by default. An optional AX read of the open workspace to auto-pick the exact extension is still a stretch goal."
+          }
+        },
         {
           "category": "feature",
           "headline": "Use your Claude or Codex CLI as the AI cleanup engine",
