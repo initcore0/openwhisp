@@ -73,11 +73,35 @@ struct CleanupPane: View {
                     isOn: $appState.fillerRemovalEnabled
                 )
                 .padding(.leading, 16)
+                SubtitledToggle(
+                    "Numbers and years",
+                    subtitle: "“twenty twenty six” → 2026",
+                    isOn: $appState.normalizeNumbers
+                )
+                .padding(.leading, 16)
+                SubtitledToggle(
+                    "Currency",
+                    subtitle: "“five dollars” → $5",
+                    isOn: $appState.normalizeCurrency
+                )
+                .padding(.leading, 16)
+                SubtitledToggle(
+                    "Spoken lists",
+                    subtitle: "“bullet buy milk” → - buy milk",
+                    isOn: $appState.spokenListsEnabled
+                )
+                .padding(.leading, 16)
+                SubtitledToggle(
+                    "Markdown commands",
+                    subtitle: "“heading intro”, “bold ship it”",
+                    isOn: $appState.basicMarkdownEnabled
+                )
+                .padding(.leading, 16)
             }
         } header: {
             Text("Formatting")
         } footer: {
-            SettingsFootnote("Free, instant, on-device: capitalizes sentences and tidies spacing and punctuation. No internet required.")
+            SettingsFootnote("Free, instant, on-device: capitalizes sentences and tidies spacing and punctuation. No internet required. Numbers, currency, lists, and markdown are off by default so they never touch ordinary prose.")
         }
     }
 

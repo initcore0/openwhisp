@@ -151,6 +151,26 @@ class AppState: ObservableObject {
         didSet { UserDefaults.standard.set(fillerRemovalEnabled, forKey: "fillerRemovalEnabled") }
     }
 
+    // Opt-in structural formatting (MAK-20). The rules live in SmartFormatter and
+    // are honored by TranscriptCleaner; these flags are the Settings controls that
+    // turn each group on. All default OFF so ordinary prose is never touched until
+    // the user opts in.
+    @Published var normalizeNumbers: Bool {
+        didSet { UserDefaults.standard.set(normalizeNumbers, forKey: "normalizeNumbers") }
+    }
+
+    @Published var normalizeCurrency: Bool {
+        didSet { UserDefaults.standard.set(normalizeCurrency, forKey: "normalizeCurrency") }
+    }
+
+    @Published var spokenListsEnabled: Bool {
+        didSet { UserDefaults.standard.set(spokenListsEnabled, forKey: "spokenListsEnabled") }
+    }
+
+    @Published var basicMarkdownEnabled: Bool {
+        didSet { UserDefaults.standard.set(basicMarkdownEnabled, forKey: "basicMarkdownEnabled") }
+    }
+
     @Published var liveChunkDuration: Double {
         didSet { UserDefaults.standard.set(liveChunkDuration, forKey: "liveChunkDuration") }
     }
@@ -942,6 +962,11 @@ class AppState: ObservableObject {
         smartFormattingEnabled = UserDefaults.standard.object(forKey: "smartFormattingEnabled") as? Bool ?? true
         spokenPunctuationEnabled = UserDefaults.standard.object(forKey: "spokenPunctuationEnabled") as? Bool ?? true
         fillerRemovalEnabled = UserDefaults.standard.object(forKey: "fillerRemovalEnabled") as? Bool ?? true
+        // MAK-20 structural formatting groups default OFF (opt-in).
+        normalizeNumbers = UserDefaults.standard.object(forKey: "normalizeNumbers") as? Bool ?? false
+        normalizeCurrency = UserDefaults.standard.object(forKey: "normalizeCurrency") as? Bool ?? false
+        spokenListsEnabled = UserDefaults.standard.object(forKey: "spokenListsEnabled") as? Bool ?? false
+        basicMarkdownEnabled = UserDefaults.standard.object(forKey: "basicMarkdownEnabled") as? Bool ?? false
         liveChunkDuration = UserDefaults.standard.object(forKey: "liveChunkDuration") as? Double ?? 2.0
         pauseBasedLiveChunksEnabled = UserDefaults.standard.object(forKey: "pauseBasedLiveChunksEnabled") as? Bool ?? false
         transcriptionEngine = UserDefaults.standard.string(forKey: "transcriptionEngine") ?? Self.defaultTranscriptionEngine
@@ -3179,7 +3204,11 @@ class AppState: ObservableObject {
             substitutions: vocabulary.substitutions,
             smartFormattingEnabled: smartFormattingEnabled,
             fillerRemovalEnabled: fillerRemovalEnabled,
-            spokenPunctuationEnabled: spokenPunctuationEnabled
+            spokenPunctuationEnabled: spokenPunctuationEnabled,
+            normalizeNumbers: normalizeNumbers,
+            normalizeCurrency: normalizeCurrency,
+            spokenListsEnabled: spokenListsEnabled,
+            basicMarkdownEnabled: basicMarkdownEnabled
         )
     }
 
