@@ -2,7 +2,43 @@
 
 **Goal:** regression-test every shipped feature by feeding pre-recorded audio through the full pipeline — capture → chunking/VAD → transcription → voice actions/formatting → post-processing → output/history/bridge — without a human speaking into a microphone.
 
-**Status:** plan (2026-07-08). Research: codebase seam audit + Apple-ecosystem survey of virtual-mic options.
+**Status:** partially implemented (2026-07-08). Tier 1 (fixtures + `FileAudioCapture`
++ core pipeline suite) is built and runs in the existing `swift test` CI job.
+Tier 2 (real-WhisperKit runner + BlackHole smoke) is scripted for local/nightly.
+See **Implementation status** below.
+
+---
+
+## Implementation status (2026-07-08)
+
+Landed (branch `feat/e2e-audio-testing`):
+
+- **Fixtures** — `Tests/Fixtures/audio/` holds 5 checked-in 16 kHz mono 16-bit WAVs
+  (plain speech, numbers/dates, speech+silence tail, two-utterance pause split,
+  pure silence), each with an expected-transcript `.txt`. Regenerate with
+  `scripts/gen-audio-fixtures.sh` (`say` + `afconvert`, pinned voice/rate;
+  `--check` is a format-drift guard). Checked in — not from the whisper.cpp
+  submodule, which CI doesn't fetch.
+- **`FileAudioCapture`** (`OpenWhisp/Services/FileAudioCapture.swift`, in
+  `OpenWhispCore`) — a Foundation-only fixture-replaying `AudioCapture` that
+  reproduces `AudioRecorder`'s RMS + pause-based VAD and writes real chunk WAVs.
+  Ships with a tiny `WAVFile` RIFF reader/writer so no AVFoundation leaks into
+  core. Unit-tested in `Tests/OpenWhispCoreTests/FileAudioCaptureTests.swift`.
+- **Core pipeline suite** — `Tests/OpenWhispCoreTests/AudioPipelineE2ETests.swift`
+  drives fixtures through the real `LiveChunkPipeline` + `TranscriptCleaner` +
+  spy `TextOutput` + history, with a `ScriptedFileEngine` (canned text) for
+  deterministic, exact assertions. Runs in the **existing** `ci.yml` `swift test`
+  job — no CI changes needed for Tier 1.
+- **Tier 2 scripts** — `scripts/e2e-smoke.sh` (BlackHole virtual-mic, drives the
+  app via `openwhisp dictate`) and `scripts/e2e-whisperkit.sh` +
+  `scripts/e2e/whisperkit-harness.swift` (compiles a harness linked against the
+  real WhisperKit engine and transcribes every fixture). The latter runs nightly,
+  non-blocking, via `.github/workflows/e2e-nightly.yml`.
+
+Not yet done (see **Build plan** Phase B): AppState constructor injection of
+`AudioCapture`, the AppKit-linked `xcodebuild test` lane, and the full
+feature-matrix suite (voice actions / refine / settings-profiles / agent-bridge
+end-to-end) require app-level DI and are the next phase.
 
 ---
 

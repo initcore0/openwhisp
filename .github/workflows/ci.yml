@@ -7,6 +7,11 @@ on:
 
 jobs:
   test:
+    # Covers the pure-logic unit tests AND the Tier-1 E2E audio suite
+    # (FileAudioCapture + fixture-driven pipeline tests), which are plain
+    # `swift test` with a scripted engine — no submodules, no WhisperKit. The
+    # heavier real-engine Tier-2 job lives in e2e-nightly.yml. See
+    # docs/E2E_AUDIO_TESTING.md.
     name: swift test (core logic)
     runs-on: macos-14
     steps:
