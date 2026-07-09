@@ -2072,6 +2072,12 @@ class AppState: ObservableObject {
         let sessionID = activeSessionID
         let usesWhisperKit = streamingUsesWhisperKit
         let engine = activeStreamingEngine
+        // Snapshot the selected input device for this session. Both streaming engines
+        // apply it in start(): Apple Speech retargets its own AVAudioEngine input
+        // node; WhisperKit swaps+restores the system default (no per-engine seam).
+        // "" = follow the system default. Previously never applied here at all — the
+        // reason a non-default mic was silently ignored on the default (streaming) path.
+        let micID = microphoneID
 
         // The actual engine start, after permissions are granted.
         let launch: @MainActor () -> Void = {
@@ -2082,6 +2088,7 @@ class AppState: ObservableObject {
                 return
             }
             do {
+                engine.selectDevice(micID)
                 try engine.start(language: self.engineLanguageSetting)
                 self.isArming = false
                 self.isRecording = true

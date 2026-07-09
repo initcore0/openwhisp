@@ -16,9 +16,12 @@ class AudioRecorder: NSObject, AVAudioRecorderDelegate, AudioCapture {
     private var meterTimer: Timer?
     private let streamQueue = DispatchQueue(label: "com.openwhisp.app.audio-stream")
 
-    // Desired input device (applied per-engine for streaming, per-recorder for legacy)
+    // Desired input device UID (applied per-engine for streaming, per-recorder for
+    // legacy). nil / "" = follow the system default input.
     private var selectedDeviceID: String?
-    private var previousDefaultInputDevice: AudioDeviceID?
+    // Live system-default swap for the legacy AVAudioRecorder path (which can only
+    // capture the default). Restored in stop(). See `AudioInputRouter`.
+    private var legacyDefaultOverride: AudioInputRouter.DefaultInputOverride?
 
     // Streaming state
     private var streamingEngine: AVAudioEngine?
@@ -79,54 +82,26 @@ class AudioRecorder: NSObject, AVAudioRecorderDelegate, AudioCapture {
         selectedDeviceID = deviceID
     }
 
-    /// Address for the system default input device property.
-    private static func defaultInputAddress() -> AudioObjectPropertyAddress {
-        AudioObjectPropertyAddress(
-            mSelector: kAudioHardwarePropertyDefaultInputDevice,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-    }
-
-    /// Reads the current system default input device.
-    private static func currentDefaultInputDevice() -> AudioDeviceID? {
-        var address = defaultInputAddress()
-        var devID = AudioDeviceID(0)
-        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
-        let status = AudioObjectGetPropertyData(
-            UInt32(kAudioObjectSystemObject),
-            &address,
-            0, nil,
-            &size,
-            &devID
-        )
-        return status == noErr ? devID : nil
-    }
-
-    /// Sets the system default input device. Returns true on success.
-    @discardableResult
-    private static func setDefaultInputDevice(_ deviceID: AudioDeviceID) -> Bool {
-        var address = defaultInputAddress()
-        var devID = deviceID
-        let size = UInt32(MemoryLayout<AudioDeviceID>.size)
-        let status = AudioObjectSetPropertyData(
-            UInt32(kAudioObjectSystemObject),
-            &address,
-            0, nil,
-            size,
-            &devID
-        )
-        return status == noErr
-    }
-
-    /// Scopes the selected input device to a specific engine's input node.
-    /// Must be called before `engine.start()`. Does not mutate the global default.
-    private func applyInputDevice(to engine: AVAudioEngine) {
-        guard let deviceID = selectedDeviceID, let device = AudioDevice.byID(deviceID) else { return }
-        do {
-            try engine.inputNode.auAudioUnit.setDeviceID(device.deviceID)
-        } catch {
-            print("Warning: Could not set input device on engine: \(error.localizedDescription)")
+    /// Scopes the selected input device to a specific engine's input node (streaming
+    /// paths). Must be called before `engine.start()`. Does not mutate the global
+    /// default.
+    ///
+    /// Returns false only when a NON-EMPTY device was selected but couldn't be
+    /// resolved/applied — the caller surfaces that as an error instead of silently
+    /// capturing the default (the historical bug). An empty selection returns true
+    /// (follow the system default is the intended behavior, not a failure).
+    private func applyInputDevice(to engine: AVAudioEngine) -> Bool {
+        switch AudioInputRoutingPolicy.decide(
+            microphoneID: selectedDeviceID ?? "",
+            deviceResolved: AudioInputRouter.canResolve(uid: selectedDeviceID ?? "")
+        ) {
+        case .systemDefault:
+            return true
+        case .useDevice(let uid):
+            guard let device = AudioInputRouter.resolve(uid: uid) else { return false }
+            return AudioInputRouter.apply(device, to: engine)
+        case .unresolved:
+            return false
         }
     }
     
@@ -145,14 +120,23 @@ class AudioRecorder: NSObject, AVAudioRecorderDelegate, AudioCapture {
         let settings = makeSettings()
 
         // Legacy AVAudioRecorder can only capture from the system default input.
-        // Temporarily switch the default to the selected device, capturing the
-        // previous default so it can be restored in stop().
-        if let deviceID = selectedDeviceID, let device = AudioDevice.byID(deviceID) {
-            previousDefaultInputDevice = Self.currentDefaultInputDevice()
-            if !Self.setDefaultInputDevice(device.deviceID) {
-                print("Warning: Could not set input device for legacy recording")
-                previousDefaultInputDevice = nil
+        // Temporarily switch the default to the selected device (restored in stop()).
+        // A non-empty selection that can't be resolved is a hard error — never
+        // silently record the default (the historical selected-mic-ignored bug).
+        switch AudioInputRoutingPolicy.decide(
+            microphoneID: selectedDeviceID ?? "",
+            deviceResolved: AudioInputRouter.canResolve(uid: selectedDeviceID ?? "")
+        ) {
+        case .systemDefault:
+            break
+        case .useDevice(let uid):
+            if let device = AudioInputRouter.resolve(uid: uid) {
+                let override = AudioInputRouter.DefaultInputOverride()
+                if override.engage(device) { legacyDefaultOverride = override }
             }
+        case .unresolved(let uid):
+            onStateChanged?(.error(AudioInputRoutingPolicy.unresolvedMessage(uid: uid)))
+            return
         }
 
         do {
@@ -166,10 +150,8 @@ class AudioRecorder: NSObject, AVAudioRecorderDelegate, AudioCapture {
         } catch {
             // Undo the default-device switch above: on failure stop() never runs,
             // so without this the machine-wide default input stays changed.
-            if let previous = previousDefaultInputDevice {
-                Self.setDefaultInputDevice(previous)
-                previousDefaultInputDevice = nil
-            }
+            legacyDefaultOverride?.restore()
+            legacyDefaultOverride = nil
             onStateChanged?(.error("Recording failed: \(error.localizedDescription)"))
         }
     }
@@ -189,7 +171,11 @@ class AudioRecorder: NSObject, AVAudioRecorderDelegate, AudioCapture {
         streamFileIndex = 0
         
         let engine = AVAudioEngine()
-        applyInputDevice(to: engine)
+        guard applyInputDevice(to: engine) else {
+            isStreaming = false
+            onStateChanged?(.error(AudioInputRoutingPolicy.unresolvedMessage(uid: selectedDeviceID ?? "")))
+            return
+        }
         let input = engine.inputNode
         let format = input.outputFormat(forBus: 0)
         streamingEngine = engine
@@ -275,7 +261,12 @@ class AudioRecorder: NSObject, AVAudioRecorderDelegate, AudioCapture {
         resetPauseStreamingState()
 
         let engine = AVAudioEngine()
-        applyInputDevice(to: engine)
+        guard applyInputDevice(to: engine) else {
+            isStreaming = false
+            isPauseBasedStreaming = false
+            onStateChanged?(.error(AudioInputRoutingPolicy.unresolvedMessage(uid: selectedDeviceID ?? "")))
+            return
+        }
         let input = engine.inputNode
         let format = input.outputFormat(forBus: 0)
         streamingEngine = engine
@@ -499,10 +490,8 @@ class AudioRecorder: NSObject, AVAudioRecorderDelegate, AudioCapture {
             recordingURL = nil
 
             // Restore the system default input device if the legacy path changed it.
-            if let previous = previousDefaultInputDevice {
-                Self.setDefaultInputDevice(previous)
-                previousDefaultInputDevice = nil
-            }
+            legacyDefaultOverride?.restore()
+            legacyDefaultOverride = nil
         }
 
         onStateChanged?(.stopped)

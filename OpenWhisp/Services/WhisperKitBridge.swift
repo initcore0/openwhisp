@@ -354,6 +354,14 @@ final class WhisperKitStreamHandle {
     func start() async throws { try await transcriber?.startStreamTranscription() }
     func stop() async { await transcriber?.stopStreamTranscription() }
 
+    /// True once WhisperKit's `AudioProcessor` has built and started its capture
+    /// engine — i.e. the input node is bound to the (currently-default) device.
+    /// The streaming engine polls this to know when it's safe to restore a
+    /// system-default-input override without losing the device binding.
+    func isCapturing() -> Bool {
+        (kit.audioProcessor as? AudioProcessor)?.audioEngine?.isRunning ?? false
+    }
+
     /// The full assembled transcript (confirmed + unconfirmed) as of the last state.
     func fullText() -> String {
         (latest?.fullText ?? "").trimmingCharacters(in: .whitespacesAndNewlines)

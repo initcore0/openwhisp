@@ -38,6 +38,7 @@ let package = Package(
                 "TranscriptionEngine.swift",
                 "AudioCapture.swift",
                 "FileAudioCapture.swift",
+                "AudioInputRoutingPolicy.swift",
                 "OverlayPhase.swift",
                 "LiveChunkPipeline.swift",
                 "ConfigBundle.swift",
