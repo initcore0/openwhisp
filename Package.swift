@@ -23,6 +23,8 @@ let package = Package(
             sources: [
                 "SmartFormatter.swift",
                 "Vocabulary.swift",
+                "LanguageResolver.swift",
+                "ProfileResolver.swift",
                 "MetaInstructionStripper.swift",
                 "PostProcessor.swift",
                 "AppProfile.swift",

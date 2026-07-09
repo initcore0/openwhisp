@@ -832,16 +832,21 @@ class AppState: ObservableObject {
     /// no translate concept, so it always gets the plain language (used as a
     /// locale hint).
     var engineLanguageSetting: String {
-        if translateToEnglish, transcriptionEngine != "appleSpeech" {
-            return WhisperTask.translateToEnglishSetting
-        }
-        return language
+        LanguageResolver.engineLanguageSetting(
+            language: language,
+            translateToEnglish: translateToEnglish,
+            transcriptionEngine: transcriptionEngine
+        )
     }
 
     /// The language of the OUTPUT text, for formatting rules (spoken
     /// punctuation etc.): English when translating, else the spoken language.
     private var outputLanguageForCleaning: String {
-        (translateToEnglish && transcriptionEngine != "appleSpeech") ? "en" : language
+        LanguageResolver.outputLanguageForCleaning(
+            language: language,
+            translateToEnglish: translateToEnglish,
+            transcriptionEngine: transcriptionEngine
+        )
     }
 
     /// Whether dictation can send any text off this machine to the internet.
@@ -861,14 +866,24 @@ class AppState: ObservableObject {
         Self.languageDisplayName(for: language)
     }
 
-    private init(
+    /// Test/DI seam: when injected, `wireUpServices()` uses these instead of
+    /// constructing the concrete `AudioRecorder()` / real file engine. Nil in the
+    /// shipping app (the `.shared` singleton), so production wiring is unchanged.
+    private let injectedAudioCapture: AudioCapture?
+    private let injectedFileEngine: FileTranscriptionEngine?
+
+    init(
         secretStore: SecretStore = KeychainStore(),
         launchAtLoginService: LaunchAtLoginService = LaunchAtLogin(),
-        textOutput: TextOutput = TextInserter()
+        textOutput: TextOutput = TextInserter(),
+        audioCapture: AudioCapture? = nil,
+        fileEngine: FileTranscriptionEngine? = nil
     ) {
         self.secretStore = secretStore
         self.launchAtLoginService = launchAtLoginService
         self.textOutput = textOutput
+        self.injectedAudioCapture = audioCapture
+        self.injectedFileEngine = fileEngine
         let savedWhisperBinaryPath = UserDefaults.standard.string(forKey: "whisperBinaryPath") ?? ""
         whisperBinaryPath = Self.preferredWhisperCLIPath(savedPath: savedWhisperBinaryPath)
 
@@ -1062,7 +1077,8 @@ class AppState: ObservableObject {
         // setting. "whisperKit" is an experimental CoreML backend (pilot) that
         // conforms to the same FileTranscriptionEngine protocol, so all the
         // callback wiring below is identical regardless of which one is active.
-        whisperEngine = Self.makeFileEngine(for: transcriptionEngine, model: modelName, whisperKitModel: whisperKitModel)
+        whisperEngine = injectedFileEngine
+            ?? Self.makeFileEngine(for: transcriptionEngine, model: modelName, whisperKitModel: whisperKitModel)
         appleSpeechEngine = AppleSpeechEngine()
         whisperKitStreamEngine = WhisperKitStreamingEngine(modelName: whisperKitModel)
         translationService = OpenAITranslationService()
@@ -1070,7 +1086,7 @@ class AppState: ObservableObject {
         wireFileEngineCallbacks()
         wireStreamingEngineCallbacks(whisperKitStreamEngine)
 
-        audioRecorder = AudioRecorder()
+        audioRecorder = injectedAudioCapture ?? AudioRecorder()
         audioRecorder.autoGainEnabled = autoGainEnabled
         audioRecorder.onStateChanged = { [weak self] state in
             Task { @MainActor in
@@ -3449,22 +3465,18 @@ class AppState: ObservableObject {
         profileOverrideBackup = (language: language, translateToEnglish: translateToEnglish,
                                  outputMode: outputMode, aiCleanup: openAIEnhancementEnabled)
 
-        // Don't persist the overridden values; they're session-scoped.
+        // Resolve the effective settings via the pure resolver (single source of
+        // truth for the "en" → translate remap + inherit-vs-override matrix), then
+        // apply. Don't persist the overridden values; they're session-scoped.
         suppressSettingsPersistence = true
-        if let lang = profile.language {
-            // Preserve the profile's historical semantics: "en" meant
-            // translate-to-English (source auto-detected); any other explicit
-            // language transcribes in that language without translation.
-            if lang == "en" {
-                language = "auto"
-                translateToEnglish = true
-            } else {
-                language = lang
-                translateToEnglish = false
-            }
-        }
-        if let mode = profile.outputMode { outputMode = mode }
-        if let ai = profile.aiCleanupEnabled { openAIEnhancementEnabled = ai }
+        let resolved = ProfileResolver.resolve(profile: profile, over: .init(
+            language: language, translateToEnglish: translateToEnglish,
+            outputMode: outputMode, aiCleanupEnabled: openAIEnhancementEnabled
+        ))
+        language = resolved.language
+        translateToEnglish = resolved.translateToEnglish
+        outputMode = resolved.outputMode
+        openAIEnhancementEnabled = resolved.aiCleanupEnabled
     }
 
     /// Restore any settings a profile overrode for the just-finished session.
