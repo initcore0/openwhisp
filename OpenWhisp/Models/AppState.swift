@@ -798,6 +798,26 @@ class AppState: ObservableObject {
         return mode == "rephrase" ? "bundled-rephrase" : "bundled-improve"
     }
 
+    /// The whole-text final AI step, expressed as the `AsyncTextRefiner` seam
+    /// (MAK-15). This is the concrete `AIPostProcessor` refiner for the
+    /// `VocabularySubstitutor → SmartFormatter → AIPostProcessor` chain: the app
+    /// owns the network call (`OpenAITranslationService`) so core stays
+    /// Foundation-only, and the chain composes this transform uniformly.
+    ///
+    /// A snapshot of the session's LLM settings, built per call so a mid-session
+    /// settings change is reflected. Used by `completeFinalText` today; the rest
+    /// of the AI orchestration (engine bracket, session guards, status UI) stays in
+    /// AppState because those are UI/lifecycle concerns the pure chain doesn't model.
+    func makeWholeTextRefiner() -> OpenAIRefiner {
+        OpenAIRefiner(
+            service: translationService,
+            mode: refinementMode(openAIEnhancementMode),
+            targetLanguage: translationTargetLanguage,
+            endpoint: llmEndpoint,
+            model: llmModel
+        )
+    }
+
     /// Whether this build includes the built-in LLM runtime (llama-server).
     /// False for an app packaged without it — the built-in provider then can't
     /// work no matter what, and the UI should say so rather than fail vaguely.
@@ -2754,42 +2774,59 @@ class AppState: ObservableObject {
         // it would paste/clobber the clipboard after the session was cancelled.
         let sessionID = activeSessionID
 
+        // Route the whole-text AI transform through the `AsyncTextRefiner` seam
+        // (MAK-15) — the `AIPostProcessor` refiner — instead of calling
+        // `translationService.processFinalText` directly. Behavior is byte-identical:
+        // the seam wraps the same call, and the completion-style branches below
+        // (empty-output and failure fallbacks, status/error/side-effects) are
+        // UNCHANGED. Only the source of the transform moved to the composable seam.
+        // The engine bracket, session guard, and status UI stay here because they
+        // are lifecycle/UI concerns the pure chain doesn't model.
         ensureBundledLLMReady(quiesceWhisper: true, work: { [weak self] done in
             guard let self else { done(); return }
-            self.translationService.processFinalText(
-                text: finalText,
-                mode: self.refinementMode(self.openAIEnhancementMode),
-                targetLanguage: self.translationTargetLanguage,
-                endpoint: self.llmEndpoint,
-                model: self.llmModel
-            ) { [weak self] result in
-                Task { @MainActor in
-                    // Close the engine's in-flight bracket on EVERY completion path
-                    // (including the guarded early returns below).
-                    done()
-                    guard let self, sessionID == self.activeSessionID else { return }
-                    self.isTranscribing = false
-                    switch result {
-                    case .success(let processedText):
-                        let cleaned = self.postProcess(processedText)
-                        guard !cleaned.isEmpty else {
-                            self.error = "The LLM returned empty text."
-                            self.translationStatus = "Refinement failed"
-                            self.openAIEnhancementEnabledForSession = false
-                            self.insertCompletedText(finalText, originalText: finalText)
-                            self.statusMessage = "Refinement failed; inserted local text"
-                            return
-                        }
-                        self.translationStatus = self.openAIEnhancementMode == "rephrase" ? "Rephrased" : "Improved"
-                        self.rememberLastDictation(cleaned)
-                        self.insertCompletedText(cleaned, originalText: finalText)
-                    case .failure(let error):
-                        self.error = "Post-processing failed: \(error.localizedDescription)"
+            // Build the refiner INSIDE work:, after the engine is ready — the
+            // bundled provider re-picks its port per launch (MAK-28) and
+            // `llmEndpoint` must be read AFTER `ensureRunning` reports healthy.
+            // This matches the OLD code, which read endpoint/model here too.
+            let refiner = self.makeWholeTextRefiner()
+            let refineContext = PostProcessContext(
+                language: self.outputLanguageForCleaning,
+                targetBundleID: self.targetApplication?.bundleIdentifier,
+                isLiveChunk: false
+            )
+            Task { @MainActor [weak self] in
+                let result: Result<String, Error>
+                do {
+                    result = .success(try await refiner.refine(finalText, context: refineContext))
+                } catch {
+                    result = .failure(error)
+                }
+                // Close the engine's in-flight bracket on EVERY completion path
+                // (including the guarded early returns below). Fires regardless of
+                // whether self survived the await, matching the old completion.
+                done()
+                guard let self, sessionID == self.activeSessionID else { return }
+                self.isTranscribing = false
+                switch result {
+                case .success(let processedText):
+                    let cleaned = self.postProcess(processedText)
+                    guard !cleaned.isEmpty else {
+                        self.error = "The LLM returned empty text."
                         self.translationStatus = "Refinement failed"
                         self.openAIEnhancementEnabledForSession = false
                         self.insertCompletedText(finalText, originalText: finalText)
                         self.statusMessage = "Refinement failed; inserted local text"
+                        return
                     }
+                    self.translationStatus = self.openAIEnhancementMode == "rephrase" ? "Rephrased" : "Improved"
+                    self.rememberLastDictation(cleaned)
+                    self.insertCompletedText(cleaned, originalText: finalText)
+                case .failure(let error):
+                    self.error = "Post-processing failed: \(error.localizedDescription)"
+                    self.translationStatus = "Refinement failed"
+                    self.openAIEnhancementEnabledForSession = false
+                    self.insertCompletedText(finalText, originalText: finalText)
+                    self.statusMessage = "Refinement failed; inserted local text"
                 }
             }
         }, fallback: { [weak self] in
