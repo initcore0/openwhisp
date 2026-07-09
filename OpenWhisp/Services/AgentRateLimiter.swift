@@ -83,7 +83,9 @@ public struct AgentRateLimiter: Equatable, Sendable {
 
         var retryAfter: TimeInterval = 0
 
-        // Cooldown: gap since the most recent session last held the mic.
+        // Cooldown: gap since the most recent session last held the mic. This is
+        // the one throttle that legitimately keys on `lastActivity` (the session's
+        // end), so it consults `recent` — pruned on that same clock.
         if let last = recent.last {
             let sinceLast = now.timeIntervalSince(last.lastActivity)
             if sinceLast < cooldownSeconds {
@@ -91,20 +93,37 @@ public struct AgentRateLimiter: Equatable, Sendable {
             }
         }
 
-        // Per-window cap: full window → wait for the oldest start to age out.
-        if maxSessionsPerHour > 0, recent.count >= maxSessionsPerHour, let oldest = recent.first {
+        // The cap and the budget are both keyed on a session's `start` (when the
+        // slot was claimed / the mic-time began accruing), so they must decide
+        // membership on that same clock — not on `lastActivity`, which `pruned()`
+        // uses for the cooldown. A "straddling" session whose `start` predates the
+        // window but whose `lastActivity` keeps it in `recent` is NOT in-window for
+        // these two: counting it while flooring its age-out at 0 would let new
+        // in-window starts pile up unbounded behind a stale `oldest` (MAK-31).
+        let cutoff = now.addingTimeInterval(-windowSeconds)
+        let inWindow = recent.filter { $0.start > cutoff }
+
+        // Per-window cap: full window → wait for the oldest *in-window* start to
+        // age out. Because membership and age-out share the `start` clock, the
+        // oldest in-window start is strictly newer than `cutoff`, so its age-out is
+        // always strictly positive — no floor needed, and the invariant (at most
+        // `maxSessionsPerHour` in-window starts) holds by construction.
+        if maxSessionsPerHour > 0, inWindow.count >= maxSessionsPerHour, let oldest = inWindow.first {
             let ageOut = windowSeconds - now.timeIntervalSince(oldest.start)
             retryAfter = max(retryAfter, ageOut)
         }
 
-        // Listening budget: total recorded mic time in the window. When exhausted,
-        // wait until enough of the oldest sessions age out to get back under it.
+        // Listening budget: total recorded mic time from in-window starts. When
+        // exhausted, wait until enough of the oldest of them age out to get back
+        // under it. Same clock as the cap: only sessions that started in the window
+        // count, so every `wait` below is derived from an in-window start and is
+        // strictly positive.
         if maxListeningSecondsPerHour > 0 {
-            let total = recent.reduce(0) { $0 + $1.seconds }
+            let total = inWindow.reduce(0) { $0 + $1.seconds }
             if total >= maxListeningSecondsPerHour {
                 var freed: TimeInterval = 0
                 var wait: TimeInterval = 0
-                for session in recent {
+                for session in inWindow {
                     wait = windowSeconds - now.timeIntervalSince(session.start)
                     freed += session.seconds
                     if total - freed < maxListeningSecondsPerHour { break }
@@ -141,16 +160,24 @@ public struct AgentRateLimiter: Equatable, Sendable {
         sessions.removeValue(forKey: clientName)
     }
 
-    /// Accepted-start count for a client within the current window (for tests / a
-    /// future settings display).
+    /// Number of accepted starts for a client that fall within the current window
+    /// *by start time* — i.e. exactly the set the per-window cap counts (for tests
+    /// / a future settings display). Keys on `start`, matching the cap, so a
+    /// straddling session whose start has aged past the window no longer inflates
+    /// the count even while its `lastActivity` still binds the cooldown.
     public func sessionCount(clientName: String, now: Date) -> Int {
-        pruned(sessions[clientName] ?? [], now: now).count
+        let cutoff = now.addingTimeInterval(-windowSeconds)
+        return pruned(sessions[clientName] ?? [], now: now).filter { $0.start > cutoff }.count
     }
 
-    /// Drop sessions whose start is older than the window (they can no longer bind
-    /// the cooldown, the cap, or the budget — a session's length is bounded far
-    /// below any sane window). Kept sorted-ascending by construction (we only
-    /// append at `now`), so the surviving suffix is contiguous.
+    /// Drop sessions that can no longer bind the *cooldown* — those whose
+    /// `lastActivity` (session end, the cooldown clock) is older than the window
+    /// (or the cooldown horizon, whichever reaches further back). This keys on
+    /// `lastActivity`, so the survivors are exactly the set the cooldown consults;
+    /// `check()` re-derives the cap/budget's in-window set from `start` on top of
+    /// this, since those two throttles key on a different clock. Kept
+    /// sorted-ascending by construction (we only append at `now`), so the surviving
+    /// suffix is contiguous.
     private func pruned(_ recent: [Session], now: Date) -> [Session] {
         let cutoff = now.addingTimeInterval(-windowSeconds)
         // Also honor the cooldown horizon: even past the window, the immediately
