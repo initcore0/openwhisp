@@ -29,9 +29,12 @@ enum ScriptRunner {
         // Discard stderr to /dev/null so a script writing lots of stderr can't
         // block on a full, undrained pipe buffer (which would force a timeout).
         process.standardError = FileHandle.nullDevice
-        // Run the script in its OWN process group so that if we have to kill it we
-        // can signal the whole group — killing any subprocesses it spawned that
-        // would otherwise keep the stdout pipe open and the reader blocked.
+        // We TRY to put the script in its own process group (see setpgid below) so
+        // a timeout can group-kill any subprocesses it spawned — grandchildren that
+        // would otherwise keep the stdout pipe open and the reader blocked. But that
+        // placement is BEST-EFFORT (it races the child's exec), so it is not
+        // guaranteed; the direct `kill(pid)` on timeout is the guaranteed reaper of
+        // the main child. See ScriptTimeoutKill for the exact escalation policy.
         process.environment = ProcessInfo.processInfo.environment
 
         do {
@@ -42,8 +45,13 @@ enum ScriptRunner {
             )
         }
         let pid = process.processIdentifier
-        // Put the child in its own process group (best-effort; ignore EACCES if it
-        // already exec'd). Lets us SIGKILL(-pgid) to reap daemonized grandchildren.
+        // Try to put the child in its own process group so we can later
+        // SIGKILL(-pgid) to reap daemonized grandchildren. This is best-effort: it
+        // races the child's exec, and once exec'd it fails with EACCES, leaving the
+        // child in OUR group. We don't rely on it succeeding — the timeout path
+        // re-reads the child's actual group and only group-kills when the placement
+        // demonstrably took (see ScriptTimeoutKill), always reaping the child
+        // directly regardless.
         setpgid(pid, pid)
 
         // Feed stdin on a background queue, then close so the script sees EOF.
@@ -83,8 +91,16 @@ enum ScriptRunner {
             timedOut = true
             process.terminate()                       // SIGTERM to the child
             if waitGroup.wait(timeout: .now() + 0.25) == .timedOut {
-                kill(-pid, SIGKILL)                   // SIGKILL the whole group
-                kill(pid, SIGKILL)                    // and the child directly, in case setpgid lost the race
+                // Escalate to SIGKILL. Re-read the child's ACTUAL process group
+                // (setpgid above is best-effort) and let the pure policy decide the
+                // targets: it group-kills only when the child leads its own group —
+                // never our group — and always kills the child directly as the
+                // guaranteed reaper.
+                for target in ScriptTimeoutKill.targets(
+                    pid: pid, resolvedPgid: getpgid(pid), ownPgid: getpgid(0)
+                ) {
+                    kill(target.killArg, SIGKILL)
+                }
             }
         }
 

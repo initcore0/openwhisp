@@ -77,6 +77,59 @@ final class ScriptOutcomeTests: XCTestCase {
     }
 }
 
+final class ScriptTimeoutKillTests: XCTestCase {
+    // Happy path: setpgid took, so the child leads its own group (pgid == pid) and
+    // that group is not ours. Group-kill FIRST (reap grandchildren), then the
+    // direct kill as the guaranteed reaper.
+    func testChildLeadsOwnGroupKillsGroupThenDirect() {
+        let targets = ScriptTimeoutKill.targets(pid: 4321, resolvedPgid: 4321, ownPgid: 999)
+        XCTAssertEqual(targets, [.group(4321), .direct(4321)])
+        // Group target is negated for kill(2); direct is the raw pid.
+        XCTAssertEqual(targets.map(\.killArg), [-4321, 4321])
+        XCTAssertEqual(targets.map(\.isGroup), [true, false])
+    }
+
+    // setpgid lost the race: the child stayed in OUR group (pgid == ownPgid). We
+    // must NOT group-kill (that would signal OpenWhisp itself) — only the direct
+    // kill, which still reaps the main child.
+    func testChildInOwnProcessGroupOnlyDirectKill() {
+        let ourPgid: Int32 = 501
+        let targets = ScriptTimeoutKill.targets(pid: 4321, resolvedPgid: ourPgid, ownPgid: ourPgid)
+        XCTAssertEqual(targets, [.direct(4321)])
+        XCTAssertFalse(targets.contains { $0.isGroup })
+    }
+
+    // Child is in some OTHER group that is neither our group nor a group it leads
+    // (pgid != pid). Don't group-kill an unrelated group; direct-kill only.
+    func testChildInForeignNonLedGroupOnlyDirectKill() {
+        let targets = ScriptTimeoutKill.targets(pid: 4321, resolvedPgid: 7777, ownPgid: 999)
+        XCTAssertEqual(targets, [.direct(4321)])
+    }
+
+    // getpgid failed (returns -1). Treat as "no reliable group" — direct-kill only.
+    func testFailedPgidLookupOnlyDirectKill() {
+        let targets = ScriptTimeoutKill.targets(pid: 4321, resolvedPgid: -1, ownPgid: 999)
+        XCTAssertEqual(targets, [.direct(4321)])
+    }
+
+    // Defensive: an invalid pid yields no targets (never kill(0)/kill(-1)).
+    func testNonPositivePidYieldsNoTargets() {
+        XCTAssertEqual(ScriptTimeoutKill.targets(pid: 0, resolvedPgid: 0, ownPgid: 999), [])
+        XCTAssertEqual(ScriptTimeoutKill.targets(pid: -5, resolvedPgid: -5, ownPgid: 999), [])
+    }
+
+    // The direct kill is ALWAYS present (guaranteed reaper), in every branch.
+    func testDirectKillAlwaysPresentForValidPid() {
+        for pgid: Int32 in [4321, 501, 7777, -1] {
+            let targets = ScriptTimeoutKill.targets(pid: 4321, resolvedPgid: pgid, ownPgid: 501)
+            XCTAssertTrue(targets.contains(.direct(4321)),
+                          "direct kill must always be present for pgid=\(pgid)")
+            XCTAssertEqual(targets.last, .direct(4321),
+                           "direct kill must be last for pgid=\(pgid)")
+        }
+    }
+}
+
 final class ScriptPathValidatorTests: XCTestCase {
     func testEmptyPath() {
         XCTAssertEqual(
