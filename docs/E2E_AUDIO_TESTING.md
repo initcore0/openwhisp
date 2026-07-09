@@ -57,6 +57,14 @@ before shipping the next feature.
   harness linked against the real WhisperKit engine; auto-picks a staged model to
   run offline). The WhisperKit runner is wired nightly via
   `.github/workflows/e2e-nightly.yml`.
+- **Live app-feature tests** — `scripts/e2e-app-features.sh` drives the **running
+  app** through its `openwhisp` CLI (the agent bridge) and asserts the text
+  features end-to-end against the **real LLM / real app state**, which `swift test`
+  can't (it stubs the LLM). Covers **refine** (rephrase / grammar / translate /
+  no-op passthrough / stdin / `--json`), `status`, and `history`. This is the
+  "give it text + an instruction and confirm the output actually changed" test.
+  Requires the app running with an LLM configured (`openwhisp status` →
+  `llm=configured`); refine cases skip (not fail) without one.
 
 **Still deferred:** a full-app raw-swiftc harness that links `AppState` itself
 (compiles the 4368-line `@MainActor` class + ~40 deps) — most feature *logic* is
@@ -106,10 +114,14 @@ never exact) — but a scripted engine's text flowing through formatting can be 
 phrase), run it, and check the `.wav`/`.txt` in. Re-run `./scripts/gen-audio-fixtures.sh --check`
 to confirm format.
 
-**4. Real-engine / real-capture coverage (optional).** If the feature only matters
-with the *real* engine or the *real* mic, add a case to `scripts/e2e-whisperkit.sh`
-(real WhisperKit) or `scripts/e2e-smoke.sh` (BlackHole). These are nightly/local, not
-blocking CI.
+**4. Real-engine / real-capture / real-LLM coverage (optional).** If the feature only
+matters with the *real* engine, the *real* mic, or the *real* LLM, add a case to the
+matching Tier-2 script (nightly/local, not blocking CI):
+- real transcription engine → `scripts/e2e-whisperkit.sh`
+- real microphone capture → `scripts/e2e-smoke.sh` (BlackHole)
+- **real LLM / any agent-bridge verb (refine, status, history)** → `scripts/e2e-app-features.sh`,
+  which drives the running app via the `openwhisp` CLI and asserts the real output.
+  This is the place for "the app produced genuinely different/correct text" checks.
 
 **Rule of thumb:** every pipeline feature gets at least one `FeatureMatrixE2ETests`
 case driven from a fixture. If you find yourself unable to write one without linking
