@@ -14,7 +14,22 @@ class WhisperEngine: FileTranscriptionEngine {
     var onProgress: ((Int) -> Void)?
     var onWorkerStatus: ((String) -> Void)?
 
-    private let serverPort: Int
+    /// Loopback port the server binds. Re-picked (under `serverLock`) at each
+    /// (re)launch inside `ensureServerOnce` rather than cached once at init —
+    /// see MAK-28. Now that it is a `var` mutated under the lock, every read
+    /// outside the lock goes through `currentPort` (a lock-guarded snapshot) so
+    /// there is no TSan-visible data race and a caller can't poll a concurrent
+    /// relaunch's port on behalf of the old generation. Reads WITH the lock held
+    /// (the launch path) touch `serverPort` directly.
+    private var serverPort: Int
+
+    /// Thread-safe snapshot of `serverPort` for reads that run WITHOUT
+    /// `serverLock` held (`healthCheck`, `postInference`).
+    private var currentPort: Int {
+        serverLock.lock()
+        defer { serverLock.unlock() }
+        return serverPort
+    }
     private let serverLock = NSLock()
     private var serverProcess: Process?
     private var serverModelPath: String?
@@ -36,7 +51,7 @@ class WhisperEngine: FileTranscriptionEngine {
     private var startingGeneration: Int?
 
     init() {
-        serverPort = Self.availableLoopbackPort() ?? 8178
+        serverPort = Self.availableLoopbackPort(in: Self.portRange) ?? Self.portRange.lowerBound
         pidFileURL = Self.workerPIDFileURL()
         logFileURL = Self.logFileURL()
         Self.stopStaleServerIfNeeded(pidFileURL: pidFileURL)
@@ -301,7 +316,38 @@ class WhisperEngine: FileTranscriptionEngine {
         return text
     }
 
+    /// Ensures a healthy whisper-server is running for `modelPath`, retrying
+    /// with a freshly-discovered loopback port if a launch fails to become
+    /// healthy — which is how a lost port-bind race (MAK-28) surfaces. The
+    /// happy path (server already healthy on this model) returns on the first
+    /// attempt without re-picking a port.
+    ///
+    /// Retries ONLY on a health failure. If a concurrent `stopServer()` /
+    /// model-switch cancels an in-flight launch, `ensureServerOnce` reports
+    /// `.cancelled` and we do NOT retry — retrying would relaunch a server the
+    /// user just tore down (an orphan on quit). See MAK-28 review #2. The
+    /// retry-vs-cancel decision is the pure `ServerLaunchRetry.decide`.
     private func ensureServer(binaryPath: String, modelPath: String) -> Bool {
+        let maxAttempts = 3
+        for attempt in 1...maxAttempts {
+            let attemptsRemaining = maxAttempts - attempt + 1
+            let outcome = ensureServerOnce(binaryPath: binaryPath, modelPath: modelPath)
+            switch ServerLaunchRetry.decide(outcome: outcome, attemptsRemaining: attemptsRemaining) {
+            case .succeed:
+                return true
+            case .giveUp:
+                return false
+            case .retry:
+                log("whisper-server launch attempt \(attempt) failed health check; retrying on a fresh port")
+            }
+        }
+        return false
+    }
+
+    /// Outcome of a single `ensureServerOnce` attempt, routed through
+    /// `ServerLaunchRetry.decide`. `.healthFailed` is retryable; `.cancelled`
+    /// (a concurrent stop/generation-invalidation) is not.
+    private func ensureServerOnce(binaryPath: String, modelPath: String) -> ServerLaunchRetry.Outcome {
         // --- Phase 1: snapshot / start under the lock -------------------------
         serverLock.lock()
 
@@ -319,7 +365,16 @@ class WhisperEngine: FileTranscriptionEngine {
                 serverLock.lock()
                 let stillCurrent = serverGeneration == myGeneration && serverProcess === process
                 serverLock.unlock()
-                return healthy && stillCurrent
+                if healthy, stillCurrent {
+                    return .launched
+                }
+                // The joined startup was stopped/replaced out from under us
+                // (generation moved) — that's a cancellation, not a health
+                // failure; don't relaunch a server the owner is tearing down.
+                // If it's still current but unhealthy, the owning generation's
+                // phase 3 will tear it down; treat that as a health failure so
+                // a retry can bring a fresh server up.
+                return stillCurrent ? .healthFailed : .cancelled
             }
             // No startup pending: probe health WITHOUT the lock (healthCheck
             // blocks up to ~1.2s; holding serverLock stalls main-actor callers
@@ -336,11 +391,15 @@ class WhisperEngine: FileTranscriptionEngine {
             serverLock.lock()
             if serverGeneration != probedGeneration || serverProcess !== probedProcess {
                 serverLock.unlock()
-                return ensureServer(binaryPath: binaryPath, modelPath: modelPath)
+                // Re-evaluate from the top by re-entering ONCE (ensureServerOnce,
+                // NOT the ensureServer wrapper) so this recursion is charged
+                // against the caller's existing attempt budget rather than being
+                // granted a fresh 3-attempt budget. See MAK-28 review #5.
+                return ensureServerOnce(binaryPath: binaryPath, modelPath: modelPath)
             }
             if probeHealthy {
                 serverLock.unlock()
-                return true
+                return .launched
             }
         }
 
@@ -353,7 +412,20 @@ class WhisperEngine: FileTranscriptionEngine {
             DispatchQueue.main.async {
                 self.onWorkerStatus?("Worker unavailable")
             }
-            return false
+            // Not a user cancellation: report as a (non-)launch failure so the
+            // outer loop's give-up path fires. A retry would just fail identically
+            // (the binary won't appear), but it's harmless — preserving the prior
+            // retry-on-false behavior for this branch.
+            return .healthFailed
+        }
+
+        // Pick a FRESH port for this launch instead of reusing the one cached at
+        // init. Reusing one port across restarts widens the window in which the
+        // child hasn't bound yet and something else can claim it; re-picking (and
+        // the caller's retry-on-failure) is the MAK-28 fix. Keep the previous
+        // port if discovery fails so we still attempt a launch.
+        if let freshPort = Self.availableLoopbackPort(in: Self.portRange) {
+            serverPort = freshPort
         }
 
         let process = Process()
@@ -393,8 +465,12 @@ class WhisperEngine: FileTranscriptionEngine {
         process.standardError = stderrPipe
 
         do {
+            // Capture the port under the lock (held here) so the deferred
+            // main-thread status closure doesn't read the mutable `serverPort`
+            // unsynchronized.
+            let launchPort = serverPort
             DispatchQueue.main.async {
-                self.onWorkerStatus?("Loading on port \(self.serverPort)...")
+                self.onWorkerStatus?("Loading on port \(launchPort)...")
             }
             try process.run()
         } catch {
@@ -404,7 +480,9 @@ class WhisperEngine: FileTranscriptionEngine {
             DispatchQueue.main.async {
                 self.onWorkerStatus?("Worker unavailable")
             }
-            return false
+            // A spawn failure is a launch failure, not a user cancellation —
+            // eligible for a retry on a fresh port (matching prior behavior).
+            return .healthFailed
         }
 
         // Commit the freshly-started process into shared state and bump the
@@ -436,28 +514,37 @@ class WhisperEngine: FileTranscriptionEngine {
         }
 
         // If a concurrent stop/replace happened, the process we started is no
-        // longer the current one — don't touch shared state, just bail.
+        // longer the current one — don't touch shared state, just bail. This is
+        // a CANCELLATION (the user stopped/switched, or is quitting), NOT a
+        // health failure: the outer loop must NOT retry, or attempt N+1 would
+        // relaunch a server the user just tore down (an orphan on quit). This is
+        // the crux of MAK-28 review #2.
         guard serverGeneration == myGeneration, serverProcess === process else {
             // Our process was already torn down (or replaced) by someone else.
             if process.isRunning {
                 process.terminate()
             }
-            return false
+            return .cancelled
         }
 
         if healthy, process.isRunning {
+            // Capture under the lock (held via the phase-3 defer) so the
+            // deferred status closure doesn't read `serverPort` unsynchronized.
+            let loadedPort = serverPort
             DispatchQueue.main.async {
-                self.onWorkerStatus?("Loaded on port \(self.serverPort)")
+                self.onWorkerStatus?("Loaded on port \(loadedPort)")
             }
-            return true
+            return .launched
         }
 
-        // Health failed (or process died): tear down the server we own.
+        // Health failed (or process died) while our generation is still current:
+        // a lost port-bind race or a crashed child. Tear down the server we own
+        // and report a retryable health failure.
         stopServerLocked()
         DispatchQueue.main.async {
             self.onWorkerStatus?("Worker unavailable")
         }
-        return false
+        return .healthFailed
     }
 
     /// Must be called with `serverLock` held. Bumps `serverGeneration` so any
@@ -485,6 +572,17 @@ class WhisperEngine: FileTranscriptionEngine {
     /// a busy whisper-server can take seconds to finish its graceful shutdown.
     /// Its SIGTERM handler closes the listen socket immediately, so a
     /// replacement server can bind the port while the old one drains.
+    ///
+    /// Both signals target the RETAINED `Process`: SIGKILL is only sent while
+    /// `process.isRunning` is still true, and a running child has NOT been
+    /// reaped by Foundation's waitpid — so its PID cannot have been recycled out
+    /// from under us. The path-prefix identity gate (`isOwnWhisperServerProcess`)
+    /// deliberately does NOT apply here: it exists to guard a bare PID read from
+    /// a stale PID file (`stopStaleServerIfNeeded`), where recycling IS the risk.
+    /// Applying it here would strand a server we legitimately launched but whose
+    /// path is outside `ownedServerPrefixes()` (e.g. a `whisper-server` sibling
+    /// to a user-selected Homebrew whisper-cli) — SIGTERM ignored mid-inference,
+    /// SIGKILL never sent, leaking RAM + the bound port. See MAK-27 review #1.
     private static func terminateAsync(_ process: Process) {
         let pid = process.processIdentifier
         process.terminate()
@@ -492,6 +590,9 @@ class WhisperEngine: FileTranscriptionEngine {
             for _ in 0..<20 where process.isRunning {
                 Thread.sleep(forTimeInterval: 0.1)
             }
+            // Gate the SIGKILL on `isRunning` (not on path identity): a still-
+            // running retained child hasn't been reaped, so `pid` is guaranteed
+            // to still name it.
             if process.isRunning {
                 kill(pid, SIGKILL)
             }
@@ -549,7 +650,7 @@ class WhisperEngine: FileTranscriptionEngine {
     }
 
     private func healthCheck() -> Bool {
-        guard let url = URL(string: "http://127.0.0.1:\(serverPort)/health") else { return false }
+        guard let url = URL(string: "http://127.0.0.1:\(currentPort)/health") else { return false }
         var request = URLRequest(url: url)
         request.timeoutInterval = 1
 
@@ -566,7 +667,8 @@ class WhisperEngine: FileTranscriptionEngine {
     }
 
     private func postInference(wavPath: String, language: String, prompt: String = "") throws -> String {
-        guard let url = URL(string: "http://127.0.0.1:\(serverPort)/inference") else {
+        let port = currentPort
+        guard let url = URL(string: "http://127.0.0.1:\(port)/inference") else {
             throw WhisperWorkerError.invalidURL
         }
 
@@ -582,7 +684,7 @@ class WhisperEngine: FileTranscriptionEngine {
             prompt: prompt
         )
         let fileSize = (try? FileManager.default.attributesOfItem(atPath: wavPath)[.size] as? NSNumber)?.int64Value ?? -1
-        log("Server API POST /inference port=\(serverPort), wav=\(URL(fileURLWithPath: wavPath).lastPathComponent), bytes=\(fileSize), language=\(language)")
+        log("Server API POST /inference port=\(port), wav=\(URL(fileURLWithPath: wavPath).lastPathComponent), bytes=\(fileSize), language=\(language)")
 
         let semaphore = DispatchSemaphore(value: 0)
         var resultData: Data?
@@ -670,9 +772,36 @@ class WhisperEngine: FileTranscriptionEngine {
         return data
     }
 
-    private static func availableLoopbackPort() -> Int? {
+    /// Loopback port range this engine picks from. Disjoint from
+    /// `LlamaServerEngine.portRange` so the two engines probing concurrently at
+    /// startup can never land on the same candidate — the "sibling race" in
+    /// MAK-28. Whisper uses the lower half, llama the upper.
+    static let portRange: ClosedRange<Int> = 8178...8677
+
+    /// Probes for a free loopback port inside `range` by attempting to bind each
+    /// candidate (in randomised order) and returning the first that binds. The
+    /// probe socket is closed before returning, so — like any bind-then-close
+    /// scheme — there is still a race window before the child re-binds it. The
+    /// caller (`ensureServer`) closes that window by RETRYING with a fresh port
+    /// on a failed launch rather than caching one port forever (MAK-28).
+    ///
+    /// Binding an explicit candidate (not port 0) is what keeps whisper and
+    /// llama in disjoint ranges; port 0 would let the kernel hand either engine
+    /// any ephemeral port, re-opening the sibling collision.
+    private static func availableLoopbackPort(in range: ClosedRange<Int>) -> Int? {
+        for candidate in range.shuffled() {
+            if canBindLoopbackPort(candidate) {
+                return candidate
+            }
+        }
+        return nil
+    }
+
+    /// Attempts to bind `port` on 127.0.0.1; true iff the bind succeeds. Closes
+    /// the probe socket before returning.
+    private static func canBindLoopbackPort(_ port: Int) -> Bool {
         let socketFD = socket(AF_INET, SOCK_STREAM, 0)
-        guard socketFD >= 0 else { return nil }
+        guard socketFD >= 0 else { return false }
         defer { close(socketFD) }
 
         // Set SO_REUSEADDR so that if whisper-server is launched with the same
@@ -685,7 +814,7 @@ class WhisperEngine: FileTranscriptionEngine {
         var addr = sockaddr_in()
         addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
         addr.sin_family = sa_family_t(AF_INET)
-        addr.sin_port = in_port_t(0).bigEndian
+        addr.sin_port = in_port_t(UInt16(port)).bigEndian
         addr.sin_addr = in_addr(s_addr: inet_addr("127.0.0.1"))
 
         let bindResult = withUnsafePointer(to: &addr) {
@@ -693,18 +822,7 @@ class WhisperEngine: FileTranscriptionEngine {
                 bind(socketFD, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
             }
         }
-        guard bindResult == 0 else { return nil }
-
-        var boundAddr = sockaddr_in()
-        var length = socklen_t(MemoryLayout<sockaddr_in>.size)
-        let nameResult = withUnsafeMutablePointer(to: &boundAddr) {
-            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                getsockname(socketFD, $0, &length)
-            }
-        }
-        guard nameResult == 0 else { return nil }
-
-        return Int(UInt16(bigEndian: boundAddr.sin_port))
+        return bindResult == 0
     }
 
     private func writeWorkerPID(_ pid: Int32) {
@@ -757,26 +875,35 @@ class WhisperEngine: FileTranscriptionEngine {
             pid > 0
         else { return }
 
-        // Only signal if the PID is alive AND its executable is actually a
-        // whisper-server. After a crash + PID reuse the persisted PID can point
-        // at an unrelated user process — never kill that. If we can't resolve
-        // the path, err on the side of NOT killing.
-        if kill(pid, 0) == 0, isWhisperServerProcess(pid: pid) {
-            print("[WhisperEngine] stopping stale whisper-server pid \(pid)")
-            kill(pid, SIGTERM)
-            Thread.sleep(forTimeInterval: 0.5)
-            if kill(pid, 0) == 0 {
-                kill(pid, SIGKILL)
-            }
+        // Only signal if the PID is alive AND its executable is actually OUR
+        // whisper-server (basename + a path inside the app bundle or dev build
+        // dir). After a crash + PID reuse the persisted PID can point at an
+        // unrelated process — e.g. a user's Homebrew whisper-server — which we
+        // must never kill. Re-verify identity immediately before EACH signal:
+        // between SIGTERM and the SIGKILL escalation the PID can be recycled, so
+        // a liveness-only re-check (kill(pid, 0)) would let us SIGKILL whatever
+        // process inherited the number.
+        guard kill(pid, 0) == 0, isOwnWhisperServerProcess(pid: pid) else {
+            try? FileManager.default.removeItem(at: pidFileURL)
+            return
+        }
+
+        print("[WhisperEngine] stopping stale whisper-server pid \(pid)")
+        kill(pid, SIGTERM)
+        Thread.sleep(forTimeInterval: 0.5)
+        if kill(pid, 0) == 0, isOwnWhisperServerProcess(pid: pid) {
+            kill(pid, SIGKILL)
         }
 
         try? FileManager.default.removeItem(at: pidFileURL)
     }
 
-    /// Resolves the executable path of `pid` via libproc and returns true only
-    /// if its last path component is `whisper-server`. Returns false if the path
-    /// cannot be resolved (so callers won't signal an unknown process).
-    private static func isWhisperServerProcess(pid: Int32) -> Bool {
+    /// True only if `pid`'s executable basename is `whisper-server` AND it
+    /// resolves inside our app bundle (Resources/whisper) or the dev build dir
+    /// (whisper.cpp/build/bin). Mirrors `LlamaServerEngine.isOwnLlamaServerProcess`.
+    /// Returns false if the path can't be resolved, so we never signal an
+    /// unknown process.
+    private static func isOwnWhisperServerProcess(pid: Int32) -> Bool {
         // proc_pidpath wants PROC_PIDPATHINFO_MAXSIZE (== 4*MAXPATHLEN) of space;
         // that C macro isn't importable into Swift, so use its expansion directly.
         // A smaller buffer (e.g. MAXPATHLEN) can truncate long paths, causing a
@@ -785,7 +912,31 @@ class WhisperEngine: FileTranscriptionEngine {
         let length = proc_pidpath(pid, &buffer, UInt32(buffer.count))
         guard length > 0 else { return false }
         let path = String(cString: buffer)
-        return (path as NSString).lastPathComponent == "whisper-server"
+        return ServerProcessIdentity.isOwnedServerProcess(
+            executablePath: path,
+            ownedPrefixes: ownedServerPrefixes(),
+            expectedBasename: "whisper-server"
+        )
+    }
+
+    /// Directory prefixes under which a whisper-server we launched can live:
+    /// the app bundle's `Resources/whisper` dir and the dev build dir. Kept in
+    /// sync with `serverBinaryPath(for:)`'s resolution order.
+    ///
+    /// NOTE: `serverBinaryPath(for:)` can also launch a server sibling to the
+    /// selected `whisper-cli` binary, but that path depends on the runtime CLI
+    /// selection which isn't known here (stale reaping runs in `init()`, before
+    /// any transcription). A sibling-layout server therefore won't be reaped as
+    /// stale — it fails the identity check and is left alone. That is the safe
+    /// direction (never signal a process we can't positively identify as ours);
+    /// the far worse alternative was SIGKILLing an unrelated user process.
+    private static func ownedServerPrefixes() -> [String] {
+        var prefixes: [String] = []
+        if let bundled = Bundle.main.resourceURL?.appendingPathComponent("whisper").path {
+            prefixes.append(bundled)
+        }
+        prefixes.append("\(NSHomeDirectory())/whisper.cpp/build/bin")
+        return prefixes
     }
 }
 

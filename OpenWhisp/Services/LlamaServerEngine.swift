@@ -37,7 +37,12 @@ final class LlamaServerEngine {
         }
     }
 
-    private let serverPort: Int
+    /// Loopback port the server binds. Re-picked (under `serverLock`) at each
+    /// (re)launch rather than cached once at init — see MAK-28. Being a `var`
+    /// mutated under the lock, reads that run WITHOUT the lock (`healthCheck`,
+    /// and external callers via `baseURL`/`port`) go through the lock-guarded
+    /// `port`/`baseURL` accessors, not `serverPort` directly.
+    private var serverPort: Int
     private let serverLock = NSLock()
     private var serverProcess: Process?
     private var serverModelPath: String?
@@ -66,7 +71,7 @@ final class LlamaServerEngine {
     private var inFlight = 0
 
     init() {
-        serverPort = Self.availableLoopbackPort() ?? 8181
+        serverPort = Self.availableLoopbackPort(in: Self.portRange) ?? Self.portRange.lowerBound
         pidFileURL = Self.serverPIDFileURL()
         Self.stopStaleServerIfNeeded(pidFileURL: pidFileURL)
         log("LlamaServerEngine initialized with server port \(serverPort)")
@@ -79,9 +84,19 @@ final class LlamaServerEngine {
     }
 
     /// Base URL the OpenAI-compatible client should POST to, e.g.
-    /// "http://127.0.0.1:54321/v1". The port is fixed for the engine's lifetime.
-    var baseURL: String { "http://127.0.0.1:\(serverPort)/v1" }
-    var port: Int { serverPort }
+    /// "http://127.0.0.1:54321/v1". The port is re-picked per (re)launch
+    /// (MAK-28), so callers read this fresh AFTER `ensureRunning` reports the
+    /// server healthy — which is when the current port is committed.
+    var baseURL: String {
+        serverLock.lock()
+        defer { serverLock.unlock() }
+        return "http://127.0.0.1:\(serverPort)/v1"
+    }
+    var port: Int {
+        serverLock.lock()
+        defer { serverLock.unlock() }
+        return serverPort
+    }
 
     /// Path of the model the server is currently loaded with, or nil if no server
     /// is running. Used by the dev status indicator to show what's actually live
@@ -107,7 +122,16 @@ final class LlamaServerEngine {
     /// process if needed, reuses it if already healthy on the same model, relaunches
     /// if the model changed. Coalesces concurrent starts for the same model.
     /// Completion runs off the main thread.
-    func ensureRunning(modelPath: String, completion: @escaping (Result<Void, Error>) -> Void) {
+    ///
+    /// `attemptsRemaining` bounds the MAK-28 retry: a launch that fails its
+    /// health check (the way a lost port-bind race surfaces) re-drives this
+    /// method on a FRESH port until the budget is exhausted. Callers use the
+    /// default; the retry supplies a decremented value.
+    func ensureRunning(
+        modelPath: String,
+        attemptsRemaining: Int = 3,
+        completion: @escaping (Result<Void, Error>) -> Void
+    ) {
         guard FileManager.default.fileExists(atPath: modelPath) else {
             completion(.failure(LlamaError.modelMissing))
             return
@@ -155,6 +179,15 @@ final class LlamaServerEngine {
                 self.log("llama-server binary unavailable")
                 completion(.failure(LlamaError.unavailable))
                 return
+            }
+
+            // Pick a FRESH port for this launch instead of reusing the one cached
+            // at init. Reusing one port across restarts widens the window in which
+            // the child hasn't bound yet and something else can claim it; re-picking
+            // (plus the retry below) is the MAK-28 fix. Keep the previous port if
+            // discovery fails so we still attempt a launch.
+            if let freshPort = Self.availableLoopbackPort(in: Self.portRange) {
+                self.serverPort = freshPort
             }
 
             let process = Process()
@@ -246,8 +279,25 @@ final class LlamaServerEngine {
             } else {
                 self.stopServerLocked()
                 self.serverLock.unlock()
-                self.log("llama-server failed health check")
-                waiters.forEach { $0(.failure(LlamaError.unavailable)) }
+                if attemptsRemaining > 1 {
+                    // A failed launch (e.g. a lost port-bind race — MAK-28)
+                    // surfaces here as a health failure. stopServerLocked reset
+                    // the start/coalesce state and bumped the generation, so
+                    // re-driving ensureRunning starts a clean attempt on a FRESH
+                    // port. Re-drive once per waiter: the first relaunches, the
+                    // rest coalesce onto it via the normal in-flight path.
+                    self.log("llama-server failed health check; retrying on a fresh port (\(attemptsRemaining - 1) left)")
+                    for waiter in waiters {
+                        self.ensureRunning(
+                            modelPath: modelPath,
+                            attemptsRemaining: attemptsRemaining - 1,
+                            completion: waiter
+                        )
+                    }
+                } else {
+                    self.log("llama-server failed health check")
+                    waiters.forEach { $0(.failure(LlamaError.unavailable)) }
+                }
             }
         }
     }
@@ -347,6 +397,15 @@ final class LlamaServerEngine {
     /// model. Its SIGTERM handler closes the listen socket immediately, so a
     /// replacement server can bind the port while the old one drains. Mirrors
     /// WhisperEngine.terminateAsync.
+    ///
+    /// Both signals target the RETAINED `Process`: SIGKILL is only sent while
+    /// `process.isRunning` is still true, and a running child has NOT been
+    /// reaped by Foundation's waitpid — so its PID cannot have been recycled.
+    /// The path-prefix identity gate (`isOwnLlamaServerProcess`) deliberately
+    /// does NOT apply here: it guards a bare PID read from a stale PID file
+    /// (`stopStaleServerIfNeeded`), where recycling IS the risk. Applying it to a
+    /// retained process would strand a server we launched whose path is outside
+    /// `ownedServerPrefixes()`, leaking RAM + the bound port. See MAK-27 review #1.
     private static func terminateAsync(_ process: Process) {
         let pid = process.processIdentifier
         process.terminate()
@@ -354,6 +413,8 @@ final class LlamaServerEngine {
             for _ in 0..<20 where process.isRunning {
                 Thread.sleep(forTimeInterval: 0.1)
             }
+            // Gate the SIGKILL on `isRunning` (not on path identity): a still-
+            // running retained child hasn't been reaped, so `pid` still names it.
             if process.isRunning {
                 kill(pid, SIGKILL)
             }
@@ -412,7 +473,10 @@ final class LlamaServerEngine {
     }
 
     private func healthCheck() -> Bool {
-        guard let url = URL(string: "http://127.0.0.1:\(serverPort)/health") else { return false }
+        // `serverPort` is a `var` re-picked per launch under `serverLock`;
+        // healthCheck always runs WITHOUT the lock held, so read the port via the
+        // lock-guarded `port` accessor to avoid a data race (MAK-28 review #3).
+        guard let url = URL(string: "http://127.0.0.1:\(port)/health") else { return false }
         var request = URLRequest(url: url)
         request.timeoutInterval = 1
 
@@ -431,9 +495,32 @@ final class LlamaServerEngine {
 
     // MARK: - Port discovery
 
-    private static func availableLoopbackPort() -> Int? {
+    /// Loopback port range this engine picks from. Disjoint from
+    /// `WhisperEngine.portRange` so the two engines probing concurrently at
+    /// startup can never land on the same candidate — the "sibling race" in
+    /// MAK-28. Llama uses the upper band; whisper the lower.
+    static let portRange: ClosedRange<Int> = 8678...9177
+
+    /// Probes for a free loopback port inside `range` by attempting to bind each
+    /// candidate (randomised order) and returning the first that binds. There is
+    /// still a race window before the child re-binds it, closed by the caller
+    /// retrying with a fresh port on a failed launch (MAK-28). Binding an
+    /// explicit candidate (not port 0) is what keeps whisper and llama in
+    /// disjoint ranges.
+    private static func availableLoopbackPort(in range: ClosedRange<Int>) -> Int? {
+        for candidate in range.shuffled() {
+            if canBindLoopbackPort(candidate) {
+                return candidate
+            }
+        }
+        return nil
+    }
+
+    /// Attempts to bind `port` on 127.0.0.1; true iff the bind succeeds. Closes
+    /// the probe socket before returning.
+    private static func canBindLoopbackPort(_ port: Int) -> Bool {
         let socketFD = socket(AF_INET, SOCK_STREAM, 0)
-        guard socketFD >= 0 else { return nil }
+        guard socketFD >= 0 else { return false }
         defer { close(socketFD) }
 
         var reuse: Int32 = 1
@@ -442,7 +529,7 @@ final class LlamaServerEngine {
         var addr = sockaddr_in()
         addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
         addr.sin_family = sa_family_t(AF_INET)
-        addr.sin_port = in_port_t(0).bigEndian
+        addr.sin_port = in_port_t(UInt16(port)).bigEndian
         addr.sin_addr = in_addr(s_addr: inet_addr("127.0.0.1"))
 
         let bindResult = withUnsafePointer(to: &addr) {
@@ -450,18 +537,7 @@ final class LlamaServerEngine {
                 bind(socketFD, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
             }
         }
-        guard bindResult == 0 else { return nil }
-
-        var boundAddr = sockaddr_in()
-        var length = socklen_t(MemoryLayout<sockaddr_in>.size)
-        let nameResult = withUnsafeMutablePointer(to: &boundAddr) {
-            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                getsockname(socketFD, $0, &length)
-            }
-        }
-        guard nameResult == 0 else { return nil }
-
-        return Int(UInt16(bigEndian: boundAddr.sin_port))
+        return bindResult == 0
     }
 
     // MARK: - PID file + stale reaping
@@ -499,14 +575,20 @@ final class LlamaServerEngine {
         // Only signal if the PID is alive AND its executable is actually OUR
         // llama-server (basename + path inside the app bundle or dev build dir).
         // After a crash + PID reuse the persisted PID can point at an unrelated
-        // process — e.g. a user's Homebrew llama-server — which we must never kill.
+        // process — e.g. a user's Homebrew llama-server — which we must never
+        // kill. Re-verify identity immediately before EACH signal: between
+        // SIGTERM and the SIGKILL escalation the PID can be recycled, so a
+        // liveness-only re-check would let us SIGKILL whatever inherited it.
+        guard kill(pid, 0) == 0, isOwnLlamaServerProcess(pid: pid) else {
+            try? FileManager.default.removeItem(at: pidFileURL)
+            return
+        }
+
+        print("[LlamaServerEngine] stopping stale llama-server pid \(pid)")
+        kill(pid, SIGTERM)
+        Thread.sleep(forTimeInterval: 0.5)
         if kill(pid, 0) == 0, isOwnLlamaServerProcess(pid: pid) {
-            print("[LlamaServerEngine] stopping stale llama-server pid \(pid)")
-            kill(pid, SIGTERM)
-            Thread.sleep(forTimeInterval: 0.5)
-            if kill(pid, 0) == 0 {
-                kill(pid, SIGKILL)
-            }
+            kill(pid, SIGKILL)
         }
 
         try? FileManager.default.removeItem(at: pidFileURL)
@@ -515,17 +597,30 @@ final class LlamaServerEngine {
     /// True only if `pid`'s executable basename is `llama-server` AND it resolves
     /// inside our app bundle (Resources/llama) or the dev build dir
     /// (llama.cpp/build/bin). Returns false if the path can't be resolved, so we
-    /// never signal an unknown process.
+    /// never signal an unknown process. Shares the decision logic with
+    /// WhisperEngine via `ServerProcessIdentity`.
     private static func isOwnLlamaServerProcess(pid: Int32) -> Bool {
         var buffer = [CChar](repeating: 0, count: 4 * Int(MAXPATHLEN))
         let length = proc_pidpath(pid, &buffer, UInt32(buffer.count))
         guard length > 0 else { return false }
         let path = String(cString: buffer)
-        guard (path as NSString).lastPathComponent == "llama-server" else { return false }
-        let bundledPrefix = Bundle.main.resourceURL?.appendingPathComponent("llama").path
-        if let bundledPrefix, path.hasPrefix(bundledPrefix) { return true }
-        if path.contains("/llama.cpp/build/bin/") { return true }
-        return false
+        return ServerProcessIdentity.isOwnedServerProcess(
+            executablePath: path,
+            ownedPrefixes: ownedServerPrefixes(),
+            expectedBasename: "llama-server"
+        )
+    }
+
+    /// Directory prefixes under which a llama-server we launched can live: the
+    /// app bundle's `Resources/llama` dir and the dev build dir. Kept in sync
+    /// with `resolvedServerBinaryPath()`'s resolution order.
+    private static func ownedServerPrefixes() -> [String] {
+        var prefixes: [String] = []
+        if let bundled = Bundle.main.resourceURL?.appendingPathComponent("llama").path {
+            prefixes.append(bundled)
+        }
+        prefixes.append("\(NSHomeDirectory())/llama.cpp/build/bin")
+        return prefixes
     }
 
     // MARK: - Logging
