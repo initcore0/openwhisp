@@ -1,0 +1,37 @@
+name: E2E audio (nightly, non-blocking)
+
+# Tier-2 of docs/E2E_AUDIO_TESTING.md: run the REAL WhisperKit engine over the
+# checked-in fixtures. This is heavier than the plain `swift test` job (it builds
+# the WhisperKit dependency and downloads a model), so it runs nightly / on
+# demand and is marked non-blocking — Tier-1 (deterministic, in `ci.yml`) is the
+# gate. The BlackHole virtual-mic smoke test (scripts/e2e-smoke.sh) is NOT here:
+# it needs a running app + mic TCC, so it's a local/self-hosted concern.
+
+on:
+  schedule:
+    - cron: '0 7 * * *'   # 07:00 UTC daily
+  workflow_dispatch:       # manual trigger
+
+# Never block a PR/branch — this job is advisory.
+permissions:
+  contents: read
+
+jobs:
+  whisperkit-fixtures:
+    name: real WhisperKit over fixtures
+    runs-on: macos-14
+    # Don't fail the workflow run if this flaky, network-dependent job fails.
+    continue-on-error: true
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive   # WhisperKit dep lives in a submodule
+      - name: Select Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+      - name: Show Swift version
+        run: swift --version
+      - name: Run real-engine E2E over fixtures (tiny.en)
+        run: ./scripts/e2e-whisperkit.sh openai_whisper-tiny.en
