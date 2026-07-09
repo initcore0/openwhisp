@@ -74,6 +74,56 @@ enum ScriptOutcome: Equatable {
     }
 }
 
+/// Pure decision for how to escalate-kill a runaway script on timeout.
+///
+/// Process-group placement (`setpgid(pid, pid)`) is **best-effort**: the parent
+/// races the child's `exec`, and once the child has exec'd the call fails with
+/// EACCES, leaving the child in OpenWhisp's own group. So we must decide the kill
+/// targets from the child's *actual* group, read back with `getpgid(pid)` — not
+/// blindly from `pid`.
+///
+/// The dangerous case this guards: if `setpgid` failed, the child's pgid is
+/// **OpenWhisp's own** pgid, and a `kill(-pgid, …)` would signal the whole app.
+/// We therefore only group-kill when the child is a group *leader* (its pgid
+/// equals its own pid) — i.e. when `setpgid` demonstrably succeeded. In every
+/// case the direct `kill(pid, …)` is the guaranteed reaper of the main child.
+enum ScriptTimeoutKill {
+    /// A single kill target: negative pid means "the process group led by pid".
+    struct Target: Equatable {
+        /// Argument to pass to `kill(2)` (already negated for group targets).
+        let killArg: Int32
+        /// True when this targets a whole process group (`kill(-pgid, …)`).
+        let isGroup: Bool
+
+        static func direct(_ pid: Int32) -> Target { Target(killArg: pid, isGroup: false) }
+        static func group(_ pgid: Int32) -> Target { Target(killArg: -pgid, isGroup: true) }
+    }
+
+    /// Ordered SIGKILL targets for a timed-out child.
+    ///
+    /// - Parameters:
+    ///   - pid: the child's process id (must be > 0).
+    ///   - resolvedPgid: the child's current process group, as returned by
+    ///     `getpgid(pid)` (pass the raw result; a negative value means the lookup
+    ///     failed and is treated as "no reliable group").
+    ///   - ownPgid: OpenWhisp's own process group, from `getpgid(0)`. A group-kill
+    ///     is suppressed if the child's group is the same, to avoid self-signaling.
+    /// - Returns: the group target first (when safe) so grandchildren die before we
+    ///   reap the leader, then the direct target — the guaranteed reaper — always.
+    static func targets(pid: Int32, resolvedPgid: Int32, ownPgid: Int32) -> [Target] {
+        guard pid > 0 else { return [] }
+        var out: [Target] = []
+        // Group-kill only when the child leads its OWN group (setpgid succeeded):
+        // pgid must be a valid lookup, equal to the child's pid, and NOT our own
+        // group — otherwise `kill(-pgid)` would hit unrelated processes (or us).
+        if resolvedPgid == pid, resolvedPgid != ownPgid {
+            out.append(.group(resolvedPgid))
+        }
+        out.append(.direct(pid))
+        return out
+    }
+}
+
 /// Validation for a user-supplied script path, kept pure/testable.
 enum ScriptPathValidator {
     enum Result: Equatable {
