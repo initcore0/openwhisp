@@ -72,9 +72,13 @@ public enum VoiceEditCommand: Equatable, Sendable {
     ]
 
     /// Everything trimmed from the ends before matching: whitespace plus the
-    /// punctuation whisper tends to append to a short spoken command.
+    /// punctuation whisper tends to append to a short spoken command. Includes
+    /// the non-ASCII marks Whisper commonly emits — the Unicode ellipsis `…`,
+    /// curly quotes `’”“‘`, and CJK sentence punctuation `。！？，；：` — so
+    /// "Scratch that…" or a curly-quoted command still normalizes to the bare
+    /// phrase instead of missing the dictionary and being pasted as literal text.
     private static let punctuationAndWhitespace =
-        CharacterSet.whitespacesAndNewlines.union(CharacterSet(charactersIn: ".,!?;:\"'`-"))
+        CharacterSet.whitespacesAndNewlines.union(CharacterSet(charactersIn: ".,!?;:\"'`-…’”“‘。！？，；："))
 }
 
 /// The minimal, correct model the edit commands operate on: an ordered list of
@@ -175,36 +179,130 @@ public struct VoiceEditBuffer: Equatable, Sendable {
         undoSnapshot = nil
     }
 
-    /// Rewrite the buffer from a transform on its flattened text. Used by the
-    /// word/sentence deletions, which operate on the joined text rather than the
-    /// utterance list. The result is stored as a single utterance so it stays
-    /// stable under further edits; empties collapse to an empty buffer.
+    /// Rewrite the buffer from a transform that trims a suffix off its flattened
+    /// text — the word/sentence deletions. The transform operates on the joined
+    /// text (it must span utterance boundaries to find the last word/sentence),
+    /// but the result is mapped BACK onto the original element list: fully removed
+    /// elements are dropped, the boundary element is truncated in place, and every
+    /// earlier utterance / break marker is kept verbatim.
+    ///
+    /// This preserves structure — a later "scratch that" still drops only the last
+    /// chunk, not the whole dictation — which a naive "store the result as one
+    /// flat utterance" would destroy. Empties collapse to an empty buffer.
     private mutating func editFlattened(_ transform: (String) -> String) {
         let flattened = text
         guard !flattened.isEmpty else { return }
-        let edited = transform(flattened).trimmingCharacters(in: .whitespacesAndNewlines)
+        let edited = transform(flattened)
         undoSnapshot = utterances
-        utterances = edited.isEmpty ? [] : [edited]
+        utterances = Self.reapplyTrim(original: utterances, editedFlattened: edited)
+    }
+
+    /// Rebuild the element list so its flattened `text` equals `editedFlattened`
+    /// (which is `original` flattened with a trailing word/sentence removed), while
+    /// keeping as many original element boundaries as possible.
+    ///
+    /// The deletes only ever remove a suffix, so `editedFlattened` (ignoring
+    /// trailing whitespace) is a prefix of the original flattened text. We replay
+    /// the same flattening element-by-element and stop at the retained length,
+    /// truncating the element that straddles the boundary. Trailing empties and
+    /// dangling break markers are dropped.
+    static func reapplyTrim(original: [String], editedFlattened: String) -> [String] {
+        // Retained length: the edited text minus trailing whitespace (a deleted
+        // word/sentence leaves nothing meaningful hanging off the end).
+        var retained = Substring(editedFlattened)
+        while let last = retained.last, last.isWhitespace { retained = retained.dropLast() }
+        let keepCount = retained.count
+        if keepCount == 0 { return [] }
+
+        var result: [String] = []
+        var flatCount = 0            // characters emitted by `text` so far
+        var needsSpace = false       // whether the next text element gets a leading join-space
+        var endsWithNewline = false
+
+        for element in original {
+            if flatCount >= keepCount { break }
+
+            if element == "\n" || element == "\n\n" {
+                // Break markers contribute their own characters, no join-space.
+                let breakLen = element.count
+                if flatCount + breakLen <= keepCount {
+                    result.append(element)
+                    flatCount += breakLen
+                    needsSpace = false
+                    endsWithNewline = true
+                }
+                // A break that would exceed the boundary is simply dropped.
+                continue
+            }
+
+            // A join-space precedes this element unless we're at the very start or
+            // right after a newline — mirroring `text`.
+            let joinSpace = (flatCount > 0 && !endsWithNewline && needsSpace) ? 1 : 0
+            let available = keepCount - flatCount - joinSpace
+            if available <= 0 { break }
+
+            if element.count <= available {
+                result.append(element)
+                flatCount += joinSpace + element.count
+            } else {
+                // This element straddles the boundary — keep only its retained head.
+                let head = String(element.prefix(available))
+                    .trimmingCharacters(in: CharacterSet(charactersIn: " \t"))
+                if !head.isEmpty { result.append(head) }
+                flatCount += joinSpace + available
+            }
+            needsSpace = true
+            endsWithNewline = false
+        }
+
+        // Drop a trailing break marker left with nothing after it.
+        while let last = result.last, last == "\n" || last == "\n\n" {
+            result.removeLast()
+        }
+        return result
     }
 
     // MARK: - Pure text helpers
 
-    /// Remove the trailing word (and any whitespace hugging it) from `text`.
+    /// Remove the trailing word from `text`.
+    ///
+    /// If the text ends in a line/paragraph break (a trailing newline, possibly
+    /// with a space between it and the last word), the break itself is what
+    /// "delete last word" removes — it does NOT reach back through the break and
+    /// eat the word before it. This keeps "new paragraph" then "delete last word"
+    /// least-surprising: the accidental break goes, the preceding word stays.
+    /// Only when there is no trailing break do we drop the last actual word.
     static func removingLastWord(from text: String) -> String {
         var s = Substring(text)
-        // Drop trailing whitespace/newlines first so we delete the last *word*,
-        // not a dangling space.
-        while let last = s.last, last.isWhitespace { s = s.dropLast() }
+        // Drop trailing spaces/tabs (but NOT newlines) so a dangling space
+        // doesn't count as the "word" while a real break is still detectable.
+        while let last = s.last, last == " " || last == "\t" { s = s.dropLast() }
+
+        // A trailing newline means the last thing typed was a break: remove just
+        // the break (all consecutive trailing newlines of one marker), leaving
+        // the word before it intact.
+        if let last = s.last, last.isNewline {
+            while let l = s.last, l.isNewline { s = s.dropLast() }
+            while let l = s.last, l == " " || l == "\t" { s = s.dropLast() }
+            return String(s)
+        }
+
+        // Otherwise delete the trailing word, then trim the whitespace it leaves.
         while let last = s.last, !last.isWhitespace { s = s.dropLast() }
-        // Trim the now-trailing whitespace left behind by the removed word.
         while let last = s.last, last == " " || last == "\t" { s = s.dropLast() }
         return String(s)
     }
 
     /// Remove the trailing sentence from `text`. A sentence ends at the last
-    /// `.`/`!`/`?` (or newline); everything after the PREVIOUS terminator is the
-    /// last sentence and is dropped. When there's only one sentence, the buffer
-    /// empties.
+    /// `.`/`!`/`?` (or newline); everything after the PREVIOUS *real* boundary is
+    /// the last sentence and is dropped. When there's only one sentence, the
+    /// buffer empties.
+    ///
+    /// The boundary check is context-aware: a `.` that is part of a decimal
+    /// ("3.50") or that immediately follows a known abbreviation ("Mr.", "Dr.")
+    /// or a lone capital initial ("J.") is NOT treated as a sentence end, so
+    /// "The price is 3.50 dollars." and "I met Mr. Smith today." delete cleanly
+    /// as single sentences. `!`/`?`/`\n` are always boundaries.
     static func removingLastSentence(from text: String) -> String {
         var s = Substring(text)
         // Ignore trailing whitespace and the final terminator so we search for
@@ -212,12 +310,14 @@ public struct VoiceEditBuffer: Equatable, Sendable {
         while let last = s.last, last.isWhitespace { s = s.dropLast() }
         while let last = s.last, Self.sentenceTerminators.contains(last) { s = s.dropLast() }
 
-        // Walk back to the previous sentence terminator (or newline). Everything
-        // up to and including it is kept; the last sentence after it is dropped.
+        // Walk back to the previous *real* sentence boundary. Everything up to
+        // and including it is kept; the last sentence after it is dropped.
         var idx = s.endIndex
         while idx > s.startIndex {
             let prev = s.index(before: idx)
-            if Self.sentenceTerminators.contains(s[prev]) || s[prev] == "\n" {
+            let ch = s[prev]
+            if ch == "\n" || ch == "!" || ch == "?"
+                || (ch == "." && Self.isSentenceEndingPeriod(in: s, at: prev)) {
                 return String(s[..<idx]).trimmingCharacters(in: .whitespaces)
             }
             idx = prev
@@ -225,6 +325,43 @@ public struct VoiceEditBuffer: Equatable, Sendable {
         // No earlier boundary — the whole thing was one sentence.
         return ""
     }
+
+    /// Whether the `.` at `dotIndex` genuinely ends a sentence, rather than being
+    /// a decimal point or an abbreviation dot. Conservative by design: when in
+    /// doubt it returns `true` (treats it as a boundary), because the whole
+    /// feature is "drop the last sentence" and over-keeping is safer than the
+    /// decimal/abbreviation corruption the reviewer flagged.
+    private static func isSentenceEndingPeriod(in s: Substring, at dotIndex: Substring.Index) -> Bool {
+        // Decimal: a digit on both sides of the dot ("3.50") is never a boundary.
+        let after = s.index(after: dotIndex)
+        let nextChar: Character? = after < s.endIndex ? s[after] : nil
+        let prevChar: Character? = dotIndex > s.startIndex ? s[s.index(before: dotIndex)] : nil
+        if let p = prevChar, let n = nextChar, p.isNumber, n.isNumber {
+            return false
+        }
+
+        // Abbreviation: the token immediately before the dot (its letters) is a
+        // known abbreviation ("Mr", "Dr", …) or a single capital initial ("J").
+        var start = dotIndex
+        while start > s.startIndex {
+            let before = s.index(before: start)
+            if s[before].isLetter { start = before } else { break }
+        }
+        let token = s[start..<dotIndex]
+        if token.isEmpty { return true }
+        if Self.abbreviations.contains(token.lowercased()) { return false }
+        // A lone capital letter ("I met J. Smith") reads as an initial, not an end.
+        if token.count == 1, let only = token.first, only.isUppercase { return false }
+        return true
+    }
+
+    /// Common title/abbreviation stems (without the trailing dot, lowercased)
+    /// that should not be read as a sentence end. Deliberately short and
+    /// conservative — just the everyday ones the reviewer named plus a few peers.
+    private static let abbreviations: Set<String> = [
+        "mr", "mrs", "ms", "dr", "prof", "sr", "jr", "st",
+        "vs", "etc", "no",
+    ]
 
     private static let sentenceTerminators: Set<Character> = [".", "!", "?"]
 }
