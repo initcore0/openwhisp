@@ -22,6 +22,7 @@ let package = Package(
             path: "OpenWhisp/Services",
             sources: [
                 "SmartFormatter.swift",
+                "JSONStore.swift",
                 "Vocabulary.swift",
                 "LanguageResolver.swift",
                 "ProfileResolver.swift",

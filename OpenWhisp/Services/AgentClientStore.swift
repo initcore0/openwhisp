@@ -259,32 +259,16 @@ public struct AgentClientStore: Codable, Equatable {
     }
 
     public static func load() -> AgentClientStore {
-        guard let data = try? Data(contentsOf: fileURL) else { return AgentClientStore() }
-        do {
-            var store = try JSONDecoder().decode(AgentClientStore.self, from: data)
+        JSONStore.load(from: fileURL, default: AgentClientStore(), label: "AgentClientStore") {
+            var store = $0
             store.demoteRunScopedGrants()
             return store
-        } catch {
-            // Corrupt / hand-edited / version-skewed: move aside so the next save
-            // doesn't overwrite and make the loss permanent.
-            let backup = fileURL.appendingPathExtension("corrupt-\(Int(Date().timeIntervalSince1970))")
-            try? FileManager.default.moveItem(at: fileURL, to: backup)
-            print("[AgentClientStore] load failed: \(error); moved file to \(backup.lastPathComponent)")
-            return AgentClientStore()
         }
     }
 
     public func save() {
-        do {
-            let dir = Self.fileURL.deletingLastPathComponent()
-            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true,
-                                                    attributes: [.posixPermissions: 0o700])
-            let encoder = JSONEncoder()
-            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-            let data = try encoder.encode(self)
-            try data.write(to: Self.fileURL, options: .atomic)
-        } catch {
-            print("[AgentClientStore] save failed: \(error.localizedDescription)")
-        }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        JSONStore.save(self, to: Self.fileURL, label: "AgentClientStore", encoder: encoder)
     }
 }
