@@ -39,6 +39,7 @@ let package = Package(
                 "LaunchAtLoginService.swift",
                 "TextOutput.swift",
                 "OutputTarget.swift",
+                "FileOutputFormatter.swift",
                 "HotkeyControlling.swift",
                 "TranscriptionEngine.swift",
                 "AudioCapture.swift",
