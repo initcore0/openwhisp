@@ -23,3 +23,6 @@ build/
 /main
 *.o
 a.out
+
+# Claude Code local working directory (worktrees, local settings)
+.claude/
