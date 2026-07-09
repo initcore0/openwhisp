@@ -67,6 +67,53 @@ final class TranscriptCleanerTests: XCTestCase {
         XCTAssertNotEqual(cleaner().clean(input, isFinalTranscript: false), "Hello, how are you?")
     }
 
+    // MARK: Opt-in structural formatting threads through Config (MAK-20)
+
+    func testStructuralRulesOffByDefaultThroughCleaner() {
+        // The default Config leaves normalizeNumbers/currency/lists/markdown off,
+        // so a cleaner built the usual way must NOT apply them.
+        let c = cleaner()
+        XCTAssertEqual(c.clean("five dollars", isFinalTranscript: false), "Five dollars")
+        XCTAssertEqual(c.clean("bullet buy milk", isFinalTranscript: false), "Bullet buy milk")
+    }
+
+    func testStructuralRulesApplyWhenEnabledThroughConfig() {
+        let c = TranscriptCleaner(config: .init(
+            language: "en",
+            customVocabularyEnabled: false,
+            substitutions: [],
+            smartFormattingEnabled: true,
+            fillerRemovalEnabled: true,
+            spokenPunctuationEnabled: true,
+            normalizeNumbers: true,
+            normalizeCurrency: true,
+            spokenListsEnabled: true,
+            basicMarkdownEnabled: true))
+        XCTAssertEqual(c.clean("bullet spend five dollars", isFinalTranscript: false), "- Spend $5")
+    }
+
+    func testStructuralRulesRespectedByChainForm() async throws {
+        // The composable chain must produce the same output as clean() with the
+        // new flags on, so downstream stages stay in agreement.
+        let c = TranscriptCleaner(config: .init(
+            language: "en",
+            customVocabularyEnabled: false,
+            substitutions: [],
+            smartFormattingEnabled: true,
+            fillerRemovalEnabled: true,
+            spokenPunctuationEnabled: true,
+            normalizeNumbers: true,
+            normalizeCurrency: true,
+            spokenListsEnabled: true,
+            basicMarkdownEnabled: true))
+        let input = "heading tasks new line bullet spend five dollars"
+        let direct = c.clean(input, isFinalTranscript: false)
+        let chain = try await c.makeChain(isFinalTranscript: false)
+            .process(input, context: .init(language: "en", targetBundleID: nil, isLiveChunk: true))
+        XCTAssertEqual(direct, chain)
+        XCTAssertEqual(direct, "# Tasks\n- Spend $5")
+    }
+
     // MARK: clean() and the PostProcessorChain form agree
 
     func testCleanMatchesChain() async throws {

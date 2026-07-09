@@ -19,6 +19,39 @@ struct TranscriptCleaner {
         var smartFormattingEnabled: Bool
         var fillerRemovalEnabled: Bool
         var spokenPunctuationEnabled: Bool
+
+        // --- Opt-in structural formatting (MAK-20), all default OFF -----------
+        // Threaded into SmartFormatter.Options below. Off by default so behavior
+        // is unchanged until a caller / Settings opts in. UI wiring is a
+        // deliberate follow-up (see PR notes) — no Settings toggles yet.
+        var normalizeNumbers: Bool
+        var normalizeCurrency: Bool
+        var spokenListsEnabled: Bool
+        var basicMarkdownEnabled: Bool
+
+        init(
+            language: String,
+            customVocabularyEnabled: Bool,
+            substitutions: [Vocabulary.Substitution],
+            smartFormattingEnabled: Bool,
+            fillerRemovalEnabled: Bool,
+            spokenPunctuationEnabled: Bool,
+            normalizeNumbers: Bool = false,
+            normalizeCurrency: Bool = false,
+            spokenListsEnabled: Bool = false,
+            basicMarkdownEnabled: Bool = false
+        ) {
+            self.language = language
+            self.customVocabularyEnabled = customVocabularyEnabled
+            self.substitutions = substitutions
+            self.smartFormattingEnabled = smartFormattingEnabled
+            self.fillerRemovalEnabled = fillerRemovalEnabled
+            self.spokenPunctuationEnabled = spokenPunctuationEnabled
+            self.normalizeNumbers = normalizeNumbers
+            self.normalizeCurrency = normalizeCurrency
+            self.spokenListsEnabled = spokenListsEnabled
+            self.basicMarkdownEnabled = basicMarkdownEnabled
+        }
     }
 
     let config: Config
@@ -90,7 +123,11 @@ struct TranscriptCleaner {
             removeFillers: config.fillerRemovalEnabled,
             applySpokenPunctuation: config.spokenPunctuationEnabled,
             capitalizeSentences: true,
-            ensureTerminalPunctuation: false
+            ensureTerminalPunctuation: false,
+            normalizeNumbers: config.normalizeNumbers,
+            normalizeCurrency: config.normalizeCurrency,
+            spokenLists: config.spokenListsEnabled,
+            basicMarkdown: config.basicMarkdownEnabled
         ))
     }
 

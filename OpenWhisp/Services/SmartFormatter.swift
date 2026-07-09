@@ -22,19 +22,64 @@ struct SmartFormatter: PostProcessor {
         var capitalizeSentences: Bool
         var ensureTerminalPunctuation: Bool
 
+        // --- Opt-in structural formatting (all default OFF) -------------------
+        // These are the MAK-20 "richer local formatting" rule groups. They are
+        // intentionally off by default so existing behavior is byte-for-byte
+        // unchanged unless a caller (or Settings) turns them on. Each group is a
+        // pure, independent transform step in `format(...)`.
+
+        /// Normalize small spelled cardinals in clearly-numeric contexts to
+        /// digits, and combine year-style pairs ("twenty twenty six" -> "2026").
+        var normalizeNumbers: Bool
+        /// Normalize spoken currency ("five dollars" -> "$5", "ten cents" -> "10¢").
+        var normalizeCurrency: Bool
+        /// Turn spoken list markers at the start of a line into markdown list
+        /// items ("bullet X" -> "- X", "number one X" -> "1. X").
+        var spokenLists: Bool
+        /// Basic markdown commands: "bold X" -> "**X**", "heading X" -> "# X".
+        var basicMarkdown: Bool
+
         static let `default` = Options(
             removeFillers: true,
             applySpokenPunctuation: true,
             capitalizeSentences: true,
-            ensureTerminalPunctuation: false
+            ensureTerminalPunctuation: false,
+            normalizeNumbers: false,
+            normalizeCurrency: false,
+            spokenLists: false,
+            basicMarkdown: false
         )
 
         static let off = Options(
             removeFillers: false,
             applySpokenPunctuation: false,
             capitalizeSentences: false,
-            ensureTerminalPunctuation: false
+            ensureTerminalPunctuation: false,
+            normalizeNumbers: false,
+            normalizeCurrency: false,
+            spokenLists: false,
+            basicMarkdown: false
         )
+
+        init(
+            removeFillers: Bool,
+            applySpokenPunctuation: Bool,
+            capitalizeSentences: Bool,
+            ensureTerminalPunctuation: Bool,
+            normalizeNumbers: Bool = false,
+            normalizeCurrency: Bool = false,
+            spokenLists: Bool = false,
+            basicMarkdown: Bool = false
+        ) {
+            self.removeFillers = removeFillers
+            self.applySpokenPunctuation = applySpokenPunctuation
+            self.capitalizeSentences = capitalizeSentences
+            self.ensureTerminalPunctuation = ensureTerminalPunctuation
+            self.normalizeNumbers = normalizeNumbers
+            self.normalizeCurrency = normalizeCurrency
+            self.spokenLists = spokenLists
+            self.basicMarkdown = basicMarkdown
+        }
     }
 
     let options: Options
@@ -62,10 +107,37 @@ struct SmartFormatter: PostProcessor {
         // intentional newlines from spoken "new line"/"new paragraph".
         s = Self.normalizeWhitespacePreservingNewlines(s)
 
-        // Only apply English-centric capitalization rules for English / auto.
+        // Only apply English-centric rules for English / auto. The number,
+        // currency, list and markdown groups are all spelled-English rule sets,
+        // so they gate on the same flag as capitalization.
         let englishLike = language == "auto" || language == "en" || language.hasPrefix("en")
+
+        // Structural transforms run BEFORE capitalization so the capitalizer sees
+        // the final line structure (new list-item lines, headings) and capitalizes
+        // the first real word of each. Currency runs before plain number
+        // normalization because "five dollars" must be consumed as a unit first.
+        if englishLike {
+            if options.normalizeCurrency {
+                s = Self.normalizeCurrency(s)
+            }
+            if options.normalizeNumbers {
+                s = Self.normalizeNumbers(s)
+            }
+            if options.spokenLists {
+                s = Self.applySpokenLists(s)
+            }
+            if options.basicMarkdown {
+                s = Self.applyBasicMarkdown(s)
+            }
+        }
+
         if options.capitalizeSentences && englishLike {
-            s = Self.capitalizeSentences(s)
+            // The list/heading-lead skip is only meaningful when a structural rule
+            // group can produce those leads. Gate it so the DEFAULT pipeline (both
+            // flags off) is byte-for-byte unchanged — otherwise a plain "- foo"
+            // line would silently capitalize its first word.
+            let structuralLeadsPossible = options.spokenLists || options.basicMarkdown
+            s = Self.capitalizeSentences(s, skipStructuralLeads: structuralLeadsPossible)
             s = Self.capitalizeStandaloneI(s)
         }
 
@@ -165,7 +237,16 @@ struct SmartFormatter: PostProcessor {
 
     // MARK: - Capitalization
 
-    private static func capitalizeSentences(_ text: String) -> String {
+    /// Capitalize the first letter of each sentence.
+    ///
+    /// `skipStructuralLeads` controls the list/heading/emphasis-lead handling:
+    /// when true, a leading marker ("-", "#", "*", ">") at a line start is
+    /// transparent so the first *word* of the item is capitalized ("- buy" ->
+    /// "- Buy"). This is ONLY passed when the opt-in `spokenLists`/`basicMarkdown`
+    /// groups are on — those are the rules that can produce such leads. With the
+    /// default pipeline it is false, so a literal "- foo" is left byte-for-byte
+    /// unchanged (the marker consumes the pending capitalization, as before).
+    private static func capitalizeSentences(_ text: String, skipStructuralLeads: Bool) -> String {
         guard !text.isEmpty else { return text }
         var result = ""
         result.reserveCapacity(text.count)
@@ -184,6 +265,13 @@ struct SmartFormatter: PostProcessor {
                     capitalizeNext = true
                 } else if c.isWhitespace {
                     // keep waiting
+                } else if skipStructuralLeads && capitalizeNext && Self.listOrMarkdownLead.contains(c) {
+                    // A leading list/heading/emphasis marker (from the opt-in
+                    // structural rules) is transparent: it does not consume the
+                    // pending capitalization, so the first *word* of the item is
+                    // still capitalized ("- buy" -> "- Buy"). We only skip these
+                    // while a capitalization is already pending — i.e. at a line
+                    // start — so a stray marker mid-sentence is never affected.
                 } else {
                     capitalizeNext = false
                 }
@@ -191,6 +279,10 @@ struct SmartFormatter: PostProcessor {
         }
         return result
     }
+
+    /// Characters that lead a structural line (bullet, heading, emphasis) and
+    /// should be skipped when deciding what word to capitalize at a line start.
+    private static let listOrMarkdownLead: Set<Character> = ["-", "#", "*", ">"]
 
     /// Capitalize the standalone pronoun "i" -> "I".
     private static func capitalizeStandaloneI(_ text: String) -> String {
@@ -206,5 +298,322 @@ struct SmartFormatter: PostProcessor {
         guard let last = trimmed.last else { return text }
         if ".!?".contains(last) { return text }
         return trimmed + "."
+    }
+
+    // MARK: - Number words (shared)
+
+    /// Spelled cardinal words 0–19 and the tens. This is the small, closed set we
+    /// convert; anything larger (hundreds, "million", ordinals) is left alone —
+    /// the goal is to fix the common, unambiguous cases without ever mangling
+    /// prose. "one"/"a" are excluded from *bare* conversion (see `numericContext`)
+    /// because "one of them" / "a dog" are ordinary English, not numbers.
+    private static let onesWords: [String: Int] = [
+        "zero": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+        "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+        "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14,
+        "fifteen": 15, "sixteen": 16, "seventeen": 17, "eighteen": 18,
+        "nineteen": 19
+    ]
+
+    private static let tensWords: [String: Int] = [
+        "twenty": 20, "thirty": 30, "forty": 40, "fifty": 50,
+        "sixty": 60, "seventy": 70, "eighty": 80, "ninety": 90
+    ]
+
+    /// Parse a spelled number phrase of the form <tens>[ <ones>] or a single
+    /// ones/tens word into its integer value. Returns nil if `words` isn't a
+    /// clean number phrase we recognize. Consumes 1–2 words (`consumed`).
+    private static func parseSpelledNumber(_ words: [Substring]) -> (value: Int, consumed: Int)? {
+        guard let first = words.first?.lowercased() else { return nil }
+        if let tens = tensWords[first] {
+            // "twenty six" -> 26 (tens + a following ones word 1–9).
+            if words.count >= 2 {
+                let second = words[1].lowercased()
+                if let ones = onesWords[second], ones >= 1, ones <= 9 {
+                    return (tens + ones, 2)
+                }
+            }
+            return (tens, 1)
+        }
+        if let ones = onesWords[first] {
+            return (ones, 1)
+        }
+        return nil
+    }
+
+    // MARK: - Currency normalization
+
+    /// "<number> dollars" -> "$<number>", "<number> cents" -> "<number>¢".
+    /// Only fires when a recognized spelled number (or already-a-digit run)
+    /// directly precedes the currency unit, so ordinary words never trip it.
+    private static func normalizeCurrency(_ text: String) -> String {
+        // Operate per line so a trailing newline never fuses a unit word to the
+        // next line's first token when we split on spaces.
+        text.components(separatedBy: "\n")
+            .map(normalizeCurrencyLine)
+            .joined(separator: "\n")
+    }
+
+    private static func normalizeCurrencyLine(_ text: String) -> String {
+        var out: [String] = []
+        let words = text.split(separator: " ", omittingEmptySubsequences: false)
+        var i = 0
+        while i < words.count {
+            // Determine the numeric value preceding a currency unit.
+            let (amount, consumed) = leadingNumber(from: Array(words[i...]))
+            // If the number token itself ends a sentence ("5." / "5!" / "5?"),
+            // it is a boundary — the following word starts a NEW sentence and is
+            // not the currency unit for this number. Fusing here would delete the
+            // period and swallow the next word ("It scored 5. Dollars matter" ->
+            // "It scored $5 matter"). So only fuse when the number does not carry
+            // sentence-ending punctuation.
+            let numberEndsSentence = consumed > 0
+                && endsSentence(words[i + consumed - 1])
+            if let amount = amount, !numberEndsSentence {
+                let unitIndex = i + consumed
+                if unitIndex < words.count {
+                    let token = words[unitIndex]
+                    let unit = token.lowercased()
+                        .trimmingCharacters(in: CharacterSet(charactersIn: ".,!?"))
+                    // Preserve any sentence punctuation that whisper attached to
+                    // the unit word ("dollars." -> "$5.").
+                    let trailing = trailingPunctuation(token)
+                    if unit == "dollars" || unit == "dollar" {
+                        out.append("$\(amount)\(trailing)")
+                        i = unitIndex + 1
+                        continue
+                    }
+                    if unit == "cents" || unit == "cent" {
+                        out.append("\(amount)¢\(trailing)")
+                        i = unitIndex + 1
+                        continue
+                    }
+                }
+            }
+            out.append(String(words[i]))
+            i += 1
+        }
+        return out.joined(separator: " ")
+    }
+
+    /// True when a token ends with sentence-terminating punctuation (. ! ?),
+    /// meaning it closes a sentence rather than continuing into a following unit.
+    /// A trailing comma is NOT a boundary here ("5, dollars" is malformed anyway).
+    private static func endsSentence(_ token: Substring) -> Bool {
+        guard let last = token.last else { return false }
+        return last == "." || last == "!" || last == "?"
+    }
+
+    /// Trailing punctuation (.,!?) of a token, as a String (may be empty).
+    private static func trailingPunctuation(_ token: Substring) -> String {
+        let punct = CharacterSet(charactersIn: ".,!?")
+        var suffix = ""
+        for ch in token.reversed() {
+            if ch.unicodeScalars.allSatisfy({ punct.contains($0) }) {
+                suffix.insert(ch, at: suffix.startIndex)
+            } else {
+                break
+            }
+        }
+        return suffix
+    }
+
+    /// If the token stream begins with a number (a digit run OR a spelled number
+    /// phrase), return its integer value and how many tokens it consumed. Used by
+    /// currency so "$5" and "$twenty five" both resolve to the digit amount.
+    private static func leadingNumber(from words: [Substring]) -> (Int?, Int) {
+        guard let first = words.first else { return (nil, 0) }
+        let bare = first.trimmingCharacters(in: CharacterSet(charactersIn: ".,!?"))
+        if let digits = Int(bare) {
+            return (digits, 1)
+        }
+        if let parsed = parseSpelledNumber(words) {
+            return (parsed.value, parsed.consumed)
+        }
+        return (nil, 0)
+    }
+
+    // MARK: - Number normalization
+
+    /// Convert small spelled cardinals to digits, but only in contexts where a
+    /// digit is clearly intended, and combine year-style pairs.
+    ///
+    /// Two safe cases are handled:
+    ///  1. Year pairs: "<tens+ones> <tens+ones>" where each half is 10–99 and the
+    ///     phrase reads like a spoken year -> "twenty twenty six" -> "2026".
+    ///  2. A spelled number immediately followed by a unit/counter noun
+    ///     ("five items", "twenty three people") -> "5 items", "23 people".
+    ///
+    /// Bare "one"/"a" and standalone numbers in plain prose are deliberately left
+    /// alone — converting "I have one idea" to "I have 1 idea" is the kind of
+    /// over-eager transform this rule set refuses to make.
+    private static func normalizeNumbers(_ text: String) -> String {
+        text.components(separatedBy: "\n")
+            .map(normalizeNumbersLine)
+            .joined(separator: "\n")
+    }
+
+    private static func normalizeNumbersLine(_ text: String) -> String {
+        var out: [String] = []
+        let words = text.split(separator: " ", omittingEmptySubsequences: false)
+        var i = 0
+        while i < words.count {
+            // Case 1: year pair — two spelled halves each in 20–99 (or a teen +
+            // tens) that combine to a plausible year like 1900–2099.
+            if let year = parseYearPair(Array(words[i...])) {
+                out.append(String(year.value))
+                i += year.consumed
+                continue
+            }
+            // Case 2: spelled number directly before a counter noun.
+            // Value 1 is excluded (require >= 2): "one" reads as ordinary English
+            // far more often than as the digit, and several counter nouns are also
+            // idiom heads — "one day I will", "give me one second", "one thing",
+            // "one word", "one minute" — that must NOT become "1 day" / "1 second".
+            if let parsed = parseSpelledNumber(Array(words[i...])), parsed.value >= 2 {
+                let nounIndex = i + parsed.consumed
+                if nounIndex < words.count,
+                   isCounterNoun(words[nounIndex]) {
+                    out.append(String(parsed.value))
+                    i += parsed.consumed
+                    continue
+                }
+            }
+            out.append(String(words[i]))
+            i += 1
+        }
+        return out.joined(separator: " ")
+    }
+
+    /// Recognize a spoken-year pair: "<X hundred> " isn't handled, but
+    /// "twenty twenty", "twenty twenty six", "nineteen ninety nine" are.
+    ///
+    /// The first half is restricted to 19 or 20 (years 1900–2099). This is the
+    /// key guard against mangling spoken clock times: "ten thirty" (10 + 30) and
+    /// "eleven forty five" (11 + 45) are exactly how people say times, and a
+    /// looser 10–20 range would turn them into "1030" / "1145". Genuine spoken
+    /// years all lead with "nineteen" or "twenty", so pinning firstHalf to those
+    /// two century leads keeps years while leaving every teen/tens time alone.
+    /// The second half is 0–99; combine as firstHalf*100 + secondHalf.
+    private static func parseYearPair(_ words: [Substring]) -> (value: Int, consumed: Int)? {
+        guard let firstHalf = parseSpelledNumber(words) else { return nil }
+        // Only 19xx / 20xx read unambiguously as years; teen/tens leads are times.
+        guard firstHalf.value == 19 || firstHalf.value == 20 else { return nil }
+        let rest = Array(words[firstHalf.consumed...])
+        guard let secondHalf = parseSpelledNumber(rest) else { return nil }
+        guard secondHalf.value >= 0, secondHalf.value <= 99 else { return nil }
+        let year = firstHalf.value * 100 + secondHalf.value
+        guard year >= 1900, year <= 2099 else { return nil }
+        return (year, firstHalf.consumed + secondHalf.consumed)
+    }
+
+    /// Nouns that read as counters after a number, so "five <noun>" clearly means
+    /// the digit 5. Kept small and unambiguous. Matched case-insensitively and
+    /// tolerant of trailing punctuation.
+    private static let counterNouns: Set<String> = [
+        "items", "item", "people", "person", "things", "thing",
+        "times", "steps", "step", "points", "point", "days", "day",
+        "weeks", "week", "months", "month", "years", "year", "hours",
+        "hour", "minutes", "minute", "seconds", "second", "dollars",
+        "dollar", "cents", "cent", "percent", "files", "file", "lines",
+        "line", "words", "word", "pages", "page", "tasks", "task"
+    ]
+
+    private static func isCounterNoun(_ token: Substring) -> Bool {
+        let bare = token.lowercased()
+            .trimmingCharacters(in: CharacterSet(charactersIn: ".,!?:;"))
+        return counterNouns.contains(bare)
+    }
+
+    // MARK: - Spoken lists
+
+    /// Turn spoken list markers at the start of a line into markdown list items.
+    ///  - "bullet X"      -> "- X"
+    ///  - "number one X"  -> "1. X"  (and two/three/… -> 2./3./…)
+    /// Only fires at the very start of a line (after optional whitespace), so a
+    /// "bullet" in the middle of a sentence is untouched.
+    private static func applySpokenLists(_ text: String) -> String {
+        let lines = text.components(separatedBy: "\n")
+        let transformed = lines.map { line -> String in
+            let leading = line.prefix(while: { $0 == " " || $0 == "\t" })
+            let body = line.dropFirst(leading.count)
+
+            // "bullet X" / "bullet point X" -> "- X"
+            // NOTE: no "dash" branch here. Spoken "dash" is already mapped to
+            // " - " by applySpokenPunctuation (on by default), which runs before
+            // this pass — so a "dash" literal never reaches applySpokenLists in
+            // the normal pipeline. A branch for it would be dead code, so the
+            // dash-list path is owned entirely by spoken punctuation.
+            if let rest = matchLeadingWord(body, "bullet point") ?? matchLeadingWord(body, "bullet") {
+                return "\(leading)- \(rest)"
+            }
+
+            // "number one X" -> "1. X"
+            let tokens = body.split(separator: " ", omittingEmptySubsequences: true)
+            if tokens.count >= 2, tokens[0].lowercased() == "number" {
+                if let n = onesWords[tokens[1].lowercased()], n >= 1 {
+                    let rest = tokens.dropFirst(2).joined(separator: " ")
+                    let sep = rest.isEmpty ? "" : " "
+                    return "\(leading)\(n).\(sep)\(rest)"
+                }
+            }
+            return line
+        }
+        return transformed.joined(separator: "\n")
+    }
+
+    /// If `text` begins (case-insensitively) with the whole word(s) `word`
+    /// followed by a space, return the remainder (trimmed of the leading space);
+    /// otherwise nil. Whole-word: "bulletin" does not match "bullet".
+    private static func matchLeadingWord(_ text: Substring, _ word: String) -> String? {
+        let lower = text.lowercased()
+        let prefix = word.lowercased() + " "
+        guard lower.hasPrefix(prefix) else { return nil }
+        let rest = text.dropFirst(prefix.count)
+        return String(rest)
+    }
+
+    // MARK: - Basic markdown
+
+    /// Basic spoken markdown commands, applied per line:
+    ///  - "heading X" / "header X"        -> "# X"
+    ///  - "bold X" (rest of line)         -> "**X**"
+    ///  - "italic X" (rest of line)       -> "*X*"
+    /// These only fire when the command word STARTS the line, which is the clear
+    /// "format the following as …" intent; a stray "bold" mid-sentence is left
+    /// alone to avoid mangling prose.
+    private static func applyBasicMarkdown(_ text: String) -> String {
+        let lines = text.components(separatedBy: "\n")
+        let transformed = lines.map { line -> String in
+            let leading = line.prefix(while: { $0 == " " || $0 == "\t" })
+            let body = line.dropFirst(leading.count)
+
+            if let rest = matchLeadingWord(body, "heading") ?? matchLeadingWord(body, "header") {
+                return "\(leading)# \(rest)"
+            }
+            if let rest = matchLeadingWord(body, "bold"), !rest.isEmpty {
+                let (core, trailing) = splitTrailingPunctuation(rest)
+                return "\(leading)**\(core)**\(trailing)"
+            }
+            if let rest = matchLeadingWord(body, "italic"), !rest.isEmpty {
+                let (core, trailing) = splitTrailingPunctuation(rest)
+                return "\(leading)*\(core)*\(trailing)"
+            }
+            return line
+        }
+        return transformed.joined(separator: "\n")
+    }
+
+    /// Split a run's trailing sentence punctuation off so emphasis wraps the words
+    /// only: "world." -> ("world", "."). Keeps the marker outside the ** **.
+    private static func splitTrailingPunctuation(_ s: String) -> (core: String, trailing: String) {
+        let punct = CharacterSet(charactersIn: ".,!?;:")
+        var trailing = ""
+        var core = s
+        while let last = core.last, last.unicodeScalars.allSatisfy({ punct.contains($0) }) {
+            trailing.insert(last, at: trailing.startIndex)
+            core.removeLast()
+        }
+        return (core, trailing)
     }
 }

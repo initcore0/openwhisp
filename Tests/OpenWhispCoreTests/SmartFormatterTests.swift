@@ -73,6 +73,14 @@ final class SmartFormatterTests: XCTestCase {
         XCTAssertEqual(f.format("use a 10 mm socket", language: "en"), "Use a 10 mm socket")
     }
 
+    func testDefaultDashLeadDoesNotCapitalizeNextWord() {
+        // Pin: with the stock default formatter (no opt-in structural groups), a
+        // spoken "dash" -> " - " lead must consume the sentence capitalization,
+        // so the following word stays lowercase. This is the pre-MAK-20 behavior
+        // and must remain byte-for-byte unchanged.
+        XCTAssertEqual(f.format("new line dash second point", language: "en"), "- second point")
+    }
+
     func testCapitalizesMultiClusterUppercaseWithoutCrashing() {
         // ß uppercases to "SS" (two grapheme clusters) — must not trap, and the
         // full uppercase form must be preserved.
