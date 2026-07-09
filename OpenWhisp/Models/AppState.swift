@@ -330,6 +330,49 @@ class AppState: ObservableObject {
         }
     }
 
+    // MARK: Agent-CLI provider (MAK-44)
+    //
+    // Used when `llmProvider == EnhancementProvider.agentCLIID`. The whole-text
+    // refine step then pipes the transcript through a locally-installed coding-agent
+    // CLI (claude/codex/custom) and uses its cleaned stdout, reusing the user's
+    // existing CLI auth (no API key). Persisted; default is the Claude preset so a
+    // user who opts in gets a working setup with zero extra typing.
+
+    /// Selected agent-CLI preset id ("claude" / "codex" / "custom").
+    @Published var agentCLIPreset: String {
+        didSet { persist(agentCLIPreset, "agentCLIPreset") }
+    }
+
+    /// Custom executable (bare name resolved on PATH, or an absolute path). Used
+    /// only when `agentCLIPreset == "custom"`.
+    @Published var agentCLICustomCommand: String {
+        didSet { persist(agentCLICustomCommand, "agentCLICustomCommand") }
+    }
+
+    /// Custom fixed args, one per line (each line is one argv entry, verbatim — no
+    /// shell splitting). The transcript is never here; it goes on stdin.
+    @Published var agentCLICustomArgsText: String {
+        didSet { persist(agentCLICustomArgsText, "agentCLICustomArgsText") }
+    }
+
+    /// Hard wall-clock timeout (seconds) for the agent CLI. On overrun the runner
+    /// kills it and fails open to the original transcript.
+    @Published var agentCLITimeout: Double {
+        didSet { persist(agentCLITimeout, "agentCLITimeout") }
+    }
+
+    /// The effective, ready-to-run agent-CLI config from the persisted selection.
+    /// A built-in preset keeps its shipped command + args; the custom preset uses
+    /// the user's fields. Timeout is always the user's (clamped to a sane floor).
+    var activeAgentCLIConfig: AgentCLIProvider.Config {
+        AgentCLIProvider.resolveConfig(
+            presetID: agentCLIPreset,
+            customCommand: agentCLICustomCommand,
+            customArgs: AgentCLIProvider.parseCustomArgs(agentCLICustomArgsText),
+            timeout: agentCLITimeout
+        )
+    }
+
     #if OPENWHISP_INSTRUMENTATION
     /// Dev-only: show the debug HUD on the recording overlay. Toggled from the
     /// menu-bar checkbox; persisted. Only exists in instrumented builds.
@@ -377,6 +420,45 @@ class AppState: ObservableObject {
     }
     @Published var scriptPostProcessorPath: String {
         didSet { UserDefaults.standard.set(scriptPostProcessorPath, forKey: "scriptPostProcessorPath") }
+    }
+
+    /// Output target (M9 / MAK-11..14): where a FINAL dictation is delivered. A
+    /// GLOBAL selection (v1) — one destination for every app — plus the three sink
+    /// configs. `.focusedApp` is the default so nothing changes until the user opts
+    /// in. Persisted as one JSON blob under `outputTargetSettings`; each mutation
+    /// re-saves. The router is rebuilt fresh at each final insert from this value,
+    /// so a config edit takes effect on the next dictation with no extra plumbing.
+    @Published var outputTargetSettings: OutputTargetSettings {
+        didSet { persistOutputTargetSettings() }
+    }
+
+    /// Convenience projections so the Settings UI can bind directly to each field of
+    /// `outputTargetSettings` (SwiftUI can't bind into a nested struct's members via
+    /// a `@Published` aggregate without these). Each setter writes back through the
+    /// aggregate, which persists.
+    var outputTargetKind: OutputTargetKind {
+        get { outputTargetSettings.kind }
+        set { outputTargetSettings.kind = newValue }
+    }
+    var fileOutputPath: String {
+        get { outputTargetSettings.file.path }
+        set { outputTargetSettings.file.path = newValue }
+    }
+    var fileOutputTemplate: String {
+        get { outputTargetSettings.file.template ?? "" }
+        set { outputTargetSettings.file.template = newValue.isEmpty ? nil : newValue }
+    }
+    var fileOutputMode: FileOutputMode {
+        get { outputTargetSettings.file.mode }
+        set { outputTargetSettings.file.mode = newValue }
+    }
+    var webhookURL: String {
+        get { outputTargetSettings.webhook.url }
+        set { outputTargetSettings.webhook.url = newValue }
+    }
+    var shortcutOutputName: String {
+        get { outputTargetSettings.shortcutName }
+        set { outputTargetSettings.shortcutName = newValue }
     }
 
     /// Apply per-app profile overrides (language / output mode / AI cleanup)
@@ -836,8 +918,17 @@ class AppState: ObservableObject {
     /// settings change is reflected. Used by `completeFinalText` today; the rest
     /// of the AI orchestration (engine bracket, session guards, status UI) stays in
     /// AppState because those are UI/lifecycle concerns the pure chain doesn't model.
-    func makeWholeTextRefiner() -> OpenAIRefiner {
-        OpenAIRefiner(
+    ///
+    /// Provider selection (MAK-44): when the user picked the agent-CLI backend, this
+    /// returns an `AgentCLIRefiner` (pipe the transcript through claude/codex/custom)
+    /// instead of `OpenAIRefiner`. Both conform to `AsyncTextRefiner`, so the
+    /// `AIPostProcessor` chain and `completeFinalText` orchestration are unchanged.
+    /// Every other provider keeps the OpenAI-service refiner — the default path.
+    func makeWholeTextRefiner() -> AsyncTextRefiner {
+        if EnhancementProvider.usesAgentCLI(llmProvider) {
+            return AgentCLIRefiner(config: activeAgentCLIConfig)
+        }
+        return OpenAIRefiner(
             service: translationService,
             mode: refinementMode(openAIEnhancementMode),
             targetLanguage: translationTargetLanguage,
@@ -856,6 +947,15 @@ class AppState: ObservableObject {
     /// Whether the active LLM provider is configured enough to call.
     var llmConfigured: Bool {
         switch llmProvider {
+        case EnhancementProvider.agentCLIID:
+            // Configured when the selected preset/custom fields build a valid argv
+            // (non-empty command, no transcript-in-args). We can't verify the CLI is
+            // actually installed here without spawning it — that's the runner's
+            // fail-open job — but an empty custom command is a clear misconfig.
+            if case .success = AgentCLIProvider.buildCommand(config: activeAgentCLIConfig) {
+                return true
+            }
+            return false
         case "bundled":
             // Configured only when this build can run the LLM at all AND the
             // selected model is actually on disk. The runtime check keeps
@@ -1009,9 +1109,16 @@ class AppState: ObservableObject {
         localLLMBaseURL = UserDefaults.standard.string(forKey: "localLLMBaseURL") ?? "http://localhost:8080/v1"
         localLLMModel = UserDefaults.standard.string(forKey: "localLLMModel") ?? ""
         bundledLLMModel = UserDefaults.standard.string(forKey: "bundledLLMModel") ?? "qwen2.5-0.5b-instruct"
+        // Agent-CLI provider (MAK-44) — used only when llmProvider == "agentCLI".
+        // Default to the Claude preset so opting in works with zero extra typing.
+        agentCLIPreset = UserDefaults.standard.string(forKey: "agentCLIPreset") ?? "claude"
+        agentCLICustomCommand = UserDefaults.standard.string(forKey: "agentCLICustomCommand") ?? ""
+        agentCLICustomArgsText = UserDefaults.standard.string(forKey: "agentCLICustomArgsText") ?? ""
+        agentCLITimeout = UserDefaults.standard.object(forKey: "agentCLITimeout") as? Double ?? 30.0
         instructionChainEnabled = UserDefaults.standard.object(forKey: "instructionChainEnabled") as? Bool ?? true
         scriptPostProcessorEnabled = UserDefaults.standard.object(forKey: "scriptPostProcessorEnabled") as? Bool ?? false
         scriptPostProcessorPath = UserDefaults.standard.string(forKey: "scriptPostProcessorPath") ?? ""
+        outputTargetSettings = Self.loadOutputTargetSettings()
         perAppModesEnabled = UserDefaults.standard.object(forKey: "perAppModesEnabled") as? Bool ?? false
         historyEnabled = UserDefaults.standard.object(forKey: "historyEnabled") as? Bool ?? true
         // Agent Bridge (M8) — default off; started at launch via startAgentBridgeIfEnabled().
@@ -2050,6 +2157,39 @@ class AppState: ObservableObject {
     func testLLMProvider() {
         error = nil
         switch llmProvider {
+        case EnhancementProvider.agentCLIID:
+            // Validate the config builds first (empty command / transcript-in-args
+            // fail closed with a clear message, no spawn).
+            switch AgentCLIProvider.buildCommand(config: activeAgentCLIConfig) {
+            case .failure(.emptyCommand):
+                translationStatus = "Enter the agent CLI command first"
+                return
+            case .failure(.transcriptInArgs):
+                translationStatus = "Remove \(AgentCLIProvider.transcriptSentinel) from the arguments"
+                return
+            case .success:
+                break
+            }
+            translationStatus = "Testing agent CLI…"
+            let config = activeAgentCLIConfig
+            // Actually run the CLI on a tiny probe off the main actor (it's a
+            // blocking Process spawn). Fail-open: identical output = the CLI didn't
+            // transform anything, but it DID run, so the wiring is proven.
+            Task { @MainActor [weak self] in
+                let probe = "test one two"
+                let output = await Task.detached(priority: .userInitiated) {
+                    AgentCLIRunner.run(probe, config: config)
+                }.value
+                guard let self else { return }
+                if output == probe {
+                    // Ran but returned the original — either the CLI isn't installed
+                    // (fail-open kept the input) or it genuinely made no change.
+                    self.translationStatus = "Agent CLI ran (no change / not installed)"
+                } else {
+                    self.translationStatus = "Agent CLI working"
+                }
+            }
+
         case "bundled":
             guard bundledLLMRuntimeAvailable else {
                 translationStatus = "This build doesn't include the built-in AI runtime"
@@ -3124,16 +3264,39 @@ class AppState: ObservableObject {
         let pastesWholeOnce = !isLiveChunkSession || isPreviewSession
         if pastesWholeOnce {
             let insertion = addTrailingSpace ? "\(text) " : text
-            textOutput.insert(
-                insertion,
-                mode: currentInsertionMode,
-                restoreClipboard: restoreClipboard
-            ) { [weak self] outcome in
-                // If the insert couldn't be confirmed, the text was left on the
-                // clipboard — tell the user so it isn't silently lost. (Arrives after
-                // the success status below; overrides it only on fallback.)
-                guard let self, outcome == .copiedToClipboard else { return }
-                self.showClipboardFallbackNotice()
+            // Output target (MAK-11..14): when the user has selected AND configured a
+            // non-focused sink (file / Shortcut / webhook), route the FINAL text
+            // there; otherwise keep the exact historical focused-app insert. Keeping
+            // the default path a bare `textOutput.insert` (not wrapped in the router)
+            // means the common case is byte-for-byte unchanged — no regression.
+            let effectiveKind = OutputTargetResolver.effectiveKind(outputTargetSettings)
+            if effectiveKind == .focusedApp {
+                textOutput.insert(
+                    insertion,
+                    mode: currentInsertionMode,
+                    restoreClipboard: restoreClipboard
+                ) { [weak self] outcome in
+                    // If the insert couldn't be confirmed, the text was left on the
+                    // clipboard — tell the user so it isn't silently lost. (Arrives after
+                    // the success status below; overrides it only on fallback.)
+                    guard let self, outcome == .copiedToClipboard else { return }
+                    self.showClipboardFallbackNotice()
+                }
+            } else {
+                // A configured sink is selected. Build a fresh router (default =
+                // focused-app insert that still surfaces the clipboard-fallback
+                // notice) + the sink, and route the payload. On any sink failure the
+                // router fails open to that same focused-app insert — matching the
+                // never-drop-text guarantee. The sink receives the un-spaced text; a
+                // trailing space belongs to the focused-app insert path only.
+                let router = buildOutputRouter(effectiveKind: effectiveKind, focusedAppInsertion: insertion)
+                let payload = OutputPayload(
+                    text: text,
+                    language: outputLanguageForCleaning,
+                    targetAppBundleID: targetApplication?.bundleIdentifier,
+                    isLiveChunk: false
+                )
+                router.route(payload) { _ in }
             }
         } else {
             // liveChunks: the text was already pasted incrementally (no trailing space).
@@ -3166,6 +3329,72 @@ class AppState: ObservableObject {
             ? "Enhanced: \(text.prefix(50))..."
             : "Done: \(originalText.prefix(50))..."
         finishSessionUI(delay: 0.8)
+    }
+
+    // MARK: - Output target routing (MAK-11..14)
+
+    /// Build a fresh `OutputRouter` for a final delivery whose effective (configured)
+    /// kind is a non-focused sink. The default target is a focused-app insert that
+    /// mirrors the historical path — including the "couldn't insert — text is on the
+    /// clipboard" notice — so a sink fail-open behaves exactly like a normal insert.
+    ///
+    /// - Parameters:
+    ///   - effectiveKind: the already-resolved sink kind (never `.focusedApp` here;
+    ///     the caller handles that case with the bare insert).
+    ///   - focusedAppInsertion: the exact string the focused-app path would insert
+    ///     (i.e. `text` plus any trailing space), used by the default/fallback target.
+    private func buildOutputRouter(effectiveKind: OutputTargetKind, focusedAppInsertion: String) -> OutputRouter {
+        let defaultTarget = FocusedAppInsertTarget(
+            insertion: focusedAppInsertion,
+            mode: currentInsertionMode,
+            restoreClipboard: restoreClipboard,
+            insert: { [weak self] insertion, mode, restore, completion in
+                self?.textOutput.insert(insertion, mode: mode, restoreClipboard: restore) { outcome in
+                    if outcome == .copiedToClipboard { self?.showClipboardFallbackNotice() }
+                    completion()
+                }
+            }
+        )
+
+        var sinks: [OutputTarget] = []
+        switch effectiveKind {
+        case .focusedApp:
+            break   // handled by the caller; nothing extra to register.
+        case .file:
+            sinks.append(FileOutputTarget(config: outputTargetSettings.file))
+        case .webhook:
+            sinks.append(WebhookOutputTarget(config: outputTargetSettings.webhook))
+        case .shortcut:
+            sinks.append(ShortcutOutputTarget(shortcutName: outputTargetSettings.shortcutName))
+        }
+
+        // Global selection (v1): apply the effective kind to whatever app is
+        // frontmost so the router keys on the current bundle. (`nil` bundle → the
+        // router resolves to the default focused-app insert, which is fine.)
+        let selections: [OutputTargetSelection]
+        if let bundleID = targetApplication?.bundleIdentifier {
+            selections = [OutputTargetSelection(appBundleID: bundleID, kind: effectiveKind)]
+        } else {
+            selections = []
+        }
+        return OutputRouter(defaultTarget: defaultTarget, targets: sinks, selections: selections)
+    }
+
+    // MARK: - Output target persistence
+
+    /// Persist the whole output-target settings blob as JSON under one key.
+    private func persistOutputTargetSettings() {
+        guard let data = try? JSONEncoder().encode(outputTargetSettings) else { return }
+        UserDefaults.standard.set(data, forKey: "outputTargetSettings")
+    }
+
+    /// Load the persisted output-target settings, defaulting to focused-app (today's
+    /// behavior) when absent or unreadable.
+    private static func loadOutputTargetSettings() -> OutputTargetSettings {
+        guard let data = UserDefaults.standard.data(forKey: "outputTargetSettings"),
+              let decoded = try? JSONDecoder().decode(OutputTargetSettings.self, from: data)
+        else { return OutputTargetSettings() }
+        return decoded
     }
 
     /// Local transcript cleanup. Delegates to TranscriptCleaner (in OpenWhispCore)
@@ -3477,6 +3706,10 @@ class AppState: ObservableObject {
         localLLMBaseURL = "http://localhost:8080/v1"
         localLLMModel = ""
         bundledLLMModel = "qwen2.5-0.5b-instruct"
+        agentCLIPreset = "claude"
+        agentCLICustomCommand = ""
+        agentCLICustomArgsText = ""
+        agentCLITimeout = 30.0
         instructionChainEnabled = true
 
         triggerMode = "fn"
@@ -3500,6 +3733,7 @@ class AppState: ObservableObject {
         addTrailingSpace = false
         scriptPostProcessorEnabled = false
         scriptPostProcessorPath = ""
+        outputTargetSettings = OutputTargetSettings()   // back to focused-app default
 
         showOverlay = true
         voiceIndicatorStyle = .defaultStyle
