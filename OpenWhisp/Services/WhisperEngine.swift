@@ -16,9 +16,20 @@ class WhisperEngine: FileTranscriptionEngine {
 
     /// Loopback port the server binds. Re-picked (under `serverLock`) at each
     /// (re)launch inside `ensureServerOnce` rather than cached once at init —
-    /// see MAK-28. Read by `healthCheck`/`postInference`/`waitForHealth`, all of
-    /// which run while a launched server owns the port, so a plain read is safe.
+    /// see MAK-28. Now that it is a `var` mutated under the lock, every read
+    /// outside the lock goes through `currentPort` (a lock-guarded snapshot) so
+    /// there is no TSan-visible data race and a caller can't poll a concurrent
+    /// relaunch's port on behalf of the old generation. Reads WITH the lock held
+    /// (the launch path) touch `serverPort` directly.
     private var serverPort: Int
+
+    /// Thread-safe snapshot of `serverPort` for reads that run WITHOUT
+    /// `serverLock` held (`healthCheck`, `postInference`).
+    private var currentPort: Int {
+        serverLock.lock()
+        defer { serverLock.unlock() }
+        return serverPort
+    }
     private let serverLock = NSLock()
     private var serverProcess: Process?
     private var serverModelPath: String?
@@ -310,20 +321,33 @@ class WhisperEngine: FileTranscriptionEngine {
     /// healthy — which is how a lost port-bind race (MAK-28) surfaces. The
     /// happy path (server already healthy on this model) returns on the first
     /// attempt without re-picking a port.
+    ///
+    /// Retries ONLY on a health failure. If a concurrent `stopServer()` /
+    /// model-switch cancels an in-flight launch, `ensureServerOnce` reports
+    /// `.cancelled` and we do NOT retry — retrying would relaunch a server the
+    /// user just tore down (an orphan on quit). See MAK-28 review #2. The
+    /// retry-vs-cancel decision is the pure `ServerLaunchRetry.decide`.
     private func ensureServer(binaryPath: String, modelPath: String) -> Bool {
         let maxAttempts = 3
         for attempt in 1...maxAttempts {
-            if ensureServerOnce(binaryPath: binaryPath, modelPath: modelPath) {
+            let attemptsRemaining = maxAttempts - attempt + 1
+            let outcome = ensureServerOnce(binaryPath: binaryPath, modelPath: modelPath)
+            switch ServerLaunchRetry.decide(outcome: outcome, attemptsRemaining: attemptsRemaining) {
+            case .succeed:
                 return true
-            }
-            if attempt < maxAttempts {
-                log("whisper-server launch attempt \(attempt) failed; retrying on a fresh port")
+            case .giveUp:
+                return false
+            case .retry:
+                log("whisper-server launch attempt \(attempt) failed health check; retrying on a fresh port")
             }
         }
         return false
     }
 
-    private func ensureServerOnce(binaryPath: String, modelPath: String) -> Bool {
+    /// Outcome of a single `ensureServerOnce` attempt, routed through
+    /// `ServerLaunchRetry.decide`. `.healthFailed` is retryable; `.cancelled`
+    /// (a concurrent stop/generation-invalidation) is not.
+    private func ensureServerOnce(binaryPath: String, modelPath: String) -> ServerLaunchRetry.Outcome {
         // --- Phase 1: snapshot / start under the lock -------------------------
         serverLock.lock()
 
@@ -341,7 +365,16 @@ class WhisperEngine: FileTranscriptionEngine {
                 serverLock.lock()
                 let stillCurrent = serverGeneration == myGeneration && serverProcess === process
                 serverLock.unlock()
-                return healthy && stillCurrent
+                if healthy, stillCurrent {
+                    return .launched
+                }
+                // The joined startup was stopped/replaced out from under us
+                // (generation moved) — that's a cancellation, not a health
+                // failure; don't relaunch a server the owner is tearing down.
+                // If it's still current but unhealthy, the owning generation's
+                // phase 3 will tear it down; treat that as a health failure so
+                // a retry can bring a fresh server up.
+                return stillCurrent ? .healthFailed : .cancelled
             }
             // No startup pending: probe health WITHOUT the lock (healthCheck
             // blocks up to ~1.2s; holding serverLock stalls main-actor callers
@@ -358,11 +391,15 @@ class WhisperEngine: FileTranscriptionEngine {
             serverLock.lock()
             if serverGeneration != probedGeneration || serverProcess !== probedProcess {
                 serverLock.unlock()
-                return ensureServer(binaryPath: binaryPath, modelPath: modelPath)
+                // Re-evaluate from the top by re-entering ONCE (ensureServerOnce,
+                // NOT the ensureServer wrapper) so this recursion is charged
+                // against the caller's existing attempt budget rather than being
+                // granted a fresh 3-attempt budget. See MAK-28 review #5.
+                return ensureServerOnce(binaryPath: binaryPath, modelPath: modelPath)
             }
             if probeHealthy {
                 serverLock.unlock()
-                return true
+                return .launched
             }
         }
 
@@ -375,7 +412,11 @@ class WhisperEngine: FileTranscriptionEngine {
             DispatchQueue.main.async {
                 self.onWorkerStatus?("Worker unavailable")
             }
-            return false
+            // Not a user cancellation: report as a (non-)launch failure so the
+            // outer loop's give-up path fires. A retry would just fail identically
+            // (the binary won't appear), but it's harmless — preserving the prior
+            // retry-on-false behavior for this branch.
+            return .healthFailed
         }
 
         // Pick a FRESH port for this launch instead of reusing the one cached at
@@ -424,8 +465,12 @@ class WhisperEngine: FileTranscriptionEngine {
         process.standardError = stderrPipe
 
         do {
+            // Capture the port under the lock (held here) so the deferred
+            // main-thread status closure doesn't read the mutable `serverPort`
+            // unsynchronized.
+            let launchPort = serverPort
             DispatchQueue.main.async {
-                self.onWorkerStatus?("Loading on port \(self.serverPort)...")
+                self.onWorkerStatus?("Loading on port \(launchPort)...")
             }
             try process.run()
         } catch {
@@ -435,7 +480,9 @@ class WhisperEngine: FileTranscriptionEngine {
             DispatchQueue.main.async {
                 self.onWorkerStatus?("Worker unavailable")
             }
-            return false
+            // A spawn failure is a launch failure, not a user cancellation —
+            // eligible for a retry on a fresh port (matching prior behavior).
+            return .healthFailed
         }
 
         // Commit the freshly-started process into shared state and bump the
@@ -467,28 +514,37 @@ class WhisperEngine: FileTranscriptionEngine {
         }
 
         // If a concurrent stop/replace happened, the process we started is no
-        // longer the current one — don't touch shared state, just bail.
+        // longer the current one — don't touch shared state, just bail. This is
+        // a CANCELLATION (the user stopped/switched, or is quitting), NOT a
+        // health failure: the outer loop must NOT retry, or attempt N+1 would
+        // relaunch a server the user just tore down (an orphan on quit). This is
+        // the crux of MAK-28 review #2.
         guard serverGeneration == myGeneration, serverProcess === process else {
             // Our process was already torn down (or replaced) by someone else.
             if process.isRunning {
                 process.terminate()
             }
-            return false
+            return .cancelled
         }
 
         if healthy, process.isRunning {
+            // Capture under the lock (held via the phase-3 defer) so the
+            // deferred status closure doesn't read `serverPort` unsynchronized.
+            let loadedPort = serverPort
             DispatchQueue.main.async {
-                self.onWorkerStatus?("Loaded on port \(self.serverPort)")
+                self.onWorkerStatus?("Loaded on port \(loadedPort)")
             }
-            return true
+            return .launched
         }
 
-        // Health failed (or process died): tear down the server we own.
+        // Health failed (or process died) while our generation is still current:
+        // a lost port-bind race or a crashed child. Tear down the server we own
+        // and report a retryable health failure.
         stopServerLocked()
         DispatchQueue.main.async {
             self.onWorkerStatus?("Worker unavailable")
         }
-        return false
+        return .healthFailed
     }
 
     /// Must be called with `serverLock` held. Bumps `serverGeneration` so any
@@ -517,12 +573,16 @@ class WhisperEngine: FileTranscriptionEngine {
     /// Its SIGTERM handler closes the listen socket immediately, so a
     /// replacement server can bind the port while the old one drains.
     ///
-    /// The graceful `terminate()` targets the retained `Process` (Foundation
-    /// reaps it via waitpid, so it can't hit a recycled PID). The raw SIGKILL
-    /// escalation uses the cached numeric PID, so before sending it we re-verify
-    /// the PID still names OUR whisper-server — otherwise, if the child exited
-    /// and its PID was recycled in the escalation window, we'd SIGKILL an
-    /// unrelated process. `process.isRunning` alone doesn't close that window.
+    /// Both signals target the RETAINED `Process`: SIGKILL is only sent while
+    /// `process.isRunning` is still true, and a running child has NOT been
+    /// reaped by Foundation's waitpid — so its PID cannot have been recycled out
+    /// from under us. The path-prefix identity gate (`isOwnWhisperServerProcess`)
+    /// deliberately does NOT apply here: it exists to guard a bare PID read from
+    /// a stale PID file (`stopStaleServerIfNeeded`), where recycling IS the risk.
+    /// Applying it here would strand a server we legitimately launched but whose
+    /// path is outside `ownedServerPrefixes()` (e.g. a `whisper-server` sibling
+    /// to a user-selected Homebrew whisper-cli) — SIGTERM ignored mid-inference,
+    /// SIGKILL never sent, leaking RAM + the bound port. See MAK-27 review #1.
     private static func terminateAsync(_ process: Process) {
         let pid = process.processIdentifier
         process.terminate()
@@ -530,7 +590,10 @@ class WhisperEngine: FileTranscriptionEngine {
             for _ in 0..<20 where process.isRunning {
                 Thread.sleep(forTimeInterval: 0.1)
             }
-            if process.isRunning, isOwnWhisperServerProcess(pid: pid) {
+            // Gate the SIGKILL on `isRunning` (not on path identity): a still-
+            // running retained child hasn't been reaped, so `pid` is guaranteed
+            // to still name it.
+            if process.isRunning {
                 kill(pid, SIGKILL)
             }
         }
@@ -587,7 +650,7 @@ class WhisperEngine: FileTranscriptionEngine {
     }
 
     private func healthCheck() -> Bool {
-        guard let url = URL(string: "http://127.0.0.1:\(serverPort)/health") else { return false }
+        guard let url = URL(string: "http://127.0.0.1:\(currentPort)/health") else { return false }
         var request = URLRequest(url: url)
         request.timeoutInterval = 1
 
@@ -604,7 +667,8 @@ class WhisperEngine: FileTranscriptionEngine {
     }
 
     private func postInference(wavPath: String, language: String, prompt: String = "") throws -> String {
-        guard let url = URL(string: "http://127.0.0.1:\(serverPort)/inference") else {
+        let port = currentPort
+        guard let url = URL(string: "http://127.0.0.1:\(port)/inference") else {
             throw WhisperWorkerError.invalidURL
         }
 
@@ -620,7 +684,7 @@ class WhisperEngine: FileTranscriptionEngine {
             prompt: prompt
         )
         let fileSize = (try? FileManager.default.attributesOfItem(atPath: wavPath)[.size] as? NSNumber)?.int64Value ?? -1
-        log("Server API POST /inference port=\(serverPort), wav=\(URL(fileURLWithPath: wavPath).lastPathComponent), bytes=\(fileSize), language=\(language)")
+        log("Server API POST /inference port=\(port), wav=\(URL(fileURLWithPath: wavPath).lastPathComponent), bytes=\(fileSize), language=\(language)")
 
         let semaphore = DispatchSemaphore(value: 0)
         var resultData: Data?

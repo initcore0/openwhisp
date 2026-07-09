@@ -70,7 +70,8 @@ let package = Package(
                 "ModelStorage.swift",
                 "SettingsMigration.swift",
                 "RefineTap.swift",
-                "ServerProcessIdentity.swift"
+                "ServerProcessIdentity.swift",
+                "ServerLaunchRetry.swift"
             ]
         ),
         .executableTarget(

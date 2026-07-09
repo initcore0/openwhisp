@@ -38,8 +38,10 @@ final class LlamaServerEngine {
     }
 
     /// Loopback port the server binds. Re-picked (under `serverLock`) at each
-    /// (re)launch rather than cached once at init — see MAK-28. Read by
-    /// `baseURL`/`port`/`healthCheck` while a launched server owns it.
+    /// (re)launch rather than cached once at init — see MAK-28. Being a `var`
+    /// mutated under the lock, reads that run WITHOUT the lock (`healthCheck`,
+    /// and external callers via `baseURL`/`port`) go through the lock-guarded
+    /// `port`/`baseURL` accessors, not `serverPort` directly.
     private var serverPort: Int
     private let serverLock = NSLock()
     private var serverProcess: Process?
@@ -396,12 +398,14 @@ final class LlamaServerEngine {
     /// replacement server can bind the port while the old one drains. Mirrors
     /// WhisperEngine.terminateAsync.
     ///
-    /// The graceful `terminate()` targets the retained `Process` (Foundation
-    /// reaps it via waitpid, so it can't hit a recycled PID). The raw SIGKILL
-    /// escalation uses the cached numeric PID, so before sending it we re-verify
-    /// the PID still names OUR llama-server — otherwise, if the child exited and
-    /// its PID was recycled in the escalation window, we'd SIGKILL an unrelated
-    /// process. `process.isRunning` alone doesn't close that window.
+    /// Both signals target the RETAINED `Process`: SIGKILL is only sent while
+    /// `process.isRunning` is still true, and a running child has NOT been
+    /// reaped by Foundation's waitpid — so its PID cannot have been recycled.
+    /// The path-prefix identity gate (`isOwnLlamaServerProcess`) deliberately
+    /// does NOT apply here: it guards a bare PID read from a stale PID file
+    /// (`stopStaleServerIfNeeded`), where recycling IS the risk. Applying it to a
+    /// retained process would strand a server we launched whose path is outside
+    /// `ownedServerPrefixes()`, leaking RAM + the bound port. See MAK-27 review #1.
     private static func terminateAsync(_ process: Process) {
         let pid = process.processIdentifier
         process.terminate()
@@ -409,7 +413,9 @@ final class LlamaServerEngine {
             for _ in 0..<20 where process.isRunning {
                 Thread.sleep(forTimeInterval: 0.1)
             }
-            if process.isRunning, isOwnLlamaServerProcess(pid: pid) {
+            // Gate the SIGKILL on `isRunning` (not on path identity): a still-
+            // running retained child hasn't been reaped, so `pid` still names it.
+            if process.isRunning {
                 kill(pid, SIGKILL)
             }
         }
@@ -467,7 +473,10 @@ final class LlamaServerEngine {
     }
 
     private func healthCheck() -> Bool {
-        guard let url = URL(string: "http://127.0.0.1:\(serverPort)/health") else { return false }
+        // `serverPort` is a `var` re-picked per launch under `serverLock`;
+        // healthCheck always runs WITHOUT the lock held, so read the port via the
+        // lock-guarded `port` accessor to avoid a data race (MAK-28 review #3).
+        guard let url = URL(string: "http://127.0.0.1:\(port)/health") else { return false }
         var request = URLRequest(url: url)
         request.timeoutInterval = 1
 
