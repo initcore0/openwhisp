@@ -33,7 +33,7 @@ BUNDLE_ID="com.openwhisp.app"
 BLACKHOLE_NAME="BlackHole 2ch"
 APP_BINARY="OpenWhisp"
 STATE_DIR="${TMPDIR:-/tmp}/openwhisp-e2e-smoke"
-SAVED_DEVICE_FILE="$STATE_DIR/saved-input-device"
+SAVED_OUTPUT_FILE="$STATE_DIR/saved-output-device"
 SAVED_MIC_ID_FILE="$STATE_DIR/saved-microphone-id"
 
 mkdir -p "$STATE_DIR"
@@ -60,10 +60,25 @@ find_cli() {
 
 blackhole_uid() {
     # The CoreAudio device UID string OpenWhisp stores in `microphoneID`.
-    # SwitchAudioSource prints it with -f cli/json; parse the UID for our device.
-    SwitchAudioSource -a -t input -f cli 2>/dev/null \
-        | awk -F, -v name="$BLACKHOLE_NAME" '
-            $0 ~ name { for (i=1;i<=NF;i++) if ($i ~ /uid=/) { sub(/.*uid=/,"",$i); print $i; exit } }'
+    # Parse the JSON listing ({"name":…,"type":…,"id":…,"uid":…}) rather than the
+    # CSV `-f cli` form: some device UIDs contain commas (e.g. Shure MV7+), which
+    # would break naive comma-splitting. Match our device by name, print its uid.
+    SwitchAudioSource -a -t input -f json 2>/dev/null \
+        | python3 -c "
+import sys, json
+name = '$BLACKHOLE_NAME'
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        d = json.loads(line)
+    except ValueError:
+        continue
+    if d.get('name') == name:
+        print(d.get('uid', ''))
+        break
+"
 }
 
 cmd_setup() {
@@ -101,9 +116,10 @@ EOF
 }
 
 cmd_restore() {
-    if [[ -f "$SAVED_DEVICE_FILE" ]]; then
-        local dev; dev="$(cat "$SAVED_DEVICE_FILE")"
-        SwitchAudioSource -t input -s "$dev" 2>/dev/null && ok "Restored default input to '$dev'."
+    if [[ -f "$SAVED_OUTPUT_FILE" ]]; then
+        local dev; dev="$(cat "$SAVED_OUTPUT_FILE")"
+        [[ -n "$dev" ]] && SwitchAudioSource -t output -s "$dev" 2>/dev/null \
+            && ok "Restored default output to '$dev'."
     fi
     if [[ -f "$SAVED_MIC_ID_FILE" ]]; then
         local prev; prev="$(cat "$SAVED_MIC_ID_FILE")"
@@ -125,35 +141,40 @@ cmd_run() {
     log "Using CLI: $cli"
 
     # Is the app up? `status` must reach the bridge socket.
-    "$cli" status >/dev/null 2>&1 || die "OpenWhisp app not running / bridge unreachable. Launch the app, then retry."
+    local status_line
+    status_line="$("$cli" status 2>/dev/null)" || die "OpenWhisp app not running / bridge unreachable. Launch the app, then retry."
+    # A session already in progress makes `dictate` return busy (exit 4). Catch it
+    # here with a clear message instead of a cryptic mid-run failure — a stuck
+    # user session clears by pressing the dictation hotkey once or restarting the app.
+    if printf '%s' "$status_line" | grep -q "session=active"; then
+        die "OpenWhisp already has an active session. End it (press your dictation hotkey, or restart the app), then retry."
+    fi
 
     local uid; uid="$(blackhole_uid)"
     [[ -n "$uid" ]] || die "BlackHole not found. Run: $0 --setup"
 
-    # Save + set the OpenWhisp input device to BlackHole by UID.
+    # Route by making BlackHole the DEFAULT OUTPUT and pointing OpenWhisp's input
+    # at BlackHole by UID. Playing to the default AudioToolbox sink avoids ffmpeg's
+    # undiscoverable per-device output index (its `-list_devices` doesn't work for
+    # the audiotoolbox output muxer). Save both so cmd_restore can undo them.
     defaults read "$BUNDLE_ID" microphoneID > "$SAVED_MIC_ID_FILE" 2>/dev/null || echo "" > "$SAVED_MIC_ID_FILE"
-    SwitchAudioSource -c -t input > "$SAVED_DEVICE_FILE" 2>/dev/null || true
-    defaults write "$BUNDLE_ID" microphoneID "$uid"
-    ok "OpenWhisp input device set to BlackHole ($uid)."
+    SwitchAudioSource -c -t output > "$SAVED_OUTPUT_FILE" 2>/dev/null || echo "" > "$SAVED_OUTPUT_FILE"
     trap cmd_restore EXIT
 
-    # ffmpeg output device index for BlackHole (AudioToolbox sink enumeration).
-    local dev_index
-    dev_index="$(ffmpeg -hide_banner -f audiotoolbox -list_devices true -i "" 2>&1 \
-        | awk -v n="$BLACKHOLE_NAME" '$0 ~ n { gsub(/[^0-9]/,"",$1); print $1; exit }')"
-    [[ -n "$dev_index" ]] || warn "Couldn't resolve ffmpeg device index; trying default sink."
+    defaults write "$BUNDLE_ID" microphoneID "$uid"
+    ok "OpenWhisp input device set to BlackHole ($uid)."
+    SwitchAudioSource -t output -s "$BLACKHOLE_NAME" 2>/dev/null \
+        && ok "Default output routed to BlackHole (playback → OpenWhisp's mic)." \
+        || die "Couldn't set BlackHole as the default output device."
+    sleep 1   # let CoreAudio + OpenWhisp settle on the new input/output devices
 
     log "Starting dictation and playing '$fixture_name' into BlackHole…"
     # dictate blocks until the session ends. The fixture ends in silence, so
     # silence-auto-stop finishes the session; --timeout is a backstop.
     local out_file="$STATE_DIR/transcript.txt"
     ( sleep 0.5   # ~0.5s leading silence so capture is armed before audio
-      if [[ -n "$dev_index" ]]; then
-          ffmpeg -hide_banner -loglevel error -re -i "$wav" \
-              -f audiotoolbox -audio_device_index "$dev_index" - 2>/dev/null
-      else
-          ffmpeg -hide_banner -loglevel error -re -i "$wav" -f audiotoolbox - 2>/dev/null
-      fi
+      # -re paces playback at real time; default audiotoolbox sink = BlackHole now.
+      ffmpeg -hide_banner -loglevel error -re -i "$wav" -f audiotoolbox - 2>/dev/null
     ) &
     local ffmpeg_pid=$!
 
