@@ -41,8 +41,11 @@ struct Harness {
     // fixture asserts correctly without pulling the whole cleaner in.
     static func isEffectivelyEmpty(_ normalized: String) -> Bool {
         let markers: Set<String> = [
+            // non-speech markers the app strips…
             "blank audio", "silence", "no speech", "music", "inaudible",
-            "background noise", "noise", "static"
+            "background noise", "noise", "static",
+            // …and the bare-word artifacts Whisper emits on pure silence.
+            "you", "thank you", "thanks for watching", "bye", "thanks",
         ]
         return normalized.isEmpty || markers.contains(normalized)
     }

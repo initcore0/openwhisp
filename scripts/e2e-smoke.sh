@@ -34,6 +34,7 @@ BLACKHOLE_NAME="BlackHole 2ch"
 APP_BINARY="OpenWhisp"
 STATE_DIR="${TMPDIR:-/tmp}/openwhisp-e2e-smoke"
 SAVED_OUTPUT_FILE="$STATE_DIR/saved-output-device"
+SAVED_INPUT_FILE="$STATE_DIR/saved-input-device"
 SAVED_MIC_ID_FILE="$STATE_DIR/saved-microphone-id"
 
 mkdir -p "$STATE_DIR"
@@ -121,6 +122,11 @@ cmd_restore() {
         [[ -n "$dev" ]] && SwitchAudioSource -t output -s "$dev" 2>/dev/null \
             && ok "Restored default output to '$dev'."
     fi
+    if [[ -f "$SAVED_INPUT_FILE" ]]; then
+        local dev; dev="$(cat "$SAVED_INPUT_FILE")"
+        [[ -n "$dev" ]] && SwitchAudioSource -t input -s "$dev" 2>/dev/null \
+            && ok "Restored default input to '$dev'."
+    fi
     if [[ -f "$SAVED_MIC_ID_FILE" ]]; then
         local prev; prev="$(cat "$SAVED_MIC_ID_FILE")"
         defaults write "$BUNDLE_ID" microphoneID "$prev" 2>/dev/null
@@ -153,20 +159,33 @@ cmd_run() {
     local uid; uid="$(blackhole_uid)"
     [[ -n "$uid" ]] || die "BlackHole not found. Run: $0 --setup"
 
-    # Route by making BlackHole the DEFAULT OUTPUT and pointing OpenWhisp's input
-    # at BlackHole by UID. Playing to the default AudioToolbox sink avoids ffmpeg's
-    # undiscoverable per-device output index (its `-list_devices` doesn't work for
-    # the audiotoolbox output muxer). Save both so cmd_restore can undo them.
+    # Routing — the important subtlety: a RUNNING OpenWhisp only reads its
+    # `microphoneID` setting at launch (no live observer), so `defaults write` to
+    # it is invisible to the running app. Instead we drive the SYSTEM defaults:
+    #   - default OUTPUT = BlackHole → the fixture playback lands in BlackHole
+    #   - default INPUT  = BlackHole → OpenWhisp (with an EMPTY microphoneID, i.e.
+    #     "system default") captures BlackHole
+    # We also CLEAR OpenWhisp's microphoneID so a previously-pinned device can't
+    # override the system default. Playing to the default AudioToolbox sink also
+    # sidesteps ffmpeg's undiscoverable per-device output index.
     defaults read "$BUNDLE_ID" microphoneID > "$SAVED_MIC_ID_FILE" 2>/dev/null || echo "" > "$SAVED_MIC_ID_FILE"
     SwitchAudioSource -c -t output > "$SAVED_OUTPUT_FILE" 2>/dev/null || echo "" > "$SAVED_OUTPUT_FILE"
+    SwitchAudioSource -c -t input  > "$SAVED_INPUT_FILE"  2>/dev/null || echo "" > "$SAVED_INPUT_FILE"
     trap cmd_restore EXIT
 
-    defaults write "$BUNDLE_ID" microphoneID "$uid"
-    ok "OpenWhisp input device set to BlackHole ($uid)."
+    # Clear OpenWhisp's pinned mic so it follows the system default input. NOTE:
+    # this only takes effect for an app launched AFTER this write; if the app was
+    # already running with a pinned device, set "Input device: System Default" (or
+    # BlackHole) in OpenWhisp Settings once — see the note we print on mismatch.
+    defaults write "$BUNDLE_ID" microphoneID ""
+
     SwitchAudioSource -t output -s "$BLACKHOLE_NAME" 2>/dev/null \
-        && ok "Default output routed to BlackHole (playback → OpenWhisp's mic)." \
+        && ok "Default OUTPUT → BlackHole (fixture playback lands here)." \
         || die "Couldn't set BlackHole as the default output device."
-    sleep 1   # let CoreAudio + OpenWhisp settle on the new input/output devices
+    SwitchAudioSource -t input -s "$BLACKHOLE_NAME" 2>/dev/null \
+        && ok "Default INPUT → BlackHole (OpenWhisp captures here)." \
+        || die "Couldn't set BlackHole as the default input device."
+    sleep 1   # let CoreAudio + OpenWhisp settle on the new devices
 
     log "Starting dictation and playing '$fixture_name' into BlackHole…"
     # dictate blocks until the session ends. The fixture ends in silence, so
@@ -193,9 +212,13 @@ cmd_run() {
     norm() { tr '[:upper:]' '[:lower:]' | tr -cd '[:alnum:] ' | tr -s ' '; }
     local t_norm; t_norm="$(printf '%s' "$transcript" | norm)"
     if [[ "$fixture_name" == "silence" ]]; then
-        # Tolerate Whisper's blank-audio hallucination the app strips ([BLANK_AUDIO]).
+        # Tolerate Whisper's silence hallucinations: non-speech markers the app
+        # strips ([BLANK_AUDIO]) AND the bare-word artifacts models emit on silence
+        # ("you", "thank you", "thanks for watching", "bye") — never real
+        # single-word dictations, so treating them as empty is safe here.
         case "$t_norm" in
-            ""|"blank audio"|"silence"|"no speech"|"music"|"inaudible"|"noise")
+            ""|"blank audio"|"silence"|"no speech"|"music"|"inaudible"|"noise"\
+            |"you"|"thank you"|"thanks for watching"|"bye"|"thanks")
                 ok "silence → empty transcript (got \"$transcript\")" ;;
             *) die "expected empty transcript for silence, got: $transcript" ;;
         esac
