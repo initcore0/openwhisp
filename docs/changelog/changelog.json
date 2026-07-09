@@ -7,14 +7,14 @@
       "id": "2026-07",
       "title": "July 2026",
       "date": "2026-07-09",
-      "summary": "A batch of new features, fixes, and under-the-hood hardening — all landed on main, all covered by tests, all on your machine. One new feature (rich local formatting) is live in Settings today; four more shipped their tested engine with the UI landing next — each is marked below.",
+      "summary": "A batch of new features, fixes, and under-the-hood hardening — all landed on main, all covered by tests, all on your machine. Five new features are live in Settings today — rich local formatting plus output targets (route a dictation to a file, a macOS Shortcut, or a webhook); three more shipped their tested engine with the UI landing next — each is marked below.",
       "stats": {
         "changesShipped": 14,
-        "newFeatures": 1,
-        "testsPassing": 762,
+        "newFeatures": 5,
+        "testsPassing": 841,
         "onDevicePercent": 100,
-        "newFeaturesLive": 1,
-        "newFeaturesCorePending": 4
+        "newFeaturesLive": 5,
+        "newFeaturesCorePending": 3
       },
       "entries": [
         {
@@ -22,16 +22,16 @@
           "headline": "Send your dictation straight into a macOS Shortcut",
           "body": "Route the final transcript into any Shortcut you've built — add it to Things or Reminders, append to a note, fire a webhook, run AppleScript. One OS-level integration reaches the whole Shortcuts ecosystem, and if the shortcut can't run, your text falls back to normal insertion so nothing is ever lost.",
           "tickets": ["MAK-13"],
-          "prs": [129],
+          "prs": [129, 134],
           "howTo": {
-            "availability": "coming-soon",
-            "summary": "Pick a Shortcut per app; OpenWhisp runs it with your transcript as the input.",
+            "availability": "live",
+            "summary": "Pick a Shortcut in Settings; OpenWhisp runs it with your transcript as the input.",
             "steps": [
               "Build a Shortcut in Shortcuts.app that starts with “Receive input” (text) and does whatever you want with it.",
-              "In Settings, choose that Shortcut as the output target for an app (picker landing next — see note).",
+              "Open Settings › Output › Output target and choose Shortcut, then pick your Shortcut from the list (or type its name and Refresh).",
               "Dictate as usual — OpenWhisp runs `shortcuts run <name>` with your transcript on stdin and hands the text off."
             ],
-            "note": "The Shortcut sink is built and tested (transcript in → `shortcuts run` invoked; on any error or timeout it fails open to normal insertion). The per-app Settings picker to choose which Shortcut runs is a follow-up. Until it lands there's no in-app way to select a Shortcut, so this target isn't yet reachable from the running app."
+            "note": "Live now. Runs on the final transcript only (live-typing always goes to the focused app). On any error or timeout it fails open to normal insertion, so your words are never lost."
           }
         },
         {
@@ -115,7 +115,7 @@
             119
           ],
           "howTo": {
-            "availability": "shipped",
+            "availability": "live",
             "summary": "Turn on the rule groups you want in Settings, then just speak the structure.",
             "steps": [
               "In Settings › Cleanup › Formatting, turn on the groups you want — Numbers and years, Currency, Spoken lists, Markdown commands. They're independent and off by default.",
@@ -138,17 +138,18 @@
             "MAK-11"
           ],
           "prs": [
-            122
+            122,
+            134
           ],
           "howTo": {
-            "availability": "coming-soon",
-            "summary": "Route a dictation to a file, Shortcut, or webhook — chosen per app.",
+            "availability": "live",
+            "summary": "Route a dictation to a file, Shortcut, or webhook instead of the focused app.",
             "steps": [
-              "In Settings, pick an output target for an app or profile (e.g. your notes app → a Markdown file).",
-              "Dictate into that app — the text goes to the target instead of being typed in.",
-              "Everything else keeps typing into the focused app, exactly as before."
+              "Open Settings › Output › Output target and pick a destination: Focused app (default), File, Shortcut, or Webhook.",
+              "Fill in that target's details (a file path, a Shortcut, or a webhook URL).",
+              "Dictate as usual — the final text goes to your chosen target. If it isn't configured or a delivery fails, your words still land in the focused app — never dropped."
             ],
-            "note": "The routing protocol and its fail-open safety net (if a target fails, your words still land in the focused app — never dropped) are shipped and tested. The Settings picker and the actual file / Shortcut / webhook destinations are the next tickets (MAK-12/13/14)."
+            "note": "Live now. The choice is global (one destination for all apps) for this version. Live-typing (“Type live as you speak”) always goes to the focused app; only the final transcript is routed."
           }
         },
         {
@@ -156,17 +157,17 @@
           "headline": "Dictate straight into a Markdown or text file",
           "body": "Point OpenWhisp at a file — an Obsidian daily note, a Logseq journal, a scratch .md — and your dictation gets appended there instead of typed into the focused app. Add a dated heading if you like, or overwrite for a rolling \"last dictation\" buffer. All local; if the file can't be written, your words still land in the focused app — never dropped.",
           "tickets": ["MAK-12"],
-          "prs": [127],
+          "prs": [127, 134],
           "howTo": {
-            "availability": "coming-soon",
-            "summary": "Choose a file as an app's output target; each dictation is appended with an optional dated heading.",
+            "availability": "live",
+            "summary": "Choose File as the output target; each dictation is appended with an optional dated heading.",
             "steps": [
-              "Pick the file to write to (any .md or .txt — e.g. your vault's daily note).",
+              "Open Settings › Output › Output target and choose File, then Choose… the file to write to (any .md or .txt — e.g. your vault's daily note).",
               "Optionally set a heading template with {{date}}, {{time}}, or {{datetime}} tokens (e.g. \"## {{datetime}}\") to stamp each entry.",
-              "Choose append (add each dictation to the end, blank-line separated) or overwrite (keep only the latest).",
+              "Choose Append (add each dictation to the end, blank-line separated) or Overwrite (keep only the latest).",
               "Dictate — the final text is written to the file; live partials are ignored so you get one clean entry."
             ],
-            "note": "The file writer and its entry formatter (heading tokens, append separators, overwrite, empty-dictation handling) are built and tested, and it fails open to normal insertion on any write error. The Settings picker to select a file target per app is the next step — until it lands, there's no in-app way to turn this on yet."
+            "note": "Live now. All local; if the file can't be written, your words still land in the focused app — never dropped."
           }
         },
         {
@@ -174,16 +175,16 @@
           "headline": "Send a dictation straight to a webhook (Notion, Obsidian, Zapier, n8n…)",
           "body": "POST your finished transcript as JSON — text, language, app, and timestamp — to any URL you configure, with optional auth headers. If the endpoint is down or slow, your words still land in the focused app as usual. Never dropped.",
           "tickets": ["MAK-14"],
-          "prs": [128],
+          "prs": [128, 134],
           "howTo": {
-            "availability": "coming-soon",
-            "summary": "Point an output target at a URL; OpenWhisp POSTs each dictation there as JSON.",
+            "availability": "live",
+            "summary": "Point the output target at a URL; OpenWhisp POSTs each dictation there as JSON.",
             "steps": [
-              "In Settings, set a webhook URL for an app or profile and add any headers your endpoint needs (e.g. an Authorization token).",
-              "Dictate into that app — OpenWhisp POSTs { text, language, appBundleID, timestamp } as JSON to your URL.",
+              "Open Settings › Output › Output target and choose Webhook, then enter your URL and add any headers your endpoint needs (e.g. an Authorization token).",
+              "Dictate as usual — OpenWhisp POSTs { text, language, appBundleID, timestamp } as JSON to your URL.",
               "If the POST fails (non-2xx, network error, or timeout), the same text is typed into the focused app instead — you never lose it."
             ],
-            "note": "The webhook sink is built and tested: the JSON body, the request (POST, application/json, your custom headers, a short timeout), and the fail-open behavior all ship now. The Settings screen to enter the URL/headers per app is the next step; until it lands there's no in-app way to configure a webhook yet."
+            "note": "Live now. Content-Type: application/json is always set; your custom headers are applied verbatim, with a short timeout so a slow endpoint fails open quickly."
           }
         },
         {

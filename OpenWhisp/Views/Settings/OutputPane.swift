@@ -9,13 +9,233 @@ struct OutputPane: View {
 
     private var isWhisperKit: Bool { appState.transcriptionEngine == "whisperKit" }
 
+    /// Shortcuts enumerated from `shortcuts list` for the Shortcut picker, loaded
+    /// lazily when the Shortcut target is shown. Empty until loaded / if none exist.
+    @State private var availableShortcuts: [String] = []
+    @State private var shortcutsLoaded = false
+
     var body: some View {
         Form {
+            outputTargetSection
             deliverySection
             insertionSection
             scriptSection
         }
         .formStyle(.grouped)
+        .onAppear {
+            if appState.outputTargetKind == .shortcut { loadShortcuts() }
+        }
+        .onChange(of: appState.outputTargetKind) { kind in
+            if kind == .shortcut { loadShortcuts() }
+        }
+    }
+
+    // MARK: - Output target (MAK-11..14)
+
+    /// Where a finished dictation is DELIVERED: the focused app (default), a file, a
+    /// macOS Shortcut, or a webhook. A global choice for v1 — one destination for
+    /// every app. Config fields for the chosen target appear below the picker; the
+    /// chosen target only takes effect once it's fully configured (else dictation
+    /// keeps typing into the focused app, and any target failure falls back to it).
+    private var outputTargetSection: some View {
+        Section {
+            SelectableRow(
+                title: "Focused app",
+                subtitle: "Type or paste the transcript into whatever app you're in. The default.",
+                badge: "Default",
+                isSelected: appState.outputTargetKind == .focusedApp
+            ) { appState.outputTargetKind = .focusedApp }
+
+            SelectableRow(
+                title: "File",
+                subtitle: "Append (or overwrite) each dictation to a Markdown/text file — e.g. an Obsidian daily note.",
+                isSelected: appState.outputTargetKind == .file
+            ) { appState.outputTargetKind = .file }
+
+            SelectableRow(
+                title: "Shortcut",
+                subtitle: "Run a macOS Shortcut with the transcript as its input (Things, Reminders, an HTTP request…).",
+                isSelected: appState.outputTargetKind == .shortcut
+            ) { appState.outputTargetKind = .shortcut }
+
+            SelectableRow(
+                title: "Webhook",
+                subtitle: "POST the transcript as JSON to a URL you configure (Notion, Zapier, n8n, a self-hosted endpoint).",
+                isSelected: appState.outputTargetKind == .webhook
+            ) { appState.outputTargetKind = .webhook }
+
+            switch appState.outputTargetKind {
+            case .focusedApp: EmptyView()
+            case .file:       fileTargetConfig
+            case .shortcut:   shortcutTargetConfig
+            case .webhook:    webhookTargetConfig
+            }
+        } header: {
+            Text("Output target")
+        } footer: {
+            if appState.outputTargetKind != .focusedApp {
+                SettingsFootnote("If the target isn't fully configured, or a delivery fails, your words are still typed into the focused app — never dropped. Live-typing (\u{201C}Type live as you speak\u{201D}) always goes to the focused app.")
+            }
+        }
+    }
+
+    // MARK: File target config
+
+    @ViewBuilder
+    private var fileTargetConfig: some View {
+        HStack {
+            Text(appState.fileOutputPath.isEmpty ? "No file chosen" : appState.fileOutputPath)
+                .font(.caption)
+                .foregroundColor(appState.fileOutputPath.isEmpty ? .secondary : .primary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Spacer()
+            Button("Choose…") { chooseOutputFile() }
+            if !appState.fileOutputPath.isEmpty {
+                Button("Clear") { appState.fileOutputPath = "" }
+            }
+        }
+
+        Picker("Write mode", selection: fileModeBinding) {
+            Text("Append").tag(FileOutputMode.append)
+            Text("Overwrite").tag(FileOutputMode.overwrite)
+        }
+
+        VStack(alignment: .leading, spacing: 4) {
+            TextField("Heading template (optional)", text: fileTemplateBinding)
+                .textFieldStyle(.roundedBorder)
+            Text("Rendered above each entry. Tokens: {{date}}, {{time}}, {{datetime}} — e.g. \u{201C}## {{datetime}}\u{201D}.")
+                .font(.caption)
+                .foregroundColor(.secondary)
+        }
+    }
+
+    // MARK: Shortcut target config
+
+    @ViewBuilder
+    private var shortcutTargetConfig: some View {
+        if availableShortcuts.isEmpty {
+            HStack {
+                TextField("Shortcut name", text: shortcutNameBinding)
+                    .textFieldStyle(.roundedBorder)
+                Button("Refresh") { loadShortcuts(force: true) }
+            }
+            Text(shortcutsLoaded
+                 ? "No Shortcuts found (or Shortcuts access not granted). Type a name, or create one in Shortcuts.app and Refresh."
+                 : "Loading your Shortcuts…")
+                .font(.caption)
+                .foregroundColor(.secondary)
+        } else {
+            Picker("Shortcut", selection: shortcutNameBinding) {
+                Text("None").tag("")
+                ForEach(availableShortcuts, id: \.self) { name in
+                    Text(name).tag(name)
+                }
+            }
+            HStack {
+                Spacer()
+                Button("Refresh") { loadShortcuts(force: true) }
+            }
+            Text("OpenWhisp runs \u{201C}shortcuts run <name>\u{201D} with the transcript on stdin. Build a Shortcut that receives text input.")
+                .font(.caption)
+                .foregroundColor(.secondary)
+        }
+    }
+
+    // MARK: Webhook target config
+
+    @ViewBuilder
+    private var webhookTargetConfig: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            TextField("https://example.com/webhook", text: webhookURLBinding)
+                .textFieldStyle(.roundedBorder)
+                .autocorrectionDisabled(true)
+            Text("POSTs { text, language, appBundleID, timestamp } as JSON.")
+                .font(.caption)
+                .foregroundColor(.secondary)
+        }
+
+        if !appState.outputTargetSettings.webhook.headers.isEmpty {
+            ForEach(appState.outputTargetSettings.webhook.headers.sorted(by: { $0.key < $1.key }), id: \.key) { key, value in
+                HStack {
+                    Text(key).font(.caption).fontWeight(.medium)
+                    Spacer()
+                    Text(value).font(.caption).foregroundColor(.secondary).lineLimit(1).truncationMode(.tail)
+                    Button {
+                        appState.outputTargetSettings.webhook.headers.removeValue(forKey: key)
+                    } label: {
+                        Image(systemName: "minus.circle")
+                    }
+                    .buttonStyle(.borderless)
+                }
+            }
+        }
+
+        HStack {
+            TextField("Header name (e.g. Authorization)", text: $newHeaderName)
+                .textFieldStyle(.roundedBorder)
+            TextField("Value", text: $newHeaderValue)
+                .textFieldStyle(.roundedBorder)
+            Button("Add") { addWebhookHeader() }
+                .disabled(newHeaderName.trimmingCharacters(in: .whitespaces).isEmpty)
+        }
+        Text("Optional headers applied verbatim (e.g. an Authorization token). Content-Type: application/json is always set.")
+            .font(.caption)
+            .foregroundColor(.secondary)
+    }
+
+    @State private var newHeaderName = ""
+    @State private var newHeaderValue = ""
+
+    // MARK: Bindings + actions
+
+    private var fileModeBinding: Binding<FileOutputMode> {
+        Binding(get: { appState.fileOutputMode }, set: { appState.fileOutputMode = $0 })
+    }
+    private var fileTemplateBinding: Binding<String> {
+        Binding(get: { appState.fileOutputTemplate }, set: { appState.fileOutputTemplate = $0 })
+    }
+    private var shortcutNameBinding: Binding<String> {
+        Binding(get: { appState.shortcutOutputName }, set: { appState.shortcutOutputName = $0 })
+    }
+    private var webhookURLBinding: Binding<String> {
+        Binding(get: { appState.webhookURL }, set: { appState.webhookURL = $0 })
+    }
+
+    private func chooseOutputFile() {
+        let panel = NSSavePanel()
+        panel.canCreateDirectories = true
+        panel.prompt = "Choose File"
+        panel.message = "Choose the file to write dictations to (created if it doesn't exist)"
+        panel.nameFieldStringValue = "dictations.md"
+        if !appState.fileOutputPath.isEmpty {
+            let url = URL(fileURLWithPath: (appState.fileOutputPath as NSString).expandingTildeInPath)
+            panel.directoryURL = url.deletingLastPathComponent()
+            panel.nameFieldStringValue = url.lastPathComponent
+        }
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        appState.fileOutputPath = url.path
+    }
+
+    private func addWebhookHeader() {
+        let name = newHeaderName.trimmingCharacters(in: .whitespaces)
+        guard !name.isEmpty else { return }
+        appState.outputTargetSettings.webhook.headers[name] = newHeaderValue
+        newHeaderName = ""
+        newHeaderValue = ""
+    }
+
+    /// Enumerate the user's Shortcuts off the main thread (the CLI blocks). Runs once
+    /// when the Shortcut target is shown, or on an explicit Refresh.
+    private func loadShortcuts(force: Bool = false) {
+        if shortcutsLoaded && !force { return }
+        DispatchQueue.global(qos: .userInitiated).async {
+            let names = ShortcutOutputTarget.listShortcuts()
+            DispatchQueue.main.async {
+                availableShortcuts = names
+                shortcutsLoaded = true
+            }
+        }
     }
 
     // MARK: - Delivery
