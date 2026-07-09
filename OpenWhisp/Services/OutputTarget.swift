@@ -233,7 +233,15 @@ final class OutputRouter {
             defaultTarget.deliver(payload, completion: completion)
             return
         }
+        // Latch: only the FIRST outcome from the selected target counts. A
+        // misbehaving target that invokes its completion more than once (a network
+        // callback firing twice, or `.delivered` followed by a late
+        // `.failedFallback`) must not make the router deliver the same text into
+        // the focused app twice.
+        var handled = false
         selected.deliver(payload) { [defaultTarget] outcome in
+            guard !handled else { return }
+            handled = true
             switch outcome {
             case .delivered:
                 completion(.delivered)

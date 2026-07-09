@@ -192,6 +192,65 @@ final class OutputTargetTests: XCTestCase {
         XCTAssertEqual(spy.insertions.map(\.text), ["exactly this"])
     }
 
+    // MARK: misbehaving targets (exactly-once enforcement)
+
+    /// A broken target that violates the "completion exactly once" contract by
+    /// reporting a list of outcomes in sequence.
+    private final class DoubleCompletingTarget: OutputTarget {
+        let kind: OutputTargetKind
+        private let outcomes: [OutputDelivery]
+        init(kind: OutputTargetKind, outcomes: [OutputDelivery]) {
+            self.kind = kind
+            self.outcomes = outcomes
+        }
+        func deliver(_ payload: OutputPayload, completion: @escaping (OutputDelivery) -> Void) {
+            for outcome in outcomes { completion(outcome) }
+        }
+    }
+
+    func testRouteIgnoresSecondCompletionFromMisbehavingTarget() {
+        // delivered → late failedFallback: the router must NOT then also paste the
+        // text into the focused app (that would double-deliver).
+        let spy = RecordingTextOutput()
+        let def = FocusedAppOutputTarget(textOutput: spy)
+        let broken = DoubleCompletingTarget(
+            kind: .webhook,
+            outcomes: [.delivered, .failedFallback(reason: "late timeout")]
+        )
+        let router = OutputRouter(
+            defaultTarget: def,
+            targets: [broken],
+            selections: [OutputTargetSelection(appBundleID: "com.example.chat", kind: .webhook)]
+        )
+
+        var completions: [OutputDelivery] = []
+        router.route(payload("once only", bundleID: "com.example.chat")) { completions.append($0) }
+
+        XCTAssertEqual(completions, [.delivered])
+        XCTAssertTrue(spy.insertions.isEmpty, "late failedFallback must not trigger a second delivery")
+    }
+
+    func testRouteDoubleFailureFallsBackExactlyOnce() {
+        // failedFallback twice: the fallback insert must happen exactly once.
+        let spy = RecordingTextOutput()
+        let def = FocusedAppOutputTarget(textOutput: spy)
+        let broken = DoubleCompletingTarget(
+            kind: .file,
+            outcomes: [.failedFallback(reason: "disk full"), .failedFallback(reason: "retry failed")]
+        )
+        let router = OutputRouter(
+            defaultTarget: def,
+            targets: [broken],
+            selections: [OutputTargetSelection(appBundleID: "com.example.notes", kind: .file)]
+        )
+
+        var completions: [OutputDelivery] = []
+        router.route(payload("no dupes", bundleID: "com.example.notes")) { completions.append($0) }
+
+        XCTAssertEqual(completions, [.delivered])
+        XCTAssertEqual(spy.insertions.map(\.text), ["no dupes"], "fallback must insert exactly once")
+    }
+
     // MARK: payload shape
 
     func testPayloadCarriesAllContractFields() {
