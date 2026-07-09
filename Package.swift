@@ -38,6 +38,7 @@ let package = Package(
                 "SecretStore.swift",
                 "LaunchAtLoginService.swift",
                 "TextOutput.swift",
+                "OutputTarget.swift",
                 "HotkeyControlling.swift",
                 "TranscriptionEngine.swift",
                 "AudioCapture.swift",
