@@ -169,22 +169,31 @@ cmd_run() {
     # Fuzzy assertion (determinism policy): key-phrase containment on normalized
     # text. Whisper output varies across machines/OS — never exact-match.
     local expected="" ; [[ -f "$expected_file" ]] && expected="$(cat "$expected_file")"
+    norm() { tr '[:upper:]' '[:lower:]' | tr -cd '[:alnum:] ' | tr -s ' '; }
+    local t_norm; t_norm="$(printf '%s' "$transcript" | norm)"
     if [[ "$fixture_name" == "silence" ]]; then
-        [[ -z "${transcript// }" ]] && ok "silence → empty transcript (correct)" \
-            || die "expected empty transcript for silence, got: $transcript"
+        # Tolerate Whisper's blank-audio hallucination the app strips ([BLANK_AUDIO]).
+        case "$t_norm" in
+            ""|"blank audio"|"silence"|"no speech"|"music"|"inaudible"|"noise")
+                ok "silence → empty transcript (got \"$transcript\")" ;;
+            *) die "expected empty transcript for silence, got: $transcript" ;;
+        esac
     else
-        norm() { tr '[:upper:]' '[:lower:]' | tr -cd '[:alnum:] ' | tr -s ' '; }
-        local t_norm e_norm key
-        t_norm="$(printf '%s' "$transcript" | norm)"
-        e_norm="$(printf '%s' "$expected"   | norm)"
-        # Use the LONGEST expected word as the key phrase — distinctive enough that
-        # a match is meaningful (a first-word check on "the …" would match noise).
-        key="$(printf '%s' "$e_norm" | tr ' ' '\n' | awk '{ print length, $0 }' \
-               | sort -rn | head -1 | cut -d' ' -f2-)"
-        if [[ -n "$key" && "$t_norm" == *"$key"* ]]; then
-            ok "transcript contains expected key phrase (\"$key\")"
+        local e_norm
+        e_norm="$(printf '%s' "$expected" | norm)"
+        # Fraction of the expected's 3+-letter content words present in the
+        # transcript. A ratio tolerates Whisper's number/date normalization
+        # ("four fifteen" → "415") far better than a single key word. ≥40% passes.
+        local total=0 hits=0 w
+        for w in $(printf '%s' "$e_norm" | tr ' ' '\n' | awk 'length>=3' | sort -u); do
+            total=$((total + 1))
+            case " $t_norm " in *" $w "*) hits=$((hits + 1)) ;; esac
+        done
+        local pct=0; [[ $total -gt 0 ]] && pct=$(( hits * 100 / total ))
+        if [[ $total -eq 0 || $pct -ge 40 ]]; then
+            ok "transcript matches (${pct}% content-word overlap)"
         else
-            die "transcript did not match expected. got=[$t_norm] expected≈[$e_norm]"
+            die "only ${pct}% overlap — got=[$t_norm] expected≈[$e_norm]"
         fi
     fi
     ok "Tier-2 smoke test passed for '$fixture_name'."

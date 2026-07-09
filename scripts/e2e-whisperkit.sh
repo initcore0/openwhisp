@@ -16,7 +16,8 @@
 # already staged. Intended for a self-hosted/nightly job, NOT blocking CI.
 #
 # Usage:
-#   ./scripts/e2e-whisperkit.sh                 # tiny.en over all fixtures
+#   ./scripts/e2e-whisperkit.sh                 # auto-picks an ALREADY-STAGED model
+#                                               #   (runs offline); else downloads tiny.en
 #   ./scripts/e2e-whisperkit.sh <model-name>    # e.g. openai_whisper-small
 #   MODEL=openai_whisper-tiny.en ./scripts/e2e-whisperkit.sh
 
@@ -26,11 +27,26 @@ PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 FIXTURE_DIR="$PROJECT_DIR/Tests/Fixtures/audio"
 HARNESS_SRC="$PROJECT_DIR/scripts/e2e/whisperkit-harness.swift"
 BUILD_DIR="$PROJECT_DIR/build/e2e-whisperkit"
-MODEL="${1:-${MODEL:-openai_whisper-tiny.en}}"
+STAGED_DIR="$HOME/Library/Application Support/OpenWhisp/whisperkit-models"
 
 log()  { printf '\033[36m▸\033[0m %s\n' "$*"; }
 ok()   { printf '\033[32m✓\033[0m %s\n' "$*"; }
 die()  { printf '\033[31m✗\033[0m %s\n' "$*" >&2; exit 1; }
+
+# Model resolution: an explicit arg/env wins. Otherwise prefer a model already
+# staged in OpenWhisp's model dir (runs OFFLINE — no Hugging Face download), and
+# only fall back to auto-downloading tiny.en if nothing is staged.
+pick_model() {
+    if [[ -n "${1:-}" ]]; then echo "$1"; return; fi
+    if [[ -n "${MODEL:-}" ]]; then echo "$MODEL"; return; fi
+    for m in openai_whisper-small openai_whisper-tiny.en openai_whisper-large-v3-turbo; do
+        [[ -d "$STAGED_DIR/$m" ]] && { echo "$m"; return; }
+    done
+    # Nothing staged — first staged dir, else download tiny.en.
+    local first; first="$(ls -1 "$STAGED_DIR" 2>/dev/null | grep '^openai_whisper' | head -1)"
+    echo "${first:-openai_whisper-tiny.en}"
+}
+MODEL="$(pick_model "${1:-}")"
 
 command -v xcrun >/dev/null || die "Xcode command line tools required."
 [[ -f "$HARNESS_SRC" ]] || die "harness missing: $HARNESS_SRC"
