@@ -20,7 +20,7 @@
           "headline": "Use your Claude or Codex CLI as the AI cleanup engine",
           "body": "Pipe your dictation through a coding-agent CLI you already have installed — claude, codex, or any command that reads stdin — and reuse the subscription you already pay for as the cleanup model. No separate API key, no extra service: it's the inverse of Agent Bridge, consuming an agent as the refine engine.",
           "tickets": ["MAK-44"],
-          "prs": [127],
+          "prs": [130],
           "howTo": {
             "availability": "coming-soon",
             "summary": "Point OpenWhisp at a local agent CLI (e.g. claude -p) and it cleans up each dictation using your own subscription.",
