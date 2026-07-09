@@ -260,6 +260,66 @@ final class FeatureMatrixE2ETests: XCTestCase {
         XCTAssertNotEqual(tText, gText)
     }
 
+    // MARK: - (3) File-tagging (MAK-48) gated by config, end-to-end
+
+    /// Drive ONE fixture + ONE scripted transcript through the real cleaner twice,
+    /// under two configs that differ ONLY in `fileTaggingEnabled`. With it ON, the
+    /// spoken filename "open main dot t s" becomes an editor @-mention; with it OFF
+    /// (the default — the state in every non-editor app), the identical text is
+    /// left byte-for-byte alone. This is the end-to-end proof that the per-app
+    /// gate in AppState (which sets `fileTaggingEnabled` only for Cursor/Windsurf)
+    /// actually changes what lands in the editor.
+    func testFileTaggingConfigChangesOutputForSameFixture() throws {
+        let transcript = "open main dot t s and fix it"
+
+        // OFF (default): the transform never runs — text unchanged. This is the
+        // non-editor / toggle-off case, i.e. ordinary dictation everywhere else.
+        let offCfg = TranscriptCleaner.Config.plain
+        XCTAssertFalse(offCfg.fileTaggingEnabled, "fileTagging must default OFF")
+        let offText = try driveCleaned(
+            fixture: "plain_speech.wav", transcript: transcript, config: offCfg)
+
+        // ON: mirrors what AppState builds when Cursor/Windsurf is frontmost.
+        var onCfg = TranscriptCleaner.Config.plain
+        onCfg.fileTaggingEnabled = true
+        let onText = try driveCleaned(
+            fixture: "plain_speech.wav", transcript: transcript, config: onCfg)
+
+        // Same fixture, same words → different output only because of the config.
+        XCTAssertNotEqual(offText, onText, "fileTagging config produced identical output")
+        // ON rewrote the spoken filename to an @-mention.
+        XCTAssertTrue(onText.contains("@main.ts"),
+                      "spoken filename not converted when enabled: \(onText)")
+        XCTAssertFalse(onText.lowercased().contains("main dot t s"),
+                       "spoken form should be gone when enabled: \(onText)")
+        // OFF left the spoken form exactly as dictated — no @-mention synthesized.
+        XCTAssertFalse(offText.contains("@main.ts"),
+                       "no @-mention should appear when disabled: \(offText)")
+        XCTAssertTrue(offText.lowercased().contains("main dot t s"),
+                      "spoken form should survive verbatim when disabled: \(offText)")
+    }
+
+    /// File-tagging composed WITH smart formatting: it runs after formatting, so a
+    /// sentence-start capital and the @-mention coexist ("Open @main.ts …") and the
+    /// mention itself isn't re-capitalized. Same fixture, formatting on both sides,
+    /// tagging the only difference.
+    func testFileTaggingComposesWithSmartFormatting() throws {
+        let transcript = "open main dot t s and fix it"
+
+        var onCfg = TranscriptCleaner.Config.plain
+        onCfg.smartFormattingEnabled = true
+        onCfg.fileTaggingEnabled = true
+        let text = try driveCleaned(
+            fixture: "plain_speech.wav", transcript: transcript, config: onCfg)
+
+        XCTAssertTrue(text.contains("@main.ts"),
+                      "mention not produced with formatting on: \(text)")
+        // Smart formatting still capitalized the sentence start.
+        XCTAssertTrue(text.hasPrefix("Open"), "sentence not capitalized: \(text)")
+        // The mention was NOT re-capitalized to "@Main.ts".
+        XCTAssertFalse(text.contains("@Main.ts"), "mention over-capitalized: \(text)")
+    }
+
     // MARK: - Helper (local to this suite; not one of the shared doubles)
 
     /// Drive one fixture through the real FileAudioCapture → LiveChunkPipeline →

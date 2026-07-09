@@ -29,6 +29,13 @@ struct TranscriptCleaner {
         var spokenListsEnabled: Bool
         var basicMarkdownEnabled: Bool
 
+        /// Rewrite spoken filenames to editor `@`-mentions (MAK-48). Default OFF.
+        /// `AppState` sets this true ONLY when the user's setting is on AND the
+        /// frontmost app is a known AI-native editor (see
+        /// `FileTagTransform.appliesTo(bundleID:)`), so ordinary dictation into
+        /// non-editor apps is never touched.
+        var fileTaggingEnabled: Bool
+
         init(
             language: String,
             customVocabularyEnabled: Bool,
@@ -39,7 +46,8 @@ struct TranscriptCleaner {
             normalizeNumbers: Bool = false,
             normalizeCurrency: Bool = false,
             spokenListsEnabled: Bool = false,
-            basicMarkdownEnabled: Bool = false
+            basicMarkdownEnabled: Bool = false,
+            fileTaggingEnabled: Bool = false
         ) {
             self.language = language
             self.customVocabularyEnabled = customVocabularyEnabled
@@ -51,6 +59,7 @@ struct TranscriptCleaner {
             self.normalizeCurrency = normalizeCurrency
             self.spokenListsEnabled = spokenListsEnabled
             self.basicMarkdownEnabled = basicMarkdownEnabled
+            self.fileTaggingEnabled = fileTaggingEnabled
         }
     }
 
@@ -87,6 +96,15 @@ struct TranscriptCleaner {
         // 4) Smart formatting (caps / punctuation / fillers / spoken punctuation).
         if let fmt = smartFormatterStage {
             normalized = fmt.format(normalized, language: config.language)
+        }
+
+        // 4b) File-tagging (MAK-48): rewrite spoken filenames to editor @-mentions.
+        //     Runs AFTER formatting so it sees the collapsed whitespace and the
+        //     capitalizer never re-capitalizes a mid-sentence "@main.ts". Gated to
+        //     Cursor/Windsurf by the caller (config.fileTaggingEnabled), so it's a
+        //     no-op — byte-for-byte pass-through — everywhere else.
+        if config.fileTaggingEnabled {
+            normalized = FileTagTransform.transform(normalized)
         }
 
         // 5) Strip a trailing "translate this into English" / "transcribe this"
@@ -135,6 +153,9 @@ struct TranscriptCleaner {
         var stages: [PostProcessor] = [NonSpeechMarkerStage(), NormalizeStage(), IgnorableGuardStage()]
         if let sub = vocabularyStage { stages.append(sub) }
         if let fmt = smartFormatterStage { stages.append(fmt) }
+        // File-tagging runs after formatting (see clean() step 4b for why), gated
+        // to Cursor/Windsurf by the caller.
+        if config.fileTaggingEnabled { stages.append(FileTagStage()) }
         if isFinalTranscript { stages.append(MetaInstructionStage()) }
         return stages
     }
@@ -215,6 +236,15 @@ struct NormalizeStage: PostProcessor {
 struct IgnorableGuardStage: PostProcessor {
     func process(_ text: String, context: PostProcessContext) async throws -> String {
         TranscriptCleaner.isIgnorable(text) ? "" : text
+    }
+}
+
+/// Rewrites spoken filenames to editor `@`-mentions (Cursor/Windsurf). Only
+/// added to the chain when `Config.fileTaggingEnabled` is set (the caller gates
+/// that on the frontmost app being a known editor).
+struct FileTagStage: PostProcessor {
+    func process(_ text: String, context: PostProcessContext) async throws -> String {
+        FileTagTransform.transform(text)
     }
 }
 

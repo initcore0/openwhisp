@@ -14,11 +14,12 @@ import Foundation
 ///
 /// ## Scope
 ///
-/// This transform is intended to run ONLY in a per-app mode for Cursor /
-/// Windsurf, where an `@name.ext` is a meaningful file reference. It is shipped
-/// here as the pure, tested core; the per-app enablement (run it only when the
-/// frontmost app is Cursor/Windsurf) is a deliberate follow-up and is NOT wired
-/// into `AppState` by this change.
+/// This transform runs ONLY in a per-app mode for Cursor / Windsurf, where an
+/// `@name.ext` is a meaningful file reference. `AppState.transcriptCleanerConfig`
+/// enables it only when (a) the user's "Enable file tagging in code editors"
+/// setting is on AND (b) the frontmost app's bundle id is in `editorBundleIDs`
+/// (see `appliesTo(bundleID:)`). Rewriting "@main.ts" into a Slack message would
+/// be wrong, so anywhere else the transform never runs.
 ///
 /// ## Conservatism (why it won't mangle prose)
 ///
@@ -46,6 +47,32 @@ import Foundation
 ///
 /// Everything else in the sentence is passed through untouched.
 enum FileTagTransform {
+
+    // MARK: - Per-app enablement (the gating crux)
+
+    /// Bundle ids of the AI-native editors where an `@name.ext` is a real file
+    /// reference their own autocomplete acts on. File-tagging fires ONLY when the
+    /// frontmost app is one of these — anywhere else a spoken "@main.ts" would be
+    /// literal noise (a Slack message, a doc), so the transform is left off.
+    ///
+    /// Bundle ids (verified 2026-07):
+    ///   - Cursor:   `com.todesktop.230313mzl4w4u92` (from the installed
+    ///     Cursor.app Info.plist — Cursor ships via ToDesktop).
+    ///   - Windsurf: `com.exafunction.windsurf` (Exafunction's AI IDE).
+    /// Extend this set to add another editor; the decision is pure so it's
+    /// covered by `swift test` (`FileTagTransform.appliesTo(bundleID:)`).
+    static let editorBundleIDs: Set<String> = [
+        "com.todesktop.230313mzl4w4u92",  // Cursor
+        "com.exafunction.windsurf"        // Windsurf
+    ]
+
+    /// Should file-tagging run for the app with this frontmost bundle id? True
+    /// only for a known AI-native editor; false for any other app and for `nil`
+    /// (no identifiable frontmost app). Pure, so it's unit-tested directly.
+    static func appliesTo(bundleID: String?) -> Bool {
+        guard let bundleID else { return false }
+        return editorBundleIDs.contains(bundleID)
+    }
 
     /// File extensions we recognize as spoken-letter runs and as whole words.
     /// Kept intentionally to the common dev set from the ticket. Lowercased.

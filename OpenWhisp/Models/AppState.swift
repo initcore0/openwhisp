@@ -151,6 +151,14 @@ class AppState: ObservableObject {
         didSet { UserDefaults.standard.set(fillerRemovalEnabled, forKey: "fillerRemovalEnabled") }
     }
 
+    /// Rewrite spoken filenames to editor `@`-mentions (MAK-48), but ONLY when
+    /// the frontmost app is a known AI-native editor (Cursor / Windsurf). Default
+    /// OFF: a niche developer aid that would be wrong to run in a chat or doc, so
+    /// it's opt-in and gated to editors even when enabled.
+    @Published var fileTaggingEnabled: Bool {
+        didSet { UserDefaults.standard.set(fileTaggingEnabled, forKey: "fileTaggingEnabled") }
+    }
+
     @Published var liveChunkDuration: Double {
         didSet { UserDefaults.standard.set(liveChunkDuration, forKey: "liveChunkDuration") }
     }
@@ -942,6 +950,7 @@ class AppState: ObservableObject {
         smartFormattingEnabled = UserDefaults.standard.object(forKey: "smartFormattingEnabled") as? Bool ?? true
         spokenPunctuationEnabled = UserDefaults.standard.object(forKey: "spokenPunctuationEnabled") as? Bool ?? true
         fillerRemovalEnabled = UserDefaults.standard.object(forKey: "fillerRemovalEnabled") as? Bool ?? true
+        fileTaggingEnabled = UserDefaults.standard.object(forKey: "fileTaggingEnabled") as? Bool ?? false
         liveChunkDuration = UserDefaults.standard.object(forKey: "liveChunkDuration") as? Double ?? 2.0
         pauseBasedLiveChunksEnabled = UserDefaults.standard.object(forKey: "pauseBasedLiveChunksEnabled") as? Bool ?? false
         transcriptionEngine = UserDefaults.standard.string(forKey: "transcriptionEngine") ?? Self.defaultTranscriptionEngine
@@ -3179,8 +3188,20 @@ class AppState: ObservableObject {
             substitutions: vocabulary.substitutions,
             smartFormattingEnabled: smartFormattingEnabled,
             fillerRemovalEnabled: fillerRemovalEnabled,
-            spokenPunctuationEnabled: spokenPunctuationEnabled
+            spokenPunctuationEnabled: spokenPunctuationEnabled,
+            fileTaggingEnabled: fileTaggingIsActive
         )
+    }
+
+    /// File-tagging (MAK-48) fires ONLY when the user opted in AND the app being
+    /// dictated into is a known AI-native editor (Cursor/Windsurf). `targetApplication`
+    /// is captured at session start (the frontmost app at record time), so this
+    /// reflects where the text will actually land — a spoken "@main.ts" would be
+    /// wrong in a Slack message or a doc. The editor decision lives in a pure,
+    /// tested helper so `swift test` covers the bundle-id set.
+    private var fileTaggingIsActive: Bool {
+        guard fileTaggingEnabled else { return false }
+        return FileTagTransform.appliesTo(bundleID: targetApplication?.bundleIdentifier)
     }
 
     private func startElapsedTimer() {
@@ -3456,6 +3477,7 @@ class AppState: ObservableObject {
         smartFormattingEnabled = true
         spokenPunctuationEnabled = true
         fillerRemovalEnabled = true
+        fileTaggingEnabled = false
         customVocabularyEnabled = true
         perAppModesEnabled = false
         historyEnabled = true

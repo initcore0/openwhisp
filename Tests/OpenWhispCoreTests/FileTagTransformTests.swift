@@ -264,4 +264,44 @@ final class FileTagTransformTests: XCTestCase {
         let s = "open @main.ts and edit"
         XCTAssertEqual(FileTagTransform.transform(s), s)
     }
+
+    // MARK: - Per-app enablement: appliesTo(bundleID:)
+    //
+    // The gating crux: file-tagging must fire ONLY when the frontmost app is a
+    // known AI-native editor, so a spoken "@main.ts" never lands in a Slack
+    // message or a doc. These verify the pure decision used by AppState.
+
+    func testAppliesToCursorBundleID() {
+        // The real Cursor bundle id (Cursor ships via ToDesktop), verified from
+        // the installed /Applications/Cursor.app Info.plist.
+        XCTAssertTrue(FileTagTransform.appliesTo(bundleID: "com.todesktop.230313mzl4w4u92"))
+    }
+
+    func testAppliesToWindsurfBundleID() {
+        XCTAssertTrue(FileTagTransform.appliesTo(bundleID: "com.exafunction.windsurf"))
+    }
+
+    func testDoesNotApplyToChatApp() {
+        // Slack, Messages, a browser, TextEdit — anywhere an @-mention is prose.
+        XCTAssertFalse(FileTagTransform.appliesTo(bundleID: "com.tinyspeck.slackmacgap"))
+        XCTAssertFalse(FileTagTransform.appliesTo(bundleID: "com.apple.MobileSMS"))
+        XCTAssertFalse(FileTagTransform.appliesTo(bundleID: "com.apple.TextEdit"))
+        XCTAssertFalse(FileTagTransform.appliesTo(bundleID: "com.google.Chrome"))
+    }
+
+    func testDoesNotApplyToNilBundleID() {
+        // No identifiable frontmost app (nil) → never rewrite.
+        XCTAssertFalse(FileTagTransform.appliesTo(bundleID: nil))
+    }
+
+    func testDoesNotApplyToEmptyBundleID() {
+        XCTAssertFalse(FileTagTransform.appliesTo(bundleID: ""))
+    }
+
+    func testKnownEditorSetContainsBothEditors() {
+        // The set is the single source of truth AppState reads; guard it doesn't
+        // silently lose an editor.
+        XCTAssertTrue(FileTagTransform.editorBundleIDs.contains("com.todesktop.230313mzl4w4u92"))
+        XCTAssertTrue(FileTagTransform.editorBundleIDs.contains("com.exafunction.windsurf"))
+    }
 }

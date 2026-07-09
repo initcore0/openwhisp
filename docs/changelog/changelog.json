@@ -26,10 +26,11 @@
             131
           ],
           "howTo": {
-            "availability": "coming-soon",
-            "summary": "Say the filename in spoken form; the “dot <ext>” or leading “at” cue turns it into an @-mention.",
+            "availability": "live",
+            "summary": "Turn it on once in Settings, then say the filename in Cursor or Windsurf; the “dot <ext>” or leading “at” cue becomes an @-mention.",
             "steps": [
-              "Dictate the filename the way you'd say it: the name, the word “dot”, then the extension spelled out letter-by-letter (“main dot t s”) or as a whole word (“main dot swift”).",
+              "Turn it on: Settings › Cleanup › Formatting › “Enable file tagging in code editors” (off by default).",
+              "Dictate into Cursor or Windsurf and say the filename the way you'd read it: the name, the word “dot”, then the extension spelled out letter-by-letter (“main dot t s”) or as a whole word (“main dot swift”).",
               "Or lead with “at” for a bare mention: “at main” → @main.",
               "The @-mention lands in your editor and its file autocomplete disambiguates the rest."
             ],
@@ -40,7 +41,7 @@
               "“at main” → @main",
               "“open main dot t s and fix it” → open @main.ts and fix it"
             ],
-            "note": "The transform is shipped and fully tested (45 cases, both the rewrites and the no-mangle guarantees). What's still landing: running it automatically only when Cursor or Windsurf is frontmost (a per-app-mode step), plus an optional AX read of the open workspace to pick the exact extension. Until that per-app wiring lands, the spoken forms are typed literally rather than converted."
+            "note": "Works in Cursor and Windsurf when the Settings toggle is on — OpenWhisp only converts spoken filenames while one of those editors is frontmost, so ordinary dictation everywhere else (chat, docs) is never touched. Off by default. An optional AX read of the open workspace to auto-pick the exact extension is still a stretch goal."
           }
         },
         {
