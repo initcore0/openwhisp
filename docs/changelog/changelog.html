@@ -206,6 +206,15 @@
                 border: 1px solid color-mix(in srgb, var(--refine) 30%, transparent); }
   .avail::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
 
+  /* A "coming-soon" feature isn't reachable yet, so its step-by-step how-to would
+     read as a live instruction and mislead. For pending guides we hide the steps
+     and the "Say" list, showing only the summary (in future voice) + the note that
+     explains what's actually pending. When the feature ships, flip the guide to
+     `shipped` and the steps become visible. */
+  .guide.pending ol,
+  .guide.pending .say-block { display: none; }
+  .guide.pending .g-sum { color: var(--muted); font-weight: 500; }
+
   .guide .g-sum { font-weight: 600; font-size: .96rem; margin: 0; color: var(--ink); }
   .guide ol { margin: 0; padding-left: 1.3rem; display: flex; flex-direction: column; gap: .5rem; }
   .guide ol li { color: var(--muted); font-size: .92rem; text-wrap: pretty; }
@@ -238,12 +247,12 @@
   <header>
     <p class="eyebrow">Shipped · July 2026</p>
     <h1>Fourteen ways OpenWhisp got<br><span class="accent">sharper, safer, and more yours.</span></h1>
-    <p class="lede">A batch of new features, fixes, and under-the-hood hardening — all landed on <code style="font-family:var(--font-mono);font-size:.85em">main</code>, all covered by tests, all running on your machine. Here's exactly what changed.</p>
+    <p class="lede">A batch of fixes and under-the-hood hardening, plus new features landing on <code style="font-family:var(--font-mono);font-size:.85em">main</code> — all covered by tests, all on your machine. One new feature is live in Settings today; four more shipped their tested engine with the UI landing next. Each is marked below.</p>
   </header>
 
   <div class="stats">
     <div class="stat"><div class="n">14</div><div class="k">changes shipped</div></div>
-    <div class="stat"><div class="n">5</div><div class="k">new features</div></div>
+    <div class="stat"><div class="n">1<small> live</small></div><div class="k">new feature · 4 in progress</div></div>
     <div class="stat"><div class="n">757</div><div class="k">tests passing</div></div>
     <div class="stat"><div class="n">100<small>%</small></div><div class="k">on-device</div></div>
   </div>
@@ -253,7 +262,7 @@
     <div class="sec-head">
       <span class="dot feature"></span>
       <h2>New features</h2>
-      <span class="count">5 shipped</span>
+      <span class="count">1 live · 4 in progress</span>
     </div>
     <ul class="entries">
       <li>
@@ -268,9 +277,9 @@
               <div class="receipts"><span class="tag ticket">MAK-35</span><span class="tag pr">#121</span></div>
             </div>
           </summary>
-          <div class="guide">
-            <span class="avail soon">Landing next</span>
-            <p class="g-sum">Choose a cleanup level in Settings; revert to your exact words anytime.</p>
+          <div class="guide pending">
+            <span class="avail soon">Coming soon</span>
+            <p class="g-sum">When it ships, you'll choose a cleanup level in Settings and be able to revert to your exact words anytime.</p>
             <ol>
               <li>Open Settings › Cleanup and pick a level: None (verbatim), Low (fixes caps, punctuation, spelling), Medium (also removes fillers and lightly rephrases), or High (also resolves spoken self-corrections like “3, no wait, 4” → “4”).</li>
               <li>Dictate as usual — the level you chose is applied automatically.</li>
@@ -292,9 +301,9 @@
               <div class="receipts"><span class="tag ticket">MAK-19</span><span class="tag pr">#117</span></div>
             </div>
           </summary>
-          <div class="guide">
-            <span class="avail soon">Landing next</span>
-            <p class="g-sum">Mid-dictation, just say the command as its own phrase.</p>
+          <div class="guide pending">
+            <span class="avail soon">Coming soon</span>
+            <p class="g-sum">When it ships, you'll edit mid-dictation by saying a command as its own phrase.</p>
             <ol>
               <li>Start dictation as usual (hold Fn/Globe, or Control+Space).</li>
               <li>Pause and say a command on its own — it must be the whole phrase, so ordinary speech like “scratch the surface” is never mistaken for a command.</li>
@@ -325,9 +334,9 @@
               <div class="receipts"><span class="tag ticket">MAK-41</span><span class="tag pr">#120</span></div>
             </div>
           </summary>
-          <div class="guide">
-            <span class="avail soon">Landing next</span>
-            <p class="g-sum">Just fix a mistyped word once; OpenWhisp offers to remember it.</p>
+          <div class="guide pending">
+            <span class="avail soon">Coming soon</span>
+            <p class="g-sum">When it ships, fixing a mistyped word once will prompt OpenWhisp to remember it.</p>
             <ol>
               <li>Dictate; OpenWhisp inserts the text.</li>
               <li>Type over a single misheard word to correct it (e.g. “kubernetis” → “kubernetes”).</li>
@@ -351,10 +360,10 @@
             </div>
           </summary>
           <div class="guide">
-            <span class="avail soon">Landing next</span>
-            <p class="g-sum">Turn on the rule groups you want, then just speak the structure.</p>
+            <span class="avail live">Available now</span>
+            <p class="g-sum">Turn on the rule groups you want in Settings, then just speak the structure.</p>
             <ol>
-              <li>In Settings › Smart Formatting, enable the groups you want (they're independent and off by default).</li>
+              <li>In Settings › Cleanup › Formatting, turn on the groups you want — Numbers and years, Currency, Spoken lists, Markdown commands. They're independent and off by default.</li>
               <li>Dictate naturally — the rules rewrite structure locally, on-device, no LLM.</li>
             </ol>
             <div class="say-block">
@@ -366,7 +375,7 @@
                 <li>“heading intro” → # intro,&nbsp;&nbsp;“bold ship it” → **ship it**</li>
               </ul>
             </div>
-            <p class="g-note">The rules are shipped, tested, and deliberately off by default so they never touch ordinary prose. The Settings toggles to switch each group on are landing next.</p>
+            <p class="g-note">Live now. Each group is off by default so it never touches ordinary prose until you turn it on.</p>
           </div>
         </details>
       </li>
@@ -382,9 +391,9 @@
               <div class="receipts"><span class="tag ticket">MAK-11</span><span class="tag pr">#122</span></div>
             </div>
           </summary>
-          <div class="guide">
-            <span class="avail soon">Landing next</span>
-            <p class="g-sum">Route a dictation to a file, Shortcut, or webhook — chosen per app.</p>
+          <div class="guide pending">
+            <span class="avail soon">Coming soon</span>
+            <p class="g-sum">When it ships, you'll route a dictation to a file, Shortcut, or webhook — chosen per app.</p>
             <ol>
               <li>In Settings, pick an output target for an app or profile (e.g. your notes app → a Markdown file).</li>
               <li>Dictate into that app — the text goes to the target instead of being typed in.</li>
