@@ -53,7 +53,9 @@ final class FakeStreamingTranscriptionEngine: StreamingTranscriptionEngine {
 
     private(set) var startedLanguages: [String] = []
     private(set) var stops: [Bool] = []
+    private(set) var selectedDevices: [String] = []
 
+    func selectDevice(_ deviceID: String) { selectedDevices.append(deviceID) }
     func start(language: String) throws { startedLanguages.append(language) }
     func stop(cancel: Bool) { stops.append(cancel) }
 }
@@ -109,9 +111,11 @@ final class TranscriptionEngineTests: XCTestCase {
 
     func testStreamingEngineRecordsLifecycle() throws {
         let fake = FakeStreamingTranscriptionEngine()
+        fake.selectDevice("mic-uid-1")
         try fake.start(language: "auto")
         fake.stop(cancel: false)
         fake.stop(cancel: true)
+        XCTAssertEqual(fake.selectedDevices, ["mic-uid-1"])
         XCTAssertEqual(fake.startedLanguages, ["auto"])
         XCTAssertEqual(fake.stops, [false, true])
     }

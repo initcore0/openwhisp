@@ -10,6 +10,14 @@
 #   fixture.wav ──ffmpeg──▶ BlackHole 2ch ──CoreAudio──▶ OpenWhisp ──▶ transcript
 #                                                    (mic UID selected by us)
 #
+# REGRESSION INTENT (the mic-selection fix, PR #108): OpenWhisp must capture the
+# device named by its own `microphoneID` setting — NOT the system default input.
+# So this test pins `microphoneID` to BlackHole's UID and DELIBERATELY leaves the
+# system default INPUT as the built-in mic. If capture followed the default input
+# (the old bug), it would transcribe room noise / silence and fail the assertion.
+# Only the default OUTPUT is pointed at BlackHole, so the fixture playback lands
+# there for the pinned device to capture.
+#
 # This is intentionally a HANDFUL of tests, tolerant of flake, run locally or
 # nightly on a self-hosted Mac — NOT in blocking CI (the BlackHole cask is
 # known-fragile on GitHub runner images). Everything deterministic lives in
@@ -34,7 +42,6 @@ BLACKHOLE_NAME="BlackHole 2ch"
 APP_BINARY="OpenWhisp"
 STATE_DIR="${TMPDIR:-/tmp}/openwhisp-e2e-smoke"
 SAVED_OUTPUT_FILE="$STATE_DIR/saved-output-device"
-SAVED_INPUT_FILE="$STATE_DIR/saved-input-device"
 SAVED_MIC_ID_FILE="$STATE_DIR/saved-microphone-id"
 
 mkdir -p "$STATE_DIR"
@@ -117,15 +124,13 @@ EOF
 }
 
 cmd_restore() {
+    # We only ever changed the default OUTPUT and OpenWhisp's microphoneID — the
+    # default INPUT is deliberately left untouched by this test, so nothing to
+    # restore there.
     if [[ -f "$SAVED_OUTPUT_FILE" ]]; then
         local dev; dev="$(cat "$SAVED_OUTPUT_FILE")"
         [[ -n "$dev" ]] && SwitchAudioSource -t output -s "$dev" 2>/dev/null \
             && ok "Restored default output to '$dev'."
-    fi
-    if [[ -f "$SAVED_INPUT_FILE" ]]; then
-        local dev; dev="$(cat "$SAVED_INPUT_FILE")"
-        [[ -n "$dev" ]] && SwitchAudioSource -t input -s "$dev" 2>/dev/null \
-            && ok "Restored default input to '$dev'."
     fi
     if [[ -f "$SAVED_MIC_ID_FILE" ]]; then
         local prev; prev="$(cat "$SAVED_MIC_ID_FILE")"
@@ -159,33 +164,39 @@ cmd_run() {
     local uid; uid="$(blackhole_uid)"
     [[ -n "$uid" ]] || die "BlackHole not found. Run: $0 --setup"
 
-    # Routing — the important subtlety: a RUNNING OpenWhisp only reads its
-    # `microphoneID` setting at launch (no live observer), so `defaults write` to
-    # it is invisible to the running app. Instead we drive the SYSTEM defaults:
+    # Routing — the regression proof (PR #108). OpenWhisp must capture the device
+    # its `microphoneID` names, independent of the system default input:
     #   - default OUTPUT = BlackHole → the fixture playback lands in BlackHole
-    #   - default INPUT  = BlackHole → OpenWhisp (with an EMPTY microphoneID, i.e.
-    #     "system default") captures BlackHole
-    # We also CLEAR OpenWhisp's microphoneID so a previously-pinned device can't
-    # override the system default. Playing to the default AudioToolbox sink also
-    # sidesteps ffmpeg's undiscoverable per-device output index.
+    #   - microphoneID   = BlackHole's UID → OpenWhisp captures BlackHole DIRECTLY
+    #   - system default INPUT is LEFT ALONE (built-in mic) → if capture followed
+    #     the default (the old bug), it'd hear the room, not the fixture, and fail.
+    # Playing to the default AudioToolbox sink sidesteps ffmpeg's undiscoverable
+    # per-device output index.
+    #
+    # Caveat: a RUNNING OpenWhisp reads `microphoneID` from UserDefaults at LAUNCH
+    # (no external-write observer), so a shell `defaults write` only takes effect
+    # for an app started AFTER it. We verify the running app already has the right
+    # value below and fail with clear guidance otherwise, rather than silently
+    # testing a stale pin.
     defaults read "$BUNDLE_ID" microphoneID > "$SAVED_MIC_ID_FILE" 2>/dev/null || echo "" > "$SAVED_MIC_ID_FILE"
     SwitchAudioSource -c -t output > "$SAVED_OUTPUT_FILE" 2>/dev/null || echo "" > "$SAVED_OUTPUT_FILE"
-    SwitchAudioSource -c -t input  > "$SAVED_INPUT_FILE"  2>/dev/null || echo "" > "$SAVED_INPUT_FILE"
     trap cmd_restore EXIT
 
-    # Clear OpenWhisp's pinned mic so it follows the system default input. NOTE:
-    # this only takes effect for an app launched AFTER this write; if the app was
-    # already running with a pinned device, set "Input device: System Default" (or
-    # BlackHole) in OpenWhisp Settings once — see the note we print on mismatch.
-    defaults write "$BUNDLE_ID" microphoneID ""
+    # Pin OpenWhisp to BlackHole by UID. For a running app this write only lands on
+    # the NEXT launch; the guard below catches a stale in-memory value.
+    local prev_mic; prev_mic="$(cat "$SAVED_MIC_ID_FILE")"
+    defaults write "$BUNDLE_ID" microphoneID "$uid"
+    if [[ "$prev_mic" != "$uid" ]]; then
+        warn "Set microphoneID → BlackHole. A RUNNING app only picks this up on relaunch."
+        warn "If the assertion fails, quit and reopen OpenWhisp (or set Input device →"
+        warn "'$BLACKHOLE_NAME' in Settings ▸ Dictation once), then re-run this script."
+    fi
+    ok "OpenWhisp microphoneID → BlackHole UID (system default INPUT left untouched)."
 
     SwitchAudioSource -t output -s "$BLACKHOLE_NAME" 2>/dev/null \
         && ok "Default OUTPUT → BlackHole (fixture playback lands here)." \
         || die "Couldn't set BlackHole as the default output device."
-    SwitchAudioSource -t input -s "$BLACKHOLE_NAME" 2>/dev/null \
-        && ok "Default INPUT → BlackHole (OpenWhisp captures here)." \
-        || die "Couldn't set BlackHole as the default input device."
-    sleep 1   # let CoreAudio + OpenWhisp settle on the new devices
+    sleep 1   # let CoreAudio + OpenWhisp settle on the new output device
 
     log "Starting dictation and playing '$fixture_name' into BlackHole…"
     # dictate blocks until the session ends. The fixture ends in silence, so

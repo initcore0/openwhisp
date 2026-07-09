@@ -1,4 +1,5 @@
 import Foundation
+import CoreAudio   // AudioDeviceID (the input-device id threaded to WhisperKit)
 
 /// Experimental real-time WhisperKit engine (streaming partials).
 ///
@@ -21,6 +22,16 @@ final class WhisperKitStreamingEngine: StreamingTranscriptionEngine {
     /// WhisperKit model id (its own namespace). Defaults to the staged `small`
     /// (multilingual EN+RU) — the same model the file engine uses.
     private let modelName: String
+
+    /// Pinned input-device UID for the next session ("" = system default). Resolved
+    /// to a CoreAudio device in `runStart` and passed straight into WhisperKit's
+    /// `AudioStreamTranscriber(inputDeviceID:)` (our fork backports upstream #503's
+    /// passthrough), so capture targets the device directly — no system-default swap.
+    private var selectedDeviceID = ""
+
+    func selectDevice(_ deviceID: String) {
+        selectedDeviceID = deviceID
+    }
 
     init(modelName: String = "openai_whisper-small") {
         self.modelName = modelName
@@ -82,13 +93,40 @@ final class WhisperKitStreamingEngine: StreamingTranscriptionEngine {
     @MainActor
     private func runStart(task: WhisperKitTaskMapper.Resolved) async {
         do {
+            // Resolve the selected input device. It's passed straight into
+            // AudioStreamTranscriber(inputDeviceID:) (our WhisperKit fork backports
+            // upstream #503), which forwards it to startRecordingLive — WhisperKit
+            // captures the chosen device directly, no system-default swap needed. An
+            // unresolved pinned device is a hard error, never a silent default capture.
+            let inputDeviceID: AudioDeviceID?
+            switch AudioInputRoutingPolicy.decide(
+                microphoneID: selectedDeviceID,
+                deviceResolved: AudioInputRouter.canResolve(uid: selectedDeviceID)
+            ) {
+            case .systemDefault:
+                inputDeviceID = nil
+            case .useDevice(let uid):
+                // Resolve to the concrete device id. A nil here (device vanished
+                // between canResolve and now) is treated as unresolved — a hard error,
+                // NOT a silent nil that would fall back to the system default.
+                guard let id = AudioInputRouter.resolve(uid: uid)?.deviceID else {
+                    onError?(AudioInputRoutingPolicy.unresolvedMessage(uid: uid))
+                    return
+                }
+                inputDeviceID = id
+            case .unresolved(let uid):
+                onError?(AudioInputRoutingPolicy.unresolvedMessage(uid: uid))
+                return
+            }
+
             let kit = try await ensureLoaded()
             generation += 1
             let myGeneration = generation
             let handle = try WhisperKitBridge.makeStreamHandle(
                 kit: kit,
                 task: task,
-                languageOverride: nil
+                languageOverride: nil,
+                inputDeviceID: inputDeviceID
             ) { [weak self] newState in
                 Task { @MainActor in
                     guard let self, self.generation == myGeneration else { return }

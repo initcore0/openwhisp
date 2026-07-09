@@ -108,6 +108,17 @@ protocol StreamingTranscriptionEngine: AnyObject {
     /// Engines whose display level is already absolute pass the same value twice.
     var onLevelChanged: ((_ display: Float, _ vad: Float) -> Void)? { get set }
 
+    /// Pin the input device (an opaque platform UID, e.g. the CoreAudio device UID
+    /// stored as `microphoneID`) for the NEXT `start()`. The empty string means
+    /// "follow the system default input". Call before `start()`; a device pinned
+    /// while a stream is running takes effect on the next session.
+    ///
+    /// If the pinned (non-empty) device can't be resolved at `start()` time, the
+    /// engine surfaces an error via `onError` rather than silently capturing the
+    /// system default — that silent fallback was the bug where selecting a
+    /// non-default mic still recorded the built-in one.
+    func selectDevice(_ deviceID: String)
+
     /// Begin streaming recognition for `language` ("auto" = current locale).
     func start(language: String) throws
     /// Stop streaming. `cancel` discards any pending final result.

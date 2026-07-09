@@ -25,7 +25,16 @@ final class AppleSpeechEngine: StreamingTranscriptionEngine {
     /// dispatch a result between the cancel and the next start() — without it,
     /// that callback would pass the gate and be attributed to the new session.
     private var generation = 0
-    
+
+    /// Pinned input-device UID for the next session ("" = system default). Applied
+    /// per-engine in `start()`; no global default mutation needed because Apple
+    /// Speech uses its own `AVAudioEngine` whose input node we can retarget directly.
+    private var selectedDeviceID = ""
+
+    func selectDevice(_ deviceID: String) {
+        selectedDeviceID = deviceID
+    }
+
     static func requestAuthorization(_ completion: @escaping (SFSpeechRecognizerAuthorizationStatus) -> Void) {
         SFSpeechRecognizer.requestAuthorization { status in
             DispatchQueue.main.async {
@@ -60,6 +69,28 @@ final class AppleSpeechEngine: StreamingTranscriptionEngine {
         
         let engine = AVAudioEngine()
         let input = engine.inputNode
+
+        // Route to the selected input device BEFORE reading the format (the format
+        // follows the device). A non-empty selection that can't be resolved is a
+        // hard error — never silently fall back to the system default (that was the
+        // bug where picking a non-default mic still captured the built-in one).
+        switch AudioInputRoutingPolicy.decide(
+            microphoneID: selectedDeviceID,
+            deviceResolved: AudioInputRouter.canResolve(uid: selectedDeviceID)
+        ) {
+        case .systemDefault:
+            break                                   // input node already follows the default
+        case .useDevice(let uid):
+            // Resolved above; a nil here or a setDeviceID failure is still a hard
+            // error — don't fall through to the default node.
+            guard let device = AudioInputRouter.resolve(uid: uid),
+                  AudioInputRouter.apply(device, to: engine) else {
+                throw AppleSpeechError.unavailable(AudioInputRoutingPolicy.unresolvedMessage(uid: uid))
+            }
+        case .unresolved(let uid):
+            throw AppleSpeechError.unavailable(AudioInputRoutingPolicy.unresolvedMessage(uid: uid))
+        }
+
         let format = input.outputFormat(forBus: 0)
         // With no input device the format is 0 Hz / 0 ch and installTap raises
         // an ObjC NSException that Swift try/catch can't intercept (app crash).
