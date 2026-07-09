@@ -268,4 +268,97 @@ public extension AgentCLIProvider {
     static func preset(id: String) -> Preset? {
         presets.first { $0.id == id }
     }
+
+    /// The persisted selection key for the *custom* preset — the one whose
+    /// command/args come from the user's own fields rather than a built-in template.
+    static let customPresetID = "custom"
+
+    /// Resolve the effective, ready-to-run `Config` for the agent-CLI provider from
+    /// the user's persisted choices.
+    ///
+    /// This is the single, testable place where "which preset + which custom fields"
+    /// becomes "the exact command to run":
+    ///   - a built-in preset id (`claude` / `codex`) yields that preset's shipped
+    ///     `command` + `args`, but always with the user's chosen `timeout`;
+    ///   - the `custom` preset (or any unknown id) yields the user's own
+    ///     `customCommand` + `customArgs`.
+    ///
+    /// The transcript is never involved here — it travels on stdin (see the type
+    /// header). Timeouts are clamped to a sane floor so a fat-fingered 0 can't make
+    /// the runner kill the CLI instantly.
+    static func resolveConfig(
+        presetID: String,
+        customCommand: String,
+        customArgs: [String],
+        timeout: TimeInterval
+    ) -> Config {
+        let clampedTimeout = max(1.0, timeout)
+        if presetID == customPresetID {
+            return Config(command: customCommand, args: customArgs, timeout: clampedTimeout)
+        }
+        guard let preset = preset(id: presetID), presetID != customPresetID else {
+            // Unknown id → fall back to the custom fields, never to a surprise CLI.
+            return Config(command: customCommand, args: customArgs, timeout: clampedTimeout)
+        }
+        // Keep the preset's shipped command + args (never derived from the user's
+        // custom fields), but honor the user's timeout.
+        return Config(command: preset.config.command, args: preset.config.args, timeout: clampedTimeout)
+    }
+
+    /// Parse the settings-UI "arguments" text box (one argument per line) into the
+    /// discrete `[String]` argv template. Blank lines are dropped; each surviving
+    /// line is one argument, verbatim (no shell splitting — so an instruction with
+    /// spaces stays a single argument). This keeps the injection-safety contract:
+    /// the user types the fixed args, never the transcript.
+    static func parseCustomArgs(_ text: String) -> [String] {
+        text
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map { String($0) }
+            .filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+    }
+
+    /// Inverse of `parseCustomArgs` — render an argv template back into the
+    /// one-arg-per-line text the settings field edits.
+    static func formatCustomArgs(_ args: [String]) -> String {
+        args.joined(separator: "\n")
+    }
+}
+
+// MARK: - Enhancement-provider selection (pure)
+
+/// The AI-cleanup / whole-text-refine backend the user selected. This is the pure,
+/// testable decision behind "which refiner runs": OpenWhisp historically had only
+/// the OpenAI-compatible family (cloud / bundled llama / local server); MAK-44 adds
+/// the agent-CLI provider as a peer. Only the agent-CLI case changes *which*
+/// `AsyncTextRefiner` the app builds — every other id keeps the existing
+/// OpenAI-service path unchanged (no regression).
+public enum EnhancementProvider: Equatable {
+    /// The persisted `llmProvider` value selecting the agent-CLI backend.
+    public static let agentCLIID = "agentCLI"
+
+    /// True iff the persisted provider id selects the agent-CLI refiner. Every other
+    /// id (`bundled` / `openai` / `local` / anything unknown) stays on the existing
+    /// OpenAI-service refiner, so the default is preserved.
+    public static func usesAgentCLI(_ providerID: String) -> Bool {
+        providerID == agentCLIID
+    }
+
+    /// The command the app would spawn for the agent-CLI provider, given the user's
+    /// persisted selection — or a `BuildError` if the config is unusable (empty
+    /// command, transcript-in-argv). Pure: this is the seam a test drives to prove
+    /// "provider=agentCLI + preset=claude ⇒ the claude argv".
+    public static func agentCLICommand(
+        presetID: String,
+        customCommand: String,
+        customArgs: [String],
+        timeout: TimeInterval
+    ) -> Result<AgentCLIProvider.Command, AgentCLIProvider.BuildError> {
+        let config = AgentCLIProvider.resolveConfig(
+            presetID: presetID,
+            customCommand: customCommand,
+            customArgs: customArgs,
+            timeout: timeout
+        )
+        return AgentCLIProvider.buildCommand(config: config)
+    }
 }

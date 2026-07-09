@@ -180,6 +180,7 @@ struct CleanupPane: View {
                 Text("On this Mac (built-in)").tag("bundled")
                 Text("OpenAI (cloud)").tag("openai")
                 Text("Your server (self-hosted)").tag("local")
+                Text("Agent CLI (Claude / Codex)").tag("agentCLI")
             }
 
             SettingsFootnote(providerDescription)
@@ -187,9 +188,10 @@ struct CleanupPane: View {
             // Provider fields shown directly — required configuration never
             // hides behind a disclosure.
             switch appState.llmProvider {
-            case "bundled": bundledLLMFields
-            case "local":   localLLMFields
-            default:        openAIFields
+            case "bundled":  bundledLLMFields
+            case "local":    localLLMFields
+            case "agentCLI": agentCLIFields
+            default:         openAIFields
             }
 
             HStack {
@@ -248,7 +250,8 @@ struct CleanupPane: View {
 
     private var translationStatusIsGood: Bool {
         ["Built-in model working", "Server reachable", "OpenAI key valid",
-         "Local LLM reachable", "Rephrased", "Improved"].contains(appState.translationStatus)
+         "Local LLM reachable", "Rephrased", "Improved",
+         "Agent CLI working"].contains(appState.translationStatus)
     }
 
     private var providerDescription: String {
@@ -257,6 +260,8 @@ struct CleanupPane: View {
             return "Runs a small model fully on-device — nothing leaves your Mac, no setup or server needed. The model downloads once."
         case "local":
             return "Any OpenAI-compatible server on your machine or LAN (llama.cpp llama-server, Ollama). No data leaves to the cloud."
+        case "agentCLI":
+            return "Pipes the final transcript through a coding-agent CLI you already have installed (Claude Code, Codex, or your own command). Reuses that CLI's login — no API key here. Where the text goes depends on which CLI you pick."
         default:
             return "Sends the final transcript to OpenAI for cleanup. Needs an API key."
         }
@@ -371,6 +376,55 @@ struct CleanupPane: View {
         #if OPENWHISP_INSTRUMENTATION
         BundledLLMDebugStatus(appState: appState)
         #endif
+    }
+
+    @ViewBuilder private var agentCLIFields: some View {
+        Picker("Agent CLI", selection: $appState.agentCLIPreset) {
+            ForEach(AgentCLIProvider.presets, id: \.id) { preset in
+                Text(preset.name).tag(preset.id)
+            }
+        }
+
+        // The chosen preset's one-line description (what it actually runs).
+        if let preset = AgentCLIProvider.preset(id: appState.agentCLIPreset) {
+            SettingsFootnote(preset.detail)
+        }
+
+        // Custom preset: the user supplies the command + fixed args themselves.
+        if appState.agentCLIPreset == AgentCLIProvider.customPresetID {
+            VStack(alignment: .leading, spacing: 4) {
+                TextField("Command", text: $appState.agentCLICustomCommand,
+                          prompt: Text("e.g. claude, codex, or /opt/homebrew/bin/pi"))
+                    .textFieldStyle(.roundedBorder)
+                SettingsFootnote("A command on your PATH, or an absolute path. It must read the transcript on stdin and write the cleaned text to stdout.")
+            }
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Arguments")
+                SettingsFootnote("One argument per line, passed verbatim before the transcript. The transcript is never placed here — it's piped in on stdin.")
+                TextEditor(text: $appState.agentCLICustomArgsText)
+                    .font(.body.monospaced())
+                    .frame(minHeight: 60, maxHeight: 120)
+                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.2)))
+            }
+            .padding(.vertical, 2)
+        }
+
+        // Timeout applies to every preset.
+        HStack {
+            Text("Timeout")
+            Spacer()
+            TextField("Timeout", value: $appState.agentCLITimeout, format: .number)
+                .textFieldStyle(.roundedBorder)
+                .frame(width: 64)
+                .multilineTextAlignment(.trailing)
+            Text("seconds")
+                .foregroundColor(.secondary)
+        }
+
+        SettingsCallout(
+            .info,
+            "Uses the CLI already installed on your Mac and its own login — no API key here. On any failure (CLI missing, timeout, error) your original transcript is kept."
+        )
     }
 
     // MARK: - Refine
