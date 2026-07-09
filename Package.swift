@@ -60,6 +60,7 @@ let package = Package(
                 "AgentRateLimiter.swift",
                 "ConfigPack.swift",
                 "ScriptPostProcessor.swift",
+                "AgentCLIProvider.swift",
                 "WhisperTask.swift",
                 "InstructionChain.swift",
                 "CleanupIntensity.swift",

@@ -24,6 +24,12 @@ enum PrivacyStatus {
         if enhancementEnabled && provider == "local" {
             return "On-device + your local LLM — nothing goes to the cloud"
         }
+        if enhancementEnabled && provider == "agentCLI" {
+            // The agent CLI makes its own connection with its own auth; where the
+            // text goes depends on which CLI the user configured (a cloud coding
+            // agent, or a fully local model), so we can't claim on-device.
+            return "Refined by your local agent CLI, using its own connection"
+        }
         return "Fully on-device — no network used"
     }
 }

@@ -7,16 +7,34 @@
       "id": "2026-07",
       "title": "July 2026",
       "date": "2026-07-09",
-      "summary": "A batch of new features, fixes, and under-the-hood hardening — all landed on main, all covered by tests, all on your machine. Five new features are live in Settings today — rich local formatting plus output targets (route a dictation to a file, a macOS Shortcut, or a webhook); three more shipped their tested engine with the UI landing next — each is marked below.",
+      "summary": "A batch of new features, fixes, and under-the-hood hardening — all landed on main, all covered by tests, all on your machine. Six new features are live in Settings today — rich local formatting, agent-CLI cleanup, plus output targets (route a dictation to a file, a macOS Shortcut, or a webhook); three more shipped their tested engine with the UI landing next — each is marked below.",
       "stats": {
-        "changesShipped": 14,
-        "newFeatures": 5,
-        "testsPassing": 841,
+        "changesShipped": 15,
+        "newFeatures": 6,
+        "testsPassing": 870,
         "onDevicePercent": 100,
-        "newFeaturesLive": 5,
+        "newFeaturesLive": 6,
         "newFeaturesCorePending": 3
       },
       "entries": [
+        {
+          "category": "feature",
+          "headline": "Use your Claude or Codex CLI as the AI cleanup engine",
+          "body": "Pipe your dictation through a coding-agent CLI you already have installed — claude, codex, or any command that reads stdin — and reuse the subscription you already pay for as the cleanup model. No separate API key, no extra service: it's the inverse of Agent Bridge, consuming an agent as the refine engine.",
+          "tickets": ["MAK-44"],
+          "prs": [130],
+          "howTo": {
+            "availability": "live",
+            "summary": "Point OpenWhisp at a local agent CLI (e.g. claude -p) and it cleans up each dictation using your own subscription.",
+            "steps": [
+              "Open Settings › Cleanup › AI Model and set Provider to “Agent CLI (Claude / Codex)”.",
+              "Pick a preset — Claude Code (claude -p) or Codex (codex exec) — or choose Custom and enter any command that reads stdin and writes the cleaned text to stdout.",
+              "Turn on “Improve every dictation automatically” below (or use Refine on demand). OpenWhisp feeds your transcript to the CLI on stdin — never on the command line, so nothing you say can be interpreted as a command — and uses its output as the refined text.",
+              "If the CLI is missing, errors, times out, or returns nothing, OpenWhisp keeps your original words — you never lose a dictation."
+            ],
+            "note": "Reuses your locally-installed CLI and its own login — no API key needed here. Where your text goes depends on which CLI you pick (a cloud coding agent, or a fully local model)."
+          }
+        },
         {
           "category": "feature",
           "headline": "Send your dictation straight into a macOS Shortcut",

@@ -322,6 +322,49 @@ class AppState: ObservableObject {
         }
     }
 
+    // MARK: Agent-CLI provider (MAK-44)
+    //
+    // Used when `llmProvider == EnhancementProvider.agentCLIID`. The whole-text
+    // refine step then pipes the transcript through a locally-installed coding-agent
+    // CLI (claude/codex/custom) and uses its cleaned stdout, reusing the user's
+    // existing CLI auth (no API key). Persisted; default is the Claude preset so a
+    // user who opts in gets a working setup with zero extra typing.
+
+    /// Selected agent-CLI preset id ("claude" / "codex" / "custom").
+    @Published var agentCLIPreset: String {
+        didSet { persist(agentCLIPreset, "agentCLIPreset") }
+    }
+
+    /// Custom executable (bare name resolved on PATH, or an absolute path). Used
+    /// only when `agentCLIPreset == "custom"`.
+    @Published var agentCLICustomCommand: String {
+        didSet { persist(agentCLICustomCommand, "agentCLICustomCommand") }
+    }
+
+    /// Custom fixed args, one per line (each line is one argv entry, verbatim — no
+    /// shell splitting). The transcript is never here; it goes on stdin.
+    @Published var agentCLICustomArgsText: String {
+        didSet { persist(agentCLICustomArgsText, "agentCLICustomArgsText") }
+    }
+
+    /// Hard wall-clock timeout (seconds) for the agent CLI. On overrun the runner
+    /// kills it and fails open to the original transcript.
+    @Published var agentCLITimeout: Double {
+        didSet { persist(agentCLITimeout, "agentCLITimeout") }
+    }
+
+    /// The effective, ready-to-run agent-CLI config from the persisted selection.
+    /// A built-in preset keeps its shipped command + args; the custom preset uses
+    /// the user's fields. Timeout is always the user's (clamped to a sane floor).
+    var activeAgentCLIConfig: AgentCLIProvider.Config {
+        AgentCLIProvider.resolveConfig(
+            presetID: agentCLIPreset,
+            customCommand: agentCLICustomCommand,
+            customArgs: AgentCLIProvider.parseCustomArgs(agentCLICustomArgsText),
+            timeout: agentCLITimeout
+        )
+    }
+
     #if OPENWHISP_INSTRUMENTATION
     /// Dev-only: show the debug HUD on the recording overlay. Toggled from the
     /// menu-bar checkbox; persisted. Only exists in instrumented builds.
@@ -867,8 +910,17 @@ class AppState: ObservableObject {
     /// settings change is reflected. Used by `completeFinalText` today; the rest
     /// of the AI orchestration (engine bracket, session guards, status UI) stays in
     /// AppState because those are UI/lifecycle concerns the pure chain doesn't model.
-    func makeWholeTextRefiner() -> OpenAIRefiner {
-        OpenAIRefiner(
+    ///
+    /// Provider selection (MAK-44): when the user picked the agent-CLI backend, this
+    /// returns an `AgentCLIRefiner` (pipe the transcript through claude/codex/custom)
+    /// instead of `OpenAIRefiner`. Both conform to `AsyncTextRefiner`, so the
+    /// `AIPostProcessor` chain and `completeFinalText` orchestration are unchanged.
+    /// Every other provider keeps the OpenAI-service refiner — the default path.
+    func makeWholeTextRefiner() -> AsyncTextRefiner {
+        if EnhancementProvider.usesAgentCLI(llmProvider) {
+            return AgentCLIRefiner(config: activeAgentCLIConfig)
+        }
+        return OpenAIRefiner(
             service: translationService,
             mode: refinementMode(openAIEnhancementMode),
             targetLanguage: translationTargetLanguage,
@@ -887,6 +939,15 @@ class AppState: ObservableObject {
     /// Whether the active LLM provider is configured enough to call.
     var llmConfigured: Bool {
         switch llmProvider {
+        case EnhancementProvider.agentCLIID:
+            // Configured when the selected preset/custom fields build a valid argv
+            // (non-empty command, no transcript-in-args). We can't verify the CLI is
+            // actually installed here without spawning it — that's the runner's
+            // fail-open job — but an empty custom command is a clear misconfig.
+            if case .success = AgentCLIProvider.buildCommand(config: activeAgentCLIConfig) {
+                return true
+            }
+            return false
         case "bundled":
             // Configured only when this build can run the LLM at all AND the
             // selected model is actually on disk. The runtime check keeps
@@ -1039,6 +1100,12 @@ class AppState: ObservableObject {
         localLLMBaseURL = UserDefaults.standard.string(forKey: "localLLMBaseURL") ?? "http://localhost:8080/v1"
         localLLMModel = UserDefaults.standard.string(forKey: "localLLMModel") ?? ""
         bundledLLMModel = UserDefaults.standard.string(forKey: "bundledLLMModel") ?? "qwen2.5-0.5b-instruct"
+        // Agent-CLI provider (MAK-44) — used only when llmProvider == "agentCLI".
+        // Default to the Claude preset so opting in works with zero extra typing.
+        agentCLIPreset = UserDefaults.standard.string(forKey: "agentCLIPreset") ?? "claude"
+        agentCLICustomCommand = UserDefaults.standard.string(forKey: "agentCLICustomCommand") ?? ""
+        agentCLICustomArgsText = UserDefaults.standard.string(forKey: "agentCLICustomArgsText") ?? ""
+        agentCLITimeout = UserDefaults.standard.object(forKey: "agentCLITimeout") as? Double ?? 30.0
         instructionChainEnabled = UserDefaults.standard.object(forKey: "instructionChainEnabled") as? Bool ?? true
         scriptPostProcessorEnabled = UserDefaults.standard.object(forKey: "scriptPostProcessorEnabled") as? Bool ?? false
         scriptPostProcessorPath = UserDefaults.standard.string(forKey: "scriptPostProcessorPath") ?? ""
@@ -2081,6 +2148,39 @@ class AppState: ObservableObject {
     func testLLMProvider() {
         error = nil
         switch llmProvider {
+        case EnhancementProvider.agentCLIID:
+            // Validate the config builds first (empty command / transcript-in-args
+            // fail closed with a clear message, no spawn).
+            switch AgentCLIProvider.buildCommand(config: activeAgentCLIConfig) {
+            case .failure(.emptyCommand):
+                translationStatus = "Enter the agent CLI command first"
+                return
+            case .failure(.transcriptInArgs):
+                translationStatus = "Remove \(AgentCLIProvider.transcriptSentinel) from the arguments"
+                return
+            case .success:
+                break
+            }
+            translationStatus = "Testing agent CLI…"
+            let config = activeAgentCLIConfig
+            // Actually run the CLI on a tiny probe off the main actor (it's a
+            // blocking Process spawn). Fail-open: identical output = the CLI didn't
+            // transform anything, but it DID run, so the wiring is proven.
+            Task { @MainActor [weak self] in
+                let probe = "test one two"
+                let output = await Task.detached(priority: .userInitiated) {
+                    AgentCLIRunner.run(probe, config: config)
+                }.value
+                guard let self else { return }
+                if output == probe {
+                    // Ran but returned the original — either the CLI isn't installed
+                    // (fail-open kept the input) or it genuinely made no change.
+                    self.translationStatus = "Agent CLI ran (no change / not installed)"
+                } else {
+                    self.translationStatus = "Agent CLI working"
+                }
+            }
+
         case "bundled":
             guard bundledLLMRuntimeAvailable else {
                 translationStatus = "This build doesn't include the built-in AI runtime"
@@ -3585,6 +3685,10 @@ class AppState: ObservableObject {
         localLLMBaseURL = "http://localhost:8080/v1"
         localLLMModel = ""
         bundledLLMModel = "qwen2.5-0.5b-instruct"
+        agentCLIPreset = "claude"
+        agentCLICustomCommand = ""
+        agentCLICustomArgsText = ""
+        agentCLITimeout = 30.0
         instructionChainEnabled = true
 
         triggerMode = "fn"
