@@ -153,6 +153,23 @@
           }
         },
         {
+          "category": "feature",
+          "headline": "Send a dictation straight to a webhook (Notion, Obsidian, Zapier, n8n…)",
+          "body": "POST your finished transcript as JSON — text, language, app, and timestamp — to any URL you configure, with optional auth headers. If the endpoint is down or slow, your words still land in the focused app as usual. Never dropped.",
+          "tickets": ["MAK-14"],
+          "prs": [128],
+          "howTo": {
+            "availability": "coming-soon",
+            "summary": "Point an output target at a URL; OpenWhisp POSTs each dictation there as JSON.",
+            "steps": [
+              "In Settings, set a webhook URL for an app or profile and add any headers your endpoint needs (e.g. an Authorization token).",
+              "Dictate into that app — OpenWhisp POSTs { text, language, appBundleID, timestamp } as JSON to your URL.",
+              "If the POST fails (non-2xx, network error, or timeout), the same text is typed into the focused app instead — you never lose it."
+            ],
+            "note": "The webhook sink is built and tested: the JSON body, the request (POST, application/json, your custom headers, a short timeout), and the fail-open behavior all ship now. The Settings screen to enter the URL/headers per app is the next step; until it lands there's no in-app way to configure a webhook yet."
+          }
+        },
+        {
           "category": "fix",
           "headline": "Silence no longer errors on one backend but not the other",
           "body": "Dictating nothing now quietly produces nothing on both whisper backends — no more stray error toast depending on which engine you'd picked in Advanced settings.",
