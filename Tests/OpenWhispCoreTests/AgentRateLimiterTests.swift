@@ -140,15 +140,21 @@ final class AgentRateLimiterTests: XCTestCase {
 
     // MARK: Long session straddling the window edge (MAK-31)
     //
-    // A session's `start` (the clock the cap and budget age-outs use) can predate
-    // the window while its `lastActivity` (`start + seconds`, the cooldown clock)
-    // still falls inside it, so `pruned()` keeps it. The age-out math must never go
-    // negative in that case, and cap membership must follow the same clock.
+    // A session's `start` (the clock the cap and budget key on) can age past the
+    // window while its `lastActivity` (`start + seconds`, the cooldown clock) still
+    // falls inside it, so `pruned()` keeps it for the cooldown. Because the cap and
+    // budget decide membership on `start`, such a straddler is NOT in-window for
+    // them: its cap slot has already aged out, and — crucially — it can no longer
+    // shield *new* in-window starts from the cap. Earlier code counted the
+    // straddler for the cap and floored its negative age-out to 0, which let new
+    // starts pile up unbounded behind it (a session-cap bypass); the fix keys cap
+    // membership and age-out on the same `start` clock so the invariant holds by
+    // construction.
 
-    func testCapAgeOutFlooredWhenStraddlingSessionStartPredatesWindow() {
-        // windowSeconds 3600. A single very long session: starts at t0, holds the
-        // mic for 3300s, so lastActivity = t0+3300. The cap is 1, so this session
-        // alone fills it.
+    func testStraddlingSessionDoesNotBypassCapForNewInWindowStarts() {
+        // The reviewer's bypass scenario, now asserted to be throttled.
+        // windowSeconds 3600, cap 1, cooldown 1. A single long session S1 starts at
+        // t0 and holds the mic for 3300s, so lastActivity = t0+3300.
         var limiter = AgentRateLimiter(
             cooldownSeconds: 1, maxSessionsPerHour: 1,
             maxListeningSecondsPerHour: 0, windowSeconds: 3600
@@ -156,22 +162,60 @@ final class AgentRateLimiterTests: XCTestCase {
         limiter.recordStart(clientName: "c", now: t0)
         limiter.recordEnd(clientName: "c", now: t0.addingTimeInterval(3300))
 
-        // At t0+3601 the start (t0) already predates the window (cutoff t0+1), but
-        // lastActivity (t0+3300) survives pruning, so the session is still counted
-        // as in-window membership — matching the cooldown clock.
-        let now = t0.addingTimeInterval(3601)
-        XCTAssertEqual(limiter.sessionCount(clientName: "c", now: now), 1)
+        // At t0+3601 S1's start (t0) has aged past the window (cutoff t0+1), so it
+        // no longer occupies a cap slot even though its lastActivity (t0+3300) keeps
+        // it around for the cooldown. The cap count (keyed on start) is 0, and the
+        // cooldown long expired, so a fresh start is legitimately allowed here.
+        let afterStraddler = t0.addingTimeInterval(3601)
+        XCTAssertEqual(limiter.sessionCount(clientName: "c", now: afterStraddler), 0)
+        XCTAssertEqual(limiter.check(clientName: "c", now: afterStraddler), .allow)
 
-        // The cap is full (1/1), so the cap branch runs with oldest.start = t0,
-        // which is *before* the window: the raw age-out is 3600 - 3601 = -1. The
-        // floor pins it to 0, so the cap contributes no wait and — the cooldown
-        // having long expired — the client is allowed. The invariant we lock: the
-        // decision is never a *negative* throttle, and here it resolves to .allow.
-        switch limiter.check(clientName: "c", now: now) {
-        case .allow:
-            break
-        case .throttled(let retry):
-            XCTAssertGreaterThanOrEqual(retry, 0, "cap age-out must never be negative")
+        // The client takes that slot: S2 starts at t0+3601. S1 still lingers in the
+        // history (its lastActivity keeps it past pruning), but it must NOT shield
+        // S2 from the cap.
+        limiter.recordStart(clientName: "c", now: afterStraddler)
+
+        // One second later the cap is full again — via S2's own in-window start, not
+        // the stale straddler. Pre-fix this returned .allow forever (oldest stayed
+        // S1 with a floored 0 age-out); now it's throttled until S2 ages out.
+        guard case .throttled(let retry) = limiter.check(clientName: "c", now: t0.addingTimeInterval(3602)) else {
+            return XCTFail("expected throttled — the cap must count S2, not the aged-out straddler")
+        }
+        // 3600 - (3602 - 3601) = 3599, keyed on S2's start (t0+3601).
+        XCTAssertEqual(retry, 3599, accuracy: 0.001)
+    }
+
+    func testStraddlerNeverAllowsUnlimitedStartsAsNewOnesPileUp() {
+        // Directly exercises the pile-up the old bypass allowed: with the straddler
+        // still lingering, repeatedly attempting a new start must NOT keep returning
+        // .allow. After the first new in-window start is taken, further attempts are
+        // throttled with a positive retryAfter derived from that in-window start.
+        var limiter = AgentRateLimiter(
+            cooldownSeconds: 1, maxSessionsPerHour: 1,
+            maxListeningSecondsPerHour: 0, windowSeconds: 3600
+        )
+        limiter.recordStart(clientName: "c", now: t0)
+        limiter.recordEnd(clientName: "c", now: t0.addingTimeInterval(3300)) // lastActivity t0+3300
+
+        // Straddler's slot has aged out at t0+3601 → one start is allowed. Take it.
+        let s2Start = t0.addingTimeInterval(3601)
+        XCTAssertEqual(limiter.check(clientName: "c", now: s2Start), .allow)
+        limiter.recordStart(clientName: "c", now: s2Start)
+
+        // Now hammer the limiter every cooldown interval, as the reviewer's step 3
+        // describes. Every one of these must be throttled — never .allow — because
+        // the in-window start S2 (t0+3601) fills the cap of 1 and the straddler no
+        // longer masks it.
+        for offset in stride(from: 3602.0, through: 3650.0, by: 1.0) {
+            let now = t0.addingTimeInterval(offset)
+            guard case .throttled(let retry) = limiter.check(clientName: "c", now: now) else {
+                return XCTFail("bypass: cap allowed a start at t0+\(offset) behind a lingering straddler")
+            }
+            // Wait is derived from S2's start (t0+3601), not the straddler: it's the
+            // time until S2 ages out, always positive within the window.
+            let expected = 3600 - (offset - 3601)
+            XCTAssertEqual(retry, expected, accuracy: 0.001,
+                           "retryAfter at t0+\(offset) must track S2's in-window start")
         }
     }
 
@@ -195,9 +239,10 @@ final class AgentRateLimiterTests: XCTestCase {
         XCTAssertEqual(retry, 500, accuracy: 0.001) // 3600 - 3100, keyed on start
     }
 
-    func testBudgetWaitFlooredWhenStraddlingSessionStartPredatesWindow() {
+    func testStraddlingSessionDropsOutOfBudgetOnceStartAgesOut() {
         // A long session that alone exhausts the listening budget and whose start
-        // predates the window at check time.
+        // has aged past the window at check time must no longer count against the
+        // budget — its mic time began more than a window ago.
         var limiter = AgentRateLimiter(
             cooldownSeconds: 1, maxSessionsPerHour: 0,
             maxListeningSecondsPerHour: 600, windowSeconds: 3600
@@ -205,16 +250,22 @@ final class AgentRateLimiterTests: XCTestCase {
         limiter.recordStart(clientName: "c", now: t0)
         limiter.recordEnd(clientName: "c", now: t0.addingTimeInterval(3300)) // 3300s > 600 budget
 
-        // At t0+3601: start predates the window, lastActivity (t0+3300) keeps the
-        // session alive, budget is exhausted → the wait loop runs. Pre-fix it would
-        // compute 3600 - 3601 = -1; the floor keeps it >= 0.
-        let now = t0.addingTimeInterval(3601)
-        switch limiter.check(clientName: "c", now: now) {
-        case .allow:
-            break
-        case .throttled(let retry):
-            XCTAssertGreaterThanOrEqual(retry, 0, "budget wait must never be negative")
+        // At t0+3601: S1's start (t0) has aged past the window (cutoff t0+1), so its
+        // seconds no longer count toward the in-window total even though its
+        // lastActivity (t0+3300) keeps it around for the cooldown. Budget is 0/600
+        // and the cooldown expired → allowed. (Pre-fix, the straddler stayed in the
+        // total and the wait floored to 0, incidentally also .allow — but for the
+        // wrong reason; here it's because the mic time genuinely aged out.)
+        XCTAssertEqual(limiter.check(clientName: "c", now: t0.addingTimeInterval(3601)), .allow)
+
+        // While the straddler's start is still *inside* the window, its seconds do
+        // count and the wait is keyed on that start — strictly positive, no floor.
+        // At t0+3400 (start 3400s old) the budget is exhausted; it frees when the
+        // start ages out at t0+3600, i.e. 200s.
+        guard case .throttled(let retry) = limiter.check(clientName: "c", now: t0.addingTimeInterval(3400)) else {
+            return XCTFail("expected throttled — budget exhausted while start is in-window")
         }
+        XCTAssertEqual(retry, 200, accuracy: 0.001) // 3600 - 3400, keyed on start
     }
 
     // MARK: forget / count
