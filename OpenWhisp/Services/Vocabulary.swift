@@ -51,29 +51,11 @@ enum VocabularyStore {
     }
 
     static func load() -> Vocabulary {
-        guard let data = try? Data(contentsOf: fileURL) else { return .empty }
-        do {
-            return try JSONDecoder().decode(Vocabulary.self, from: data)
-        } catch {
-            // The file exists but is undecodable (corruption, hand-edit, version
-            // skew). Move it aside instead of returning .empty silently — the
-            // next save would otherwise overwrite it and make the loss permanent.
-            let backup = fileURL.appendingPathExtension("corrupt-\(Int(Date().timeIntervalSince1970))")
-            try? FileManager.default.moveItem(at: fileURL, to: backup)
-            print("[VocabularyStore] load failed: \(error); moved file to \(backup.lastPathComponent)")
-            return .empty
-        }
+        JSONStore.load(from: fileURL, default: .empty, label: "VocabularyStore")
     }
 
     static func save(_ vocabulary: Vocabulary) {
-        do {
-            let dir = fileURL.deletingLastPathComponent()
-            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-            let data = try JSONEncoder().encode(vocabulary)
-            try data.write(to: fileURL, options: .atomic)
-        } catch {
-            print("[VocabularyStore] save failed: \(error.localizedDescription)")
-        }
+        JSONStore.save(vocabulary, to: fileURL, label: "VocabularyStore")
     }
 }
 

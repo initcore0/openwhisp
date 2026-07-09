@@ -46,29 +46,11 @@ enum AppProfileStore {
     }
 
     static func load() -> [AppProfile] {
-        guard let data = try? Data(contentsOf: fileURL) else { return [] }
-        do {
-            return try JSONDecoder().decode([AppProfile].self, from: data)
-        } catch {
-            // The file exists but is undecodable (corruption, hand-edit, version
-            // skew). Move it aside instead of returning [] silently — the next
-            // save would otherwise overwrite it and make the loss permanent.
-            let backup = fileURL.appendingPathExtension("corrupt-\(Int(Date().timeIntervalSince1970))")
-            try? FileManager.default.moveItem(at: fileURL, to: backup)
-            print("[AppProfileStore] load failed: \(error); moved file to \(backup.lastPathComponent)")
-            return []
-        }
+        JSONStore.load(from: fileURL, default: [], label: "AppProfileStore")
     }
 
     static func save(_ profiles: [AppProfile]) {
-        do {
-            let dir = fileURL.deletingLastPathComponent()
-            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-            let data = try JSONEncoder().encode(profiles)
-            try data.write(to: fileURL, options: .atomic)
-        } catch {
-            print("[AppProfileStore] save failed: \(error.localizedDescription)")
-        }
+        JSONStore.save(profiles, to: fileURL, label: "AppProfileStore")
     }
 
     /// First profile matching the given bundle ID, if any.
