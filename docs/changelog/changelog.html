@@ -1,0 +1,292 @@
+<title>OpenWhisp — Shipped</title>
+<style>
+  :root {
+    /* OpenWhisp brand tokens (from openwhisp.app) */
+    --ground: #f2f4f8;
+    --surface: #ffffff;
+    --raised: #f7f9fc;
+    --ink: #0b1416;
+    --muted: #55636e;
+    --line: #dde4ec;
+    --speak: #0a7d84;      /* teal accent */
+    --speak-bright: #06a6b0;
+    --refine: #b0439a;     /* magenta secondary */
+    --fix: #b06a12;        /* amber for bug fixes */
+    --improve: #5a6473;    /* neutral for improvements */
+    --shadow: 0 1px 2px rgba(11,20,22,.05), 0 8px 24px -12px rgba(11,20,22,.12);
+
+    --font-display: "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
+    --font-sans: ui-sans-serif, system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
+    --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+
+    --maxw: 62rem;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --ground: #04181a;
+      --surface: #071e21;
+      --raised: #0a2529;
+      --ink: #e8ecf2;
+      --muted: #8fa0a3;
+      --line: #14383c;
+      --speak: #3dd8e0;
+      --speak-bright: #5fe6ec;
+      --refine: #e879c9;
+      --fix: #e6b566;
+      --improve: #8a97a0;
+      --shadow: 0 1px 2px rgba(0,0,0,.3), 0 12px 32px -14px rgba(0,0,0,.6);
+    }
+  }
+  :root[data-theme="light"] {
+    --ground: #f2f4f8; --surface: #ffffff; --raised: #f7f9fc; --ink: #0b1416;
+    --muted: #55636e; --line: #dde4ec; --speak: #0a7d84; --speak-bright: #06a6b0;
+    --refine: #b0439a; --fix: #b06a12; --improve: #5a6473;
+    --shadow: 0 1px 2px rgba(11,20,22,.05), 0 8px 24px -12px rgba(11,20,22,.12);
+  }
+  :root[data-theme="dark"] {
+    --ground: #04181a; --surface: #071e21; --raised: #0a2529; --ink: #e8ecf2;
+    --muted: #8fa0a3; --line: #14383c; --speak: #3dd8e0; --speak-bright: #5fe6ec;
+    --refine: #e879c9; --fix: #e6b566; --improve: #8a97a0;
+    --shadow: 0 1px 2px rgba(0,0,0,.3), 0 12px 32px -14px rgba(0,0,0,.6);
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--ground); color: var(--ink);
+    font-family: var(--font-sans);
+    font-size: 16px; line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: var(--maxw); margin: 0 auto; padding: clamp(2rem, 5vw, 5rem) clamp(1.15rem, 4vw, 2.5rem) 5rem; }
+
+  /* ---- header ---- */
+  .eyebrow {
+    font-family: var(--font-mono); font-size: .72rem; letter-spacing: .16em;
+    text-transform: uppercase; color: var(--speak); margin: 0 0 1rem;
+    display: flex; align-items: center; gap: .6rem;
+  }
+  .eyebrow::before {
+    content: ""; width: 8px; height: 8px; border-radius: 50%;
+    background: var(--speak); box-shadow: 0 0 0 4px color-mix(in srgb, var(--speak) 20%, transparent);
+  }
+  h1 {
+    font-family: var(--font-display); font-weight: 600;
+    font-size: clamp(2.1rem, 6vw, 3.4rem); line-height: 1.04; letter-spacing: -.02em;
+    text-wrap: balance; margin: 0 0 .9rem;
+  }
+  h1 .accent { color: var(--speak); }
+  .lede {
+    font-size: clamp(1.02rem, 2.2vw, 1.22rem); color: var(--muted);
+    max-width: 42rem; margin: 0 0 2.4rem; text-wrap: pretty;
+  }
+
+  /* ---- stat strip ---- */
+  .stats {
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px;
+    background: var(--line); border: 1px solid var(--line); border-radius: 14px;
+    overflow: hidden; margin-bottom: 3.4rem; box-shadow: var(--shadow);
+  }
+  .stat { background: var(--surface); padding: 1.15rem 1.25rem; }
+  .stat .n {
+    font-family: var(--font-display); font-weight: 600;
+    font-size: clamp(1.5rem, 4vw, 2rem); line-height: 1; letter-spacing: -.01em;
+    font-variant-numeric: tabular-nums; color: var(--ink);
+  }
+  .stat .n small { font-size: .62em; font-weight: 500; color: var(--muted); margin-left: .15em; }
+  .stat .k { font-size: .78rem; color: var(--muted); margin-top: .4rem; }
+  @media (max-width: 620px) {
+    .stats { grid-template-columns: repeat(2, 1fr); }
+  }
+
+  /* ---- section ---- */
+  section { margin-bottom: 3.2rem; }
+  .sec-head {
+    display: flex; align-items: baseline; gap: .75rem;
+    padding-bottom: .7rem; margin-bottom: 1.1rem;
+    border-bottom: 1px solid var(--line);
+  }
+  .sec-head h2 {
+    font-family: var(--font-display); font-weight: 600; font-size: 1.02rem;
+    letter-spacing: .01em; margin: 0;
+  }
+  .sec-head .count {
+    font-family: var(--font-mono); font-size: .72rem; color: var(--muted);
+    font-variant-numeric: tabular-nums;
+  }
+  .sec-head .dot { width: 9px; height: 9px; border-radius: 3px; align-self: center; }
+  .dot.feature { background: var(--speak); }
+  .dot.fix { background: var(--fix); }
+  .dot.improve { background: var(--improve); }
+
+  /* ---- entry ---- */
+  ul.entries { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: .55rem; }
+  .entry {
+    display: grid; grid-template-columns: 1fr auto; gap: .35rem 1rem;
+    background: var(--surface); border: 1px solid var(--line); border-radius: 12px;
+    padding: 1rem 1.15rem; transition: border-color .15s ease, transform .15s ease;
+  }
+  .entry:hover { border-color: color-mix(in srgb, var(--speak) 45%, var(--line)); }
+  .entry h3 {
+    font-family: var(--font-sans); font-weight: 600; font-size: 1rem;
+    margin: 0; line-height: 1.35; align-self: center;
+  }
+  .entry p { grid-column: 1 / 2; margin: .15rem 0 0; color: var(--muted); font-size: .92rem; text-wrap: pretty; }
+  .receipts {
+    grid-row: 1 / 2; grid-column: 2 / 3; align-self: center;
+    display: flex; gap: .4rem; flex-wrap: wrap; justify-content: flex-end;
+  }
+  .tag {
+    font-family: var(--font-mono); font-size: .68rem; letter-spacing: .01em;
+    padding: .2rem .5rem; border-radius: 6px; white-space: nowrap;
+    border: 1px solid transparent;
+  }
+  .tag.ticket { color: var(--muted); background: var(--raised); border-color: var(--line); }
+  .tag.pr { color: var(--speak); background: color-mix(in srgb, var(--speak) 12%, transparent);
+            border-color: color-mix(in srgb, var(--speak) 30%, transparent); }
+  @media (max-width: 560px) {
+    .entry { grid-template-columns: 1fr; }
+    .receipts { grid-row: auto; grid-column: 1; justify-content: flex-start; margin-top: .5rem; }
+  }
+
+  /* ---- footer note ---- */
+  .note {
+    margin-top: 2.5rem; padding: 1.4rem 1.5rem; border-radius: 12px;
+    background: var(--raised); border: 1px solid var(--line);
+    font-size: .9rem; color: var(--muted); text-wrap: pretty;
+  }
+  .note strong { color: var(--ink); font-weight: 600; }
+  .foot {
+    margin-top: 2.5rem; padding-top: 1.4rem; border-top: 1px solid var(--line);
+    display: flex; justify-content: space-between; gap: 1rem; flex-wrap: wrap;
+    font-family: var(--font-mono); font-size: .74rem; color: var(--muted);
+  }
+  .foot a { color: var(--speak); text-decoration: none; }
+  .foot a:hover { text-decoration: underline; }
+</style>
+
+<div class="wrap">
+  <header>
+    <p class="eyebrow">Shipped · July 2026</p>
+    <h1>Fourteen ways OpenWhisp got<br><span class="accent">sharper, safer, and more yours.</span></h1>
+    <p class="lede">A batch of new features, fixes, and under-the-hood hardening — all landed on <code style="font-family:var(--font-mono);font-size:.85em">main</code>, all covered by tests, all running on your machine. Here's exactly what changed.</p>
+  </header>
+
+  <div class="stats">
+    <div class="stat"><div class="n">14</div><div class="k">changes shipped</div></div>
+    <div class="stat"><div class="n">5</div><div class="k">new features</div></div>
+    <div class="stat"><div class="n">757</div><div class="k">tests passing</div></div>
+    <div class="stat"><div class="n">100<small>%</small></div><div class="k">on-device</div></div>
+  </div>
+
+  <!-- FEATURES -->
+  <section>
+    <div class="sec-head">
+      <span class="dot feature"></span>
+      <h2>New features</h2>
+      <span class="count">5 shipped</span>
+    </div>
+    <ul class="entries">
+      <li class="entry">
+        <h3>Adjustable AI cleanup, from a light touch to a full polish</h3>
+        <p>Pick how much the AI reshapes your words — None, Low, Medium, or High — and OpenWhisp always keeps your raw transcript so you can revert to exactly what you said in one click.</p>
+        <div class="receipts"><span class="tag ticket">MAK-35</span><span class="tag pr">#121</span></div>
+      </li>
+      <li class="entry">
+        <h3>Voice editing — "scratch that", "delete last sentence", "undo"</h3>
+        <p>Fix a misspoken phrase without deleting and re-dictating. A deterministic, offline command layer edits the in-progress text before it's committed. No AI required.</p>
+        <div class="receipts"><span class="tag ticket">MAK-19</span><span class="tag pr">#117</span></div>
+      </li>
+      <li class="entry">
+        <h3>A self-learning dictionary that tunes itself</h3>
+        <p>When you type over a transcription to correct it, OpenWhisp notices the fix and proposes it as a vocabulary term — learning your jargon on your machine, never on someone's server.</p>
+        <div class="receipts"><span class="tag ticket">MAK-41</span><span class="tag pr">#120</span></div>
+      </li>
+      <li class="entry">
+        <h3>Richer local formatting — numbers, lists, and markdown</h3>
+        <p>Opt-in rules turn spoken structure into clean text: "bullet…" into a list, "twenty twenty-six" into 2026, "bold that" into markdown — all deterministic, all off by default so nothing surprises you.</p>
+        <div class="receipts"><span class="tag ticket">MAK-20</span><span class="tag pr">#119</span></div>
+      </li>
+      <li class="entry">
+        <h3>Send dictations beyond the focused app</h3>
+        <p>Foundational plumbing for routing a transcript somewhere other than the app you're in — a file, a Shortcut, a webhook. Built to fail open: if a target can't take it, your text still lands where it always did. Never dropped.</p>
+        <div class="receipts"><span class="tag ticket">MAK-11</span><span class="tag pr">#122</span></div>
+      </li>
+    </ul>
+  </section>
+
+  <!-- FIXES -->
+  <section>
+    <div class="sec-head">
+      <span class="dot fix"></span>
+      <h2>Fixes</h2>
+      <span class="count">6 shipped</span>
+    </div>
+    <ul class="entries">
+      <li class="entry">
+        <h3>Silence no longer errors on one backend but not the other</h3>
+        <p>Dictating nothing now quietly produces nothing on both whisper backends — no more stray error toast depending on which engine you'd picked in Advanced settings.</p>
+        <div class="receipts"><span class="tag ticket">MAK-23</span><span class="tag pr">#123</span></div>
+      </li>
+      <li class="entry">
+        <h3>OpenWhisp can't accidentally kill your other whisper servers</h3>
+        <p>The engine now checks a process is one it actually launched — by full path, not just name — before signaling it, so your own Homebrew or hand-built whisper-server is safe. Plus a fix for a startup port race.</p>
+        <div class="receipts"><span class="tag ticket">MAK-27</span><span class="tag ticket">MAK-28</span><span class="tag pr">#118</span></div>
+      </li>
+      <li class="entry">
+        <h3>A data race in Apple Speech dictation, closed</h3>
+        <p>Session state is now confined to a single context, so a late recognition callback can never leak a partial from one dictation into the next.</p>
+        <div class="receipts"><span class="tag ticket">MAK-29</span><span class="tag pr">#116</span></div>
+      </li>
+      <li class="entry">
+        <h3>Agent rate limiting counts sessions on one honest clock</h3>
+        <p>The per-client session cap could be bypassed by a long-running session straddling the window edge. It now measures membership and expiry on the same clock, so the cap holds.</p>
+        <div class="receipts"><span class="tag ticket">MAK-31</span><span class="tag pr">#112</span></div>
+      </li>
+      <li class="entry">
+        <h3>Post-processing scripts clean up after themselves</h3>
+        <p>Timed-out post-processing scripts now reap reliably — honest about best-effort process-group isolation, with a guarded kill that can never signal OpenWhisp's own processes.</p>
+        <div class="receipts"><span class="tag ticket">MAK-30</span><span class="tag pr">#115</span></div>
+      </li>
+      <li class="entry">
+        <h3>The audio-device watcher tears down cleanly</h3>
+        <p>The CoreAudio listener that notices when you plug in a mic now removes itself symmetrically — no lingering, unremovable observer.</p>
+        <div class="receipts"><span class="tag ticket">MAK-33</span><span class="tag pr">#114</span></div>
+      </li>
+    </ul>
+  </section>
+
+  <!-- IMPROVEMENTS -->
+  <section>
+    <div class="sec-head">
+      <span class="dot improve"></span>
+      <h2>Under the hood</h2>
+      <span class="count">3 shipped</span>
+    </div>
+    <ul class="entries">
+      <li class="entry">
+        <h3>One place for text transforms</h3>
+        <p>The dictation pipeline now runs through a single, ordered post-processing chain — the groundwork that lets new transforms and output targets drop in cleanly, with behavior verified byte-for-byte against the old path.</p>
+        <div class="receipts"><span class="tag ticket">MAK-15</span><span class="tag pr">#124</span></div>
+      </li>
+      <li class="entry">
+        <h3>Corrupt settings files can't take the app down</h3>
+        <p>All five on-device data stores now share one hardened loader: a bad file is quarantined and the app carries on with sane defaults, instead of a fix living in only one of them.</p>
+        <div class="receipts"><span class="tag ticket">MAK-22</span><span class="tag pr">#113</span></div>
+      </li>
+      <li class="entry">
+        <h3>End-to-end audio testing, so features stay working</h3>
+        <p>A full regression suite now feeds pre-recorded audio through the whole pipeline — the reason "757 tests passing" is more than a number. Every feature above ships with coverage.</p>
+        <div class="receipts"><span class="tag ticket">E2E</span><span class="tag pr">#107–110</span></div>
+      </li>
+    </ul>
+  </section>
+
+  <div class="note">
+    <strong>Why the ticket numbers?</strong> OpenWhisp is local-first and hackable — the receipts are part of the point. Every change here traces to a public issue and a reviewed pull request you can read, run, and fork. Nothing shipped that you can't inspect.
+  </div>
+
+  <div class="foot">
+    <span>OpenWhisp · shipped July 9, 2026</span>
+    <span><a href="https://github.com/initcore0/openwhisp">github.com/initcore0/openwhisp</a></span>
+  </div>
+</div>
