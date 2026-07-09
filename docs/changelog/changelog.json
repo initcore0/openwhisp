@@ -20,7 +20,7 @@
           "headline": "Send your dictation straight into a macOS Shortcut",
           "body": "Route the final transcript into any Shortcut you've built — add it to Things or Reminders, append to a note, fire a webhook, run AppleScript. One OS-level integration reaches the whole Shortcuts ecosystem, and if the shortcut can't run, your text falls back to normal insertion so nothing is ever lost.",
           "tickets": ["MAK-13"],
-          "prs": [0],
+          "prs": [129],
           "howTo": {
             "availability": "coming-soon",
             "summary": "Pick a Shortcut per app; OpenWhisp runs it with your transcript as the input.",
