@@ -1,4 +1,5 @@
 import Foundation
+import CoreAudio   // AudioDeviceID (the input-device id threaded to WhisperKit)
 
 /// Experimental real-time WhisperKit engine (streaming partials).
 ///
@@ -22,14 +23,10 @@ final class WhisperKitStreamingEngine: StreamingTranscriptionEngine {
     /// (multilingual EN+RU) — the same model the file engine uses.
     private let modelName: String
 
-    /// Pinned input-device UID for the next session ("" = system default).
-    ///
-    /// Unlike Apple Speech, WhisperKit 1.0.0 owns the mic through
-    /// `AudioStreamTranscriber` → `AudioProcessor.startRecordingLive()`, which is
-    /// called with NO device (an internal API in a pinned remote dependency we can't
-    /// patch). WhisperKit's engine setup binds whatever the SYSTEM DEFAULT input is
-    /// at start. So the only way to route it to the selected device is to swap the
-    /// system default around stream start and restore it — see `deviceOverride`.
+    /// Pinned input-device UID for the next session ("" = system default). Resolved
+    /// to a CoreAudio device in `runStart` and passed straight into WhisperKit's
+    /// `AudioStreamTranscriber(inputDeviceID:)` (our fork backports upstream #503's
+    /// passthrough), so capture targets the device directly — no system-default swap.
     private var selectedDeviceID = ""
 
     func selectDevice(_ deviceID: String) {
@@ -48,11 +45,6 @@ final class WhisperKitStreamingEngine: StreamingTranscriptionEngine {
     // The running stream. The transcriber drives the mic and pushes state diffs to
     // `handleState`. Touched only on the main actor (via the serialized chain).
     @MainActor private var transcriber: WhisperKitStreamHandle?
-
-    // Live system-default-input swap for the current session (nil when routing to the
-    // system default). Engaged just before the stream starts and restored once the
-    // engine is bound to the device (or on any teardown/error path). Main-actor only.
-    @MainActor private var deviceOverride: AudioInputRouter.DefaultInputOverride?
 
     // Last confirmed transcript we emitted as a partial — used so we only forward
     // forward-progress (monotonic confirmed text), avoiding paste churn from the
@@ -101,25 +93,27 @@ final class WhisperKitStreamingEngine: StreamingTranscriptionEngine {
     @MainActor
     private func runStart(task: WhisperKitTaskMapper.Resolved) async {
         do {
-            // Route to the selected input device. WhisperKit binds the SYSTEM DEFAULT
-            // input when its engine starts (no per-engine device seam in 1.0.0), so a
-            // pinned device requires swapping the default around stream start and
-            // restoring it once the engine is bound. An unresolved pinned device is a
-            // hard error — never silently capture the default.
-            //
-            // RESOLVE here (fail fast before the possibly-slow model load) but ENGAGE
-            // the swap only after ensureLoaded() below — the global default must not
-            // stay changed for the whole model load (cold start can be seconds), only
-            // for the brief window until the capture engine binds the device.
-            let deviceToRoute: AudioDevice?
+            // Resolve the selected input device. It's passed straight into
+            // AudioStreamTranscriber(inputDeviceID:) (our WhisperKit fork backports
+            // upstream #503), which forwards it to startRecordingLive — WhisperKit
+            // captures the chosen device directly, no system-default swap needed. An
+            // unresolved pinned device is a hard error, never a silent default capture.
+            let inputDeviceID: AudioDeviceID?
             switch AudioInputRoutingPolicy.decide(
                 microphoneID: selectedDeviceID,
                 deviceResolved: AudioInputRouter.canResolve(uid: selectedDeviceID)
             ) {
             case .systemDefault:
-                deviceToRoute = nil
+                inputDeviceID = nil
             case .useDevice(let uid):
-                deviceToRoute = AudioInputRouter.resolve(uid: uid)
+                // Resolve to the concrete device id. A nil here (device vanished
+                // between canResolve and now) is treated as unresolved — a hard error,
+                // NOT a silent nil that would fall back to the system default.
+                guard let id = AudioInputRouter.resolve(uid: uid)?.deviceID else {
+                    onError?(AudioInputRoutingPolicy.unresolvedMessage(uid: uid))
+                    return
+                }
+                inputDeviceID = id
             case .unresolved(let uid):
                 onError?(AudioInputRoutingPolicy.unresolvedMessage(uid: uid))
                 return
@@ -131,7 +125,8 @@ final class WhisperKitStreamingEngine: StreamingTranscriptionEngine {
             let handle = try WhisperKitBridge.makeStreamHandle(
                 kit: kit,
                 task: task,
-                languageOverride: nil
+                languageOverride: nil,
+                inputDeviceID: inputDeviceID
             ) { [weak self] newState in
                 Task { @MainActor in
                     guard let self, self.generation == myGeneration else { return }
@@ -139,14 +134,6 @@ final class WhisperKitStreamingEngine: StreamingTranscriptionEngine {
                 }
             }
             transcriber = handle
-
-            // Engage the default swap NOW (model loaded; the stream is about to grab
-            // the mic). Restored once the engine binds the device (poll below) or on
-            // any teardown/error path.
-            if let device = deviceToRoute {
-                let override = AudioInputRouter.DefaultInputOverride()
-                if override.engage(device) { deviceOverride = override }
-            }
             // `start()` runs the realtime loop until stopped; it returns when the
             // stream ends. Don't block the chain on it (a stop must be able to run),
             // so drive it in a detached child whose lifetime the stop tears down.
@@ -161,52 +148,14 @@ final class WhisperKitStreamingEngine: StreamingTranscriptionEngine {
                 } catch {
                     NSLog("[WhisperKitStream] stream error: %@", error.localizedDescription)
                     guard let self, self.transcriber === handle, !self.didFinish else { return }
-                    self.restoreDeviceOverride()   // startup failed; undo the default swap
                     self.onError?("WhisperKit streaming failed: \(error.localizedDescription)")
                 }
             }
-            // Restore the system default promptly once WhisperKit's engine is bound to
-            // the (now-default) device: the AudioUnit holds its CurrentDevice after
-            // start, so the global default can go back with no effect on capture. This
-            // keeps the user's default changed for a sub-second window, not the whole
-            // session. Falls through to runStop's restore if the engine never binds.
-            if deviceOverride != nil {
-                restoreOverrideWhenCaptureLive(handle: handle, generation: myGeneration)
-            }
         } catch {
             NSLog("[WhisperKitStream] start error: %@", error.localizedDescription)
-            restoreDeviceOverride()
             guard !didFinish else { return }
             onError?("WhisperKit streaming failed: \(error.localizedDescription)")
         }
-    }
-
-    /// Poll (bounded) for WhisperKit's capture engine to start, then restore the
-    /// system-default-input override. The device binding survives the restore. If the
-    /// engine never comes up within the budget the override is left for `runStop` to
-    /// restore, so the default is never stranded.
-    @MainActor
-    private func restoreOverrideWhenCaptureLive(handle: WhisperKitStreamHandle, generation: Int) {
-        Task { @MainActor [weak self] in
-            // ~2s budget at 50ms granularity: engine start is normally tens of ms;
-            // this only needs to outlast a slow cold start of the AVAudioEngine graph.
-            for _ in 0..<40 {
-                guard let self, self.generation == generation, self.transcriber === handle,
-                      !self.didFinish else { return }
-                if handle.isCapturing() {
-                    self.restoreDeviceOverride()
-                    return
-                }
-                try? await Task.sleep(nanoseconds: 50_000_000)
-            }
-        }
-    }
-
-    /// Restore the system default input if this session swapped it. Idempotent.
-    @MainActor
-    private func restoreDeviceOverride() {
-        deviceOverride?.restore()
-        deviceOverride = nil
     }
 
     func stop(cancel: Bool) {
@@ -228,10 +177,6 @@ final class WhisperKitStreamingEngine: StreamingTranscriptionEngine {
         let handle = transcriber
         transcriber = nil
         didFinish = true
-        // Safety net: if the stream ended before the capture-live poll restored the
-        // system default (very short session, or the engine never bound), restore it
-        // now so the user's default input is never left changed. Idempotent.
-        restoreDeviceOverride()
         // Supersede the stream's generation so state callbacks it already
         // dispatched are dropped — they must not fire onPartial into whatever
         // session starts next. The final below is unaffected: it's computed

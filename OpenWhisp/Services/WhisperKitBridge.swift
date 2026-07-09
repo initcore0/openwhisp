@@ -1,4 +1,5 @@
 import Foundation
+import CoreAudio   // AudioDeviceID (the input-device id threaded to AudioStreamTranscriber)
 
 /// Maps OpenWhisp's engine-facing language setting to WhisperKit decoding
 /// options. Mirrors `WhisperTask` (used for whisper.cpp): the shared
@@ -212,10 +213,16 @@ enum WhisperKitBridge {
     /// "auto" we leave it nil and let WhisperKit detect; because the engine only
     /// surfaces CONFIRMED text as live partials, the per-window detection on the
     /// unconfirmed tail doesn't cause visible flapping.
+    /// `inputDeviceID` (a CoreAudio `AudioDeviceID`) pins the input device the stream
+    /// captures from; nil = system default input. Threaded straight into
+    /// `AudioStreamTranscriber` (our WhisperKit fork backports upstream #503's
+    /// `inputDeviceID` passthrough), which forwards it to `startRecordingLive` — so
+    /// device routing needs NO system-default swap.
     static func makeStreamHandle(
         kit: WhisperKit,
         task: WhisperKitTaskMapper.Resolved,
         languageOverride: String?,
+        inputDeviceID: AudioDeviceID? = nil,
         onState: @escaping (WhisperKitStreamState) -> Void
     ) throws -> WhisperKitStreamHandle {
         guard let tokenizer = kit.tokenizer else {
@@ -249,6 +256,7 @@ enum WhisperKitBridge {
             audioProcessor: kit.audioProcessor,
             decodingOptions: options,
             useVAD: true,                 // skip silence — don't transcribe dead air
+            inputDeviceID: inputDeviceID, // nil = system default (fork backport of #503)
             stateChangeCallback: { _, new in
                 // Absolute-scale level for the silence VAD. `bufferEnergy` is
                 // RELATIVE to WhisperKit's rolling 2s silence floor — right for a
@@ -353,14 +361,6 @@ final class WhisperKitStreamHandle {
     /// Starts mic capture + the realtime loop. Returns when the stream stops.
     func start() async throws { try await transcriber?.startStreamTranscription() }
     func stop() async { await transcriber?.stopStreamTranscription() }
-
-    /// True once WhisperKit's `AudioProcessor` has built and started its capture
-    /// engine — i.e. the input node is bound to the (currently-default) device.
-    /// The streaming engine polls this to know when it's safe to restore a
-    /// system-default-input override without losing the device binding.
-    func isCapturing() -> Bool {
-        (kit.audioProcessor as? AudioProcessor)?.audioEngine?.isRunning ?? false
-    }
 
     /// The full assembled transcript (confirmed + unconfirmed) as of the last state.
     func fullText() -> String {
