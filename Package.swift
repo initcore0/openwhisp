@@ -28,6 +28,7 @@ let package = Package(
                 "LanguageResolver.swift",
                 "ProfileResolver.swift",
                 "MetaInstructionStripper.swift",
+                "FileTagTransform.swift",
                 "PostProcessor.swift",
                 "AppProfile.swift",
                 "TranscriptionHistory.swift",
