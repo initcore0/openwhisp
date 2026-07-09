@@ -7,12 +7,14 @@
       "id": "2026-07",
       "title": "July 2026",
       "date": "2026-07-09",
-      "summary": "A batch of new features, fixes, and under-the-hood hardening — all landed on main, all covered by tests, all running on your machine.",
+      "summary": "A batch of new features, fixes, and under-the-hood hardening — all landed on main, all covered by tests, all on your machine. One new feature (rich local formatting) is live in Settings today; four more shipped their tested engine with the UI landing next — each is marked below.",
       "stats": {
         "changesShipped": 15,
-        "newFeatures": 6,
-        "testsPassing": 802,
-        "onDevicePercent": 100
+        "newFeatures": 2,
+        "testsPassing": 815,
+        "onDevicePercent": 100,
+        "newFeaturesLive": 2,
+        "newFeaturesCorePending": 4
       },
       "entries": [
         {
@@ -125,10 +127,10 @@
             119
           ],
           "howTo": {
-            "availability": "coming-soon",
-            "summary": "Turn on the rule groups you want, then just speak the structure.",
+            "availability": "shipped",
+            "summary": "Turn on the rule groups you want in Settings, then just speak the structure.",
             "steps": [
-              "In Settings › Smart Formatting, enable the groups you want (they're independent and off by default).",
+              "In Settings › Cleanup › Formatting, turn on the groups you want — Numbers and years, Currency, Spoken lists, Markdown commands. They're independent and off by default.",
               "Dictate naturally — the rules rewrite structure locally, on-device, no LLM."
             ],
             "say": [
@@ -137,7 +139,7 @@
               "“bullet buy milk” → - buy milk,  “number one …” → 1. …",
               "“heading intro” → # intro,  “bold ship it” → **ship it**"
             ],
-            "note": "The rules are shipped, tested, and deliberately off by default so they never touch ordinary prose. The Settings toggles to switch each group on are landing next."
+            "note": "Live now. Each group is off by default so it never touches ordinary prose until you turn it on."
           }
         },
         {
@@ -253,7 +255,7 @@
         {
           "category": "improvement",
           "headline": "End-to-end audio testing, so features stay working",
-          "body": "A full regression suite now feeds pre-recorded audio through the whole pipeline — the reason \"757 tests passing\" is more than a number. Every feature above ships with coverage.",
+          "body": "A full regression suite now feeds pre-recorded audio through the whole pipeline — the reason \"762 tests passing\" is more than a number. Every feature above ships with coverage.",
           "tickets": [],
           "prs": [
             107,
