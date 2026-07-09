@@ -24,7 +24,7 @@
           "tickets": ["MAK-44"],
           "prs": [130],
           "howTo": {
-            "availability": "shipped",
+            "availability": "live",
             "summary": "Point OpenWhisp at a local agent CLI (e.g. claude -p) and it cleans up each dictation using your own subscription.",
             "steps": [
               "Open Settings › Cleanup › AI Model and set Provider to “Agent CLI (Claude / Codex)”.",
@@ -116,7 +116,7 @@
             119
           ],
           "howTo": {
-            "availability": "shipped",
+            "availability": "live",
             "summary": "Turn on the rule groups you want in Settings, then just speak the structure.",
             "steps": [
               "In Settings › Cleanup › Formatting, turn on the groups you want — Numbers and years, Currency, Spoken lists, Markdown commands. They're independent and off by default.",
