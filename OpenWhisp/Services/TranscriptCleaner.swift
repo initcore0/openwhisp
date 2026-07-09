@@ -103,11 +103,40 @@ struct TranscriptCleaner {
     /// `clean(_:isFinalTranscript:)` is the synchronous fast path used today; this
     /// is the extensible form the rest of the roadmap builds on.
     func makeChain(isFinalTranscript: Bool) -> PostProcessorChain {
+        PostProcessorChain(localStages(isFinalTranscript: isFinalTranscript))
+    }
+
+    /// The ONE real chain the roadmap asked for (MAK-15):
+    /// `VocabularySubstitutor → SmartFormatter → AIPostProcessor`, on top of the
+    /// existing normalize/marker/ignorable/meta stages, in their current order.
+    ///
+    /// This is the single ordered place transforms drop in. The local stages are
+    /// byte-identical to `clean(_:isFinalTranscript:)` (see `makeChain`); the AI
+    /// stage appends the injected LLM refiner and re-cleans its output with a
+    /// NON-final pass — reproducing `AppState.completeFinalText`'s
+    /// `postProcess(processedText)` and its empty/failure fallbacks exactly.
+    ///
+    /// `refiner == nil` yields a chain identical to `makeChain` (local-only), so a
+    /// session with the AI step disabled routes through the very same assembly.
+    func makeFullChain(isFinalTranscript: Bool, refiner: AsyncTextRefiner?) -> PostProcessorChain {
+        var stages = localStages(isFinalTranscript: isFinalTranscript)
+        // The AI stage re-cleans its output the way the app does: a NON-final
+        // `clean` (no meta-strip — the LLM result is not a spoken instruction).
+        let reclean: @Sendable (String) -> String = { [config] text in
+            TranscriptCleaner(config: config).clean(text, isFinalTranscript: false)
+        }
+        stages.append(AIPostProcessor(refiner: refiner, reclean: reclean))
+        return PostProcessorChain(stages)
+    }
+
+    /// The local (non-AI) stage list, shared by `makeChain` and `makeFullChain` so
+    /// the two can never disagree on the ordering of the on-device pipeline.
+    private func localStages(isFinalTranscript: Bool) -> [PostProcessor] {
         var stages: [PostProcessor] = [NonSpeechMarkerStage(), NormalizeStage(), IgnorableGuardStage()]
         if let sub = vocabularyStage { stages.append(sub) }
         if let fmt = smartFormatterStage { stages.append(fmt) }
         if isFinalTranscript { stages.append(MetaInstructionStage()) }
-        return PostProcessorChain(stages)
+        return stages
     }
 
     // Single source of truth for the optional stages, so clean() and makeChain()
