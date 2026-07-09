@@ -29,7 +29,15 @@ final class AudioDeviceMonitor {
     private var listenerBlock: AudioObjectPropertyListenerBlock?
 
     /// Idempotent: installs the CoreAudio listener once.
+    ///
+    /// Must be called on the main thread. `start()`/`stop()` mutate
+    /// `listenerBlock`/`address` with no other synchronization, so a concurrent
+    /// `start()`/`stop()` (or two `start()`s) could register a second listener
+    /// while only one handle is retained — recreating the leak this fix removes.
+    /// The precondition pins the single-threaded contract the sole caller
+    /// (SwiftUI, main thread) already honors.
     func start() {
+        dispatchPrecondition(condition: .onQueue(.main))
         guard listenerBlock == nil else { return }
 
         let block: AudioObjectPropertyListenerBlock = { _, _ in
@@ -50,8 +58,10 @@ final class AudioDeviceMonitor {
     }
 
     /// Symmetric teardown: removes the listener installed by `start()` using the
-    /// identical block, address, and queue. Safe to call when not started.
+    /// identical block, address, and queue. Safe to call when not started. Must be
+    /// called on the main thread (see `start()`).
     func stop() {
+        dispatchPrecondition(condition: .onQueue(.main))
         guard let block = listenerBlock else { return }
 
         AudioObjectRemovePropertyListenerBlock(
