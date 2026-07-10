@@ -12,7 +12,7 @@ import CoreServices
 /// detection lives in `HotkeyGesture` (OpenWhispCore).
 final class HotkeyMonitor: HotkeyControlling {
 
-    var onHotkeyDown: (() -> Void)?
+    var onHotkeyDown: ((_ locked: Bool) -> Void)?
     var onHotkeyUp: (() -> Void)?
     var onRefineDown: (() -> Void)?
     var onRefineUp: (() -> Void)?
@@ -38,8 +38,25 @@ final class HotkeyMonitor: HotkeyControlling {
     /// it was a shortcut chord (⌃C, ⌃-click, …), not a refine request.
     private var refineTap = RefineTapRecognizer()
     var triggerMode: String = "controlSpace"
+    /// How activation behaves: "hold" (press-to-talk) or "toggle" (hands-free
+    /// lock). Setting it rebuilds the interaction machine so a live mode change
+    /// starts clean (never mid-gesture). A double-tap still reaches lock from
+    /// hold mode; see `ActivationInteraction`.
+    var hotkeyMode: String = "hold" {
+        didSet {
+            guard hotkeyMode != oldValue else { return }
+            activation = ActivationInteraction(mode: hotkeyMode == "toggle" ? .toggle : .hold)
+            isPressed = false
+        }
+    }
     /// Selected refine key id (see RefineKey). "off" disables it.
     var refineKey: String = RefineKey.defaultKey.rawValue
+
+    /// The pure interaction state machine (hold vs. toggle vs. double-tap → lock,
+    /// Esc-cancel). The raw debounced `.down`/`.up` edges resolved below are fed
+    /// through this, and its intents become the callbacks. Built for the current
+    /// `hotkeyMode`; rebuilt whenever the mode changes.
+    private var activation = ActivationInteraction(mode: .hold)
 
     init() {}
 
@@ -125,18 +142,48 @@ final class HotkeyMonitor: HotkeyControlling {
         print("[HotkeyMonitor] Stopped")
     }
 
+    func resetActivation() {
+        // Only a machine that still thinks a session is live needs resetting. An
+        // idle machine may be holding the last-tap timestamp that makes the NEXT
+        // press read as a double-tap — a session finalizing quickly between the
+        // two taps must not erase it.
+        guard activation.isActive else { return }
+        activation.reset()
+        isPressed = false
+    }
+
     // MARK: - Edge dispatch
 
-    /// Apply a resolved gesture, updating the debounced state and firing the
-    /// matching callback. Single point so CGEvent and NSEvent paths agree.
+    /// Apply a resolved gesture, updating the debounced state and feeding the
+    /// interaction machine, which decides the high-level intent (start / stop /
+    /// lock-open) for the current hold-or-toggle mode. Single point so the
+    /// CGEvent and NSEvent paths agree.
     private func apply(_ gesture: HotkeyGesture) {
+        let now = ProcessInfo.processInfo.systemUptime
         switch gesture {
         case .down:
             isPressed = true
-            Task { @MainActor in self.onHotkeyDown?() }
+            dispatch(activation.triggerDown(now: now))
         case .up:
             isPressed = false
+            dispatch(activation.triggerUp(now: now))
+        case .none:
+            break
+        }
+    }
+
+    /// Turn an interaction intent into the outward callbacks. `.start` carries
+    /// whether the session is locked (hands-free); `.none` (e.g. the release
+    /// that locks a toggle session open, or the swallowed stop-tap release) fires
+    /// nothing.
+    private func dispatch(_ intent: ActivationInteraction.Intent) {
+        switch intent {
+        case .start(let locked):
+            Task { @MainActor in self.onHotkeyDown?(locked) }
+        case .stop:
             Task { @MainActor in self.onHotkeyUp?() }
+        case .cancel:
+            Task { @MainActor in self.onCancel?() }
         case .none:
             break
         }
@@ -254,8 +301,19 @@ final class HotkeyMonitor: HotkeyControlling {
         }
 
         if type == .keyDown, keyCode == Self.escapeKeyCode {
-            Task { @MainActor in self.onCancel?() }
+            handleEscape()
         }
+    }
+
+    /// Esc cancels the active session. Clear the interaction machine (so a
+    /// locked-open session doesn't stay "active" in the machine's eyes) and
+    /// always deliver the cancel — AppState decides what to tear down (a locked
+    /// dictation, an agent session being read, or an armed refine), and the
+    /// machine may legitimately be idle for those non-hotkey sessions.
+    private func handleEscape() {
+        _ = activation.cancel()
+        isPressed = false
+        Task { @MainActor in self.onCancel?() }
     }
 
     private func handleNSEvent(_ event: NSEvent) {
@@ -288,7 +346,7 @@ final class HotkeyMonitor: HotkeyControlling {
         }
 
         if event.type == .keyDown, Int64(event.keyCode) == Self.escapeKeyCode {
-            Task { @MainActor in self.onCancel?() }
+            handleEscape()
         }
     }
 

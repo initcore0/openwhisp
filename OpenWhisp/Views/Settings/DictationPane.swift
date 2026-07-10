@@ -10,9 +10,22 @@ struct DictationPane: View {
     var body: some View {
         Form {
             Section {
-                Picker("Push-to-talk key", selection: $appState.triggerMode) {
+                Picker("Trigger key", selection: $appState.triggerMode) {
                     Text("Fn (Globe)").tag("fn")
                     Text("Control + Space").tag("controlSpace")
+                }
+
+                Picker("Activation style", selection: $appState.hotkeyMode) {
+                    Text("Hold to talk").tag("hold")
+                    Text("Hands-free (tap to lock)").tag("toggle")
+                }
+
+                if appState.hotkeyMode == "toggle" {
+                    SubtitledToggle(
+                        "Auto-stop after long silence",
+                        subtitle: "Safety net for hands-free mode: ends a locked session after a long stretch of silence, so a forgotten session doesn't keep recording. A normal pause to think won't stop it.",
+                        isOn: $appState.handsFreeSilenceAutoStop
+                    )
                 }
 
                 if RefineKey.from(id: appState.refineKey).conflictsWithTrigger(appState.triggerMode) {
@@ -26,6 +39,11 @@ struct DictationPane: View {
             } footer: {
                 VStack(alignment: .leading, spacing: 4) {
                     SettingsFootnote(appState.hotkeyHelpText + ". Some apps intercept the Fn key — switch to Control + Space if it doesn't respond.")
+                    if appState.hotkeyMode == "toggle" {
+                        SettingsFootnote("Hands-free: tap the key to start dictating, tap again (or press Esc) to stop. The mic stays live in between.")
+                    } else {
+                        SettingsFootnote("Hold to talk: dictate while the key is held. Double-tap it to lock the mic open hands-free without changing this setting.")
+                    }
                     SettingsFootnote("The Refine key is configured in Cleanup › Refine.")
                 }
             }

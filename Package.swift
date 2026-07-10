@@ -47,6 +47,7 @@ let package = Package(
                 "WebhookRequest.swift",
                 "ShortcutInvocation.swift",
                 "HotkeyControlling.swift",
+                "ActivationInteraction.swift",
                 "TranscriptionEngine.swift",
                 "AudioCapture.swift",
                 "FileAudioCapture.swift",

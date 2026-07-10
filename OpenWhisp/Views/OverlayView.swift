@@ -253,6 +253,30 @@ struct OverlayView: View {
         return phase == .arming ? "Starting — wait to speak" : nil
     }
 
+    /// Hands-free lock accent — a warm green, distinct from the cyan "speaking"
+    /// and amber "agent waiting" so a locked-open session reads at a glance as a
+    /// deliberate, sustained state.
+    private static let lockAccent = Color(red: 0.40, green: 0.82, blue: 0.55)
+
+    /// True while a user's hands-free (toggle/double-tap) session is locked open
+    /// and genuinely capturing — the moment the affordance should tell the user
+    /// the mic is held for them. Suppressed while arming/finalizing (those have
+    /// their own cues), while refining, and for agent sessions (amber owns those).
+    private var lockAffordanceActive: Bool {
+        guard appState.dictationLocked, !appState.refineArmed,
+              appState.agentDictatePrompt == nil else { return false }
+        switch phase {
+        case .listening, .speaking: return true
+        case .arming, .finalizing, .error: return false
+        }
+    }
+
+    /// The lock caption: tells the user the session is held open and how to end
+    /// it. Rendered under the pill, in the green lock accent.
+    private var lockCaption: String? {
+        lockAffordanceActive ? "Hands-free — tap key or Esc to stop" : nil
+    }
+
     /// During finalization (recording stopped, transcribing), show a status caption
     /// so paste-at-end mode isn't a silent overlay — and surface a cold WhisperKit
     /// model load as "Loading model…" so the wait doesn't look like a hang. Suppressed
@@ -293,6 +317,17 @@ struct OverlayView: View {
                     .font(.system(size: 11, weight: .semibold, design: .rounded))
                     .foregroundColor(accent.opacity(0.95))
                     .transition(.opacity)
+            }
+
+            if let lockCaption {
+                HStack(spacing: 5) {
+                    Image(systemName: "lock.fill")
+                        .font(.system(size: 10, weight: .bold))
+                    Text(lockCaption)
+                        .font(.system(size: 11, weight: .semibold, design: .rounded))
+                }
+                .foregroundColor(Self.lockAccent.opacity(0.95))
+                .transition(.opacity)
             }
 
             if let finalizingCaption {
@@ -344,6 +379,7 @@ struct OverlayView: View {
         .animation(.easeInOut(duration: 0.18), value: showTranscript)
         .animation(.easeInOut(duration: 0.18), value: phase)
         .animation(.easeInOut(duration: 0.18), value: appState.refineArmed)
+        .animation(.easeInOut(duration: 0.18), value: appState.dictationLocked)
         .animation(.easeInOut(duration: 0.18), value: appState.clipboardFallbackActive)
         .animation(.easeInOut(duration: 0.18), value: revertTarget != nil)
         .animation(.easeInOut(duration: 0.18), value: appState.isTranscribing)
