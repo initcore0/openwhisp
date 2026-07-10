@@ -91,7 +91,9 @@ let package = Package(
                 "WhisperResponseClassifier.swift",
                 "FileTranscriptionQueue.swift",
                 "SubtitleFormatter.swift",
-                "WatchFolderPolicy.swift"
+                "WatchFolderPolicy.swift",
+                "Rules.swift",
+                "RuleStore.swift"
             ]
         ),
         .executableTarget(

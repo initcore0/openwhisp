@@ -512,6 +512,16 @@ class AppState: ObservableObject {
         didSet { persistOutputTargetSettings() }
     }
 
+    /// Post-completion rules engine (MAK-43): the user's `RuleSet`, loaded from and
+    /// persisted to `RuleStore` (JSON, quarantine loader). Rules fire on the
+    /// transcribe-complete / llm-complete hooks as a SIDE CHANNEL — see
+    /// `fireRules(...)` — and never affect the normal transcript insert. Each
+    /// mutation re-saves; the plan is recomputed fresh at each hook from this value,
+    /// so a rule edit takes effect on the next dictation with no extra plumbing.
+    @Published var ruleSet: RuleSet {
+        didSet { RuleStore.save(ruleSet) }
+    }
+
     /// Convenience projections so the Settings UI can bind directly to each field of
     /// `outputTargetSettings` (SwiftUI can't bind into a nested struct's members via
     /// a `@Published` aggregate without these). Each setter writes back through the
@@ -1341,6 +1351,7 @@ class AppState: ObservableObject {
         scriptPostProcessorEnabled = UserDefaults.standard.object(forKey: "scriptPostProcessorEnabled") as? Bool ?? false
         scriptPostProcessorPath = UserDefaults.standard.string(forKey: "scriptPostProcessorPath") ?? ""
         outputTargetSettings = Self.loadOutputTargetSettings()
+        ruleSet = RuleStore.load()
         perAppModesEnabled = UserDefaults.standard.object(forKey: "perAppModesEnabled") as? Bool ?? false
         historyEnabled = UserDefaults.standard.object(forKey: "historyEnabled") as? Bool ?? true
         // Agent Bridge (M8) — default off; started at launch via startAgentBridgeIfEnabled().
@@ -3245,6 +3256,15 @@ class AppState: ObservableObject {
         // agent sessions and mid-refine finals (vocab ran on `text` in all of them).
         recordVocabularyUsage(inRawTranscript: text)
 
+        // Rules engine (MAK-43), transcribe-complete hook: the transcript is now
+        // locally cleaned but PRE-refine. Fire matching rules as a fail-open side
+        // channel (never blocks/alters the insert below). Skipped on the empty/
+        // mid-refine branches only incidentally — those don't produce a normal
+        // insert either, and an empty `finalText` won't match a literal rule.
+        if !finalText.isEmpty {
+            fireRules(hook: .transcribeComplete, text: finalText)
+        }
+
         // Mid-dictation refine: the user tapped Refine while holding Fn, so this
         // session's final splits into CONTENT (snapshot at the tap) + INSTRUCTION
         // (spoken after). Run the refine via RefineFlow.
@@ -3601,6 +3621,11 @@ class AppState: ObservableObject {
             // to nil and no revert affordance appears — passed for consistency.
             recordHistory(text, rawText: originalText)
             recordStats(text)
+            // Rules engine (MAK-43), llm-complete hook for agent sessions. Agent
+            // sessions don't run the script post-processor or type into a field, so
+            // `text` here is the final result the caller gets — fire rules over it.
+            // Only rules that opted into agent sessions (RuleSessionMode) will match.
+            fireRules(hook: .llmComplete, text: text)
             statusMessage = "Done"
             finishSessionUI(delay: 0.8)
             return
@@ -3615,6 +3640,13 @@ class AppState: ObservableObject {
             statusMessage = "Running script..."
             text = ScriptRunner.run(text, scriptPath: scriptPostProcessorPath)
         }
+
+        // Rules engine (MAK-43), llm-complete hook: `text` is now the truly-final
+        // string (post-refine, post-script) that will be inserted. Fire matching
+        // rules as a fail-open side channel BEFORE the insert is dispatched below —
+        // the runner is non-blocking and independent, so it never delays or alters
+        // the insert. Dictation (non-agent) sessions reach here.
+        fireRules(hook: .llmComplete, text: text)
 
         streamingText = text
 
@@ -3787,6 +3819,47 @@ class AppState: ObservableObject {
               let decoded = try? JSONDecoder().decode(OutputTargetSettings.self, from: data)
         else { return OutputTargetSettings() }
         return decoded
+    }
+
+    // MARK: - Rules engine (MAK-43)
+
+    /// The app-side runner that executes planned rule actions over the existing
+    /// delivery layer. Lazy so it's built once; `insertSnippet` adapts the runner to
+    /// the same `TextOutput` insert seam the normal path uses.
+    private lazy var ruleEngineRunner: RuleEngineRunner = RuleEngineRunner(
+        insertSnippet: { [weak self] snippet in
+            guard let self else { return }
+            self.textOutput.insert(
+                snippet, mode: self.currentInsertionMode, restoreClipboard: self.restoreClipboard
+            )
+        }
+    )
+
+    /// Fire the rules engine for one lifecycle `hook` over `text`, as a fail-open
+    /// SIDE CHANNEL: plan the matching actions (pure, can't throw) and hand them to
+    /// the runner (off-thread, best-effort). This NEVER changes, delays, or breaks
+    /// the normal transcript insert — the caller has already dispatched that. A
+    /// no-op when no rules exist, so the common case costs a single array check.
+    ///
+    /// The agent-session gate lives in the planner (`RuleSessionMode`): a rule only
+    /// fires on a `suppressOutput` (agent) session if it explicitly opted in.
+    private func fireRules(hook: RuleHook, text: String) {
+        guard !ruleSet.rules.isEmpty else { return }
+        let context = RuleContext(
+            hook: hook,
+            text: text,
+            appBundleID: targetApplication?.bundleIdentifier,
+            isAgentSession: suppressOutput
+        )
+        let plan = RulePlanner.plan(rules: ruleSet, context: context)
+        guard !plan.isEmpty else { return }
+        let payload = OutputPayload(
+            text: text,
+            language: outputLanguageForCleaning,
+            targetAppBundleID: targetApplication?.bundleIdentifier,
+            isLiveChunk: false
+        )
+        ruleEngineRunner.run(plan, payload: payload)
     }
 
     /// Local transcript cleanup. Delegates to TranscriptCleaner (in OpenWhispCore)

@@ -9,14 +9,36 @@
       "date": "2026-07-09",
       "summary": "A batch of new features, fixes, and under-the-hood hardening — all landed on main, all covered by tests, all on your machine. All thirteen new features are live today: batch file transcription with watch folders, hands-free (tap-to-lock) dictation, adjustable AI cleanup, voice editing, a self-learning dictionary, rich local formatting, spoken-filename @-mentions for code editors, agent-CLI cleanup, output targets that route a dictation to a file/Shortcut/webhook, and an openwhisp:// URL scheme so Raycast, Alfred, or any launcher can drive dictation.",
       "stats": {
-        "changesShipped": 23,
-        "newFeatures": 13,
-        "testsPassing": 1078,
+        "changesShipped": 24,
+        "newFeatures": 14,
+        "testsPassing": 1102,
         "onDevicePercent": 100,
-        "newFeaturesLive": 13,
+        "newFeaturesLive": 14,
         "newFeaturesCorePending": 0
       },
       "entries": [
+        {
+          "category": "feature",
+          "headline": "Rules — run your own actions when a dictation finishes",
+          "body": "OpenWhisp can now do something with a dictation the moment it's done: append it to a Markdown log, run a Shortcut, POST it to a webhook, run a script, open a URL, or type a canned snippet — automatically, when the transcript matches a rule you set. A rule is a match (starts-with / contains / exact / regex, optionally scoped to one app) plus a list of actions, and it's a pure side channel: if a rule or its action fails, your words are still typed exactly as before — nothing is dropped or delayed. It generalizes the old “run my script” toggle and reuses the same file / Shortcut / webhook delivery under the hood.",
+          "tickets": [
+            "MAK-43"
+          ],
+          "prs": [],
+          "howTo": {
+            "availability": "live",
+            "summary": "Settings › Rules › Add rule: pick when it fires and what it matches, then add one or more actions.",
+            "steps": [
+              "Open Settings › Rules and click “Add rule”.",
+              "Choose when it fires: “After transcribe” (the raw transcript, pre-refine) or “After refine” (the final text that gets typed).",
+              "Set the match: Always, Exact, Starts with, Contains, or Regex — optionally scope it to one app by bundle ID (e.g. com.apple.Notes).",
+              "Add actions in order: Insert snippet, Open URL (use {{text}} for the transcript), Run script, Run Shortcut, POST webhook, or Append to file.",
+              "Save. Rules run automatically on your next matching dictation.",
+              "To run a rule on agent-bridge sessions too, set its “Sessions” to “Agent only” or “Both” — it's dictation-only by default so an agent's transcript never leaves your machine unless you opt in."
+            ],
+            "note": "Live in Settings today. Actions are fail-open: a failing or slow action is skipped and never affects the normal insert. Scripts and Shortcuts receive the transcript on stdin (never interpolated into a command line); webhooks receive it as JSON; an Open-URL template's {{text}} is percent-encoded. Regex is guarded against catastrophic backtracking. The old Output › Script toggle still works and is unchanged."
+          }
+        },
         {
           "category": "feature",
           "headline": "Drop in an audio or video file — batch transcription with a live queue and subtitle export",

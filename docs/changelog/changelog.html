@@ -251,9 +251,9 @@
   </header>
 
   <div class="stats">
-    <div class="stat"><div class="n">23</div><div class="k">changes shipped</div></div>
-    <div class="stat"><div class="n">13<small> live</small></div><div class="k">new features</div></div>
-    <div class="stat"><div class="n">1078</div><div class="k">tests passing</div></div>
+    <div class="stat"><div class="n">24</div><div class="k">changes shipped</div></div>
+    <div class="stat"><div class="n">14<small> live</small></div><div class="k">new features</div></div>
+    <div class="stat"><div class="n">1102</div><div class="k">tests passing</div></div>
     <div class="stat"><div class="n">100<small>%</small></div><div class="k">on-device</div></div>
   </div>
 
@@ -262,9 +262,36 @@
     <div class="sec-head">
       <span class="dot feature"></span>
       <h2>New features</h2>
-      <span class="count">13 live</span>
+      <span class="count">14 live</span>
     </div>
     <ul class="entries">
+      <li>
+        <details class="entry">
+          <summary>
+            <div class="sum-left">
+              <h3>Rules — run your own actions when a dictation finishes</h3>
+              <p>OpenWhisp can now do something with a dictation the moment it's done: append it to a Markdown log, run a Shortcut, POST it to a webhook, run a script, open a URL, or type a canned snippet — automatically, when the transcript matches a rule you set. A rule is a match (starts-with / contains / exact / regex, optionally scoped to one app) plus a list of actions, and it's a pure side channel: if a rule or its action fails, your words are still typed exactly as before — nothing is dropped or delayed. It generalizes the old “run my script” toggle and reuses the same file / Shortcut / webhook delivery under the hood.</p>
+            </div>
+            <div class="sum-right">
+              <span class="try">How to use<svg class="howto-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span>
+              <div class="receipts"><span class="tag ticket">MAK-43</span></div>
+            </div>
+          </summary>
+          <div class="guide">
+            <span class="avail live">Available now</span>
+            <p class="g-sum">Settings › Rules › Add rule: pick when it fires and what it matches, then add one or more actions.</p>
+            <ol>
+              <li>Open Settings › Rules and click “Add rule”.</li>
+              <li>Choose when it fires: “After transcribe” (the raw transcript, pre-refine) or “After refine” (the final text that gets typed).</li>
+              <li>Set the match: Always, Exact, Starts with, Contains, or Regex — optionally scope it to one app by bundle ID (e.g. com.apple.Notes).</li>
+              <li>Add actions in order: Insert snippet, Open URL (use {{text}} for the transcript), Run script, Run Shortcut, POST webhook, or Append to file.</li>
+              <li>Save. Rules run automatically on your next matching dictation.</li>
+              <li>To run a rule on agent-bridge sessions too, set its “Sessions” to “Agent only” or “Both” — it's dictation-only by default so an agent's transcript never leaves your machine unless you opt in.</li>
+            </ol>
+            <p class="g-note">Live in Settings today. Actions are fail-open: a failing or slow action is skipped and never affects the normal insert. Scripts and Shortcuts receive the transcript on stdin (never interpolated into a command line); webhooks receive it as JSON; an Open-URL template's {{text}} is percent-encoded. Regex is guarded against catastrophic backtracking. The old Output › Script toggle still works and is unchanged.</p>
+          </div>
+        </details>
+      </li>
       <li>
         <details class="entry">
           <summary>

