@@ -77,6 +77,12 @@ public enum AudioRetentionPolicy {
     /// Extracts the entry UUID a retained-audio filename encodes, or nil if the
     /// name doesn't match the scheme (prefix + valid UUID + allowed extension).
     public static func parseEntryID(fromFileName name: String) -> UUID? {
+        // The guard validates a LEAF filename only. Reject anything containing a
+        // path separator (or a NUL) outright — otherwise a crafted name like
+        // "retained-../../x/retained-<uuid>.wav" would pass the prefix/extension/
+        // lastPathComponent checks below while escaping the audio directory when
+        // appended as a path component. Deletes and reads must never traverse.
+        guard !name.contains("/"), !name.contains("\0") else { return nil }
         guard name.hasPrefix(fileNamePrefix) else { return nil }
         let url = URL(fileURLWithPath: name)
         let ext = url.pathExtension.lowercased()

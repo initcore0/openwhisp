@@ -4049,6 +4049,13 @@ class AppState: ObservableObject {
     private func finishSessionUI(delay: TimeInterval = 0) {
         sessionActive = false
         pendingStop = false
+        // MAK-40: this is the single terminal site for every session path, so any
+        // staged retention WAV that recordHistory did NOT consume (secure-field
+        // guard, error, cancel, empty result) is discarded here — a password-field
+        // dictation's audio must never linger in staging. Successful sessions
+        // consumed it in recordHistory before reaching this point, so it's a no-op
+        // for them.
+        discardStagedRetainedAudio()
         // Never let a spoken question run past the session — if it's still being
         // read when capture finalizes (short question, fast answer), cut it so the
         // app isn't talking over the user or into the next session.
@@ -4527,6 +4534,13 @@ class AppState: ObservableObject {
             error = "No stored audio for this entry to re-transcribe."
             return
         }
+        // One at a time: overwriting the strong ref would deallocate the in-flight
+        // engine mid-transcription (undefined subprocess/callback lifetime) and its
+        // result would be silently dropped.
+        guard reTranscribeEngine == nil else {
+            statusMessage = "Re-transcribe already running..."
+            return
+        }
         statusMessage = "Re-transcribing..."
         let engine = Self.makeFileEngine(for: transcriptionEngine, model: modelName, whisperKitModel: whisperKitModel)
         // Hold a strong ref until the callback fires (the local would otherwise
@@ -4626,6 +4640,16 @@ class AppState: ObservableObject {
     private func takeStagedRetainedAudio() -> URL? {
         defer { pendingRetainWAVPath = nil }
         return pendingRetainWAVPath
+    }
+
+    /// Delete any un-consumed staged retention WAV and clear the pointer. Called
+    /// from finishSessionUI() so sessions that never record history (secure field,
+    /// error, cancel) can't leave their audio behind in the staging directory.
+    private func discardStagedRetainedAudio() {
+        guard let staged = takeStagedRetainedAudio() else { return }
+        if FileManager.default.fileExists(atPath: staged.path) {
+            try? FileManager.default.removeItem(at: staged)
+        }
     }
 
     /// Delete every retained clip and clear all entries' audio filenames (called when

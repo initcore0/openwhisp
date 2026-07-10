@@ -36,6 +36,16 @@ final class AudioRetentionPolicyTests: XCTestCase {
         // A traversal-ish name must not sneak past (prefix check + UUID parse fail).
         XCTAssertFalse(AudioRetentionPolicy.isRetainedAudioFileName("retained-../../etc/passwd.wav"))
         XCTAssertNil(AudioRetentionPolicy.parseEntryID(fromFileName: "history.json"))
+        // The hard case: a traversal path whose LEAF is itself a valid retained
+        // name. Prefix ("retained-.."), extension, and lastPathComponent all check
+        // out individually — only the leaf-only rule (no "/") rejects it. Without
+        // that, appendingPathComponent(name) would escape the audio directory.
+        let leaf = "retained-\(UUID().uuidString).wav"
+        XCTAssertFalse(AudioRetentionPolicy.isRetainedAudioFileName("retained-../../../tmp/\(leaf)"))
+        XCTAssertNil(AudioRetentionPolicy.parseEntryID(fromFileName: "retained-x/\(leaf)"))
+        // Absolute paths and embedded NULs are equally refused.
+        XCTAssertFalse(AudioRetentionPolicy.isRetainedAudioFileName("/tmp/\(leaf)"))
+        XCTAssertFalse(AudioRetentionPolicy.isRetainedAudioFileName("retained-\(UUID().uuidString).wav\0"))
     }
 
     // MARK: - Disabled → never deletes
