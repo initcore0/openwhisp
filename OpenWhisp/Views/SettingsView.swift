@@ -16,6 +16,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
     case models
     case cleanup
     case output
+    case files
     case profiles
     case agentBridge
     case privacy
@@ -30,6 +31,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
         case .models:      return "Models"
         case .cleanup:     return "Cleanup"
         case .output:      return "Output"
+        case .files:       return "File Transcription"
         case .profiles:    return "Per-App Profiles"
         case .agentBridge: return "Agent Bridge"
         case .privacy:     return "Privacy & Permissions"
@@ -44,6 +46,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
         case .models:      return "cpu"
         case .cleanup:     return "wand.and.stars"
         case .output:      return "text.cursor"
+        case .files:       return "waveform.and.magnifyingglass"
         case .profiles:    return "square.grid.2x2"
         case .agentBridge: return "point.3.connected.trianglepath.dotted"
         case .privacy:     return "lock.shield"
@@ -100,6 +103,7 @@ struct SettingsView: View {
         case .models:    ModelsPane(appState: appState)
         case .cleanup:   CleanupPane(appState: appState)
         case .output:    OutputPane(appState: appState)
+        case .files:     FileTranscriptionPane(coordinator: appState.fileCoordinator)
         case .profiles:  ProfilesPane(appState: appState)
         case .agentBridge: AgentBridgePane(appState: appState)
         case .privacy:   PrivacyPane(appState: appState)

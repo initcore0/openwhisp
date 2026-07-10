@@ -9,14 +9,35 @@
       "date": "2026-07-09",
       "summary": "A batch of new features, fixes, and under-the-hood hardening — all landed on main, all covered by tests, all on your machine. All ten new features are live in Settings today: adjustable AI cleanup, voice editing, a self-learning dictionary, rich local formatting, spoken-filename @-mentions for code editors, agent-CLI cleanup, and output targets that route a dictation to a file, a macOS Shortcut, or a webhook.",
       "stats": {
-        "changesShipped": 19,
-        "newFeatures": 10,
-        "testsPassing": 983,
+        "changesShipped": 20,
+        "newFeatures": 11,
+        "testsPassing": 1010,
         "onDevicePercent": 100,
-        "newFeaturesLive": 10,
+        "newFeaturesLive": 11,
         "newFeaturesCorePending": 0
       },
       "entries": [
+        {
+          "category": "feature",
+          "headline": "Drop in an audio or video file — batch transcription with a live queue and subtitle export",
+          "body": "Point OpenWhisp at MP3/MP4/M4A/WAV/WEBM (and more) and it decodes them to 16 kHz audio, runs your on-device engine, and shows a live per-file queue (Queued → Loading model → Transcribing → Enhancing → Done). Long files are chunked automatically, and finished transcripts export to plain text, SubRip (.srt) or WebVTT (.vtt) with chunk-level timestamps. Set up watch folders and any media dropped in transcribes itself.",
+          "tickets": [
+            "MAK-36"
+          ],
+          "prs": [],
+          "howTo": {
+            "availability": "live",
+            "summary": "Settings › File Transcription › Add files, watch the queue, then export .txt/.srt/.vtt from any finished file. Add a watch folder to auto-transcribe drops.",
+            "steps": [
+              "Open Settings › File Transcription.",
+              "Click “Add audio or video files…” and pick one or more media files — they queue up and transcribe one at a time on your current engine.",
+              "Watch each row move through Queued → Loading model → Transcribing → Done; long files are chunked for you.",
+              "On a finished row, use Export to save .txt, .srt, or .vtt (SRT/VTT carry chunk-level timestamps).",
+              "Optional: “Add a watch folder…” so any new media dropped into it is transcribed automatically (files still copying are picked up once they settle)."
+            ],
+            "note": "Timestamps for .srt/.vtt are chunk-level (each cue spans a decode window), since the local engines surface plain text per chunk — finer per-word timing is a future engine-seam upgrade. The optional LLM “Enhance” pass over finished transcripts is present as a toggle but only runs when an LLM is configured."
+          }
+        },
         {
           "category": "feature",
           "headline": "Say a filename, get an @-mention — hands-free file references in Cursor & Windsurf",
