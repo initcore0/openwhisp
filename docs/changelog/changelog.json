@@ -24,7 +24,9 @@
           "tickets": [
             "MAK-37"
           ],
-          "prs": [],
+          "prs": [
+            141
+          ],
           "howTo": {
             "availability": "live",
             "summary": "Hand OpenWhisp a URL like openwhisp://record from Raycast, Alfred, Shortcuts, or a script; ready-made Raycast/Alfred recipes ship in integrations/.",
