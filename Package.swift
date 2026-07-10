@@ -35,6 +35,8 @@ let package = Package(
                 "FileTagTransform.swift",
                 "PostProcessor.swift",
                 "AppProfile.swift",
+                "AppleScriptInsert.swift",
+                "MouseTrigger.swift",
                 "TranscriptionHistory.swift",
                 "SecureFieldPolicy.swift",
                 "DownloadProgressFormatter.swift",
@@ -74,11 +76,13 @@ let package = Package(
                 "VoiceEditCommand.swift",
                 "RefineFlow.swift",
                 "RefineKey.swift",
+                "DictationTrigger.swift",
                 "AudioLevel.swift",
                 "FinalizingCaption.swift",
                 "AsyncTimeout.swift",
                 "SerialTaskChain.swift",
                 "DictationStats.swift",
+                "InsightsSummary.swift",
                 "Instrumentation.swift",
                 "VoiceIndicatorStyle.swift",
                 "WhisperKitBridge.swift",
@@ -90,7 +94,10 @@ let package = Package(
                 "RefineTap.swift",
                 "ServerProcessIdentity.swift",
                 "ServerLaunchRetry.swift",
-                "WhisperResponseClassifier.swift"
+                "WhisperResponseClassifier.swift",
+                "FileTranscriptionQueue.swift",
+                "SubtitleFormatter.swift",
+                "WatchFolderPolicy.swift"
             ]
         ),
         .executableTarget(

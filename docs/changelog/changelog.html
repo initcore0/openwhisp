@@ -246,14 +246,14 @@
 <div class="wrap">
   <header>
     <p class="eyebrow">Shipped · July 2026</p>
-    <h1>Twenty-two ways OpenWhisp got<br><span class="accent">sharper, safer, and more yours.</span></h1>
-    <p class="lede">A batch of new features, fixes, and under-the-hood hardening — all landed on main, all covered by tests, all on your machine. All twelve new features are live today: hands-free (tap-to-lock) dictation, adjustable AI cleanup, voice editing, a self-learning dictionary, rich local formatting, spoken-filename @-mentions for code editors, agent-CLI cleanup, output targets that route a dictation to a file/Shortcut/webhook, and an openwhisp:// URL scheme so Raycast, Alfred, or any launcher can drive dictation.</p>
+    <h1>Twenty-seven ways OpenWhisp got<br><span class="accent">sharper, safer, and more yours.</span></h1>
+    <p class="lede">A batch of new features, fixes, and under-the-hood hardening — all landed on main, all covered by tests, all on your machine. All seventeen new features are live today: a fully-remappable dictation trigger with a record-a-shortcut field, an AppleScript keystroke insert method and mouse-button dictation triggers, a local Usage Insights dashboard, batch file transcription with watch folders, hands-free (tap-to-lock) dictation, adjustable AI cleanup, voice editing, a self-learning dictionary, rich local formatting, spoken-filename @-mentions for code editors, agent-CLI cleanup, output targets that route a dictation to a file/Shortcut/webhook, first-class Modes you can invoke by name, and an openwhisp:// URL scheme so Raycast, Alfred, or any launcher can drive dictation.</p>
   </header>
 
   <div class="stats">
-    <div class="stat"><div class="n">23</div><div class="k">changes shipped</div></div>
-    <div class="stat"><div class="n">13<small> live</small></div><div class="k">new features</div></div>
-    <div class="stat"><div class="n">1068</div><div class="k">tests passing</div></div>
+    <div class="stat"><div class="n">27</div><div class="k">changes shipped</div></div>
+    <div class="stat"><div class="n">17<small> live</small></div><div class="k">new features</div></div>
+    <div class="stat"><div class="n">1171</div><div class="k">tests passing</div></div>
     <div class="stat"><div class="n">100<small>%</small></div><div class="k">on-device</div></div>
   </div>
 
@@ -262,9 +262,111 @@
     <div class="sec-head">
       <span class="dot feature"></span>
       <h2>New features</h2>
-      <span class="count">12 live</span>
+      <span class="count">17 live</span>
     </div>
     <ul class="entries">
+      <li>
+        <details class="entry">
+          <summary>
+            <div class="sum-left">
+              <h3>Two new ways to get your words in: an AppleScript keystroke insert method and mouse-button triggers</h3>
+              <p>Some apps mangle the usual paste (⌘V) and direct-insert methods — Electron apps, remote-desktop (VNC) windows, and non-QWERTY keyboard layouts. A new AppleScript keystroke insert method types your transcript in as if from the keyboard, which those surfaces accept; pick it globally or per-app. And you can now bind a non-primary mouse button (middle, or a side button) as a dictation trigger, using the same hold or hands-free style as your trigger key.</p>
+            </div>
+            <div class="sum-right">
+              <span class="try">How to use<svg class="howto-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span>
+              <div class="receipts"><span class="tag ticket">MAK-42</span></div>
+            </div>
+          </summary>
+          <div class="guide">
+            <span class="avail live">Available now</span>
+            <p class="g-sum">Settings › Output › Insertion → “AppleScript keystroke”, and Settings › Dictation › Activation → “Mouse-button trigger”. Both can also be set per-app under Per-App Profiles.</p>
+            <ol>
+              <li>Insert method: Settings › Output › Insertion → choose “AppleScript keystroke” if paste/direct insert misbehaves in an app (Electron, VNC, non-QWERTY).</li>
+              <li>Per-app override: Settings › Per-App Profiles → add the app and set its “Insert” column (Inherit / Auto / Direct / Paste / AppleScript).</li>
+              <li>Mouse trigger: Settings › Dictation › Activation → “Mouse-button trigger” → pick Middle button or a side button (Mouse 4-10). “Off” disables it.</li>
+              <li>The mouse trigger uses your existing activation style — hold to talk, or tap to lock hands-free.</li>
+            </ol>
+            <p class="g-note">The AppleScript method never touches the clipboard, and your transcript is always safely escaped into the script (quotes, backslashes, and newlines can't break or inject it) — it falls back to paste if the script can't run (grant Accessibility/Automation permission if prompted) or if the transcript is very long (keystroke types at keyboard speed). The left and right mouse buttons are deliberately not bindable, since they're needed for normal clicking.</p>
+          </div>
+        </details>
+      </li>
+      <li>
+        <details class="entry">
+          <summary>
+            <div class="sum-left">
+              <h3>Set any key or combo as your dictation trigger — record-a-shortcut in Settings</h3>
+              <p>The dictation trigger is no longer limited to Fn or Control + Space. Open Settings › Dictation › Activation, click “Record shortcut”, and press any key or modifier combo (⌥⌘R, ⌃⇧Space, a lone Option — whatever you like). OpenWhisp warns before you pick something that would fire on ordinary typing, shadow a system shortcut like ⌘Space, or clash with your Refine key. Your custom trigger works in both hold-to-talk and hands-free modes, and the two original presets stay one click away.</p>
+            </div>
+            <div class="sum-right">
+              <span class="try">How to use<svg class="howto-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span>
+              <div class="receipts"><span class="tag ticket">MAK-17</span></div>
+            </div>
+          </summary>
+          <div class="guide">
+            <span class="avail live">Available now</span>
+            <p class="g-sum">Settings › Dictation › Activation → “Record shortcut”, press your combo; the two presets remain as quick picks.</p>
+            <ol>
+              <li>Open Settings › Dictation › Activation.</li>
+              <li>Click “Record shortcut” and press the key or modifier combo you want (e.g. ⌥⌘R, ⌃⇧Space, or a lone Option). Press Esc to cancel a recording.</li>
+              <li>If the combo would fire on ordinary typing, shadow a system shortcut (⌘Space, ⌘Q…), or clash with your Refine key, a warning appears — pick another.</li>
+              <li>Prefer a built-in? The “Trigger key” menu keeps Fn (Globe) and Control + Space as one-click quick picks.</li>
+              <li>Your custom trigger works in both Hold-to-talk and Hands-free activation styles.</li>
+            </ol>
+            <p class="g-note">Live in Settings today. A single typing key with no modifier is rejected (it would fire as you type); add a modifier or bind a non-text key (function row, Esc, arrows) instead.</p>
+          </div>
+        </details>
+      </li>
+      <li>
+        <details class="entry">
+          <summary>
+            <div class="sum-left">
+              <h3>See your dictation stats — words, speaking speed, time saved, streaks — all on this Mac</h3>
+              <p>A new Insights tab in Settings surfaces what OpenWhisp was quietly counting: total words dictated, your words-per-minute, an estimated time saved versus typing, current and longest daily streaks, and a breakdown of which apps you dictate into. It's all computed on-device from metadata only — counts and durations, never your transcripts — and there's a one-click share card (a PNG rendered locally) if you want to post your numbers. No accounts, no cloud.</p>
+            </div>
+            <div class="sum-right">
+              <span class="try">How to use<svg class="howto-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span>
+              <div class="receipts"><span class="tag ticket">MAK-38</span><span class="tag pr">#144</span></div>
+            </div>
+          </summary>
+          <div class="guide">
+            <span class="avail live">Available now</span>
+            <p class="g-sum">Open Settings › Insights to see your words, WPM, time saved, and streaks; Save/Copy the share card to post them.</p>
+            <ol>
+              <li>Open OpenWhisp Settings and pick the “Insights” tab.</li>
+              <li>Read your lifetime words, speaking speed (WPM), and estimated time saved (the card states the typing-speed assumption behind that estimate).</li>
+              <li>Check your current and longest streaks and which apps you dictate into most.</li>
+              <li>Click “Save share card…” to write a PNG, or “Copy image” to put it on the clipboard — the image is rendered entirely on your Mac; nothing is uploaded.</li>
+            </ol>
+            <p class="g-note">Time saved is an estimate: it compares your speaking time to typing the same words at 40 wpm (a common average). Your real typing speed will differ. Stats are metadata only — no transcript text is ever stored or shown here, and sessions recorded while a password field was focused are excluded.</p>
+          </div>
+        </details>
+      </li>
+      <li>
+        <details class="entry">
+          <summary>
+            <div class="sum-left">
+              <h3>Drop in an audio or video file — batch transcription with a live queue and subtitle export</h3>
+              <p>Point OpenWhisp at MP3/MP4/M4A/WAV/WEBM (and more) and it decodes them to 16 kHz audio, runs your on-device engine, and shows a live per-file queue (Queued → Loading model → Transcribing → Enhancing → Done). Long files are chunked automatically, and finished transcripts export to plain text, SubRip (.srt) or WebVTT (.vtt) with chunk-level timestamps. Set up watch folders and any media dropped in transcribes itself.</p>
+            </div>
+            <div class="sum-right">
+              <span class="try">How to use<svg class="howto-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span>
+              <div class="receipts"><span class="tag ticket">MAK-36</span><span class="tag pr">#142</span></div>
+            </div>
+          </summary>
+          <div class="guide">
+            <span class="avail live">Available now</span>
+            <p class="g-sum">Settings › File Transcription › Add files, watch the queue, then export .txt/.srt/.vtt from any finished file. Add a watch folder to auto-transcribe drops.</p>
+            <ol>
+              <li>Open Settings › File Transcription.</li>
+              <li>Click “Add audio or video files…” and pick one or more media files — they queue up and transcribe one at a time on your current engine.</li>
+              <li>Watch each row move through Queued → Loading model → Transcribing → Done; long files are chunked for you.</li>
+              <li>On a finished row, use Export to save .txt, .srt, or .vtt (SRT/VTT carry chunk-level timestamps).</li>
+              <li>Optional: “Add a watch folder…” so any new media dropped into it is transcribed automatically (files still copying are picked up once they settle).</li>
+            </ol>
+            <p class="g-note">Timestamps for .srt/.vtt are chunk-level (each cue spans a decode window), since the local engines surface plain text per chunk — finer per-word timing is a future engine-seam upgrade. The optional LLM “Enhance” pass over finished transcripts is present as a toggle but only runs when an LLM is configured.</p>
+          </div>
+        </details>
+      </li>
       <li>
         <details class="entry">
           <summary>
@@ -686,7 +788,7 @@
       </li>
       <li class="entry">
         <h3>End-to-end audio testing, so features stay working</h3>
-        <p>A full regression suite now feeds pre-recorded audio through the whole pipeline — the reason "1068 tests passing" is more than a number. Every feature above ships with coverage.</p>
+        <p>A full regression suite now feeds pre-recorded audio through the whole pipeline — the reason "1171 tests passing" is more than a number. Every feature above ships with coverage.</p>
         <div class="receipts"><span class="tag ticket">E2E</span><span class="tag pr">#107–110</span></div>
       </li>
     </ul>
@@ -697,7 +799,7 @@
   </div>
 
   <div class="foot">
-    <span>OpenWhisp · shipped July 9, 2026</span>
+    <span>OpenWhisp · shipped July 10, 2026</span>
     <span><a href="https://github.com/initcore0/openwhisp">github.com/initcore0/openwhisp</a></span>
   </div>
 </div>

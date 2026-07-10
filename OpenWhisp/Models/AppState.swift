@@ -64,6 +64,45 @@ class AppState: ObservableObject {
         }
     }
 
+    /// The primary keycode of a fully-custom dictation trigger (MAK-17), or -1
+    /// when the custom trigger is a bare modifier (e.g. lone ⌥). Only consulted
+    /// when `triggerMode == "custom"`. Persisted as an Int; -1 is the nil sentinel.
+    @Published var customTriggerKeyCode: Int {
+        didSet {
+            UserDefaults.standard.set(customTriggerKeyCode, forKey: "customTriggerKeyCode")
+            pushCustomTriggerToMonitor()
+        }
+    }
+
+    /// The modifier bitmask (TriggerModifiers.rawValue) of the custom trigger.
+    @Published var customTriggerModifiers: Int {
+        didSet {
+            UserDefaults.standard.set(customTriggerModifiers, forKey: "customTriggerModifiers")
+            pushCustomTriggerToMonitor()
+        }
+    }
+
+    /// The resolved custom trigger from the two persisted fields (-1 keycode means
+    /// a bare-modifier binding). Used to push to the monitor and to display.
+    var customTrigger: DictationTrigger {
+        DictationTrigger(
+            keyCode: customTriggerKeyCode >= 0 ? Int64(customTriggerKeyCode) : nil,
+            modifiers: TriggerModifiers(rawValue: customTriggerModifiers)
+        )
+    }
+
+    /// Record a captured shortcut as the custom trigger and switch to it. Writing
+    /// the fields persists and re-pushes to the monitor.
+    func setCustomTrigger(keyCode: Int64?, modifiers: TriggerModifiers) {
+        customTriggerKeyCode = keyCode.map(Int.init) ?? -1
+        customTriggerModifiers = modifiers.rawValue
+        triggerMode = "custom"
+    }
+
+    private func pushCustomTriggerToMonitor() {
+        hotkeyMonitor?.customTrigger = customTrigger
+    }
+
     /// How the trigger activates dictation: "hold" (press-to-talk, the default)
     /// or "toggle" (hands-free lock — tap to start, tap/Esc to stop). A quick
     /// double-tap reaches lock even in hold mode. The interaction logic lives in
@@ -102,6 +141,16 @@ class AppState: ObservableObject {
         didSet {
             UserDefaults.standard.set(refineKey, forKey: "refineKey")
             hotkeyMonitor?.refineKey = refineKey
+        }
+    }
+
+    /// Selected mouse-button dictation trigger (MouseTrigger id, e.g. "mouse2";
+    /// "off" disables it). Shares the hold/toggle activation with the key trigger
+    /// (MAK-42).
+    @Published var mouseTrigger: String {
+        didSet {
+            UserDefaults.standard.set(mouseTrigger, forKey: "mouseTrigger")
+            hotkeyMonitor?.mouseTrigger = mouseTrigger
         }
     }
 
@@ -811,6 +860,52 @@ class AppState: ObservableObject {
 
     var audioRecorder: AudioCapture!
     var whisperEngine: FileTranscriptionEngine!
+
+    /// Batch audio/video file transcription (MAK-36). Lazily built so it only
+    /// spins up its queue/watcher when the Files pane is first opened. Uses a
+    /// DEDICATED engine per job (never the live-dictation `whisperEngine`).
+    lazy var fileCoordinator: FileTranscriptionCoordinator = {
+        FileTranscriptionCoordinator(engineConfig: { [weak self] in
+            self?.fileEngineConfig() ?? .init(
+                makeEngine: { WhisperEngine() }, binaryPath: "", modelPath: "",
+                languageSetting: "auto", backend: .cli, prompt: "", enhance: nil
+            )
+        })
+    }()
+
+    /// The current engine/model/backend config for batch file transcription,
+    /// mirroring the live-dictation `startTranscription` wiring.
+    func fileEngineConfig() -> FileTranscriptionCoordinator.EngineConfig {
+        let engineName = transcriptionEngine
+        let model = modelName
+        let wkModel = whisperKitModel
+        return .init(
+            makeEngine: { Self.makeFileEngine(for: engineName, model: model, whisperKitModel: wkModel) },
+            binaryPath: whisperBinaryPath,
+            modelPath: modelPath,
+            languageSetting: engineLanguageSetting,
+            backend: whisperBackend == "serverAPI" ? .serverAPI : .cli,
+            prompt: customVocabularyEnabled ? vocabulary.whisperPrompt : "",
+            enhance: llmConfigured ? { [weak self] raw in
+                // Reuse the overlay-refine LLM primitive. Fail-open: any error
+                // (LLM busy, unavailable, mid-dictation) returns the raw text.
+                await withCheckedContinuation { cont in
+                    Task { @MainActor in
+                        guard let self else { cont.resume(returning: raw); return }
+                        self.refineText(
+                            text: raw,
+                            instruction: "Clean up this transcript: fix punctuation, casing, and obvious transcription mistakes. Keep the wording and meaning; do not summarize or omit content."
+                        ) { result in
+                            switch result {
+                            case .success(let enhanced): cont.resume(returning: enhanced)
+                            case .failure: cont.resume(returning: raw)
+                            }
+                        }
+                    }
+                }
+            } : nil
+        )
+    }
     var appleSpeechEngine: StreamingTranscriptionEngine!
     /// Experimental real-time WhisperKit engine. Shares the streaming session
     /// machinery with Apple Speech (same handlers) but uses WhisperKit's
@@ -991,6 +1086,13 @@ class AppState: ObservableObject {
     /// style actually reaches the LLM.
     private var modeRefineInstructionOverride: String?
 
+    /// A per-app profile's text-insert method for the CURRENT session (MAK-42), or
+    /// nil when no profile overrides it. Kept separate from the persisted global
+    /// `insertionMode` (unlike the other overrides it isn't a published setting the
+    /// UI mirrors), so it's a plain session-scoped value: set on profile apply,
+    /// cleared on restore, and preferred by `currentInsertionMode`.
+    private var sessionInsertionModeOverride: InsertionMode?
+
     /// While a per-app profile override is in effect, don't persist the overridden
     /// settings to UserDefaults — otherwise a crash/force-quit mid-session would
     /// leave the profile's values as the user's globals on next launch.
@@ -1026,7 +1128,9 @@ class AppState: ObservableObject {
     }
 
     private var currentInsertionMode: InsertionMode {
-        InsertionMode(rawValue: insertionMode) ?? .auto
+        // A per-app profile can override the insert method for the session (MAK-42);
+        // otherwise use the global setting.
+        sessionInsertionModeOverride ?? InsertionMode(rawValue: insertionMode) ?? .auto
     }
 
     /// The active LLM endpoint for post-processing, derived from the provider setting.
@@ -1165,7 +1269,12 @@ class AppState: ObservableObject {
     }
 
     var hotkeyHelpText: String {
-        let trigger = triggerMode == "fn" ? "Release Fn" : "Release Control+Space"
+        let trigger: String
+        switch triggerMode {
+        case "fn":     trigger = "Release Fn"
+        case "custom": trigger = "Release \(customTrigger.displayName)"
+        default:       trigger = "Release Control+Space"
+        }
         return "\(trigger) to insert - Esc to cancel"
     }
 
@@ -1247,11 +1356,15 @@ class AppState: ObservableObject {
         language = UserDefaults.standard.string(forKey: "language") ?? "auto"
         translateToEnglish = UserDefaults.standard.object(forKey: "translateToEnglish") as? Bool ?? false
         triggerMode = UserDefaults.standard.string(forKey: "triggerMode") ?? "fn"
+        // Custom trigger (MAK-17): -1 keycode = bare-modifier binding / unset.
+        customTriggerKeyCode = UserDefaults.standard.object(forKey: "customTriggerKeyCode") as? Int ?? -1
+        customTriggerModifiers = UserDefaults.standard.object(forKey: "customTriggerModifiers") as? Int ?? 0
         // Press-to-talk stays the default activation; hands-free lock (toggle) is opt-in.
         hotkeyMode = UserDefaults.standard.string(forKey: "hotkeyMode") ?? "hold"
         // Left Control: the old rightControl default doesn't exist on MacBook
         // keyboards, which made refine silently impossible there.
         refineKey = UserDefaults.standard.string(forKey: "refineKey") ?? RefineKey.defaultKey.rawValue
+        mouseTrigger = UserDefaults.standard.string(forKey: "mouseTrigger") ?? MouseTrigger.defaultTrigger.id
         outputMode = UserDefaults.standard.string(forKey: "outputMode") ?? "preview"
         showOverlay = UserDefaults.standard.object(forKey: "showOverlay") as? Bool ?? true
         voiceIndicatorStyle = VoiceIndicatorStyle.from(UserDefaults.standard.string(forKey: "voiceIndicatorStyle"))
@@ -1526,8 +1639,10 @@ class AppState: ObservableObject {
 
         hotkeyMonitor = HotkeyMonitor()
         hotkeyMonitor.triggerMode = triggerMode
+        hotkeyMonitor.customTrigger = customTrigger
         hotkeyMonitor.hotkeyMode = hotkeyMode
         hotkeyMonitor.refineKey = refineKey
+        hotkeyMonitor.mouseTrigger = mouseTrigger
         hotkeyMonitor.onPermissionStateChanged = { [weak self] isGranted in
             Task { @MainActor in
                 self?.inputMonitoringPermissionLabel = isGranted ? "Granted" : "Needs permission"
@@ -4275,9 +4390,12 @@ class AppState: ObservableObject {
         voiceEditingEnabled = true
 
         triggerMode = "fn"
+        customTriggerKeyCode = -1
+        customTriggerModifiers = 0
         hotkeyMode = "hold"
         handsFreeSilenceAutoStop = true
         refineKey = RefineKey.defaultKey.rawValue
+        mouseTrigger = MouseTrigger.defaultTrigger.id
         microphoneID = ""
         autoGainEnabled = true
         language = "auto"
@@ -4427,7 +4545,8 @@ class AppState: ObservableObject {
         )
         let resolved = ProfileResolver.resolve(profile: bridged, over: .init(
             language: language, translateToEnglish: translateToEnglish,
-            outputMode: outputMode, aiCleanupEnabled: openAIEnhancementEnabled
+            outputMode: outputMode, aiCleanupEnabled: openAIEnhancementEnabled,
+            insertionMode: insertionMode
         ))
         language = resolved.language
         translateToEnglish = resolved.translateToEnglish
@@ -4438,12 +4557,19 @@ class AppState: ObservableObject {
         // plus an optional LLM-model override.
         modeRefineInstructionOverride = ModeResolver.refineInstruction(for: mode)
         activeModeLLMModel = mode.llmModel
+
+        // The insert method is session-scoped, not a persisted published setting —
+        // stash it for currentInsertionMode; only when the profile actually changes
+        // it from the global (else stay nil so nothing to restore).
+        let resolvedInsert = InsertionMode.from(id: resolved.insertionMode)
+        sessionInsertionModeOverride = resolvedInsert.rawValue == insertionMode ? nil : resolvedInsert
     }
 
     /// Restore any settings a profile overrode for the just-finished session.
     private func restoreProfileOverridesIfNeeded() {
         modeRefineInstructionOverride = nil
         activeModeLLMModel = nil
+        sessionInsertionModeOverride = nil
         guard let backup = profileOverrideBackup else { return }
         profileOverrideBackup = nil
         // Re-enable persistence so restoring the originals writes them back.
@@ -4538,6 +4664,36 @@ class AppState: ObservableObject {
         #if OPENWHISP_INSTRUMENTATION
         lastDictationEvent = event
         #endif
+    }
+
+    // MARK: - Insights (MAK-38)
+
+    /// Derive the local Usage Insights summary from the in-memory metadata
+    /// aggregates. Pure computation over `dictationStats` (already the live copy,
+    /// mutated on every completed dictation) — nothing here leaves the device.
+    ///
+    /// App bundle ids are mapped to readable names using currently-running apps
+    /// (best source) with a fallback to the last app name seen in local history,
+    /// then to a prettified bundle id inside `InsightsSummary` itself.
+    var insightsSummary: InsightsSummary {
+        InsightsSummary(
+            stats: dictationStats,
+            today: DictationStats.dayKey(for: Date()),
+            appName: { [weak self] bundleID in self?.displayName(forBundleID: bundleID) },
+            engineName: { InsightsSummary.prettifyEngine($0) }
+        )
+    }
+
+    /// Best-effort human name for a bundle id, using running apps then history.
+    private func displayName(forBundleID bundleID: String) -> String? {
+        if let running = NSWorkspace.shared.runningApplications.first(where: {
+            $0.bundleIdentifier == bundleID
+        })?.localizedName {
+            return running
+        }
+        return history.first(where: {
+            $0.appBundleID == bundleID && ($0.appName?.isEmpty == false)
+        })?.appName
     }
 
     func copyHistoryEntry(_ entry: TranscriptionEntry) {

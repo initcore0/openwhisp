@@ -38,6 +38,16 @@ final class HotkeyMonitor: HotkeyControlling {
     /// it was a shortcut chord (⌃C, ⌃-click, …), not a refine request.
     private var refineTap = RefineTapRecognizer()
     var triggerMode: String = "controlSpace"
+    /// The user-recorded arbitrary trigger (MAK-17), consulted only when
+    /// `triggerMode == "custom"`. Its resolved down/up edges flow through the same
+    /// `apply()` → `ActivationInteraction` path as the presets, so a custom
+    /// trigger works identically in BOTH hold and toggle/lock activation styles.
+    var customTrigger: DictationTrigger?
+    /// While the Settings capture field is recording a new shortcut, ALL trigger /
+    /// refine / Esc handling is paused — otherwise pressing the CURRENT trigger to
+    /// re-record it would start dictation mid-recording, and the recording's
+    /// Esc-cancel would fire the session cancel. Set by the capture UI.
+    var isSuspendedForCapture = false
     /// How activation behaves: "hold" (press-to-talk) or "toggle" (hands-free
     /// lock). Setting it rebuilds the interaction machine so a live mode change
     /// starts clean (never mid-gesture). A double-tap still reaches lock from
@@ -47,10 +57,20 @@ final class HotkeyMonitor: HotkeyControlling {
             guard hotkeyMode != oldValue else { return }
             activation = ActivationInteraction(mode: hotkeyMode == "toggle" ? .toggle : .hold)
             isPressed = false
+            isMousePressed = false
         }
     }
     /// Selected refine key id (see RefineKey). "off" disables it.
     var refineKey: String = RefineKey.defaultKey.rawValue
+
+    /// Selected mouse-button trigger id (see `MouseTrigger`). "off" disables it.
+    /// A bound non-primary button feeds the SAME activation machine as the key
+    /// trigger, so it behaves identically (hold / toggle / double-tap → lock).
+    var mouseTrigger: String = MouseTrigger.defaultTrigger.id
+    /// Debounced held-state for the mouse-button trigger, tracked independently of
+    /// the keyboard trigger's `isPressed` so a stray keyboard event can't reset the
+    /// mouse edge detection (and vice-versa). Both drive the one `activation`.
+    private var isMousePressed = false
 
     /// The pure interaction state machine (hold vs. toggle vs. double-tap → lock,
     /// Esc-cancel). The raw debounced `.down`/`.up` edges resolved below are fed
@@ -66,7 +86,10 @@ final class HotkeyMonitor: HotkeyControlling {
         let mask: CGEventMask = CGEventMask(
             (Int64(1) << CGEventType.keyDown.rawValue) |
             (Int64(1) << CGEventType.keyUp.rawValue) |
-            (Int64(1) << CGEventType.flagsChanged.rawValue)
+            (Int64(1) << CGEventType.flagsChanged.rawValue) |
+            // Non-primary mouse buttons (middle, Mouse 4-10) for the mouse trigger.
+            (Int64(1) << CGEventType.otherMouseDown.rawValue) |
+            (Int64(1) << CGEventType.otherMouseUp.rawValue)
         )
 
         let port = createEventTap(mask: mask, tap: .cghidEventTap)
@@ -103,9 +126,9 @@ final class HotkeyMonitor: HotkeyControlling {
     private func startNSEventFallback() {
         let eventMask: NSEvent.EventTypeMask = [
             .keyDown, .keyUp, .flagsChanged,
-            // Only consumed as refine-tap disqualifiers (⌃-click, ⌃-scroll);
-            // handleNSEvent returns before any key handling for these.
-            .leftMouseDown, .rightMouseDown, .otherMouseDown, .scrollWheel,
+            // leftMouseDown/rightMouseDown/scrollWheel are refine-tap disqualifiers
+            // only. otherMouseDown/Up ALSO drive the mouse-button trigger (MAK-42).
+            .leftMouseDown, .rightMouseDown, .otherMouseDown, .otherMouseUp, .scrollWheel,
         ]
 
         globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: eventMask) { [weak self] event in
@@ -150,6 +173,7 @@ final class HotkeyMonitor: HotkeyControlling {
         guard activation.isActive else { return }
         activation.reset()
         isPressed = false
+        isMousePressed = false
     }
 
     // MARK: - Edge dispatch
@@ -166,6 +190,29 @@ final class HotkeyMonitor: HotkeyControlling {
             dispatch(activation.triggerDown(now: now))
         case .up:
             isPressed = false
+            dispatch(activation.triggerUp(now: now))
+        case .none:
+            break
+        }
+    }
+
+    /// Route a non-primary mouse-button event through the SAME activation machine
+    /// as the keyboard trigger (MAK-42), but debounced on its own `isMousePressed`
+    /// so key and mouse edges don't corrupt each other. Only the currently-bound
+    /// button matters; every other button number is ignored (and the reserved
+    /// left/right buttons never reach here — they arrive as leftMouseDown /
+    /// rightMouseDown, not otherMouse*).
+    private func handleMouseButton(buttonNumber: Int, isDown: Bool) {
+        let trigger = MouseTrigger.from(id: mouseTrigger)
+        guard let bound = trigger.buttonNumber, bound == buttonNumber else { return }
+        let now = ProcessInfo.processInfo.systemUptime
+        let gesture = HotkeyGesture.resolve(isActive: isDown, wasPressed: isMousePressed)
+        switch gesture {
+        case .down:
+            isMousePressed = true
+            dispatch(activation.triggerDown(now: now))
+        case .up:
+            isMousePressed = false
             dispatch(activation.triggerUp(now: now))
         case .none:
             break
@@ -221,6 +268,11 @@ final class HotkeyMonitor: HotkeyControlling {
         // holding Control to start dictation would read as a refine tap. The
         // Settings UI warns about this combination; suppress it here too.
         guard !key.conflictsWithTrigger(triggerMode) else { return }
+        // Same suppression for a custom trigger that IS the refine modifier
+        // (e.g. a lone-⌥ trigger with an Option refine key): holding it to
+        // dictate must not read as a refine tap. Settings warns about this too.
+        if triggerMode == "custom", let trigger = customTrigger,
+           trigger.clashesWithRefineKey(key) { return }
         guard keyCode == target else {
             // A DIFFERENT modifier changed while the refine key is held: the
             // hold is a chord (⌃⌘…), not a bare tap.
@@ -281,12 +333,25 @@ final class HotkeyMonitor: HotkeyControlling {
             return
         }
 
+        // While the capture field records a new shortcut, ALL trigger handling is
+        // paused — including a bound mouse button, so a mouse trigger can't start
+        // dictation mid-recording.
+        guard !isSuspendedForCapture else { return }
+
+        // Non-primary mouse buttons carry no keycode — handle (and return) before
+        // the keyboard paths read `.keyboardEventKeycode`.
+        if type == .otherMouseDown || type == .otherMouseUp {
+            let button = Int(event.getIntegerValueField(.mouseEventButtonNumber))
+            handleMouseButton(buttonNumber: button, isDown: type == .otherMouseDown)
+            return
+        }
+
         let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
 
-        if triggerMode == "fn" {
-            handleFn(type: type, keyCode: keyCode, event: event)
-        } else {
-            handleControlSpace(type: type, keyCode: keyCode, event: event)
+        switch effectiveTriggerMode {
+        case "fn":     handleFn(type: type, keyCode: keyCode, event: event)
+        case "custom": handleCustom(type: type, keyCode: keyCode, rawFlags: event.flags.rawValue)
+        default:       handleControlSpace(type: type, keyCode: keyCode, event: event)
         }
 
         // Refine key (a single selectable modifier) — track by its keycode.
@@ -313,15 +378,34 @@ final class HotkeyMonitor: HotkeyControlling {
     private func handleEscape() {
         _ = activation.cancel()
         isPressed = false
+        isMousePressed = false
         Task { @MainActor in self.onCancel?() }
     }
 
+    /// The trigger mode actually matched against events: "custom" only counts
+    /// when a bindable trigger was recorded; otherwise fall back to the Fn preset
+    /// so dictation is never left with NO trigger at all (mirrors
+    /// `DictationTrigger.resolve`'s fallback for a stray persisted "custom").
+    private var effectiveTriggerMode: String {
+        if triggerMode == "custom", !(customTrigger?.isBindable ?? false) { return "fn" }
+        return triggerMode
+    }
+
     private func handleNSEvent(_ event: NSEvent) {
+        guard !isSuspendedForCapture else { return }
+
         // Mouse/scroll while the refine key is held = ⌃-click / ⌃-scroll etc.
         // Handle and return BEFORE the key handlers (NSEvent.keyCode is only
         // valid for key events).
         switch event.type {
-        case .leftMouseDown, .rightMouseDown, .otherMouseDown, .scrollWheel:
+        case .otherMouseDown, .otherMouseUp:
+            // A non-primary mouse click is both a refine-tap disqualifier AND (for
+            // the bound button) the mouse trigger.
+            if isRefinePressed { refineTap.otherInput() }
+            handleMouseButton(buttonNumber: event.buttonNumber,
+                              isDown: event.type == .otherMouseDown)
+            return
+        case .leftMouseDown, .rightMouseDown, .scrollWheel:
             if isRefinePressed { refineTap.otherInput() }
             return
         default:
@@ -332,10 +416,10 @@ final class HotkeyMonitor: HotkeyControlling {
             refineTap.otherInput()
         }
 
-        if triggerMode == "fn" {
-            handleFnEvent(event)
-        } else {
-            handleControlSpaceEvent(event)
+        switch effectiveTriggerMode {
+        case "fn":     handleFnEvent(event)
+        case "custom": handleCustomEvent(event)
+        default:       handleControlSpaceEvent(event)
         }
 
         if event.type == .flagsChanged {
@@ -411,6 +495,62 @@ final class HotkeyMonitor: HotkeyControlling {
     /// keyDown is active, keyUp is inactive.
     private func fnKeyGesture(isKeyDown: Bool) -> HotkeyGesture {
         HotkeyGesture.resolve(isActive: isKeyDown, wasPressed: isPressed)
+    }
+
+    // MARK: - Custom trigger (MAK-17)
+
+    /// CGEvent path for an arbitrary recorded trigger. Both the CG and NS paths
+    /// funnel through `applyCustom` with the raw (device-independent) modifier
+    /// flags — `CGEventFlags` and `NSEvent.ModifierFlags` share that layout.
+    private func handleCustom(type: CGEventType, keyCode: Int64, rawFlags: UInt64) {
+        applyCustom(isKeyDown: type == .keyDown, isKeyUp: type == .keyUp,
+                    isFlagsChanged: type == .flagsChanged, keyCode: keyCode, rawFlags: rawFlags)
+    }
+
+    private func handleCustomEvent(_ event: NSEvent) {
+        applyCustom(isKeyDown: event.type == .keyDown, isKeyUp: event.type == .keyUp,
+                    isFlagsChanged: event.type == .flagsChanged,
+                    keyCode: Int64(event.keyCode), rawFlags: UInt64(event.modifierFlags.rawValue))
+    }
+
+    /// Resolve a down/up edge for the custom trigger and feed it through the same
+    /// `apply()` interaction path the presets use (so hold + toggle both work).
+    ///
+    /// - A trigger WITH a primary key: activates on that key's keyDown while the
+    ///   modifier chord matches EXACTLY (so a ⌘⇧X binding doesn't fire on the
+    ///   different shortcut ⌘⇧⌥X); releases on the key's keyUp, or as soon as a
+    ///   required modifier drops (flagsChanged) while it was pressed. Once
+    ///   active, EXTRA modifiers pressed mid-session don't end it (superset).
+    /// - A BARE-MODIFIER trigger (no primary key): activates when exactly the
+    ///   modifier set is held (a lone-⌥ binding must not fire inside ⌥⌘ chords),
+    ///   tracked purely on flagsChanged — like the Fn preset but arbitrary.
+    ///
+    /// The exact/superset matching itself is pure and unit-tested in
+    /// `DictationTrigger.modifiersExactly` / `.modifiersHeld` (OpenWhispCore).
+    private func applyCustom(isKeyDown: Bool, isKeyUp: Bool, isFlagsChanged: Bool,
+                             keyCode: Int64, rawFlags: UInt64) {
+        guard let trigger = customTrigger, trigger.isBindable else { return }
+        let modsHeld = DictationTrigger.modifiersHeld(trigger.modifiers, rawFlags: rawFlags)
+        let modsExact = DictationTrigger.modifiersExactly(trigger.modifiers, rawFlags: rawFlags)
+
+        if let target = trigger.keyCode {
+            if isKeyDown, keyCode == target {
+                // Activation needs the exact chord; key-repeat while already
+                // pressed resolves to no edge either way.
+                apply(HotkeyGesture.resolve(isActive: isPressed || modsExact, wasPressed: isPressed))
+            } else if isKeyUp, keyCode == target {
+                apply(HotkeyGesture.resolve(isActive: false, wasPressed: isPressed))
+            } else if isFlagsChanged, isPressed, !modsHeld {
+                // A required modifier was released while the key is still down —
+                // end the session so a stuck combo can't hang.
+                apply(HotkeyGesture.resolve(isActive: false, wasPressed: isPressed))
+            }
+        } else if isFlagsChanged {
+            // Bare-modifier trigger: the chord being fully held IS the gesture.
+            // Exact match to start; once active, superset keeps it alive.
+            apply(HotkeyGesture.resolve(isActive: isPressed ? modsHeld : modsExact,
+                                        wasPressed: isPressed))
+        }
     }
 
     // C-compatible callback for the event tap
