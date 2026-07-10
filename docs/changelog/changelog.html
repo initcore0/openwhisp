@@ -251,9 +251,9 @@
   </header>
 
   <div class="stats">
-    <div class="stat"><div class="n">23</div><div class="k">changes shipped</div></div>
+    <div class="stat"><div class="n">24</div><div class="k">changes shipped</div></div>
     <div class="stat"><div class="n">13<small> live</small></div><div class="k">new features</div></div>
-    <div class="stat"><div class="n">1078</div><div class="k">tests passing</div></div>
+    <div class="stat"><div class="n">1110</div><div class="k">tests passing</div></div>
     <div class="stat"><div class="n">100<small>%</small></div><div class="k">on-device</div></div>
   </div>
 
@@ -671,7 +671,7 @@
     <div class="sec-head">
       <span class="dot improve"></span>
       <h2>Under the hood</h2>
-      <span class="count">3 shipped</span>
+      <span class="count">4 shipped</span>
     </div>
     <ul class="entries">
       <li class="entry">
@@ -686,8 +686,13 @@
       </li>
       <li class="entry">
         <h3>End-to-end audio testing, so features stay working</h3>
-        <p>A full regression suite now feeds pre-recorded audio through the whole pipeline — the reason "1078 tests passing" is more than a number. Every feature above ships with coverage.</p>
+        <p>A full regression suite now feeds pre-recorded audio through the whole pipeline — the reason "1110 tests passing" is more than a number. Every feature above ships with coverage.</p>
         <div class="receipts"><span class="tag ticket">E2E</span><span class="tag pr">#107–110</span></div>
+      </li>
+      <li class="entry">
+        <h3>Sturdier agent bridge — the MCP adapter now speaks a typed protocol and holds one connection</h3>
+        <p>The MCP server that lets coding agents drive OpenWhisp was rebuilt on the same typed, tested message envelopes the rest of the bridge uses, instead of hand-assembled JSON. It also keeps a single connection to the app open across tool calls (reconnecting by itself if the app restarts) rather than reconnecting every time — fewer moving parts, same behavior, now covered by its own tests.</p>
+        <div class="receipts"><span class="tag ticket">MAK-5</span></div>
       </li>
     </ul>
   </section>
@@ -697,7 +702,7 @@
   </div>
 
   <div class="foot">
-    <span>OpenWhisp · shipped July 9, 2026</span>
+    <span>OpenWhisp · shipped July 10, 2026</span>
     <span><a href="https://github.com/initcore0/openwhisp">github.com/initcore0/openwhisp</a></span>
   </div>
 </div>

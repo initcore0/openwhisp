@@ -1,17 +1,17 @@
 {
   "$schema": "./changelog.schema.md",
   "project": "OpenWhisp",
-  "generated": "2026-07-09",
+  "generated": "2026-07-10",
   "releases": [
     {
       "id": "2026-07",
       "title": "July 2026",
-      "date": "2026-07-09",
+      "date": "2026-07-10",
       "summary": "A batch of new features, fixes, and under-the-hood hardening — all landed on main, all covered by tests, all on your machine. All thirteen new features are live today: batch file transcription with watch folders, hands-free (tap-to-lock) dictation, adjustable AI cleanup, voice editing, a self-learning dictionary, rich local formatting, spoken-filename @-mentions for code editors, agent-CLI cleanup, output targets that route a dictation to a file/Shortcut/webhook, and an openwhisp:// URL scheme so Raycast, Alfred, or any launcher can drive dictation.",
       "stats": {
-        "changesShipped": 23,
+        "changesShipped": 24,
         "newFeatures": 13,
-        "testsPassing": 1078,
+        "testsPassing": 1110,
         "onDevicePercent": 100,
         "newFeaturesLive": 13,
         "newFeaturesCorePending": 0
@@ -438,6 +438,15 @@
             109,
             110
           ]
+        },
+        {
+          "category": "improvement",
+          "headline": "Sturdier agent bridge — the MCP adapter now speaks a typed protocol and holds one connection",
+          "body": "The MCP server that lets coding agents drive OpenWhisp was rebuilt on the same typed, tested message envelopes the rest of the bridge uses, instead of hand-assembled JSON. It also keeps a single connection to the app open across tool calls (reconnecting by itself if the app restarts) rather than reconnecting every time — fewer moving parts, same behavior, now covered by its own tests.",
+          "tickets": [
+            "MAK-5"
+          ],
+          "prs": []
         }
       ]
     }

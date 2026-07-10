@@ -1,5 +1,6 @@
 import Foundation
 import OpenWhispCore
+import OpenWhispBridgeKit
 
 // The `openwhisp` CLI: an agent-callable front-end to OpenWhisp's Agent Bridge.
 //
