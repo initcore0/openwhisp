@@ -329,24 +329,25 @@
         <details class="entry">
           <summary>
             <div class="sum-left">
-              <h3>A self-learning dictionary that tunes itself</h3>
-              <p>When you type over a transcription to correct it, OpenWhisp notices the fix and proposes it as a vocabulary term — learning your jargon on your machine, never on someone's server.</p>
+              <h3>A self-learning dictionary — star, sort by use, and accept corrections it proposes</h3>
+              <p>Your Substitutions list now sorts your starred and most-used rules to the top and shows how often each has fired. And when you fix a single misheard word right after dictating, OpenWhisp proposes that fix for you to accept into the dictionary — learned and stored entirely on your Mac, never uploaded.</p>
             </div>
             <div class="sum-right">
               <span class="try">How to use<svg class="howto-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span>
-              <div class="receipts"><span class="tag ticket">MAK-41</span><span class="tag pr">#120</span></div>
+              <div class="receipts"><span class="tag ticket">MAK-41</span><span class="tag pr">#120</span><span class="tag pr">#137</span></div>
             </div>
           </summary>
-          <div class="guide pending">
-            <span class="avail soon">Coming soon</span>
-            <p class="g-sum">When it ships, fixing a mistyped word once will prompt OpenWhisp to remember it.</p>
+          <div class="guide">
+            <span class="avail live">Available now</span>
+            <p class="g-sum">Star and reorder your rules by use, and accept the corrections OpenWhisp learns from your type-overs.</p>
             <ol>
-              <li>Dictate; OpenWhisp inserts the text.</li>
-              <li>Type over a single misheard word to correct it (e.g. “kubernetis” → “kubernetes”).</li>
-              <li>OpenWhisp proposes that fix as a vocabulary rule — accept it, and every future transcription auto-corrects that mishearing.</li>
-              <li>Star your most-used rules to keep them at the top of the Substitutions list.</li>
+              <li>Open Settings › Cleanup › Vocabulary. Your Substitutions open sorted starred-first then most-used, each with a “used N×” count; “Sort by use” re-sorts on demand (rows stay put while you type so nothing jumps under the cursor).</li>
+              <li>Click the star on any rule to keep it at the top on the next sort.</li>
+              <li>Dictate into a normal text field, then immediately type over a single misheard word to fix it (e.g. “kubernetis” → “kubernetes”).</li>
+              <li>OpenWhisp adds that fix to “Suggested corrections” at the top of the Vocabulary section — click Add to make it a rule, or Dismiss to never be offered it again.</li>
+              <li>Turn the whole capture off with “Learn corrections as I type over them” if you don't want it.</li>
             </ol>
-            <p class="g-note">The detection logic (only proposes clean single-word fixes, never whole rewrites) and the star/frequency model are shipped and tested. The watcher that captures your corrections and the star/sort editor are the next step — for now, add terms manually in Settings › Cleanup › Substitutions.</p>
+            <p class="g-note">Live today: star + usage sort + per-rule usage counts, and the full accept/dismiss flow — an accepted suggestion becomes a real substitution that rewrites future transcripts, and nothing is ever added silently. How a suggestion appears today: after an insert made via the Accessibility path, if you type over ONE word within a couple of seconds while the SAME field stays focused and its text is readable via Accessibility, that edit is captured and run through the conservative learner (single-word casing/spelling fixes only). Deferred: capture is a single short-delay re-read, not continuous observation — corrections you make after that window, in paste-only or some web/Electron fields, or that span multiple words, aren't captured yet. You can always add those rules by hand in the same list.</p>
           </div>
         </details>
       </li>

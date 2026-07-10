@@ -50,8 +50,12 @@
           "category": "feature",
           "headline": "Use your Claude or Codex CLI as the AI cleanup engine",
           "body": "Pipe your dictation through a coding-agent CLI you already have installed — claude, codex, or any command that reads stdin — and reuse the subscription you already pay for as the cleanup model. No separate API key, no extra service: it's the inverse of Agent Bridge, consuming an agent as the refine engine.",
-          "tickets": ["MAK-44"],
-          "prs": [130],
+          "tickets": [
+            "MAK-44"
+          ],
+          "prs": [
+            130
+          ],
           "howTo": {
             "availability": "live",
             "summary": "Point OpenWhisp at a local agent CLI (e.g. claude -p) and it cleans up each dictation using your own subscription.",
@@ -68,8 +72,13 @@
           "category": "feature",
           "headline": "Send your dictation straight into a macOS Shortcut",
           "body": "Route the final transcript into any Shortcut you've built — add it to Things or Reminders, append to a note, fire a webhook, run AppleScript. One OS-level integration reaches the whole Shortcuts ecosystem, and if the shortcut can't run, your text falls back to normal insertion so nothing is ever lost.",
-          "tickets": ["MAK-13"],
-          "prs": [129, 134],
+          "tickets": [
+            "MAK-13"
+          ],
+          "prs": [
+            129,
+            134
+          ],
           "howTo": {
             "availability": "live",
             "summary": "Pick a Shortcut in Settings; OpenWhisp runs it with your transcript as the input.",
@@ -135,24 +144,26 @@
         },
         {
           "category": "feature",
-          "headline": "A self-learning dictionary that tunes itself",
-          "body": "When you type over a transcription to correct it, OpenWhisp notices the fix and proposes it as a vocabulary term — learning your jargon on your machine, never on someone's server.",
+          "headline": "A self-learning dictionary — star, sort by use, and accept corrections it proposes",
+          "body": "Your Substitutions list now sorts your starred and most-used rules to the top and shows how often each has fired. And when you fix a single misheard word right after dictating, OpenWhisp proposes that fix for you to accept into the dictionary — learned and stored entirely on your Mac, never uploaded.",
           "tickets": [
             "MAK-41"
           ],
           "prs": [
-            120
+            120,
+            137
           ],
           "howTo": {
-            "availability": "coming-soon",
-            "summary": "Just fix a mistyped word once; OpenWhisp offers to remember it.",
+            "availability": "live",
+            "summary": "Star and reorder your rules by use, and accept the corrections OpenWhisp learns from your type-overs.",
             "steps": [
-              "Dictate; OpenWhisp inserts the text.",
-              "Type over a single misheard word to correct it (e.g. “kubernetis” → “kubernetes”).",
-              "OpenWhisp proposes that fix as a vocabulary rule — accept it, and every future transcription auto-corrects that mishearing.",
-              "Star your most-used rules to keep them at the top of the Substitutions list."
+              "Open Settings › Cleanup › Vocabulary. Your Substitutions open sorted starred-first then most-used, each with a 'used N×' count; 'Sort by use' re-sorts on demand (rows stay put while you type so nothing jumps under the cursor).",
+              "Click the star on any rule to keep it at the top on the next sort.",
+              "Dictate into a normal text field, then immediately type over a single misheard word to fix it (e.g. 'kubernetis' → 'kubernetes').",
+              "OpenWhisp adds that fix to 'Suggested corrections' at the top of the Vocabulary section — click Add to make it a rule, or Dismiss to never be offered it again.",
+              "Turn the whole capture off with 'Learn corrections as I type over them' if you don't want it."
             ],
-            "note": "The detection logic (only proposes clean single-word fixes, never whole rewrites) and the star/frequency model are shipped and tested. The watcher that captures your corrections and the star/sort editor are the next step — for now, add terms manually in Settings › Cleanup › Substitutions."
+            "note": "Live today: star + usage sort + per-rule usage counts, and the full accept/dismiss flow — an accepted suggestion becomes a real substitution that rewrites future transcripts, and nothing is ever added silently. How a suggestion appears today: after an insert made via the Accessibility path, if you type over ONE word within a couple of seconds while the SAME field stays focused and its text is readable via Accessibility, that edit is captured and run through the conservative learner (single-word casing/spelling fixes only). Deferred: capture is a single short-delay re-read, not continuous observation — corrections you make after that window, in paste-only or some web/Electron fields (where the field text isn't Accessibility-readable), or that span multiple words, aren't captured yet. You can always add those rules by hand in the same list."
           }
         },
         {
@@ -207,8 +218,13 @@
           "category": "feature",
           "headline": "Dictate straight into a Markdown or text file",
           "body": "Point OpenWhisp at a file — an Obsidian daily note, a Logseq journal, a scratch .md — and your dictation gets appended there instead of typed into the focused app. Add a dated heading if you like, or overwrite for a rolling \"last dictation\" buffer. All local; if the file can't be written, your words still land in the focused app — never dropped.",
-          "tickets": ["MAK-12"],
-          "prs": [127, 134],
+          "tickets": [
+            "MAK-12"
+          ],
+          "prs": [
+            127,
+            134
+          ],
           "howTo": {
             "availability": "live",
             "summary": "Choose File as the output target; each dictation is appended with an optional dated heading.",
@@ -225,8 +241,13 @@
           "category": "feature",
           "headline": "Send a dictation straight to a webhook (Notion, Obsidian, Zapier, n8n…)",
           "body": "POST your finished transcript as JSON — text, language, app, and timestamp — to any URL you configure, with optional auth headers. If the endpoint is down or slow, your words still land in the focused app as usual. Never dropped.",
-          "tickets": ["MAK-14"],
-          "prs": [128, 134],
+          "tickets": [
+            "MAK-14"
+          ],
+          "prs": [
+            128,
+            134
+          ],
           "howTo": {
             "availability": "live",
             "summary": "Point the output target at a URL; OpenWhisp POSTs each dictation there as JSON.",

@@ -25,6 +25,8 @@ let package = Package(
                 "JSONStore.swift",
                 "Vocabulary.swift",
                 "CorrectionLearner.swift",
+                "CorrectionProposal.swift",
+                "EditDiff.swift",
                 "LanguageResolver.swift",
                 "ProfileResolver.swift",
                 "MetaInstructionStripper.swift",

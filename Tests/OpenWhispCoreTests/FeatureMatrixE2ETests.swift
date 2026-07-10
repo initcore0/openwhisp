@@ -1248,6 +1248,170 @@ final class FeatureMatrixE2ETests: XCTestCase {
     }
     }
 
+    // MARK: - Self-learning dictionary (MAK-41)
+
+    /// Part A end-to-end: a transcript cleaned through the REAL pipeline that a
+    /// substitution rewrites bumps exactly that rule's usageCount (via the same
+    /// pure helper AppState calls), and a rule that didn't fire stays put. This is
+    /// the integration proof that "used N×" reflects real dictations, not a stub.
+    func testVocabularyUsageCountReflectsWhatTheCleanerRewrote() {
+        let clod = Vocabulary.Substitution(from: "clod code", to: "Claude Code", usageCount: 0)
+        let kube = Vocabulary.Substitution(from: "kube", to: "kubectl", usageCount: 4)
+        var vocab = Vocabulary(terms: [], substitutions: [clod, kube])
+
+        // Drive a raw transcript through the real cleaner with vocabulary on.
+        let config = TranscriptCleaner.Config(
+            language: "en",
+            customVocabularyEnabled: true,
+            substitutions: vocab.substitutions,
+            smartFormattingEnabled: true,
+            fillerRemovalEnabled: false,
+            spokenPunctuationEnabled: false
+        )
+        let cleaned = TranscriptCleaner(config: config)
+            .clean("i love clod code", isFinalTranscript: true)
+        XCTAssertTrue(cleaned.contains("Claude Code"), "the cleaner must actually apply the rule")
+
+        // AppState bumps usage from the pre-enhancement transcript via this helper.
+        let fired = VocabularySubstitutor(substitutions: vocab.substitutions)
+            .firedSubstitutionIDs(in: "i love clod code")
+        vocab = vocab.incrementingUsage(of: fired)
+
+        XCTAssertEqual(vocab.substitutions[0].usageCount, 1, "clod code fired → +1")
+        XCTAssertEqual(vocab.substitutions[1].usageCount, 4, "kube never appeared → unchanged")
+        // And the editor's sort now orders the freshly-used rule ahead by usage.
+        XCTAssertEqual(
+            Vocabulary(terms: [], substitutions: [
+                Vocabulary.Substitution(from: "a", to: "A", usageCount: 0),
+                vocab.substitutions[0]  // usageCount 1
+            ]).substitutionsByFrequency().first?.from,
+            "clod code")
+    }
+
+    /// REGRESSION GUARD for the keying bug (MAJOR 1): usage counting MUST key on the
+    /// PRE-clean transcript the vocabulary stage matched against, NOT the
+    /// post-`postProcess` output. This test drives the REAL cleaner to produce the
+    /// cleaned text, then asserts:
+    ///   1. keying on the cleaned OUTPUT (the old, buggy behavior) FAILS to count a
+    ///      normal (from != to) rule — because vocab already rewrote `from`→`to`, so
+    ///      `from` no longer appears; and
+    ///   2. keying on the RAW pre-clean input (the fixed behavior) DOES count it.
+    /// If someone reverts recordVocabularyUsage to key on the cleaned text, assertion
+    /// (2) breaks and this test fails — which is exactly the guard the reviewer asked
+    /// for. `completeFinalText` passes the raw `text`, so this models the shipped path.
+    func testUsageCountingKeysOnPreCleanTranscriptNotCleanedOutput() {
+        let clodID = UUID()
+        let rule = Vocabulary.Substitution(id: clodID, from: "clod code", to: "Claude Code")
+        let vocab = Vocabulary(terms: [], substitutions: [rule])
+
+        let config = TranscriptCleaner.Config(
+            language: "en", customVocabularyEnabled: true, substitutions: vocab.substitutions,
+            smartFormattingEnabled: true, fillerRemovalEnabled: false, spokenPunctuationEnabled: false)
+
+        let rawTranscript = "i love clod code"
+        let cleanedOutput = TranscriptCleaner(config: config).clean(rawTranscript, isFinalTranscript: true)
+        XCTAssertTrue(cleanedOutput.contains("Claude Code"))
+        XCTAssertFalse(cleanedOutput.lowercased().contains("clod code"),
+                       "precondition: the rule's `from` is gone from the cleaned output")
+
+        let sub = VocabularySubstitutor(substitutions: vocab.substitutions)
+
+        // (1) BUGGY keying on the cleaned output → the rule can't match its own `to`.
+        let firedFromCleaned = sub.firedSubstitutionIDs(in: cleanedOutput)
+        XCTAssertFalse(firedFromCleaned.contains(clodID),
+                       "keying on post-clean text must NOT count a from != to rule (the bug)")
+
+        // (2) FIXED keying on the raw pre-clean transcript → the rule is counted.
+        let firedFromRaw = sub.firedSubstitutionIDs(in: rawTranscript)
+        XCTAssertTrue(firedFromRaw.contains(clodID),
+                      "keying on the raw pre-clean transcript must count the rule (the fix)")
+
+        let bumped = vocab.incrementingUsage(of: firedFromRaw)
+        XCTAssertEqual(bumped.substitutions.first(where: { $0.id == clodID })?.usageCount, 1)
+    }
+
+    /// REGRESSION GUARD for the LIVE-CHUNK variant of the keying bug: streaming
+    /// sessions clean each CHUNK (vocabulary applied per chunk) and accumulate the
+    /// SUBSTITUTED text into the session buffer, so even the "raw" text handed to
+    /// completeFinalText no longer contains the `from` phrases. The fix captures
+    /// the firing decision inside every postProcess call, via
+    /// `TranscriptCleaner.firedSubstitutionIDs(inRawTranscript:)`, unioned across
+    /// the session. This pins both halves:
+    ///   1. the accumulated post-chunk session text does NOT fire the rule (so
+    ///      keying only on completeFinalText's input can't count streaming use);
+    ///   2. the per-chunk cleaner capture DOES fire it — including through the
+    ///      cleaner's own normalization (whisper's newline/marker noise), which a
+    ///      bare VocabularySubstitutor match on the raw chunk would miss.
+    func testLiveChunkUsageCountingRequiresPerCleanCapture() {
+        let rule = Vocabulary.Substitution(from: "clod code", to: "Claude Code")
+        let config = TranscriptCleaner.Config(
+            language: "en", customVocabularyEnabled: true, substitutions: [rule],
+            smartFormattingEnabled: true, fillerRemovalEnabled: false, spokenPunctuationEnabled: false)
+        let cleaner = TranscriptCleaner(config: config)
+
+        // Simulate the live pipeline: chunks cleaned individually, then joined —
+        // exactly what insertLiveChunk accumulates into currentSessionText.
+        let rawChunks = [" i love\nclod code", "every day"]
+        let sessionText = rawChunks.map { cleaner.clean($0, isFinalTranscript: false) }
+            .joined(separator: " ")
+        XCTAssertTrue(sessionText.contains("Claude Code"))
+
+        // (1) The accumulated session text can no longer fire the rule.
+        XCTAssertTrue(
+            VocabularySubstitutor(substitutions: [rule])
+                .firedSubstitutionIDs(in: sessionText).isEmpty,
+            "post-chunk session text must not be the usage-count key (the bug)")
+
+        // (2) Per-clean capture on each raw chunk fires it (union across chunks),
+        //     surviving whisper's leading-space/newline noise via the cleaner's
+        //     shared normalization.
+        var fired: Set<Vocabulary.Substitution.ID> = []
+        for chunk in rawChunks {
+            fired.formUnion(cleaner.firedSubstitutionIDs(inRawTranscript: chunk))
+        }
+        XCTAssertEqual(fired, [rule.id], "per-clean capture must count the rule once")
+    }
+
+    /// Part C plumbing end-to-end: a captured type-over pair flows EditDiff →
+    /// proposeSubstitution → CorrectionProposalState as a user-visible proposal;
+    /// accepting adds a real, applied substitution; a second reject-then-recapture
+    /// of the same fix is suppressed. Pure — models exactly what the AX watcher
+    /// feeds AppState, without any AX.
+    func testCorrectionCaptureBecomesProposalThenAcceptedRule() {
+        // The watcher observes "kubernetis" inserted, "kubernetes" surviving.
+        guard let pair = EditDiff.singleTokenCorrection(
+            afterInsert: "we run kubernetis in prod",
+            later: "we run kubernetes in prod"
+        ) else { return XCTFail("clean single-word edit should be captured") }
+
+        var vocab = Vocabulary(terms: [], substitutions: [])
+        let (state, added) = CorrectionProposalState.empty.considering(
+            inserted: pair.inserted, surviving: pair.surviving,
+            existingSubstitutions: vocab.substitutions, now: at(0))
+        XCTAssertEqual(added?.from, "kubernetis")
+        XCTAssertEqual(added?.to, "kubernetes")
+
+        // Accept → substitution added and now actually rewrites future transcripts.
+        let (afterAccept, accepted) = state.accepting(added!.id)
+        vocab.substitutions.append(accepted!)
+        XCTAssertTrue(afterAccept.pending.isEmpty)
+        XCTAssertEqual(
+            VocabularySubstitutor(substitutions: vocab.substitutions)
+                .apply(to: "deploy kubernetis now"),
+            "deploy kubernetes now")
+
+        // Reject path on a fresh capture suppresses the identical re-proposal.
+        let (s1, p1) = CorrectionProposalState.empty.considering(
+            inserted: "run helo there", surviving: "run hello there",
+            existingSubstitutions: [], now: at(1))
+        let afterReject = s1.rejecting(p1!.id)
+        let (s2, again) = afterReject.considering(
+            inserted: "say helo again", surviving: "say hello again",
+            existingSubstitutions: [], now: at(2))
+        XCTAssertNil(again, "a declined fix must never be re-proposed")
+        XCTAssertTrue(s2.pending.isEmpty)
+    }
+
     // MARK: - Voice editing in live dictation (MAK-19)
     //
     // These drive a session's finalized utterances through the SAME seam the app
