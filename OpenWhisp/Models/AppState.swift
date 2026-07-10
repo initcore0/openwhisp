@@ -64,6 +64,45 @@ class AppState: ObservableObject {
         }
     }
 
+    /// The primary keycode of a fully-custom dictation trigger (MAK-17), or -1
+    /// when the custom trigger is a bare modifier (e.g. lone ⌥). Only consulted
+    /// when `triggerMode == "custom"`. Persisted as an Int; -1 is the nil sentinel.
+    @Published var customTriggerKeyCode: Int {
+        didSet {
+            UserDefaults.standard.set(customTriggerKeyCode, forKey: "customTriggerKeyCode")
+            pushCustomTriggerToMonitor()
+        }
+    }
+
+    /// The modifier bitmask (TriggerModifiers.rawValue) of the custom trigger.
+    @Published var customTriggerModifiers: Int {
+        didSet {
+            UserDefaults.standard.set(customTriggerModifiers, forKey: "customTriggerModifiers")
+            pushCustomTriggerToMonitor()
+        }
+    }
+
+    /// The resolved custom trigger from the two persisted fields (-1 keycode means
+    /// a bare-modifier binding). Used to push to the monitor and to display.
+    var customTrigger: DictationTrigger {
+        DictationTrigger(
+            keyCode: customTriggerKeyCode >= 0 ? Int64(customTriggerKeyCode) : nil,
+            modifiers: TriggerModifiers(rawValue: customTriggerModifiers)
+        )
+    }
+
+    /// Record a captured shortcut as the custom trigger and switch to it. Writing
+    /// the fields persists and re-pushes to the monitor.
+    func setCustomTrigger(keyCode: Int64?, modifiers: TriggerModifiers) {
+        customTriggerKeyCode = keyCode.map(Int.init) ?? -1
+        customTriggerModifiers = modifiers.rawValue
+        triggerMode = "custom"
+    }
+
+    private func pushCustomTriggerToMonitor() {
+        hotkeyMonitor?.customTrigger = customTrigger
+    }
+
     /// How the trigger activates dictation: "hold" (press-to-talk, the default)
     /// or "toggle" (hands-free lock — tap to start, tap/Esc to stop). A quick
     /// double-tap reaches lock even in hold mode. The interaction logic lives in
@@ -102,6 +141,16 @@ class AppState: ObservableObject {
         didSet {
             UserDefaults.standard.set(refineKey, forKey: "refineKey")
             hotkeyMonitor?.refineKey = refineKey
+        }
+    }
+
+    /// Selected mouse-button dictation trigger (MouseTrigger id, e.g. "mouse2";
+    /// "off" disables it). Shares the hold/toggle activation with the key trigger
+    /// (MAK-42).
+    @Published var mouseTrigger: String {
+        didSet {
+            UserDefaults.standard.set(mouseTrigger, forKey: "mouseTrigger")
+            hotkeyMonitor?.mouseTrigger = mouseTrigger
         }
     }
 
@@ -165,6 +214,20 @@ class AppState: ObservableObject {
         didSet {
             UserDefaults.standard.set(autoGainEnabled, forKey: "autoGainEnabled")
             audioRecorder?.autoGainEnabled = autoGainEnabled
+        }
+    }
+
+    /// Quiet-dictation mode (MAK-45, v1): a preprocessing preset for whispered / very
+    /// soft speech. Turning it on (a) swaps auto-gain to the stronger high-gain
+    /// `QuietDictationMode` preset in the recorder, (b) lowers the pause-based VAD's
+    /// `speechThreshold` (and lengthens the silence hangover) so a whisper still
+    /// opens a chunk, and (c) drops the hands-free / agent-bridge silence-auto-stop
+    /// gates so a whisper still arms them. Default OFF — when off, capture behaves
+    /// exactly as before. Best paired with getting close to the mic (UI copy).
+    @Published var quietDictationEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(quietDictationEnabled, forKey: "quietDictationEnabled")
+            audioRecorder?.quietModeEnabled = quietDictationEnabled
         }
     }
 
@@ -512,6 +575,16 @@ class AppState: ObservableObject {
         didSet { persistOutputTargetSettings() }
     }
 
+    /// Post-completion rules engine (MAK-43): the user's `RuleSet`, loaded from and
+    /// persisted to `RuleStore` (JSON, quarantine loader). Rules fire on the
+    /// transcribe-complete / llm-complete hooks as a SIDE CHANNEL — see
+    /// `fireRules(...)` — and never affect the normal transcript insert. Each
+    /// mutation re-saves; the plan is recomputed fresh at each hook from this value,
+    /// so a rule edit takes effect on the next dictation with no extra plumbing.
+    @Published var ruleSet: RuleSet {
+        didSet { RuleStore.save(ruleSet) }
+    }
+
     /// Convenience projections so the Settings UI can bind directly to each field of
     /// `outputTargetSettings` (SwiftUI can't bind into a nested struct's members via
     /// a `@Published` aggregate without these). Each setter writes back through the
@@ -552,10 +625,63 @@ class AppState: ObservableObject {
         didSet { UserDefaults.standard.set(historyEnabled, forKey: "historyEnabled") }
     }
 
+    // MARK: Raw-audio retention (MAK-40) — OPT-IN, on-device only
+
+    /// Opt-in: keep each dictation's raw audio on THIS Mac (never uploaded) so it
+    /// can be re-transcribed later. OFF by default. Turning it off deletes every
+    /// retained clip immediately (the audio was the only reason to keep them).
+    @Published var retainRawAudioEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(retainRawAudioEnabled, forKey: "retainRawAudioEnabled")
+            if !retainRawAudioEnabled { purgeAllRetainedAudio() }
+        }
+    }
+
+    /// Retention policy — delete audio + history older than N days (0 = no age cap).
+    @Published var audioRetentionDays: Int {
+        didSet {
+            UserDefaults.standard.set(audioRetentionDays, forKey: "audioRetentionDays")
+            applyRetentionPolicy()
+        }
+    }
+
+    /// Retention policy — keep at most N retained clips (0 = no count cap).
+    @Published var audioRetentionMaxClips: Int {
+        didSet {
+            UserDefaults.standard.set(audioRetentionMaxClips, forKey: "audioRetentionMaxClips")
+            applyRetentionPolicy()
+        }
+    }
+
+    /// A COPY of the whole-session WAV staged for retention by the current `.final`
+    /// (non-streaming) dictation, made before the engine deletes the original.
+    /// `recordHistory` moves it to the entry's canonical name (or discards it on any
+    /// early return). Streaming/live-chunk sessions have no single whole-session WAV,
+    /// so retention covers the standard hold-to-talk path (see the changelog note).
+    private var pendingRetainWAVPath: URL?
+
     /// Per-app override profiles (persisted to profiles.json).
     @Published var profiles: [AppProfile] {
         didSet { AppProfileStore.save(profiles) }
     }
+
+    /// First-class user-authored Modes (MAK-39), persisted to modes.json. A Mode
+    /// generalizes an AppProfile: a stable invocation key + tone/instruction/model
+    /// overrides + optional app auto-activation binding. Invoked by key from the
+    /// Settings picker or an `openwhisp://switch-mode`/`activate-mode` URL, or auto-
+    /// activated when its bound app is frontmost.
+    @Published var modes: [Mode] {
+        didSet { ModeStore.save(modes) }
+    }
+
+    /// The Mode explicitly activated WITHOUT recording (`activate-mode` / picker):
+    /// it governs the NEXT dictation and stays put until changed. nil = no sticky
+    /// active Mode. Not persisted (a session-scoped choice).
+    @Published var activeModeKey: String?
+
+    /// A Mode queued for the NEXT dictation only (`switch-mode`): consumed once when
+    /// that dictation starts, then cleared. Takes precedence over `activeModeKey`.
+    @Published var pendingModeKey: String?
 
     /// Recent transcriptions (persisted to history.json), newest first.
     @Published var history: [TranscriptionEntry] = []
@@ -694,6 +820,29 @@ class AppState: ObservableObject {
         didSet { CorrectionProposalStore.save(correctionProposals) }
     }
 
+    /// MAK-34 — live screen-context awareness config. Strictly opt-in (off by
+    /// default), per-app allowlisted. Persisted as a single JSON blob in
+    /// UserDefaults (it carries an array, so the per-bool key idiom doesn't fit).
+    /// The captured context itself is NEVER persisted — only this config is.
+    @Published var screenContext: ScreenContextSettings {
+        didSet { Self.persistScreenContext(screenContext) }
+    }
+
+    /// The screen context captured at the start of the CURRENT session (bias terms
+    /// + bounded surrounding text), or nil when the gate denied it / nothing was
+    /// read. Held in memory for the session only; cleared on the next start and on
+    /// finish. Never written to disk.
+    private var sessionScreenContext: SessionScreenContext?
+
+    /// In-memory capture from `ScreenContextGate` + `ScreenContextReader` for one
+    /// dictation session.
+    struct SessionScreenContext {
+        /// Extra bias terms appended to the whisper initial prompt for this session.
+        var biasTerms: [String]
+        /// Bounded surrounding text for the local refine LLM, or nil.
+        var llmContext: String?
+    }
+
     /// macOS AX watcher that captures a post-insert single-word correction. Nil on
     /// platforms/builds without it; armed after a completed AX-path final insert.
     private let correctionWatcher = AXCorrectionWatcher()
@@ -774,6 +923,38 @@ class AppState: ObservableObject {
     /// Whether the user has completed (or skipped) the first-run onboarding.
     @Published var didCompleteOnboarding: Bool {
         didSet { UserDefaults.standard.set(didCompleteOnboarding, forKey: "didCompleteOnboarding") }
+    }
+
+    // MARK: - Discoverability hints (MAK-25)
+
+    /// Count of counted user dictation sessions (never agent/refine) — the input to
+    /// the rotating-hint auto-off window. Incremented once per completed user
+    /// dictation in `recordStats`. Persisted so the first-run window survives quits.
+    @Published private(set) var hintSessionCount: Int {
+        didSet { UserDefaults.standard.set(hintSessionCount, forKey: "hintSessionCount") }
+    }
+
+    /// Ids of overlay hints the user has permanently dismissed. Persisted; a
+    /// dismissed hint never shows again (see `HintRotation`).
+    @Published private(set) var dismissedHintIDs: Set<String> {
+        didSet { UserDefaults.standard.set(Array(dismissedHintIDs), forKey: "dismissedHintIDs") }
+    }
+
+    /// The rotating overlay hint to show for the current first-run session, or nil
+    /// when hints are off (past the window / all dismissed). The overlay layers its
+    /// own LIVE-state suppression on top (never during arming/finalizing/agent/
+    /// refine/lock) — this is only the "which hint, is the feature still on" call.
+    var currentOverlayHint: TipsCatalog.Hint? {
+        // `hintSessionCount` is bumped at session COMPLETION (recordStats), so during
+        // a live session it counts only the *previous* sessions. HintRotation expects
+        // a 1-based count including the current one — hence the +1 (the very first
+        // dictation is session 1, not 0, so it gets a hint too).
+        HintRotation.hint(sessionCount: hintSessionCount + 1, dismissed: dismissedHintIDs)
+    }
+
+    /// Permanently dismiss the given overlay hint so it never rotates in again.
+    func dismissOverlayHint(_ id: String) {
+        dismissedHintIDs.insert(id)
     }
 
     // MARK: - Services
@@ -872,6 +1053,11 @@ class AppState: ObservableObject {
     /// activeSessionID drops those stale transitions.
     private var recorderSessionID: UUID?
     private var transcriptionRequests: [UUID: TranscriptionRequest] = [:]
+
+    /// Strong ref to the throwaway engine driving a history re-transcribe (MAK-40),
+    /// held only while its one-shot request is in flight so it isn't deallocated
+    /// mid-transcription. Cleared in the completion/error callback.
+    private var reTranscribeEngine: FileTranscriptionEngine?
     /// Pure ordering/sequencing state machine for live-chunk dictation (sequence
     /// assignment, concurrency cap, out-of-order reorder buffer, insertion queue,
     /// drain detection). AppState owns the side effects (transcribe/insert/file IO);
@@ -1011,6 +1197,21 @@ class AppState: ObservableObject {
     /// them for the current session, so they can be restored when it ends.
     private var profileOverrideBackup: (language: String, translateToEnglish: Bool, outputMode: String, aiCleanup: Bool)?
 
+    /// The refine instruction contributed by the Mode active for the current
+    /// session (MAK-39): the composed tone + free-form instruction. nil when no
+    /// Mode is active or the active Mode steers nothing. Session-scoped: set in
+    /// `applyProfileForFrontmostApp`, cleared in `restoreProfileOverridesIfNeeded`.
+    /// `makeWholeTextRefiner` prefers it over the intensity-dial prompt so a Mode's
+    /// style actually reaches the LLM.
+    private var modeRefineInstructionOverride: String?
+
+    /// A per-app profile's text-insert method for the CURRENT session (MAK-42), or
+    /// nil when no profile overrides it. Kept separate from the persisted global
+    /// `insertionMode` (unlike the other overrides it isn't a published setting the
+    /// UI mirrors), so it's a plain session-scoped value: set on profile apply,
+    /// cleared on restore, and preferred by `currentInsertionMode`.
+    private var sessionInsertionModeOverride: InsertionMode?
+
     /// While a per-app profile override is in effect, don't persist the overridden
     /// settings to UserDefaults — otherwise a crash/force-quit mid-session would
     /// leave the profile's values as the user's globals on next launch.
@@ -1046,7 +1247,9 @@ class AppState: ObservableObject {
     }
 
     private var currentInsertionMode: InsertionMode {
-        InsertionMode(rawValue: insertionMode) ?? .auto
+        // A per-app profile can override the insert method for the session (MAK-42);
+        // otherwise use the global setting.
+        sessionInsertionModeOverride ?? InsertionMode(rawValue: insertionMode) ?? .auto
     }
 
     /// The active LLM endpoint for post-processing, derived from the provider setting.
@@ -1122,19 +1325,58 @@ class AppState: ObservableObject {
         // translation-polish branch, so `wholeTextCustomInstruction` returns nil for
         // it (see that resolver). `.none` never reaches here (the enhance guard in
         // completeFinalText skips the whole pass).
+        // MAK-39: an active Mode's composed tone/instruction wins over the
+        // intensity-dial prompt so the Mode's STYLE actually reaches the LLM. With
+        // no active Mode this falls through to the dial prompt as before (which is
+        // nil only for the translation-polish carve-out).
+        let baseInstruction = modeRefineInstructionOverride
+            ?? CleanupIntensity.wholeTextCustomInstruction(
+                intensity: cleanupIntensity,
+                mode: openAIEnhancementMode,
+                translateToEnglish: translateToEnglish
+            )
+        // MAK-34: when the gate captured surrounding text this session (only ever
+        // for a LOCAL provider — see ScreenContextGate), append it to the cleanup
+        // system prompt as reference-only material so the local model matches the
+        // thread's tone/vocabulary. Only augments a non-nil base instruction; a nil
+        // one is the translation-polish carve-out that must reach its own branch, so
+        // we leave it alone. The local-only guarantee is enforced by the gate at
+        // capture time — but this refiner is deliberately built per call so
+        // mid-session settings changes are reflected, which means the provider can
+        // have CHANGED since capture (e.g. bundled → openai while dictating). So the
+        // local-only rule is re-checked HERE, at use time, against the provider the
+        // request will actually hit: a non-local provider never sees the context,
+        // even when it was legitimately captured under a local one.
+        let customInstruction: String?
+        if let base = baseInstruction, let ctx = sessionScreenContext?.llmContext,
+           ScreenContextGate.localRefineProviders.contains(llmProvider) {
+            customInstruction = ScreenContextTruncator.augmentedInstruction(base, withContext: ctx)
+        } else {
+            customInstruction = baseInstruction
+        }
         return OpenAIRefiner(
             service: translationService,
             mode: refinementMode(openAIEnhancementMode),
             targetLanguage: translationTargetLanguage,
             endpoint: llmEndpoint,
-            model: llmModel,
-            customInstruction: CleanupIntensity.wholeTextCustomInstruction(
-                intensity: cleanupIntensity,
-                mode: openAIEnhancementMode,
-                translateToEnglish: translateToEnglish
-            )
+            model: modeOverriddenLLMModel,
+            // customInstruction composes both merged features: the Mode override
+            // (MAK-39) is the base via `baseInstruction`, and the screen-context
+            // augmentation (MAK-34, local-only, re-checked above) wraps it.
+            customInstruction: customInstruction
         )
     }
+
+    /// The LLM model the whole-text refiner should use: the active Mode's override
+    /// when it pins one (MAK-39), else the global `llmModel`. Session-scoped, so it
+    /// reverts automatically when the Mode's overrides are restored.
+    private var modeOverriddenLLMModel: String {
+        activeModeLLMModel ?? llmModel
+    }
+
+    /// LLM model pinned by the Mode active for the current session, or nil. Set
+    /// alongside `modeRefineInstructionOverride` (same lifecycle).
+    private var activeModeLLMModel: String?
 
     /// Whether this build includes the built-in LLM runtime (llama-server).
     /// False for an app packaged without it — the built-in provider then can't
@@ -1170,7 +1412,12 @@ class AppState: ObservableObject {
     }
 
     var hotkeyHelpText: String {
-        let trigger = triggerMode == "fn" ? "Release Fn" : "Release Control+Space"
+        let trigger: String
+        switch triggerMode {
+        case "fn":     trigger = "Release Fn"
+        case "custom": trigger = "Release \(customTrigger.displayName)"
+        default:       trigger = "Release Control+Space"
+        }
         return "\(trigger) to insert - Esc to cancel"
     }
 
@@ -1252,11 +1499,15 @@ class AppState: ObservableObject {
         language = UserDefaults.standard.string(forKey: "language") ?? "auto"
         translateToEnglish = UserDefaults.standard.object(forKey: "translateToEnglish") as? Bool ?? false
         triggerMode = UserDefaults.standard.string(forKey: "triggerMode") ?? "fn"
+        // Custom trigger (MAK-17): -1 keycode = bare-modifier binding / unset.
+        customTriggerKeyCode = UserDefaults.standard.object(forKey: "customTriggerKeyCode") as? Int ?? -1
+        customTriggerModifiers = UserDefaults.standard.object(forKey: "customTriggerModifiers") as? Int ?? 0
         // Press-to-talk stays the default activation; hands-free lock (toggle) is opt-in.
         hotkeyMode = UserDefaults.standard.string(forKey: "hotkeyMode") ?? "hold"
         // Left Control: the old rightControl default doesn't exist on MacBook
         // keyboards, which made refine silently impossible there.
         refineKey = UserDefaults.standard.string(forKey: "refineKey") ?? RefineKey.defaultKey.rawValue
+        mouseTrigger = UserDefaults.standard.string(forKey: "mouseTrigger") ?? MouseTrigger.defaultTrigger.id
         outputMode = UserDefaults.standard.string(forKey: "outputMode") ?? "preview"
         showOverlay = UserDefaults.standard.object(forKey: "showOverlay") as? Bool ?? true
         voiceIndicatorStyle = VoiceIndicatorStyle.from(UserDefaults.standard.string(forKey: "voiceIndicatorStyle"))
@@ -1268,6 +1519,7 @@ class AppState: ObservableObject {
         insertionMode = UserDefaults.standard.string(forKey: "insertionMode") ?? "auto"
         addTrailingSpace = UserDefaults.standard.object(forKey: "addTrailingSpace") as? Bool ?? false
         autoGainEnabled = UserDefaults.standard.object(forKey: "autoGainEnabled") as? Bool ?? true
+        quietDictationEnabled = UserDefaults.standard.object(forKey: "quietDictationEnabled") as? Bool ?? false
         smartFormattingEnabled = UserDefaults.standard.object(forKey: "smartFormattingEnabled") as? Bool ?? true
         spokenPunctuationEnabled = UserDefaults.standard.object(forKey: "spokenPunctuationEnabled") as? Bool ?? true
         fillerRemovalEnabled = UserDefaults.standard.object(forKey: "fillerRemovalEnabled") as? Bool ?? true
@@ -1341,8 +1593,15 @@ class AppState: ObservableObject {
         scriptPostProcessorEnabled = UserDefaults.standard.object(forKey: "scriptPostProcessorEnabled") as? Bool ?? false
         scriptPostProcessorPath = UserDefaults.standard.string(forKey: "scriptPostProcessorPath") ?? ""
         outputTargetSettings = Self.loadOutputTargetSettings()
+        ruleSet = RuleStore.load()
+        screenContext = Self.loadScreenContext()
         perAppModesEnabled = UserDefaults.standard.object(forKey: "perAppModesEnabled") as? Bool ?? false
         historyEnabled = UserDefaults.standard.object(forKey: "historyEnabled") as? Bool ?? true
+        // MAK-40 raw-audio retention: opt-in (default OFF); policy defaults keep the
+        // newest 50 clips and impose no age cap until the user sets one.
+        retainRawAudioEnabled = UserDefaults.standard.bool(forKey: "retainRawAudioEnabled")
+        audioRetentionDays = UserDefaults.standard.integer(forKey: "audioRetentionDays")
+        audioRetentionMaxClips = UserDefaults.standard.object(forKey: "audioRetentionMaxClips") as? Int ?? 50
         // Agent Bridge (M8) — default off; started at launch via startAgentBridgeIfEnabled().
         // (Property observers don't fire during init, so the lazy server isn't
         // touched here — it starts only from the explicit launch call.)
@@ -1359,12 +1618,24 @@ class AppState: ObservableObject {
         agentBridgeSpeakQuestionEnabled = UserDefaults.standard.object(forKey: "agentBridgeSpeakQuestionEnabled") as? Bool ?? true
         agentClients = AgentClientStore.load()
         profiles = AppProfileStore.load()
+        // MAK-39: load user-authored Modes. On the FIRST launch after Modes ship,
+        // an install with per-app profiles but no modes.json is seeded with a Mode
+        // per profile (bridged 1:1), so existing per-app behavior survives and the
+        // profiles show up in the new Modes UI. Profiles remain their own store for
+        // AppState's existing apply/restore lifecycle; Modes add the invocation key
+        // + tone/instruction layer on top.
+        let loadedModes = ModeStore.load()
+        modes = loadedModes.isEmpty
+            ? AppProfileStore.load().map(Mode.init(fromProfile:))
+            : loadedModes
         history = TranscriptionHistoryStore.load()
         customVocabularyEnabled = UserDefaults.standard.object(forKey: "customVocabularyEnabled") as? Bool ?? true
         vocabulary = VocabularyStore.load()
         correctionLearningEnabled = UserDefaults.standard.object(forKey: "correctionLearningEnabled") as? Bool ?? true
         correctionProposals = CorrectionProposalStore.load()
         didCompleteOnboarding = UserDefaults.standard.bool(forKey: "didCompleteOnboarding")
+        hintSessionCount = UserDefaults.standard.integer(forKey: "hintSessionCount")
+        dismissedHintIDs = Set(UserDefaults.standard.stringArray(forKey: "dismissedHintIDs") ?? [])
 
         wireUpServices()
         overlayController = OverlayWindowController(appState: self)
@@ -1376,6 +1647,9 @@ class AppState: ObservableObject {
         refreshPermissionBanners()
         ensureModelExists()
         warmWhisperServerIfPossible()
+        // MAK-40: enforce the retention policy on launch (age cap may have elapsed
+        // while the app was closed) — a no-op when retention is off.
+        applyRetentionPolicy()
     }
 
     private static func modelFileName(for modelName: String) -> String {
@@ -1474,6 +1748,7 @@ class AppState: ObservableObject {
 
         audioRecorder = injectedAudioCapture ?? AudioRecorder()
         audioRecorder.autoGainEnabled = autoGainEnabled
+        audioRecorder.quietModeEnabled = quietDictationEnabled
         audioRecorder.onStateChanged = { [weak self] state in
             Task { @MainActor in
                 guard let self else { return }
@@ -1521,8 +1796,10 @@ class AppState: ObservableObject {
 
         hotkeyMonitor = HotkeyMonitor()
         hotkeyMonitor.triggerMode = triggerMode
+        hotkeyMonitor.customTrigger = customTrigger
         hotkeyMonitor.hotkeyMode = hotkeyMode
         hotkeyMonitor.refineKey = refineKey
+        hotkeyMonitor.mouseTrigger = mouseTrigger
         hotkeyMonitor.onPermissionStateChanged = { [weak self] isGranted in
             Task { @MainActor in
                 self?.inputMonitoringPermissionLabel = isGranted ? "Granted" : "Needs permission"
@@ -1682,6 +1959,19 @@ class AppState: ObservableObject {
     /// backstop (~8s of continuous silence after speech), never a quick finish.
     private static let lockSafetyConfig = SilenceAutoStop.Config(silenceToStop: 8.0)
 
+    /// Lock-safety config for quiet mode: the lowered whisper-friendly speech/silence
+    /// gates (so a whisper still arms the detector) but keeping the long 8s safety
+    /// stop, so a whispered session is still protected from running forever.
+    private static let quietLockSafetyConfig: SilenceAutoStop.Config = {
+        let q = QuietDictationMode.quietSilenceAutoStopConfig
+        return SilenceAutoStop.Config(
+            speechLevel: q.speechLevel,
+            silenceLevel: q.silenceLevel,
+            silenceToStop: 8.0,
+            minSpeechToArm: q.minSpeechToArm
+        )
+    }()
+
     /// Feed the locked-user-session silence safety auto-stop (MAK-16). Arms the
     /// detector lazily on the first live sample of a locked user session, then
     /// finishes the session if the speaker goes silent for the long hangover.
@@ -1698,7 +1988,9 @@ class AppState: ObservableObject {
             return
         }
         if lockSafetyDetector == nil {
-            lockSafetyDetector = SilenceAutoStop(config: Self.lockSafetyConfig)
+            lockSafetyDetector = SilenceAutoStop(
+                config: quietDictationEnabled ? Self.quietLockSafetyConfig : Self.lockSafetyConfig
+            )
         }
         let now = ProcessInfo.processInfo.systemUptime
         if lockSafetyDetector?.ingest(level: vadLevel, now: now) == true {
@@ -1794,6 +2086,11 @@ class AppState: ObservableObject {
         // outputMode/language/AI-cleanup affects the whole session including the
         // streaming-vs-recording decision below. Restored when the session ends.
         applyProfileForFrontmostApp()
+        // MAK-34: capture screen context (bias terms + bounded surrounding text)
+        // once, now, while the user's original field is still focused — after the
+        // secure-field refusal guard above and profile resolution, before any
+        // routing. The gate re-checks the secure-field and per-app rules.
+        captureScreenContext()
         let liveMode = outputMode == "liveChunks" || outputMode == "preview"
         // Streaming backends (Apple Speech always; WhisperKit when a live preview is
         // wanted) run the real-time path. Both go through the shared streaming
@@ -1887,6 +2184,9 @@ class AppState: ObservableObject {
         isRecording = false
         currentSessionText = ""
         streamingText = ""
+        // MAK-34: drop any captured screen context so a cancelled session can never
+        // leak surrounding text into a later refine.
+        sessionScreenContext = nil
         statusMessage = "Cancelled"
         finishSessionUI()
     }
@@ -2818,6 +3118,11 @@ class AppState: ObservableObject {
                     return
                 }
 
+                // MAK-40: the engine transcribes with deleteWhenDone, so COPY the
+                // whole-session WAV to a staging file NOW (before it's deleted) if
+                // retention is on. recordHistory renames the staging file to the
+                // entry's canonical name; the secure-field guard there still applies.
+                self.stageRetainedAudio(from: path)
                 self.startTranscription(path: path, kind: .final)
             }
         }
@@ -2867,7 +3172,17 @@ class AppState: ObservableObject {
                 }
                 self.recorderSessionID = sessionID
                 if self.pauseBasedLiveChunksEnabled {
-                    recorder.startStreamingOnSilence(onChunk: onChunk)
+                    // Quiet mode lowers the VAD speech gate (and lengthens the pause
+                    // hangover) so a whisper still opens a chunk. Thresholds come from
+                    // the pure, unit-tested QuietDictationMode resolver.
+                    let t = QuietDictationMode.thresholds(quietEnabled: self.quietDictationEnabled)
+                    recorder.startStreamingOnSilence(
+                        silenceDuration: t.silenceDuration,
+                        minimumSpeechDuration: t.minimumSpeechDuration,
+                        maximumSpeechDuration: t.maximumSpeechDuration,
+                        speechThreshold: t.speechThreshold,
+                        onChunk: onChunk
+                    )
                 } else {
                     recorder.startStreaming(chunkDuration: self.liveChunkDuration, onChunk: onChunk)
                 }
@@ -3076,7 +3391,10 @@ class AppState: ObservableObject {
             language: engineLanguageSetting,
             wavPath: path.path,
             backend: whisperBackend == "serverAPI" ? .serverAPI : .cli,
-            prompt: customVocabularyEnabled ? vocabulary.whisperPrompt : ""
+            // MAK-34: custom vocabulary + any screen-context bias terms harvested
+            // this session. Both only prime the on-device engine (whisper.cpp CLI /
+            // server); WhisperKit ignores the string prompt today (known pilot gap).
+            prompt: effectiveWhisperPrompt
         )
     }
 
@@ -3244,6 +3562,15 @@ class AppState: ObservableObject {
         // per final, before any refine/enhance/insert branch, so it counts even for
         // agent sessions and mid-refine finals (vocab ran on `text` in all of them).
         recordVocabularyUsage(inRawTranscript: text)
+
+        // Rules engine (MAK-43), transcribe-complete hook: the transcript is now
+        // locally cleaned but PRE-refine. Fire matching rules as a fail-open side
+        // channel (never blocks/alters the insert below). Skipped on the empty/
+        // mid-refine branches only incidentally — those don't produce a normal
+        // insert either, and an empty `finalText` won't match a literal rule.
+        if !finalText.isEmpty {
+            fireRules(hook: .transcribeComplete, text: finalText)
+        }
 
         // Mid-dictation refine: the user tapped Refine while holding Fn, so this
         // session's final splits into CONTENT (snapshot at the tap) + INSTRUCTION
@@ -3601,6 +3928,11 @@ class AppState: ObservableObject {
             // to nil and no revert affordance appears — passed for consistency.
             recordHistory(text, rawText: originalText)
             recordStats(text)
+            // Rules engine (MAK-43), llm-complete hook for agent sessions. Agent
+            // sessions don't run the script post-processor or type into a field, so
+            // `text` here is the final result the caller gets — fire rules over it.
+            // Only rules that opted into agent sessions (RuleSessionMode) will match.
+            fireRules(hook: .llmComplete, text: text)
             statusMessage = "Done"
             finishSessionUI(delay: 0.8)
             return
@@ -3702,6 +4034,14 @@ class AppState: ObservableObject {
         // / script-processed text), not step-1's raw transcript.
         lastTranscription = text
 
+        // Rules engine (MAK-43), llm-complete hook: `text` is the truly-final string
+        // (post-refine, post-script) that was just dispatched to the insert path above.
+        // Fire matching rules as a fail-open side channel AFTER the insert dispatch —
+        // the runner is non-blocking and independent, so it never delays or alters the
+        // insert, and it receives the exact same final text the user got. Dictation
+        // (non-agent) sessions reach here.
+        fireRules(hook: .llmComplete, text: text)
+
         // MAK-35: `originalText` is the pre-AI-cleanup transcript (the caller passes
         // step-1's local text). Persist it as the revert baseline so the user can
         // recover their exact words when the LLM changed them. recordHistory stores
@@ -3787,6 +4127,120 @@ class AppState: ObservableObject {
               let decoded = try? JSONDecoder().decode(OutputTargetSettings.self, from: data)
         else { return OutputTargetSettings() }
         return decoded
+    }
+
+    // MARK: - Rules engine (MAK-43)
+
+    /// The app-side runner that executes planned rule actions over the existing
+    /// delivery layer. Lazy so it's built once; `insertSnippet` adapts the runner to
+    /// the same `TextOutput` insert seam the normal path uses.
+    private lazy var ruleEngineRunner: RuleEngineRunner = RuleEngineRunner(
+        insertSnippet: { [weak self] snippet in
+            guard let self else { return }
+            self.textOutput.insert(
+                snippet, mode: self.currentInsertionMode, restoreClipboard: self.restoreClipboard
+            )
+        }
+    )
+
+    /// Fire the rules engine for one lifecycle `hook` over `text`, as a fail-open
+    /// SIDE CHANNEL: hand the rule set + context to the runner, which plans (pure,
+    /// can't throw) and executes off-thread, best-effort. This NEVER changes, delays, or breaks
+    /// the normal transcript insert — the caller has already dispatched that. A
+    /// no-op when no rules exist, so the common case costs a single array check.
+    ///
+    /// The agent-session gate lives in the planner (`RuleSessionMode`): a rule only
+    /// fires on a `suppressOutput` (agent) session if it explicitly opted in.
+    private func fireRules(hook: RuleHook, text: String) {
+        guard !ruleSet.rules.isEmpty else { return }
+        let context = RuleContext(
+            hook: hook,
+            text: text,
+            appBundleID: targetApplication?.bundleIdentifier,
+            isAgentSession: suppressOutput
+        )
+        let payload = OutputPayload(
+            text: text,
+            language: outputLanguageForCleaning,
+            targetAppBundleID: targetApplication?.bundleIdentifier,
+            isLiveChunk: false
+        )
+        // Planning happens on the runner's queue, not here: matching can evaluate a
+        // user-supplied regex, and even the matcher's backtracking time budget must
+        // never be spent on the finalize path. `ruleSet` is a value type — the
+        // runner gets an immutable snapshot.
+        ruleEngineRunner.planAndRun(rules: ruleSet, context: context, payload: payload)
+    }
+
+    private static func persistScreenContext(_ settings: ScreenContextSettings) {
+        guard let data = try? JSONEncoder().encode(settings) else { return }
+        UserDefaults.standard.set(data, forKey: "screenContextSettings")
+    }
+
+    /// Load the persisted screen-context config, defaulting to OFF (opt-in) when
+    /// absent or unreadable.
+    private static func loadScreenContext() -> ScreenContextSettings {
+        guard let data = UserDefaults.standard.data(forKey: "screenContextSettings"),
+              let decoded = try? JSONDecoder().decode(ScreenContextSettings.self, from: data)
+        else { return ScreenContextSettings.default }
+        return decoded
+    }
+
+    /// Capture screen context for the session that is starting, applying the full
+    /// `ScreenContextGate` (opt-in, per-app allowlist, secure-field guard,
+    /// local-provider-only for LLM context). Reads the focused field via AX ONLY
+    /// when the gate permits it; nothing is persisted. Called from `startDictation`
+    /// AFTER the secure-field refusal guard and target-app resolution.
+    private func captureScreenContext() {
+        sessionScreenContext = nil
+
+        // NEVER capture for an agent-initiated session: its transcript is returned
+        // to the agent raw, and a whisper prompt can echo (hallucinate) prompt
+        // tokens into the output — screen text harvested as bias terms could
+        // otherwise leak to the agent through the transcript. Screen context is a
+        // user-session-only feature.
+        guard !sessionInitiator.isAgent else { return }
+
+        let decision = ScreenContextGate.decide(
+            settings: screenContext,
+            bundleID: currentTextTargetApplication()?.bundleIdentifier,
+            focusedFieldIsSecure: SecureFieldDetector.focusedFieldIsSecure(),
+            refineEnhancementEnabled: openAIEnhancementEnabled,
+            refineProvider: llmProvider
+        )
+        guard decision.readsField else { return }
+
+        // A single AX read serves both uses (bias terms + LLM context).
+        guard let fieldText = ScreenContextReader.readFocusedFieldText() else { return }
+
+        var biasTerms: [String] = []
+        if decision.harvestBiasTerms {
+            biasTerms = ScreenContextHarvester.harvest(
+                from: fieldText,
+                existingTerms: customVocabularyEnabled ? vocabulary.terms : [],
+                limit: screenContext.maxBiasTerms
+            )
+        }
+        var llmContext: String?
+        if decision.provideLLMContext {
+            llmContext = ScreenContextTruncator.prepareContext(
+                from: fieldText, maxChars: screenContext.maxContextChars
+            )
+        }
+        if biasTerms.isEmpty && llmContext == nil { return }
+        sessionScreenContext = SessionScreenContext(biasTerms: biasTerms, llmContext: llmContext)
+    }
+
+    /// The whisper initial-prompt string for the current session: the user's custom
+    /// vocabulary prompt plus any bias terms harvested from screen context this
+    /// session. Empty when neither applies. Bias terms never leave the machine —
+    /// they only prime the on-device transcription engine.
+    private var effectiveWhisperPrompt: String {
+        let base = customVocabularyEnabled ? vocabulary.whisperPrompt : ""
+        let extra = sessionScreenContext?.biasTerms ?? []
+        guard !extra.isEmpty else { return base }
+        let extraJoined = extra.joined(separator: ", ")
+        return base.isEmpty ? extraJoined : "\(base), \(extraJoined)"
     }
 
     /// Local transcript cleanup. Delegates to TranscriptCleaner (in OpenWhispCore)
@@ -3996,6 +4450,13 @@ class AppState: ObservableObject {
     private func finishSessionUI(delay: TimeInterval = 0) {
         sessionActive = false
         pendingStop = false
+        // MAK-40: this is the single terminal site for every session path, so any
+        // staged retention WAV that recordHistory did NOT consume (secure-field
+        // guard, error, cancel, empty result) is discarded here — a password-field
+        // dictation's audio must never linger in staging. Successful sessions
+        // consumed it in recordHistory before reaching this point, so it's a no-op
+        // for them.
+        discardStagedRetainedAudio()
         // Never let a spoken question run past the session — if it's still being
         // read when capture finalizes (short question, fast answer), cut it so the
         // app isn't talking over the user or into the next session.
@@ -4022,6 +4483,10 @@ class AppState: ObservableObject {
         isLiveChunkSession = false
         isPreviewSession = false
         isStreamingSession = false
+        // MAK-34: drop the captured screen context at every session terminal, not
+        // just cancel — stale context from app A must never survive into anything
+        // that runs between sessions or into a later session in app B.
+        sessionScreenContext = nil
         voiceEditingActiveForSession = false
         voiceEditBuffer = VoiceEditBuffer()
         // Deliver the outcome to an agent-initiated waiter exactly once. This is
@@ -4270,11 +4735,15 @@ class AppState: ObservableObject {
         voiceEditingEnabled = true
 
         triggerMode = "fn"
+        customTriggerKeyCode = -1
+        customTriggerModifiers = 0
         hotkeyMode = "hold"
         handsFreeSilenceAutoStop = true
         refineKey = RefineKey.defaultKey.rawValue
+        mouseTrigger = MouseTrigger.defaultTrigger.id
         microphoneID = ""
         autoGainEnabled = true
+        quietDictationEnabled = false
         language = "auto"
         translateToEnglish = false
 
@@ -4336,35 +4805,117 @@ class AppState: ObservableObject {
         return nil
     }
 
-    // MARK: - Per-app profiles
+    // MARK: - Modes (per-app + first-class, MAK-39)
 
-    /// If per-app modes are on and the frontmost app has a profile, temporarily
-    /// apply its non-nil overrides to the global settings, backing up originals.
+    /// Select a Mode by its invocation key, from the `openwhisp://` URL scheme or
+    /// the Settings picker. Returns false (and changes nothing) when no Mode owns
+    /// the key, so the caller can report an honest miss.
+    ///
+    /// - `sticky == true`  → `activate-mode`: set the sticky `activeModeKey`; the
+    ///   Mode governs subsequent dictations until changed. No recording starts.
+    /// - `sticky == false` → `switch-mode`: queue the Mode for the NEXT dictation
+    ///   only (`pendingModeKey`), consumed when it starts.
+    @discardableResult
+    func selectMode(key: String, sticky: Bool) -> Bool {
+        guard let mode = ModeResolver.mode(forKey: key, in: modes) else { return false }
+        if sticky {
+            activeModeKey = mode.key
+        } else {
+            pendingModeKey = mode.key
+        }
+        return true
+    }
+
+    /// Clear any sticky/queued Mode selection, reverting to global settings +
+    /// app auto-activation for future dictations (the picker's "None" choice).
+    func clearActiveMode() {
+        activeModeKey = nil
+        pendingModeKey = nil
+    }
+
+
+    /// Resolve and apply the Mode governing this dictation, temporarily overriding
+    /// the session-scoped globals (language / output / AI cleanup) and setting the
+    /// Mode's refine instruction, backing up originals for restore at session end.
+    ///
+    /// Precedence (via `ModeResolver.resolveActive`):
+    ///   1. `pendingModeKey` — a `switch-mode` queued for THIS dictation (consumed).
+    ///   2. `activeModeKey` — a sticky `activate-mode`/picker selection.
+    ///   3. app auto-activation — a Mode bound to the frontmost app (only when
+    ///      `perAppModesEnabled`).
+    ///
+    /// An explicit Mode (1 or 2) applies even when per-app modes is off — the user
+    /// asked for it by name. Keeps the historic method name so the call site in
+    /// `startDictation` is untouched.
     private func applyProfileForFrontmostApp() {
-        guard perAppModesEnabled, profileOverrideBackup == nil else { return }
+        guard profileOverrideBackup == nil else { return }
         let frontmost = currentTextTargetApplication()
-        guard let profile = AppProfileStore.profile(for: frontmost?.bundleIdentifier, in: profiles) else { return }
+
+        // Agent-initiated sessions (agent-dictate) must NOT consume or apply the
+        // user's explicit Mode selection: a `switch-mode` the user queued for
+        // THEIR next dictation would otherwise be silently eaten (and applied) by
+        // an agent asking a question in between. Agents get only the pre-Mode
+        // behavior: app auto-activation via the per-app toggle.
+        let explicitKey: String?
+        if sessionInitiator.isAgent {
+            explicitKey = nil
+        } else {
+            // A pending (switch-mode) key is one-shot: consume it now regardless of
+            // whether it resolves, so a stale key can't stick to future dictations.
+            explicitKey = pendingModeKey ?? activeModeKey
+            if pendingModeKey != nil { pendingModeKey = nil }
+        }
+
+        guard let mode = ModeResolver.resolveActive(
+            explicitKey: explicitKey,
+            frontmostBundleID: frontmost?.bundleIdentifier,
+            perAppModesEnabled: perAppModesEnabled,
+            modes: modes
+        ) else { return }
 
         // Back up the overridable globals.
         profileOverrideBackup = (language: language, translateToEnglish: translateToEnglish,
                                  outputMode: outputMode, aiCleanup: openAIEnhancementEnabled)
 
-        // Resolve the effective settings via the pure resolver (single source of
-        // truth for the "en" → translate remap + inherit-vs-override matrix), then
-        // apply. Don't persist the overridden values; they're session-scoped.
+        // A Mode shares the session-overridable fields with AppProfile; resolve them
+        // through the SAME pure resolver (single source of truth for the "en" →
+        // translate remap + inherit-vs-override matrix). Bridge the Mode into an
+        // AppProfile shape for that call (its app binding is irrelevant here).
         suppressSettingsPersistence = true
-        let resolved = ProfileResolver.resolve(profile: profile, over: .init(
+        let bridged = AppProfile(
+            appBundleID: mode.appBundleID ?? "",
+            displayName: mode.name,
+            language: mode.language,
+            outputMode: mode.outputMode,
+            aiCleanupEnabled: mode.aiCleanupEnabled
+        )
+        let resolved = ProfileResolver.resolve(profile: bridged, over: .init(
             language: language, translateToEnglish: translateToEnglish,
-            outputMode: outputMode, aiCleanupEnabled: openAIEnhancementEnabled
+            outputMode: outputMode, aiCleanupEnabled: openAIEnhancementEnabled,
+            insertionMode: insertionMode
         ))
         language = resolved.language
         translateToEnglish = resolved.translateToEnglish
         outputMode = resolved.outputMode
         openAIEnhancementEnabled = resolved.aiCleanupEnabled
+
+        // The tone + free-form instruction the Mode contributes to the refine pass,
+        // plus an optional LLM-model override.
+        modeRefineInstructionOverride = ModeResolver.refineInstruction(for: mode)
+        activeModeLLMModel = mode.llmModel
+
+        // The insert method is session-scoped, not a persisted published setting —
+        // stash it for currentInsertionMode; only when the profile actually changes
+        // it from the global (else stay nil so nothing to restore).
+        let resolvedInsert = InsertionMode.from(id: resolved.insertionMode)
+        sessionInsertionModeOverride = resolvedInsert.rawValue == insertionMode ? nil : resolvedInsert
     }
 
     /// Restore any settings a profile overrode for the just-finished session.
     private func restoreProfileOverridesIfNeeded() {
+        modeRefineInstructionOverride = nil
+        activeModeLLMModel = nil
+        sessionInsertionModeOverride = nil
         guard let backup = profileOverrideBackup else { return }
         profileOverrideBackup = nil
         // Re-enable persistence so restoring the originals writes them back.
@@ -4395,6 +4946,11 @@ class AppState: ObservableObject {
     /// `text`; when nothing was refined (raw == final) we store nil so
     /// `revertTarget` correctly hides the affordance (a revert would be a no-op).
     private func recordHistory(_ text: String, rawText: String? = nil) {
+        // MAK-40: on ANY early return the staged retained WAV must be discarded so it
+        // can't leak into the next entry. Take it here; the success path below moves
+        // it into place, and `defer` deletes any staging file left unused.
+        let staged = takeStagedRetainedAudio()
+        defer { if let staged, FileManager.default.fileExists(atPath: staged.path) { try? FileManager.default.removeItem(at: staged) } }
         guard historyEnabled else { return }
         // Defensive privacy guard: never persist a transcript if a secure field is
         // focused at record time. Fail-open on detection errors.
@@ -4408,23 +4964,200 @@ class AppState: ObservableObject {
             guard let rawTrimmed, !rawTrimmed.isEmpty, rawTrimmed != trimmed else { return nil }
             return rawTrimmed
         }()
+        let entryID = UUID()
+        // MAK-40: move the staged WAV into the retained-audio dir under the entry's
+        // canonical name. The `defer` above cleans up the staging file if this
+        // doesn't consume it (retention off, or move fails).
+        var audioFileName: String? = nil
+        if retainRawAudioEnabled, let staged, FileManager.default.fileExists(atPath: staged.path) {
+            audioFileName = AudioRetentionManager.adopt(stagedWAV: staged, entryID: entryID)
+        }
         let entry = TranscriptionEntry(
+            id: entryID,
             text: trimmed,
             date: Date(),
             appBundleID: targetApplication?.bundleIdentifier,
             appName: targetApplication?.localizedName,
-            rawText: storedRaw
+            rawText: storedRaw,
+            audioFileName: audioFileName
         )
         history.insert(entry, at: 0)
         if history.count > TranscriptionHistoryStore.maxEntries {
+            // Evict overflow entries — and delete any retained audio they carried,
+            // so the audio directory can't outgrow the history it's keyed to.
+            let overflow = history.suffix(from: TranscriptionHistoryStore.maxEntries)
+            for e in overflow {
+                if let name = e.audioFileName { AudioRetentionManager.deleteAudio(fileName: name) }
+            }
             history = Array(history.prefix(TranscriptionHistoryStore.maxEntries))
         }
         TranscriptionHistoryStore.save(history)
+        applyRetentionPolicy()
     }
 
     func clearHistory() {
         history = []
         TranscriptionHistoryStore.save(history)
+        // Manual "Clear" wipes the audio too — the clips are only useful attached to
+        // a history entry. Only files matching the retained-audio scheme are removed.
+        AudioRetentionManager.deleteAllAudio()
+    }
+
+    // MARK: - Raw-audio retention (MAK-40)
+
+    /// Absolute URL of a history entry's retained audio, if it currently exists on
+    /// disk. Used by the PrivacyPane "re-transcribe" affordance to gate itself.
+    func retainedAudioURL(for entry: TranscriptionEntry) -> URL? {
+        guard let name = entry.audioFileName, AudioRetentionManager.audioExists(fileName: name) else { return nil }
+        return RetainedAudioStore.url(for: name)
+    }
+
+    /// Re-run a history entry's stored audio through the CURRENT transcription engine
+    /// and replace the entry's text with the new result — keeping the old text as the
+    /// revert baseline (rawText) so the user can undo, reusing the MAK-35 plumbing.
+    ///
+    /// Reuses the `FileTranscriptionEngine.transcribe` seam exactly like a live
+    /// dictation: a fresh engine instance, wired to a one-shot completion that patches
+    /// the matching history entry. Best-effort — a failure surfaces via `error` and
+    /// leaves the entry unchanged.
+    func reTranscribeHistoryEntry(_ entry: TranscriptionEntry) {
+        guard let url = retainedAudioURL(for: entry) else {
+            error = "No stored audio for this entry to re-transcribe."
+            return
+        }
+        // One at a time: overwriting the strong ref would deallocate the in-flight
+        // engine mid-transcription (undefined subprocess/callback lifetime) and its
+        // result would be silently dropped.
+        guard reTranscribeEngine == nil else {
+            statusMessage = "Re-transcribe already running..."
+            return
+        }
+        statusMessage = "Re-transcribing..."
+        let engine = Self.makeFileEngine(for: transcriptionEngine, model: modelName, whisperKitModel: whisperKitModel)
+        // Hold a strong ref until the callback fires (the local would otherwise
+        // deallocate immediately). Cleared inside the callbacks.
+        reTranscribeEngine = engine
+        let requestID = UUID()
+        engine.onTranscriptionComplete = { [weak self] rid, text in
+            Task { @MainActor in
+                guard let self, rid == requestID else { return }
+                self.reTranscribeEngine = nil
+                self.applyReTranscription(text, to: entry.id)
+                self.statusMessage = "Ready"
+            }
+        }
+        engine.onTranscriptionError = { [weak self] rid, msg in
+            Task { @MainActor in
+                guard let self, rid == requestID else { return }
+                self.reTranscribeEngine = nil
+                self.error = "Re-transcribe failed: \(msg)"
+                self.statusMessage = "Ready"
+            }
+        }
+        engine.transcribe(
+            requestID: requestID,
+            binaryPath: whisperBinaryPath,
+            modelPath: modelPath,
+            language: engineLanguageSetting,
+            wavPath: url.path,
+            deleteWhenDone: false, // NEVER delete the retained clip — it's the user's kept audio
+            backend: whisperBackend == "serverAPI" ? .serverAPI : .cli,
+            prompt: customVocabularyEnabled ? vocabulary.whisperPrompt : ""
+        )
+    }
+
+    /// Patch a history entry with a re-transcription result. The previous text
+    /// becomes the entry's `rawText` (revert target) when it actually differs, so the
+    /// MAK-35 revert affordance restores the pre-re-transcribe words.
+    private func applyReTranscription(_ newText: String, to entryID: UUID) {
+        let trimmed = newText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let idx = history.firstIndex(where: { $0.id == entryID }) else { return }
+        history[idx] = history[idx].reTranscribed(withNewText: trimmed)
+        TranscriptionHistoryStore.save(history)
+        textOutput.setClipboard(trimmed)
+    }
+
+    /// Evaluate the retention policy over the current history and execute any sweep
+    /// it dictates: drop expired entries (age cap) and prune surplus audio (count
+    /// cap). Pure decision in `AudioRetentionPolicy`; this just applies it. No-op
+    /// when retention is off (the policy returns an empty sweep).
+    func applyRetentionPolicy(now: Date = Date()) {
+        let settings = AudioRetentionSettings(
+            enabled: retainRawAudioEnabled,
+            maxAgeDays: audioRetentionDays,
+            maxEntries: audioRetentionMaxClips
+        )
+        let candidates = history.map {
+            AudioRetentionPolicy.Candidate(id: $0.id, date: $0.date, hasAudio: $0.audioFileName != nil)
+        }
+        let sweep = AudioRetentionPolicy.evaluate(candidates: candidates, settings: settings, now: now)
+        guard !sweep.isEmpty else { return }
+
+        // Delete audio files first (both count-cap prunes and age-cap drops).
+        for e in history where sweep.audioToDelete.contains(e.id) {
+            if let name = e.audioFileName { AudioRetentionManager.deleteAudio(fileName: name) }
+        }
+        // Rebuild history: remove age-cap entries entirely; clear the audio filename
+        // on entries whose clip was pruned (count cap) so the row stays but shows no
+        // re-transcribe affordance.
+        history = history.compactMap { e in
+            if sweep.entriesToDelete.contains(e.id) { return nil }
+            if sweep.audioToDelete.contains(e.id) {
+                return TranscriptionEntry(
+                    id: e.id, text: e.text, date: e.date,
+                    appBundleID: e.appBundleID, appName: e.appName,
+                    rawText: e.rawText, audioFileName: nil
+                )
+            }
+            return e
+        }
+        TranscriptionHistoryStore.save(history)
+    }
+
+    /// Stage a COPY of a just-finished whole-session WAV for retention, made before
+    /// the engine deletes the original. No-op when retention is off. Replaces any
+    /// prior un-consumed staging file (a session that never recorded history).
+    private func stageRetainedAudio(from wav: URL) {
+        if let old = pendingRetainWAVPath, FileManager.default.fileExists(atPath: old.path) {
+            try? FileManager.default.removeItem(at: old)
+        }
+        pendingRetainWAVPath = nil
+        guard retainRawAudioEnabled else { return }
+        pendingRetainWAVPath = AudioRetentionManager.stageCopy(of: wav)
+    }
+
+    /// Consume and clear the staged retained-audio path (nil if none). The caller is
+    /// then responsible for moving it into place or deleting it.
+    private func takeStagedRetainedAudio() -> URL? {
+        defer { pendingRetainWAVPath = nil }
+        return pendingRetainWAVPath
+    }
+
+    /// Delete any un-consumed staged retention WAV and clear the pointer. Called
+    /// from finishSessionUI() so sessions that never record history (secure field,
+    /// error, cancel) can't leave their audio behind in the staging directory.
+    private func discardStagedRetainedAudio() {
+        guard let staged = takeStagedRetainedAudio() else { return }
+        if FileManager.default.fileExists(atPath: staged.path) {
+            try? FileManager.default.removeItem(at: staged)
+        }
+    }
+
+    /// Delete every retained clip and clear all entries' audio filenames (called when
+    /// the user turns retention OFF). History text rows are kept.
+    private func purgeAllRetainedAudio() {
+        AudioRetentionManager.deleteAllAudio()
+        var changed = false
+        history = history.map { e in
+            guard e.audioFileName != nil else { return e }
+            changed = true
+            return TranscriptionEntry(
+                id: e.id, text: e.text, date: e.date,
+                appBundleID: e.appBundleID, appName: e.appName,
+                rawText: e.rawText, audioFileName: nil
+            )
+        }
+        if changed { TranscriptionHistoryStore.save(history) }
     }
 
     /// Fold a completed dictation into the local-only stats aggregates. METADATA
@@ -4456,9 +5189,48 @@ class AppState: ObservableObject {
         )
         dictationStats.record(event)
         DictationStatsStore.save(dictationStats)
+
+        // MAK-25: count only genuine USER dictations toward the first-run hint
+        // window — never agent sessions or refine passes (those aren't the user
+        // discovering dictation, and hints are suppressed during them anyway).
+        // Stop bumping once past the window so the persisted counter can't overflow.
+        if !sessionInitiator.isAgent, !refineArmed,
+           hintSessionCount <= HintRotation.sessionsToShow {
+            hintSessionCount += 1
+        }
         #if OPENWHISP_INSTRUMENTATION
         lastDictationEvent = event
         #endif
+    }
+
+    // MARK: - Insights (MAK-38)
+
+    /// Derive the local Usage Insights summary from the in-memory metadata
+    /// aggregates. Pure computation over `dictationStats` (already the live copy,
+    /// mutated on every completed dictation) — nothing here leaves the device.
+    ///
+    /// App bundle ids are mapped to readable names using currently-running apps
+    /// (best source) with a fallback to the last app name seen in local history,
+    /// then to a prettified bundle id inside `InsightsSummary` itself.
+    var insightsSummary: InsightsSummary {
+        InsightsSummary(
+            stats: dictationStats,
+            today: DictationStats.dayKey(for: Date()),
+            appName: { [weak self] bundleID in self?.displayName(forBundleID: bundleID) },
+            engineName: { InsightsSummary.prettifyEngine($0) }
+        )
+    }
+
+    /// Best-effort human name for a bundle id, using running apps then history.
+    private func displayName(forBundleID bundleID: String) -> String? {
+        if let running = NSWorkspace.shared.runningApplications.first(where: {
+            $0.bundleIdentifier == bundleID
+        })?.localizedName {
+            return running
+        }
+        return history.first(where: {
+            $0.appBundleID == bundleID && ($0.appName?.isEmpty == false)
+        })?.appName
     }
 
     func copyHistoryEntry(_ entry: TranscriptionEntry) {
@@ -4576,6 +5348,7 @@ class AppState: ObservableObject {
     func exportConfig() -> ConfigBundle {
         ConfigBundle(
             profiles: profiles,
+            modes: modes,
             vocabulary: vocabulary
         )
     }
@@ -4588,6 +5361,9 @@ class AppState: ObservableObject {
     func applyConfig(_ bundle: ConfigBundle) -> String {
         if let importedProfiles = bundle.profiles {
             profiles = importedProfiles
+        }
+        if let importedModes = bundle.modes {
+            modes = importedModes
         }
         if let importedVocab = bundle.vocabulary {
             vocabulary = importedVocab
@@ -5187,7 +5963,9 @@ extension AppState: AgentBridgeHost {
             // Arm silence auto-stop (default-on) so the answer ends when the speaker
             // stops, not only on the timeout. Fed from `updateAudioLevel`. The
             // timeout below remains the hard ceiling / no-speech fallback.
-            self.agentSilenceDetector = self.agentBridgeSilenceAutoStop ? SilenceAutoStop() : nil
+            self.agentSilenceDetector = self.agentBridgeSilenceAutoStop
+                ? SilenceAutoStop(config: QuietDictationMode.silenceAutoStopConfig(quietEnabled: self.quietDictationEnabled))
+                : nil
 
             let sid = self.activeSessionID
             self.agentDictateTimeoutTask = Task { [weak self] in
