@@ -1,22 +1,44 @@
 {
   "$schema": "./changelog.schema.md",
   "project": "OpenWhisp",
-  "generated": "2026-07-09",
+  "generated": "2026-07-10",
   "releases": [
     {
       "id": "2026-07",
       "title": "July 2026",
-      "date": "2026-07-09",
-      "summary": "A batch of new features, fixes, and under-the-hood hardening — all landed on main, all covered by tests, all on your machine. All thirteen new features are live today: batch file transcription with watch folders, hands-free (tap-to-lock) dictation, adjustable AI cleanup, voice editing, a self-learning dictionary, rich local formatting, spoken-filename @-mentions for code editors, agent-CLI cleanup, output targets that route a dictation to a file/Shortcut/webhook, and an openwhisp:// URL scheme so Raycast, Alfred, or any launcher can drive dictation.",
+      "date": "2026-07-10",
+      "summary": "A batch of new features, fixes, and under-the-hood hardening — all landed on main, all covered by tests, all on your machine. All fourteen new features are live today: a floating Scratchpad to dictate into with no target app, batch file transcription with watch folders, hands-free (tap-to-lock) dictation, adjustable AI cleanup, voice editing, a self-learning dictionary, rich local formatting, spoken-filename @-mentions for code editors, agent-CLI cleanup, output targets that route a dictation to a file/Shortcut/webhook, and an openwhisp:// URL scheme so Raycast, Alfred, or any launcher can drive dictation.",
       "stats": {
-        "changesShipped": 23,
-        "newFeatures": 13,
-        "testsPassing": 1078,
+        "changesShipped": 24,
+        "newFeatures": 14,
+        "testsPassing": 1098,
         "onDevicePercent": 100,
-        "newFeaturesLive": 13,
+        "newFeaturesLive": 14,
         "newFeaturesCorePending": 0
       },
       "entries": [
+        {
+          "category": "feature",
+          "headline": "A floating Scratchpad — dictate anywhere, even with no app to type into",
+          "body": "Open the Scratchpad from the menu bar (or open \"openwhisp://scratchpad\") and you get an always-on-top note panel to dictate into when nothing else has focus — a quick capture surface that's fully local. Keep several notes in a list, type or dictate freely, and each note shows a small provenance line (when it was last dictated vs. typed). Nothing leaves your Mac; the notes are saved on device.",
+          "tickets": [
+            "MAK-49"
+          ],
+          "prs": [
+            PR_PLACEHOLDER
+          ],
+          "howTo": {
+            "availability": "live",
+            "summary": "Open the Scratchpad from the menu bar (⌘S in the menu) or via openwhisp://scratchpad, then dictate or type; each dictation lands in the active note.",
+            "steps": [
+              "Click the OpenWhisp menu-bar icon → “📝 Scratchpad” (or run open \"openwhisp://scratchpad\" from any launcher).",
+              "The floating panel opens on top of your other windows and takes focus. Use “＋ New” for another note; click a note in the left list to switch.",
+              "With the Scratchpad frontmost, start a dictation (your trigger key) — the text appends into the active note instead of an app. You can also just type.",
+              "Each note shows a provenance line (e.g. “Dictated 3:14 PM · typed 3:20 PM”); the list is ordered most-recently-touched first. Notes persist locally between launches."
+            ],
+            "note": "v1 is plain text with a simple multi-note list and per-note dictated/typed timestamps. It's local-only (saved under Application Support). Rich text, tabs, checklists, and image paste are intentionally deferred. Dictation lands in the Scratchpad only while it's the frontmost window; otherwise dictation goes to your focused app as usual."
+          }
+        },
         {
           "category": "feature",
           "headline": "Drop in an audio or video file — batch transcription with a live queue and subtitle export",
