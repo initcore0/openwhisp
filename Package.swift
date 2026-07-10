@@ -41,6 +41,7 @@ let package = Package(
                 "AudioRetentionPolicy.swift",
                 "CrashRecoveryState.swift",
                 "SecureFieldPolicy.swift",
+                "ScreenContext.swift",
                 "DownloadProgressFormatter.swift",
                 "PrivacyStatus.swift",
                 "TranscriptCleaner.swift",
