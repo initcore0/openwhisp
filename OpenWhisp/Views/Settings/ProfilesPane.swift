@@ -14,7 +14,7 @@ struct ProfilesPane: View {
             Section {
                 SubtitledToggle(
                     "Apply per-app profiles",
-                    subtitle: "Override language, output, and AI cleanup for specific apps when you start dictating into them.",
+                    subtitle: "Override language, output, AI cleanup, and the text-insert method for specific apps when you start dictating into them.",
                     isOn: $appState.perAppModesEnabled
                 )
 
@@ -75,6 +75,16 @@ struct ProfilesPane: View {
                     Text("Inherit").tag("__inherit__")
                     Text("On").tag("on")
                     Text("Off").tag("off")
+                }
+                .labelsHidden()
+            }
+            TableColumn("Insert") { profile in
+                Picker("", selection: insertBinding(profile.id)) {
+                    Text("Inherit").tag("__inherit__")
+                    Text("Auto").tag("auto")
+                    Text("Direct").tag("directAX")
+                    Text("Paste").tag("paste")
+                    Text("AppleScript").tag("appleScript")
                 }
                 .labelsHidden()
             }
@@ -147,6 +157,16 @@ struct ProfilesPane: View {
                 case "off": appState.profiles[idx].aiCleanupEnabled = false
                 default:    appState.profiles[idx].aiCleanupEnabled = nil
                 }
+            }
+        )
+    }
+
+    private func insertBinding(_ id: UUID) -> Binding<String> {
+        Binding(
+            get: { appState.profiles.first(where: { $0.id == id })?.insertionMode ?? "__inherit__" },
+            set: { newValue in
+                guard let idx = appState.profiles.firstIndex(where: { $0.id == id }) else { return }
+                appState.profiles[idx].insertionMode = newValue == "__inherit__" ? nil : newValue
             }
         )
     }

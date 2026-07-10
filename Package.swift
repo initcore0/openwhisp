@@ -29,12 +29,19 @@ let package = Package(
                 "EditDiff.swift",
                 "LanguageResolver.swift",
                 "ProfileResolver.swift",
+                "Mode.swift",
+                "ModeResolver.swift",
                 "MetaInstructionStripper.swift",
                 "FileTagTransform.swift",
                 "PostProcessor.swift",
                 "AppProfile.swift",
+                "AppleScriptInsert.swift",
+                "MouseTrigger.swift",
                 "TranscriptionHistory.swift",
+                "AudioRetentionPolicy.swift",
+                "CrashRecoveryState.swift",
                 "SecureFieldPolicy.swift",
+                "ScreenContext.swift",
                 "DownloadProgressFormatter.swift",
                 "PrivacyStatus.swift",
                 "TranscriptCleaner.swift",
@@ -61,6 +68,7 @@ let package = Package(
                 "Scratchpad.swift",
                 "DictationSession.swift",
                 "SilenceAutoStop.swift",
+                "QuietDictationMode.swift",
                 "AgentSetup.swift",
                 "AgentClientStore.swift",
                 "AgentRateLimiter.swift",
@@ -73,11 +81,13 @@ let package = Package(
                 "VoiceEditCommand.swift",
                 "RefineFlow.swift",
                 "RefineKey.swift",
+                "DictationTrigger.swift",
                 "AudioLevel.swift",
                 "FinalizingCaption.swift",
                 "AsyncTimeout.swift",
                 "SerialTaskChain.swift",
                 "DictationStats.swift",
+                "InsightsSummary.swift",
                 "Instrumentation.swift",
                 "VoiceIndicatorStyle.swift",
                 "WhisperKitBridge.swift",
@@ -89,21 +99,40 @@ let package = Package(
                 "RefineTap.swift",
                 "ServerProcessIdentity.swift",
                 "ServerLaunchRetry.swift",
+                "ManagedServerSpec.swift",
                 "WhisperResponseClassifier.swift",
                 "FileTranscriptionQueue.swift",
                 "SubtitleFormatter.swift",
-                "WatchFolderPolicy.swift"
+                "WatchFolderPolicy.swift",
+                "Rules.swift",
+                "RuleStore.swift",
+                "TipsCatalog.swift",
+                "HintRotation.swift"
             ]
+        ),
+        // The Agent Bridge client + MCP stdio adapter. A library (not folded into
+        // the executable) so its pure logic — the typed MCP wire and the
+        // persistent-connection cache/retry — is unit-testable with `swift test`;
+        // the `openwhisp` executable is a thin `main` on top.
+        .target(
+            name: "OpenWhispBridgeKit",
+            dependencies: ["OpenWhispCore"],
+            path: "Sources/OpenWhispBridgeKit"
         ),
         .executableTarget(
             name: "openwhisp",
-            dependencies: ["OpenWhispCore"],
+            dependencies: ["OpenWhispCore", "OpenWhispBridgeKit"],
             path: "Sources/OpenWhispCLI"
         ),
         .testTarget(
             name: "OpenWhispCoreTests",
             dependencies: ["OpenWhispCore"],
             path: "Tests/OpenWhispCoreTests"
+        ),
+        .testTarget(
+            name: "OpenWhispBridgeKitTests",
+            dependencies: ["OpenWhispBridgeKit", "OpenWhispCore"],
+            path: "Tests/OpenWhispBridgeKitTests"
         )
     ]
 )

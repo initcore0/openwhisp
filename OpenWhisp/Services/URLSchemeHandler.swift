@@ -77,15 +77,23 @@ enum URLSchemeHandler {
             }
             appState.textOutput.insert(last, mode: .paste, restoreClipboard: true)
 
-        case .switchMode(let key), .activateMode(let key):
-            // Recognized and validated, but not yet wired to a runtime action:
-            // OpenWhisp's "modes" today are per-app profiles keyed by bundle ID and
-            // applied automatically at dictation start — there is no named-mode
-            // registry to switch by key yet. Parsing/validation ship now (the
-            // security boundary and grammar are the hard part); the runtime hook
-            // lands when the named-mode registry does. Logged honestly rather than
-            // silently doing nothing that reads as success.
-            log.notice("openwhisp:// \(command.verb.rawValue, privacy: .public) key=\(key, privacy: .public): recognized but not yet wired (named-mode registry pending)")
+        case .switchMode(let key):
+            // Queue the Mode for the NEXT dictation only (MAK-39). If no Mode owns
+            // the key, log a miss rather than silently pinning a phantom key.
+            guard appState.selectMode(key: key, sticky: false) else {
+                log.notice("openwhisp://switch-mode key=\(key, privacy: .public): no Mode with that key")
+                return
+            }
+            log.notice("openwhisp://switch-mode key=\(key, privacy: .public): queued for next dictation")
+
+        case .activateMode(let key):
+            // Set the sticky active Mode WITHOUT recording — it governs subsequent
+            // dictations until changed.
+            guard appState.selectMode(key: key, sticky: true) else {
+                log.notice("openwhisp://activate-mode key=\(key, privacy: .public): no Mode with that key")
+                return
+            }
+            log.notice("openwhisp://activate-mode key=\(key, privacy: .public): activated")
         }
     }
 }

@@ -19,13 +19,24 @@ struct TranscriptionEntry: Codable, Identifiable, Equatable {
     /// when no cleanup ran (the raw text equals `text`) or for legacy entries.
     let rawText: String?
 
+    /// The filename (NOT the full path — just the leaf) of this dictation's
+    /// retained raw audio, when opt-in audio retention was on at record time
+    /// (MAK-40). The full path is resolved against the app's audio directory so a
+    /// moved Application Support folder still finds the clip. `nil` when retention
+    /// was off, the clip was pruned by the retention policy, or for legacy entries.
+    ///
+    /// Storing only the leaf (always `retained-<uuid>.<ext>`) keeps history.json
+    /// portable and lets `AudioRetentionPolicy` validate the name before any delete.
+    let audioFileName: String?
+
     init(
         id: UUID = UUID(),
         text: String,
         date: Date,
         appBundleID: String?,
         appName: String?,
-        rawText: String? = nil
+        rawText: String? = nil,
+        audioFileName: String? = nil
     ) {
         self.id = id
         self.text = text
@@ -33,10 +44,11 @@ struct TranscriptionEntry: Codable, Identifiable, Equatable {
         self.appBundleID = appBundleID
         self.appName = appName
         self.rawText = rawText
+        self.audioFileName = audioFileName
     }
 
-    // Explicit decoding so a missing `rawText` (older history.json files) decodes
-    // to nil instead of failing the whole load. All other keys stay required.
+    // Explicit decoding so a missing `rawText`/`audioFileName` (older history.json
+    // files) decodes to nil instead of failing the whole load. Other keys required.
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decode(UUID.self, forKey: .id)
@@ -45,6 +57,7 @@ struct TranscriptionEntry: Codable, Identifiable, Equatable {
         appBundleID = try c.decodeIfPresent(String.self, forKey: .appBundleID)
         appName = try c.decodeIfPresent(String.self, forKey: .appName)
         rawText = try c.decodeIfPresent(String.self, forKey: .rawText)
+        audioFileName = try c.decodeIfPresent(String.self, forKey: .audioFileName)
     }
 
     /// The text a one-click "revert to original" should restore, or `nil` when
@@ -58,6 +71,22 @@ struct TranscriptionEntry: Codable, Identifiable, Equatable {
     var revertTarget: String? {
         guard let raw = rawText, raw != text else { return nil }
         return raw
+    }
+
+    /// Produce the entry that results from re-transcribing this one's stored audio
+    /// (MAK-40): the new text replaces `text`, and the PREVIOUS text becomes the
+    /// revert baseline (`rawText`) when it differs — so the MAK-35 "revert to
+    /// original" affordance restores the pre-re-transcribe words. When the new text
+    /// equals the old, nothing changed, so the prior `rawText` is preserved as-is.
+    /// The retained-audio filename is carried through unchanged. Pure so the app-side
+    /// patch and tests share one decision.
+    func reTranscribed(withNewText newText: String) -> TranscriptionEntry {
+        let revertBaseline = text != newText ? text : rawText
+        return TranscriptionEntry(
+            id: id, text: newText, date: date,
+            appBundleID: appBundleID, appName: appName,
+            rawText: revertBaseline, audioFileName: audioFileName
+        )
     }
 }
 
@@ -83,5 +112,26 @@ enum TranscriptionHistoryStore {
 
     static func save(_ entries: [TranscriptionEntry]) {
         JSONStore.save(entries, to: fileURL, label: "TranscriptionHistoryStore")
+    }
+}
+
+/// On-disk home for opt-in retained raw audio (MAK-40): a dedicated `audio/`
+/// subdirectory next to `history.json` under Application Support, so the retention
+/// sweep operates on a directory THIS app owns exclusively. Filenames follow
+/// `AudioRetentionPolicy`'s `retained-<uuid>.<ext>` scheme; nothing else is ever
+/// written here, and the sweep validates every candidate's name before deleting.
+enum RetainedAudioStore {
+    /// `~/Library/Application Support/OpenWhisp/audio/`.
+    static var directoryURL: URL {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support")
+        return base
+            .appendingPathComponent("OpenWhisp", isDirectory: true)
+            .appendingPathComponent("audio", isDirectory: true)
+    }
+
+    /// Full URL for a stored clip's leaf filename.
+    static func url(for fileName: String) -> URL {
+        directoryURL.appendingPathComponent(fileName)
     }
 }

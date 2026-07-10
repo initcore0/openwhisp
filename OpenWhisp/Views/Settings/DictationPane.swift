@@ -10,9 +10,34 @@ struct DictationPane: View {
     var body: some View {
         Form {
             Section {
+                // Quick picks for the two built-in presets plus the recorded
+                // custom trigger; "Custom" is offered only once something is
+                // recorded (or already selected), so the row can't dead-end.
                 Picker("Trigger key", selection: $appState.triggerMode) {
                     Text("Fn (Globe)").tag("fn")
                     Text("Control + Space").tag("controlSpace")
+                    if appState.triggerMode == "custom" || appState.customTrigger.isBindable {
+                        Text("Custom: \(appState.customTrigger.displayName)").tag("custom")
+                    }
+                }
+
+                HotkeyCaptureField(
+                    current: appState.customTrigger,
+                    isActive: appState.triggerMode == "custom",
+                    onCapture: { keyCode, modifiers in
+                        appState.setCustomTrigger(keyCode: keyCode, modifiers: modifiers)
+                    },
+                    // Pause the global monitor while recording, so pressing the
+                    // CURRENT trigger to rebind it can't start dictation and the
+                    // recording's Esc-cancel can't fire the session cancel.
+                    onRecordingChanged: { recording in
+                        appState.hotkeyMonitor?.isSuspendedForCapture = recording
+                    }
+                )
+
+                if appState.triggerMode == "custom",
+                   let conflict = appState.customTrigger.conflict(refineKey: RefineKey.from(id: appState.refineKey)) {
+                    SettingsCallout(.warning, Self.conflictMessage(conflict))
                 }
 
                 Picker("Activation style", selection: $appState.hotkeyMode) {
@@ -26,6 +51,12 @@ struct DictationPane: View {
                         subtitle: "Safety net for hands-free mode: ends a locked session after a long stretch of silence, so a forgotten session doesn't keep recording. A normal pause to think won't stop it.",
                         isOn: $appState.handsFreeSilenceAutoStop
                     )
+                }
+
+                Picker("Mouse-button trigger", selection: $appState.mouseTrigger) {
+                    ForEach(MouseTrigger.allSelectable, id: \.id) { trigger in
+                        Text(trigger.label).tag(trigger.id)
+                    }
                 }
 
                 if RefineKey.from(id: appState.refineKey).conflictsWithTrigger(appState.triggerMode) {
@@ -44,7 +75,8 @@ struct DictationPane: View {
                     } else {
                         SettingsFootnote("Hold to talk: dictate while the key is held. Double-tap it to lock the mic open hands-free without changing this setting.")
                     }
-                    SettingsFootnote("The Refine key is configured in Cleanup › Refine.")
+                    SettingsFootnote("Record any key or combo above to set your own trigger, or keep a quick pick. The Refine key is configured in Cleanup › Refine.")
+                    SettingsFootnote("A mouse-button trigger binds a non-primary button (middle, or a side button) to start dictation — it uses the same activation style as the trigger key.")
                 }
             }
 
@@ -71,12 +103,23 @@ struct DictationPane: View {
                     subtitle: "Raises the level of soft microphones on this Mac before transcribing. Turn off if your mic is already loud or picks up background noise.",
                     isOn: $appState.autoGainEnabled
                 )
+
+                SubtitledToggle(
+                    "Quiet-dictation mode",
+                    subtitle: "Tuned for whispering and very soft speech: applies a much stronger local boost and lowers the speech-detection threshold so quiet words still register. Speak close to the mic — a few inches away — and keep the room quiet for best results.",
+                    isOn: $appState.quietDictationEnabled
+                )
             } header: {
                 Text("Microphone")
             } footer: {
-                if !appState.microphoneID.isEmpty,
-                   !availableMics.contains(where: { $0.uid == appState.microphoneID }) {
-                    SettingsFootnote("Your saved microphone is disconnected — the system default is used until it reconnects automatically.")
+                VStack(alignment: .leading, spacing: 4) {
+                    if appState.quietDictationEnabled {
+                        SettingsFootnote("Quiet mode boosts hard — position the mic within a few inches of your mouth and dictate somewhere quiet so background noise isn't amplified too. It's on-device; nothing leaves your Mac.")
+                    }
+                    if !appState.microphoneID.isEmpty,
+                       !availableMics.contains(where: { $0.uid == appState.microphoneID }) {
+                        SettingsFootnote("Your saved microphone is disconnected — the system default is used until it reconnects automatically.")
+                    }
                 }
             }
 
@@ -119,5 +162,19 @@ struct DictationPane: View {
 
     private func refreshDevices() {
         availableMics = AudioDevice.availableInputs()
+    }
+
+    /// User-facing warning for a custom-trigger conflict.
+    static func conflictMessage(_ conflict: DictationTrigger.Conflict) -> String {
+        switch conflict {
+        case .bareKey:
+            return "This is a single typing key with no modifier — it would fire every time you type it. Add a modifier (⌃ ⌥ ⌘) or pick a different key."
+        case .systemShortcut(let name):
+            return "This combo is already \(name). OpenWhisp would fight the system for it — pick another combo."
+        case .refineKey:
+            return "This clashes with your Refine key (Cleanup › Refine) — they'd react to the same press. Change one of them."
+        case .escapeKey:
+            return "Esc is the cancel key — a trigger on Esc would cancel the dictation it just started. Pick a different key."
+        }
     }
 }

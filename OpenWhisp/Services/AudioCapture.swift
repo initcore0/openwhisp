@@ -27,6 +27,11 @@ enum RecorderState: Equatable {
 protocol AudioCapture: AnyObject {
     /// Peak-normalize quiet input toward a healthy level. Settable live.
     var autoGainEnabled: Bool { get set }
+    /// Quiet-dictation mode (MAK-45): swaps auto-gain to the stronger high-gain
+    /// `QuietDictationMode` preset (higher target, larger boost ceiling) so
+    /// whispered/very soft speech is lifted much harder. Only takes effect when
+    /// `autoGainEnabled` is also true. Settable live. Default off.
+    var quietModeEnabled: Bool { get set }
     /// Capture lifecycle transitions (idle/recording/stopped/error).
     var onStateChanged: ((RecorderState) -> Void)? { get set }
     /// Normalized (0–1) live level for the waveform.

@@ -12,6 +12,7 @@ class OpenWhispApp: NSObject, NSApplicationDelegate {
     var statusItem: NSStatusItem!
     var settingsWindow: NSWindow?
     var onboardingWindow: NSWindow?
+    var tipsWindow: NSWindow?
     var appState: AppState!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -262,6 +263,11 @@ class OpenWhispApp: NSObject, NSApplicationDelegate {
         let setupGuide = NSMenuItem(title: "Setup Guide…", action: #selector(openSetupGuide), keyEquivalent: "")
         menu.addItem(setupGuide)
 
+        // Discoverability (MAK-25): a cheat sheet of gestures, spoken commands, and
+        // features — sourced from what actually ships (TipsCatalog).
+        let tips = NSMenuItem(title: "Tips & Commands…", action: #selector(openTips), keyEquivalent: "")
+        menu.addItem(tips)
+
         menu.addItem(.separator())
 
         // Quit
@@ -393,6 +399,30 @@ class OpenWhispApp: NSObject, NSApplicationDelegate {
 
     @objc private func openSetupGuide() {
         presentOnboarding()
+    }
+
+    /// "Tips & Commands…" — a cheat-sheet window of the gestures, spoken commands,
+    /// and features that actually ship (content is the pure `TipsCatalog`).
+    @objc private func openTips() {
+        if let tipsWindow {
+            tipsWindow.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+        let host = NSHostingController(rootView: TipsView())
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 560, height: 640),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            backing: .buffered, defer: false
+        )
+        window.title = "Tips & Commands"
+        window.isReleasedWhenClosed = false
+        window.minSize = NSSize(width: 460, height: 420)
+        window.contentViewController = host
+        window.center()
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        tipsWindow = window
     }
 
     @objc private func openSettings() {

@@ -29,18 +29,18 @@ public struct SilenceAutoStop {
     public struct Config: Equatable {
         /// Normalized level at/above which a sample counts as speech (arms the
         /// detector, and resets the silence run).
-        var speechLevel: Float
+        public private(set) var speechLevel: Float
         /// Normalized level at/below which a sample counts as silence. Kept below
         /// `speechLevel` for hysteresis; a sample between the two is neither — it
         /// breaks a silence run without counting as speech.
-        var silenceLevel: Float
+        public private(set) var silenceLevel: Float
         /// How long a CONTINUOUS run of silence samples must persist *after*
         /// speech before the detector fires.
-        var silenceToStop: TimeInterval
+        public private(set) var silenceToStop: TimeInterval
         /// A floor on how much speech must accrue before a stop is allowed, so a
         /// single stray click can't arm-then-immediately-fire on the next quiet
         /// sample.
-        var minSpeechToArm: TimeInterval
+        public private(set) var minSpeechToArm: TimeInterval
 
         public init(
             speechLevel: Float = 0.16,

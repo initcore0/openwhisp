@@ -55,6 +55,49 @@ enum OverlayPhase: Equatable {
     }
 }
 
+/// Pure decision for whether the rotating first-run discoverability hint may be
+/// shown in the overlay right now (MAK-25). This is the LIVE-state suppression that
+/// must layer on top of `HintRotation` (which decides *which* hint and whether the
+/// feature is still on): a hint is a calm, ambient tip and must never intrude on a
+/// moment that owns the overlay's attention.
+///
+/// Foundation-only so it lives in OpenWhispCore and is unit-tested independently of
+/// SwiftUI/AppKit. Inputs mirror exactly the AppState flags the overlay observes.
+enum OverlayHintGate {
+    /// Whether a rotating hint may be shown. Only in the calm listening/speaking
+    /// phase of an ORDINARY USER session — suppressed the moment any other overlay
+    /// state owns the cue:
+    /// - `.arming` / `.finalizing` / `.error` phases (each has its own caption),
+    /// - agent sessions (an agent is asking / the human's turn — amber owns it),
+    /// - refine (a rewrite is in progress),
+    /// - hands-free lock (its own affordance is showing),
+    /// - a transcript already on screen (don't crowd the words),
+    /// - a clipboard-fallback or revert affordance is up (actionable, takes priority).
+    static func shouldShow(
+        phase: OverlayPhase,
+        isTranscribing: Bool,
+        agentActive: Bool,
+        refineArmed: Bool,
+        dictationLocked: Bool,
+        showTranscript: Bool,
+        clipboardFallbackActive: Bool,
+        revertActive: Bool
+    ) -> Bool {
+        switch phase {
+        case .arming, .finalizing, .error: return false
+        case .listening, .speaking: break
+        }
+        if isTranscribing { return false }
+        if agentActive { return false }
+        if refineArmed { return false }
+        if dictationLocked { return false }
+        if showTranscript { return false }
+        if clipboardFallbackActive { return false }
+        if revertActive { return false }
+        return true
+    }
+}
+
 /// Pure decision for the post-dictation overlay's "revert to original" affordance
 /// (MAK-35 follow-up). The History list already offers a per-entry revert; this
 /// brings the SAME one-click restore to the overlay the instant a dictation lands,
