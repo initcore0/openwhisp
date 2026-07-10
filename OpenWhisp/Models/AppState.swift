@@ -63,6 +63,32 @@ class AppState: ObservableObject {
         }
     }
 
+    /// How the trigger activates dictation: "hold" (press-to-talk, the default)
+    /// or "toggle" (hands-free lock — tap to start, tap/Esc to stop). A quick
+    /// double-tap reaches lock even in hold mode. The interaction logic lives in
+    /// the pure `ActivationInteraction`; this only persists the choice and pushes
+    /// it to the hotkey monitor (MAK-16).
+    @Published var hotkeyMode: String {
+        didSet {
+            UserDefaults.standard.set(hotkeyMode, forKey: "hotkeyMode")
+            hotkeyMonitor?.hotkeyMode = hotkeyMode
+        }
+    }
+
+    /// True while a hands-free (toggle/double-tap) dictation is LOCKED OPEN — the
+    /// mic stays live with the trigger released, until a stop tap, Esc, or the
+    /// silence safety auto-stop. Drives the overlay's lock affordance. Published
+    /// so the overlay reflects it; set from the hotkey `onHotkeyDown(locked:)`
+    /// callback and cleared on every session end.
+    @Published private(set) var dictationLocked = false
+
+    /// Safety silence auto-stop for a LOCKED USER session (MAK-16): a forgotten
+    /// hands-free session must not record forever. Reuses the same
+    /// `SilenceAutoStop` the agent bridge uses, but with a much longer hangover
+    /// (the user may pause mid-thought), and is fed only while a user lock is
+    /// live. nil for hold sessions, agent sessions, and when locked is off.
+    private var lockSafetyDetector: SilenceAutoStop?
+
     /// Selected refine key (RefineKey id, e.g. "rightOption"; "off" disables it).
     @Published var refineKey: String {
         didSet {
@@ -560,6 +586,14 @@ class AppState: ObservableObject {
     /// sessions — only sessions the bridge started. See [[SilenceAutoStop]].
     @Published var agentBridgeSilenceAutoStop: Bool {
         didSet { UserDefaults.standard.set(agentBridgeSilenceAutoStop, forKey: "agentBridgeSilenceAutoStop") }
+    }
+    /// Auto-stop a hands-free (locked) dictation after a long stretch of silence,
+    /// so a forgotten toggle session doesn't record forever (MAK-16). Default-ON;
+    /// a safety net, not a quick-finish gesture — the hangover is deliberately
+    /// long (see `lockSafetyConfig`) so a normal mid-thought pause never ends it.
+    /// Only ever affects USER locked sessions; hold-to-talk is untouched.
+    @Published var handsFreeSilenceAutoStop: Bool {
+        didSet { UserDefaults.standard.set(handsFreeSilenceAutoStop, forKey: "handsFreeSilenceAutoStop") }
     }
     /// Play a short chime when an agent opens a dictation so you notice it even
     /// when you're not looking at that corner of the screen. Agent sessions only.
@@ -1152,6 +1186,8 @@ class AppState: ObservableObject {
         language = UserDefaults.standard.string(forKey: "language") ?? "auto"
         translateToEnglish = UserDefaults.standard.object(forKey: "translateToEnglish") as? Bool ?? false
         triggerMode = UserDefaults.standard.string(forKey: "triggerMode") ?? "fn"
+        // Press-to-talk stays the default activation; hands-free lock (toggle) is opt-in.
+        hotkeyMode = UserDefaults.standard.string(forKey: "hotkeyMode") ?? "hold"
         // Left Control: the old rightControl default doesn't exist on MacBook
         // keyboards, which made refine silently impossible there.
         refineKey = UserDefaults.standard.string(forKey: "refineKey") ?? RefineKey.defaultKey.rawValue
@@ -1249,6 +1285,7 @@ class AppState: ObservableObject {
         agentBridgeAllowCloudAI = UserDefaults.standard.bool(forKey: "agentBridgeAllowCloudAI")
         // Default-ON (silence auto-stop is the expected agent-dictate UX).
         agentBridgeSilenceAutoStop = UserDefaults.standard.object(forKey: "agentBridgeSilenceAutoStop") as? Bool ?? true
+        handsFreeSilenceAutoStop = UserDefaults.standard.object(forKey: "handsFreeSilenceAutoStop") as? Bool ?? true
         // Default-ON: the chime and spoken question are the whole point of an
         // agent handing you the mic — you should notice and be able to answer
         // without staring at the overlay. Users can turn either off.
@@ -1418,6 +1455,7 @@ class AppState: ObservableObject {
 
         hotkeyMonitor = HotkeyMonitor()
         hotkeyMonitor.triggerMode = triggerMode
+        hotkeyMonitor.hotkeyMode = hotkeyMode
         hotkeyMonitor.refineKey = refineKey
         hotkeyMonitor.onPermissionStateChanged = { [weak self] isGranted in
             Task { @MainActor in
@@ -1429,9 +1467,9 @@ class AppState: ObservableObject {
                 }
             }
         }
-        hotkeyMonitor.onHotkeyDown = { [weak self] in
+        hotkeyMonitor.onHotkeyDown = { [weak self] locked in
             Task { @MainActor in
-                self?.startDictation()
+                self?.startDictation(locked: locked)
             }
         }
         hotkeyMonitor.onHotkeyUp = { [weak self] in
@@ -1536,6 +1574,7 @@ class AppState: ObservableObject {
     @MainActor
     private func updateAudioLevel(_ level: Float, vadLevel: Float) {
         audioLevel = level
+        feedLockSafetyAutoStop(vadLevel: vadLevel)
         // Only agent sessions auto-stop on silence; a user's hotkey dictation ends
         // on their own gesture and must be untouched. The detector-nil test comes
         // first so the dominant case (user sessions, where it is always nil) pays
@@ -1571,6 +1610,40 @@ class AppState: ObservableObject {
         stopDictation()
     }
 
+    /// Silence safety config for a LOCKED user session. Same detector as the
+    /// agent bridge but with a MUCH longer hangover: a hands-free user is likely
+    /// composing and may pause to think, so this is a "you clearly walked away"
+    /// backstop (~8s of continuous silence after speech), never a quick finish.
+    private static let lockSafetyConfig = SilenceAutoStop.Config(silenceToStop: 8.0)
+
+    /// Feed the locked-user-session silence safety auto-stop (MAK-16). Arms the
+    /// detector lazily on the first live sample of a locked user session, then
+    /// finishes the session if the speaker goes silent for the long hangover.
+    /// No-op for hold sessions, agent sessions, or when the setting is off — the
+    /// dominant hold/agent case pays only the fast guard below.
+    @MainActor
+    private func feedLockSafetyAutoStop(vadLevel: Float) {
+        guard dictationLocked, handsFreeSilenceAutoStop,
+              sessionActive, isRecording,
+              !sessionInitiator.isAgent else {
+            // Not an armed context — drop any stale detector so a later hold
+            // session can't inherit it.
+            lockSafetyDetector = nil
+            return
+        }
+        if lockSafetyDetector == nil {
+            lockSafetyDetector = SilenceAutoStop(config: Self.lockSafetyConfig)
+        }
+        let now = ProcessInfo.processInfo.systemUptime
+        if lockSafetyDetector?.ingest(level: vadLevel, now: now) == true {
+            // Long silence after speech in a forgotten locked session — deliver
+            // whatever was captured, exactly as a stop tap would.
+            lockSafetyDetector = nil
+            statusMessage = "Stopped — silence"
+            stopDictation()
+        }
+    }
+
     /// Swap the file-transcription backend live (when the user changes the Engine
     /// setting). Tears down the old one, builds the new one, re-wires callbacks,
     /// and re-warms if appropriate. Safe to call only after initial wiring.
@@ -1593,7 +1666,14 @@ class AppState: ObservableObject {
 
     // MARK: - Actions
 
-    func startDictation() {
+    /// - Parameter locked: this dictation is hands-free (toggle/double-tap) — it
+    ///   stays open with the trigger released, shows the lock affordance, and arms
+    ///   the silence safety auto-stop. Default `false` (ordinary press-to-talk).
+    func startDictation(locked: Bool = false) {
+        // Remember the activation style for the whole session so the overlay shows
+        // the lock affordance and the safety auto-stop is armed once capture is
+        // live (see armLockSafetyIfNeeded, called from the recorder .recording hop).
+        dictationLocked = locked
         // The dictation key is now ONLY dictation — refine has its own dedicated
         // chord (see startRefine). So a plain press always starts a normal
         // dictation and pastes instantly (no re-press disambiguation, no deferral).
@@ -1620,7 +1700,7 @@ class AppState: ObservableObject {
             Task { @MainActor in
                 guard self.pendingPreemptStart else { return } // stop/cancel in the gap consumed it
                 self.pendingPreemptStart = false
-                self.startDictation()
+                self.startDictation(locked: locked)
             }
             return
         }
@@ -3854,6 +3934,13 @@ class AppState: ObservableObject {
         agentDictateQuestion = nil
         agentDictateReadingQuestion = false
         agentSilenceDetector = nil
+        // Clear the hands-free lock state and its safety detector, and return the
+        // interaction machine to idle — a session ending off-trigger (silence
+        // safety, agent preempt, error) would otherwise leave the machine thinking
+        // a lock is still open, so the next tap would stop-instead-of-start.
+        dictationLocked = false
+        lockSafetyDetector = nil
+        hotkeyMonitor?.resetActivation()
         agentDictateTimeoutTask?.cancel()
         agentDictateTimeoutTask = nil
         elapsedTimer?.invalidate()
@@ -4053,6 +4140,8 @@ class AppState: ObservableObject {
         voiceEditingEnabled = true
 
         triggerMode = "fn"
+        hotkeyMode = "hold"
+        handsFreeSilenceAutoStop = true
         refineKey = RefineKey.defaultKey.rawValue
         microphoneID = ""
         autoGainEnabled = true

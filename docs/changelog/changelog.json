@@ -7,16 +7,37 @@
       "id": "2026-07",
       "title": "July 2026",
       "date": "2026-07-09",
-      "summary": "A batch of new features, fixes, and under-the-hood hardening — all landed on main, all covered by tests, all on your machine. All ten new features are live in Settings today: adjustable AI cleanup, voice editing, a self-learning dictionary, rich local formatting, spoken-filename @-mentions for code editors, agent-CLI cleanup, and output targets that route a dictation to a file, a macOS Shortcut, or a webhook.",
+      "summary": "A batch of new features, fixes, and under-the-hood hardening — all landed on main, all covered by tests, all on your machine. All eleven new features are live in Settings today: hands-free (tap-to-lock) dictation, adjustable AI cleanup, voice editing, a self-learning dictionary, rich local formatting, spoken-filename @-mentions for code editors, agent-CLI cleanup, and output targets that route a dictation to a file, a macOS Shortcut, or a webhook.",
       "stats": {
-        "changesShipped": 19,
-        "newFeatures": 10,
-        "testsPassing": 983,
+        "changesShipped": 20,
+        "newFeatures": 11,
+        "testsPassing": 998,
         "onDevicePercent": 100,
-        "newFeaturesLive": 10,
+        "newFeaturesLive": 11,
         "newFeaturesCorePending": 0
       },
       "entries": [
+        {
+          "category": "feature",
+          "headline": "Hands-free dictation — tap to lock the mic open, tap or Esc to stop",
+          "body": "Dictation no longer has to be held. Switch on Hands-free mode (or just double-tap your trigger key) and one tap locks the mic open so you can speak with your hands free; a second tap — or Esc — stops it. A safety net ends a forgotten locked session after a long silence, so a session you walk away from won't record forever. Holding the key still works exactly as before.",
+          "tickets": [
+            "MAK-16"
+          ],
+          "prs": [],
+          "howTo": {
+            "availability": "live",
+            "summary": "Turn on Hands-free in Settings (or double-tap the trigger key), tap to start, tap again or press Esc to stop.",
+            "steps": [
+              "Settings › Dictation › Activation › “Activation style” → “Hands-free (tap to lock)”. (Or leave it on “Hold to talk” and double-tap the trigger key to lock the mic open for a single session.)",
+              "Tap your trigger key (Fn or Control + Space) — the overlay shows a lock badge and “Hands-free — tap key or Esc to stop”.",
+              "Speak with your hands free; the mic stays live.",
+              "Tap the trigger key again, or press Esc, to stop. Esc discards the session; a stop tap delivers it.",
+              "Optional safety net: “Auto-stop after long silence” (on by default) ends a locked session after a long quiet stretch so a forgotten one can't record forever."
+            ],
+            "note": "Live in Settings today. Hold-to-talk remains the default and is unchanged. The double-tap gesture reaches lock even without changing the setting; a normal pause to think won't trip the silence safety auto-stop (its hangover is deliberately long)."
+          }
+        },
         {
           "category": "feature",
           "headline": "Say a filename, get an @-mention — hands-free file references in Cursor & Windsurf",
@@ -351,7 +372,7 @@
         {
           "category": "improvement",
           "headline": "End-to-end audio testing, so features stay working",
-          "body": "A full regression suite now feeds pre-recorded audio through the whole pipeline — the reason \"983 tests passing\" is more than a number. Every feature above ships with coverage.",
+          "body": "A full regression suite now feeds pre-recorded audio through the whole pipeline — the reason \"998 tests passing\" is more than a number. Every feature above ships with coverage.",
           "tickets": [],
           "prs": [
             107,
