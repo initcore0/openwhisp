@@ -7,13 +7,13 @@
       "id": "2026-07",
       "title": "July 2026",
       "date": "2026-07-10",
-      "summary": "A batch of new features, fixes, and under-the-hood hardening — all landed on main, all covered by tests, all on your machine. All twenty new features are live today: opt-in on-device audio retention with one-click re-transcription and an auto-cleanup policy, a fully-remappable dictation trigger with a record-a-shortcut field, an AppleScript keystroke insert method and mouse-button dictation triggers, a local Usage Insights dashboard, opt-in screen-context awareness that biases transcription toward the names already on screen, batch file transcription with watch folders, hands-free (tap-to-lock) dictation, adjustable AI cleanup, voice editing, a self-learning dictionary, rich local formatting, spoken-filename @-mentions for code editors, agent-CLI cleanup, output targets that route a dictation to a file/Shortcut/webhook, first-class Modes you can invoke by name, a Rules engine that runs your own actions when a dictation finishes, and an openwhisp:// URL scheme so Raycast, Alfred, or any launcher can drive dictation.",
+      "summary": "A batch of new features, fixes, and under-the-hood hardening — all landed on main, all covered by tests, all on your machine. All twenty-one new features are live today: quiet-dictation mode for whispering into your mic, opt-in on-device audio retention with one-click re-transcription and an auto-cleanup policy, a fully-remappable dictation trigger with a record-a-shortcut field, an AppleScript keystroke insert method and mouse-button dictation triggers, a local Usage Insights dashboard, opt-in screen-context awareness that biases transcription toward the names already on screen, batch file transcription with watch folders, hands-free (tap-to-lock) dictation, adjustable AI cleanup, voice editing, a self-learning dictionary, rich local formatting, spoken-filename @-mentions for code editors, agent-CLI cleanup, output targets that route a dictation to a file/Shortcut/webhook, first-class Modes you can invoke by name, a Rules engine that runs your own actions when a dictation finishes, and an openwhisp:// URL scheme so Raycast, Alfred, or any launcher can drive dictation.",
       "stats": {
-        "changesShipped": 32,
-        "newFeatures": 20,
-        "testsPassing": 1290,
+        "changesShipped": 33,
+        "newFeatures": 21,
+        "testsPassing": 1309,
         "onDevicePercent": 100,
-        "newFeaturesLive": 20,
+        "newFeaturesLive": 21,
         "newFeaturesCorePending": 0
       },
       "entries": [
@@ -608,6 +608,28 @@
             109,
             110
           ]
+        },
+        {
+          "category": "feature",
+          "headline": "Quiet-dictation mode — whisper into your mic and still get clean text",
+          "body": "A new toggle tuned for whispering and very soft speech. It applies a much stronger on-device audio boost (a high-gain normalizer with a hard no-clip limiter) and lowers the speech-detection threshold so quiet words still register as speech instead of being dropped as silence. Pair it with getting close to the mic in a quiet room. Off by default; everything runs locally.",
+          "tickets": [
+            "MAK-45"
+          ],
+          "prs": [
+            153
+          ],
+          "howTo": {
+            "availability": "live",
+            "summary": "Settings › Dictation › Microphone › turn on “Quiet-dictation mode”, get within a few inches of the mic, and dictate softly.",
+            "steps": [
+              "Open Settings › Dictation › Microphone.",
+              "Turn on “Quiet-dictation mode”. (Leave “Auto-boost quiet microphone” on too — quiet mode is the stronger boost curve.)",
+              "Position the mic within a few inches of your mouth and pick a quiet spot — the boost is aggressive, so it will also lift background noise.",
+              "Dictate softly or whisper; the lowered speech threshold keeps quiet words from being treated as silence."
+            ],
+            "note": "v1 is a preprocessing preset — a stronger auto-gain plus whisper-friendly VAD/silence thresholds — not a custom whisper model. The boost never clips (hard-limited), and it won't amplify near-silence into hiss. In a noisy room the aggressive gain can raise background noise, so quiet mode is best close to the mic."
+          }
         },
         {
           "category": "improvement",

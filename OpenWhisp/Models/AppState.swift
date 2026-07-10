@@ -217,6 +217,20 @@ class AppState: ObservableObject {
         }
     }
 
+    /// Quiet-dictation mode (MAK-45, v1): a preprocessing preset for whispered / very
+    /// soft speech. Turning it on (a) swaps auto-gain to the stronger high-gain
+    /// `QuietDictationMode` preset in the recorder, (b) lowers the pause-based VAD's
+    /// `speechThreshold` (and lengthens the silence hangover) so a whisper still
+    /// opens a chunk, and (c) drops the hands-free / agent-bridge silence-auto-stop
+    /// gates so a whisper still arms them. Default OFF — when off, capture behaves
+    /// exactly as before. Best paired with getting close to the mic (UI copy).
+    @Published var quietDictationEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(quietDictationEnabled, forKey: "quietDictationEnabled")
+            audioRecorder?.quietModeEnabled = quietDictationEnabled
+        }
+    }
+
     /// Local, on-device cleanup of dictated text (punctuation, capitalization,
     /// filler removal). Default-on — this is the baseline quality pass and runs
     /// entirely locally, no network.
@@ -1505,6 +1519,7 @@ class AppState: ObservableObject {
         insertionMode = UserDefaults.standard.string(forKey: "insertionMode") ?? "auto"
         addTrailingSpace = UserDefaults.standard.object(forKey: "addTrailingSpace") as? Bool ?? false
         autoGainEnabled = UserDefaults.standard.object(forKey: "autoGainEnabled") as? Bool ?? true
+        quietDictationEnabled = UserDefaults.standard.object(forKey: "quietDictationEnabled") as? Bool ?? false
         smartFormattingEnabled = UserDefaults.standard.object(forKey: "smartFormattingEnabled") as? Bool ?? true
         spokenPunctuationEnabled = UserDefaults.standard.object(forKey: "spokenPunctuationEnabled") as? Bool ?? true
         fillerRemovalEnabled = UserDefaults.standard.object(forKey: "fillerRemovalEnabled") as? Bool ?? true
@@ -1733,6 +1748,7 @@ class AppState: ObservableObject {
 
         audioRecorder = injectedAudioCapture ?? AudioRecorder()
         audioRecorder.autoGainEnabled = autoGainEnabled
+        audioRecorder.quietModeEnabled = quietDictationEnabled
         audioRecorder.onStateChanged = { [weak self] state in
             Task { @MainActor in
                 guard let self else { return }
@@ -1943,6 +1959,19 @@ class AppState: ObservableObject {
     /// backstop (~8s of continuous silence after speech), never a quick finish.
     private static let lockSafetyConfig = SilenceAutoStop.Config(silenceToStop: 8.0)
 
+    /// Lock-safety config for quiet mode: the lowered whisper-friendly speech/silence
+    /// gates (so a whisper still arms the detector) but keeping the long 8s safety
+    /// stop, so a whispered session is still protected from running forever.
+    private static let quietLockSafetyConfig: SilenceAutoStop.Config = {
+        let q = QuietDictationMode.quietSilenceAutoStopConfig
+        return SilenceAutoStop.Config(
+            speechLevel: q.speechLevel,
+            silenceLevel: q.silenceLevel,
+            silenceToStop: 8.0,
+            minSpeechToArm: q.minSpeechToArm
+        )
+    }()
+
     /// Feed the locked-user-session silence safety auto-stop (MAK-16). Arms the
     /// detector lazily on the first live sample of a locked user session, then
     /// finishes the session if the speaker goes silent for the long hangover.
@@ -1959,7 +1988,9 @@ class AppState: ObservableObject {
             return
         }
         if lockSafetyDetector == nil {
-            lockSafetyDetector = SilenceAutoStop(config: Self.lockSafetyConfig)
+            lockSafetyDetector = SilenceAutoStop(
+                config: quietDictationEnabled ? Self.quietLockSafetyConfig : Self.lockSafetyConfig
+            )
         }
         let now = ProcessInfo.processInfo.systemUptime
         if lockSafetyDetector?.ingest(level: vadLevel, now: now) == true {
@@ -3141,7 +3172,17 @@ class AppState: ObservableObject {
                 }
                 self.recorderSessionID = sessionID
                 if self.pauseBasedLiveChunksEnabled {
-                    recorder.startStreamingOnSilence(onChunk: onChunk)
+                    // Quiet mode lowers the VAD speech gate (and lengthens the pause
+                    // hangover) so a whisper still opens a chunk. Thresholds come from
+                    // the pure, unit-tested QuietDictationMode resolver.
+                    let t = QuietDictationMode.thresholds(quietEnabled: self.quietDictationEnabled)
+                    recorder.startStreamingOnSilence(
+                        silenceDuration: t.silenceDuration,
+                        minimumSpeechDuration: t.minimumSpeechDuration,
+                        maximumSpeechDuration: t.maximumSpeechDuration,
+                        speechThreshold: t.speechThreshold,
+                        onChunk: onChunk
+                    )
                 } else {
                     recorder.startStreaming(chunkDuration: self.liveChunkDuration, onChunk: onChunk)
                 }
@@ -4702,6 +4743,7 @@ class AppState: ObservableObject {
         mouseTrigger = MouseTrigger.defaultTrigger.id
         microphoneID = ""
         autoGainEnabled = true
+        quietDictationEnabled = false
         language = "auto"
         translateToEnglish = false
 
@@ -5921,7 +5963,9 @@ extension AppState: AgentBridgeHost {
             // Arm silence auto-stop (default-on) so the answer ends when the speaker
             // stops, not only on the timeout. Fed from `updateAudioLevel`. The
             // timeout below remains the hard ceiling / no-speech fallback.
-            self.agentSilenceDetector = self.agentBridgeSilenceAutoStop ? SilenceAutoStop() : nil
+            self.agentSilenceDetector = self.agentBridgeSilenceAutoStop
+                ? SilenceAutoStop(config: QuietDictationMode.silenceAutoStopConfig(quietEnabled: self.quietDictationEnabled))
+                : nil
 
             let sid = self.activeSessionID
             self.agentDictateTimeoutTask = Task { [weak self] in

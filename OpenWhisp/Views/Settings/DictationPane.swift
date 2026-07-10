@@ -103,12 +103,23 @@ struct DictationPane: View {
                     subtitle: "Raises the level of soft microphones on this Mac before transcribing. Turn off if your mic is already loud or picks up background noise.",
                     isOn: $appState.autoGainEnabled
                 )
+
+                SubtitledToggle(
+                    "Quiet-dictation mode",
+                    subtitle: "Tuned for whispering and very soft speech: applies a much stronger local boost and lowers the speech-detection threshold so quiet words still register. Speak close to the mic — a few inches away — and keep the room quiet for best results.",
+                    isOn: $appState.quietDictationEnabled
+                )
             } header: {
                 Text("Microphone")
             } footer: {
-                if !appState.microphoneID.isEmpty,
-                   !availableMics.contains(where: { $0.uid == appState.microphoneID }) {
-                    SettingsFootnote("Your saved microphone is disconnected — the system default is used until it reconnects automatically.")
+                VStack(alignment: .leading, spacing: 4) {
+                    if appState.quietDictationEnabled {
+                        SettingsFootnote("Quiet mode boosts hard — position the mic within a few inches of your mouth and dictate somewhere quiet so background noise isn't amplified too. It's on-device; nothing leaves your Mac.")
+                    }
+                    if !appState.microphoneID.isEmpty,
+                       !availableMics.contains(where: { $0.uid == appState.microphoneID }) {
+                        SettingsFootnote("Your saved microphone is disconnected — the system default is used until it reconnects automatically.")
+                    }
                 }
             }
 

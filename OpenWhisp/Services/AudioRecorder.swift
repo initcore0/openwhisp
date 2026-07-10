@@ -38,6 +38,10 @@ class AudioRecorder: NSObject, AVAudioRecorderDelegate, AudioCapture {
     /// Auto-gain: boost quiet mics toward a healthy level so whisper gets a strong
     /// signal. Off => audio is passed through unchanged.
     var autoGainEnabled: Bool = true
+    /// Quiet-dictation mode (MAK-45): when on (and `autoGainEnabled`), `applyAutoGain`
+    /// uses the stronger `QuietDictationMode` high-gain preset instead of the default
+    /// mild normalizer, lifting whispered/very soft speech much harder (still no clip).
+    var quietModeEnabled: Bool = false
     /// Smoothed gain applied across buffers (avoids pumping between chunks).
     private var smoothedGain: Float = 1.0
     private var chunkTimer: Timer?
@@ -674,16 +678,23 @@ class AudioRecorder: NSObject, AVAudioRecorderDelegate, AudioCapture {
             if a > peak { peak = a }
         }
 
-        // Don't touch near-silence — avoids amplifying noise between words.
-        let silenceFloor: Float = 0.005
-        let targetPeak: Float = 0.7      // aim for a healthy but un-clipped level
-        let maxGain: Float = 12.0        // cap so we never blow up faint noise
-
+        // Quiet-dictation mode swaps in the stronger high-gain preset (higher
+        // target, larger boost ceiling), lifting whispers much harder while keeping
+        // the never-clip guarantees. The gain math (noise floor, limiter, ceiling)
+        // is the pure `QuietDictationMode.gain(forPeak:)` in core, unit-tested with
+        // synthetic PCM. Default (non-quiet) auto-gain keeps its original mild curve.
         let desiredGain: Float
-        if peak < silenceFloor {
-            desiredGain = 1.0            // leave silence as-is
+        if quietModeEnabled {
+            desiredGain = QuietDictationMode.gain(forPeak: peak)
         } else {
-            desiredGain = min(maxGain, max(1.0, targetPeak / peak))
+            let silenceFloor: Float = 0.005
+            let targetPeak: Float = 0.7      // aim for a healthy but un-clipped level
+            let maxGain: Float = 12.0        // cap so we never blow up faint noise
+            if peak < silenceFloor {
+                desiredGain = 1.0            // leave silence as-is
+            } else {
+                desiredGain = min(maxGain, max(1.0, targetPeak / peak))
+            }
         }
 
         // Smooth toward the desired gain so loudness doesn't pump chunk-to-chunk.
@@ -691,9 +702,20 @@ class AudioRecorder: NSObject, AVAudioRecorderDelegate, AudioCapture {
         let rate: Float = desiredGain > smoothedGain ? 0.5 : 0.2
         smoothedGain += (desiredGain - smoothedGain) * rate
 
-        guard smoothedGain > 1.0001 else { return }   // nothing meaningful to apply
+        // Quiet mode: the smoothed gain can lag well above what THIS buffer can
+        // take (a ~40× boost lingering from quiet buffers when the input suddenly
+        // gets loud — release only steps 20%/buffer). Limit the APPLIED gain to
+        // the current buffer's clip ceiling so the no-clip guarantee holds across
+        // smoothing, not just per-buffer. `smoothedGain` itself keeps tracking so
+        // the release curve is unchanged. Non-quiet mode is untouched (its 12×
+        // ceiling made this a non-issue, and the off path must stay identical).
+        let appliedGain = quietModeEnabled
+            ? QuietDictationMode.limitedGain(smoothedGain, forPeak: peak)
+            : smoothedGain
+
+        guard appliedGain > 1.0001 else { return }   // nothing meaningful to apply
         for i in 0..<frames {
-            let v = samples[i] * smoothedGain
+            let v = samples[i] * appliedGain
             samples[i] = v > 1.0 ? 1.0 : (v < -1.0 ? -1.0 : v)   // hard clamp, no clip
         }
     }

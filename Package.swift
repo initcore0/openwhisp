@@ -67,6 +67,7 @@ let package = Package(
                 "URLScheme.swift",
                 "DictationSession.swift",
                 "SilenceAutoStop.swift",
+                "QuietDictationMode.swift",
                 "AgentSetup.swift",
                 "AgentClientStore.swift",
                 "AgentRateLimiter.swift",

@@ -7,6 +7,7 @@ import XCTest
 /// tests need. Also pins the protocol-extension convenience defaults.
 final class FakeAudioCapture: AudioCapture {
     var autoGainEnabled: Bool = true
+    var quietModeEnabled: Bool = false
     var onStateChanged: ((RecorderState) -> Void)?
     var onLevelChanged: ((Float) -> Void)?
 
