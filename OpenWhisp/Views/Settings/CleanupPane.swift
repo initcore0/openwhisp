@@ -131,22 +131,96 @@ struct CleanupPane: View {
             }
             .padding(.vertical, 2)
 
+            // Self-learning dictionary (MAK-41 Part C): correction proposals the app
+            // captured from your type-overs, shown here for you to accept or reject.
+            // Nothing is ever added to your rules without an explicit accept.
+            if !appState.correctionProposals.pending.isEmpty {
+                suggestedCorrections
+            }
+
             VStack(alignment: .leading, spacing: 4) {
                 Text("Substitutions")
-                SettingsFootnote("Fix recurring mishearings — applied locally after transcription.")
+                SettingsFootnote("Fix recurring mishearings — applied locally after transcription. Sorted with your starred and most-used rules first.")
                 substitutionsTable
             }
             .padding(.vertical, 2)
+            .disabled(!appState.customVocabularyEnabled)
+
+            SubtitledToggle(
+                "Learn corrections as I type over them",
+                subtitle: "When you fix a single misheard word right after dictating, OpenWhisp proposes it as a rule here — on your Mac, never uploaded. You always approve before it takes effect.",
+                isOn: $appState.correctionLearningEnabled
+            )
             .disabled(!appState.customVocabularyEnabled)
         } header: {
             Text("Vocabulary")
         }
     }
 
-    /// Standard macOS table + ± footer, same pattern as Per-App Profiles.
+    // MARK: - Suggested corrections (accept / reject)
+
+    /// The pending learned-correction proposals: one row each with the from → to fix
+    /// and Add / Dismiss buttons. Accepting folds it into the Substitutions table;
+    /// dismissing suppresses that exact fix from being re-proposed.
+    private var suggestedCorrections: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Label("Suggested corrections", systemImage: "wand.and.stars")
+                .font(.callout.weight(.semibold))
+            SettingsFootnote("You corrected these words right after dictating. Add the ones you want to learn.")
+
+            ForEach(appState.correctionProposals.pending) { proposal in
+                HStack(spacing: 8) {
+                    Text(proposal.from)
+                        .foregroundColor(.secondary)
+                        .strikethrough()
+                    Image(systemName: "arrow.right")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                    Text(proposal.to)
+                        .fontWeight(.medium)
+                    Spacer()
+                    Button("Add") { appState.acceptCorrectionProposal(proposal.id) }
+                        .controlSize(.small)
+                    Button("Dismiss") { appState.rejectCorrectionProposal(proposal.id) }
+                        .controlSize(.small)
+                        .buttonStyle(.borderless)
+                        .foregroundColor(.secondary)
+                }
+                .padding(.vertical, 2)
+            }
+        }
+        .padding(10)
+        .background(RoundedRectangle(cornerRadius: 8).fill(Color.accentColor.opacity(0.08)))
+        .padding(.vertical, 2)
+    }
+
+    // MARK: - Substitutions table
+
+    /// The substitutions the table shows, in `substitutionsByFrequency()` order
+    /// (starred first, then most-used). The order depends only on star/usage/`from`,
+    /// not on the live `to` text, so editing a row's replacement never reorders it
+    /// mid-keystroke.
+    private var sortedSubstitutions: [Vocabulary.Substitution] {
+        appState.vocabulary.substitutionsByFrequency()
+    }
+
+    /// Standard macOS table + ± footer, same pattern as Per-App Profiles, now with a
+    /// star toggle and a "used N×" count so the self-learning is visible.
     private var substitutionsTable: some View {
         VStack(spacing: 0) {
-            Table(appState.vocabulary.substitutions, selection: $selectedSubstitutionID) {
+            Table(sortedSubstitutions, selection: $selectedSubstitutionID) {
+                TableColumn("★") { sub in
+                    Button {
+                        toggleStar(sub.id)
+                    } label: {
+                        Image(systemName: starredState(sub.id) ? "star.fill" : "star")
+                            .foregroundColor(starredState(sub.id) ? .yellow : .secondary)
+                    }
+                    .buttonStyle(.borderless)
+                    .help(starredState(sub.id) ? "Starred — kept at the top" : "Star to keep at the top")
+                    .accessibilityLabel(starredState(sub.id) ? "Unstar substitution" : "Star substitution")
+                }
+                .width(24)
                 TableColumn("Heard") { sub in
                     TextField("heard", text: substitutionBinding(sub.id, keyPath: \.from))
                         .textFieldStyle(.plain)
@@ -155,8 +229,14 @@ struct CleanupPane: View {
                     TextField("correct", text: substitutionBinding(sub.id, keyPath: \.to))
                         .textFieldStyle(.plain)
                 }
+                TableColumn("Used") { sub in
+                    Text(usageLabel(sub.id))
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                .width(52)
             }
-            .frame(minHeight: 90, maxHeight: 160)
+            .frame(minHeight: 90, maxHeight: 180)
 
             HStack(spacing: 0) {
                 Button {
@@ -188,6 +268,23 @@ struct CleanupPane: View {
             .background(Color.secondary.opacity(0.05))
         }
         .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.2)))
+    }
+
+    /// Whether the substitution with `id` is currently starred.
+    private func starredState(_ id: UUID) -> Bool {
+        appState.vocabulary.substitutions.first(where: { $0.id == id })?.starred ?? false
+    }
+
+    /// Flip the starred flag on the substitution with `id` (persists via didSet).
+    private func toggleStar(_ id: UUID) {
+        guard let idx = appState.vocabulary.substitutions.firstIndex(where: { $0.id == id }) else { return }
+        appState.vocabulary.substitutions[idx].starred.toggle()
+    }
+
+    /// A compact "used N×" label, or an em-dash when never used yet.
+    private func usageLabel(_ id: UUID) -> String {
+        let count = appState.vocabulary.substitutions.first(where: { $0.id == id })?.usageCount ?? 0
+        return count == 0 ? "—" : "\(count)×"
     }
 
     /// Edit-in-place binding for one substitution field, looked up by id (Table

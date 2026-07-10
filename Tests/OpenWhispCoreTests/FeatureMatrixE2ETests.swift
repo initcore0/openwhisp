@@ -1248,4 +1248,84 @@ final class FeatureMatrixE2ETests: XCTestCase {
     }
     }
 
+    // MARK: - Self-learning dictionary (MAK-41)
+
+    /// Part A end-to-end: a transcript cleaned through the REAL pipeline that a
+    /// substitution rewrites bumps exactly that rule's usageCount (via the same
+    /// pure helper AppState calls), and a rule that didn't fire stays put. This is
+    /// the integration proof that "used N×" reflects real dictations, not a stub.
+    func testVocabularyUsageCountReflectsWhatTheCleanerRewrote() {
+        let clod = Vocabulary.Substitution(from: "clod code", to: "Claude Code", usageCount: 0)
+        let kube = Vocabulary.Substitution(from: "kube", to: "kubectl", usageCount: 4)
+        var vocab = Vocabulary(terms: [], substitutions: [clod, kube])
+
+        // Drive a raw transcript through the real cleaner with vocabulary on.
+        let config = TranscriptCleaner.Config(
+            language: "en",
+            customVocabularyEnabled: true,
+            substitutions: vocab.substitutions,
+            smartFormattingEnabled: true,
+            fillerRemovalEnabled: false,
+            spokenPunctuationEnabled: false
+        )
+        let cleaned = TranscriptCleaner(config: config)
+            .clean("i love clod code", isFinalTranscript: true)
+        XCTAssertTrue(cleaned.contains("Claude Code"), "the cleaner must actually apply the rule")
+
+        // AppState bumps usage from the pre-enhancement transcript via this helper.
+        let fired = VocabularySubstitutor(substitutions: vocab.substitutions)
+            .firedSubstitutionIDs(in: "i love clod code")
+        vocab = vocab.incrementingUsage(of: fired)
+
+        XCTAssertEqual(vocab.substitutions[0].usageCount, 1, "clod code fired → +1")
+        XCTAssertEqual(vocab.substitutions[1].usageCount, 4, "kube never appeared → unchanged")
+        // And the editor's sort now orders the freshly-used rule ahead by usage.
+        XCTAssertEqual(
+            Vocabulary(terms: [], substitutions: [
+                Vocabulary.Substitution(from: "a", to: "A", usageCount: 0),
+                vocab.substitutions[0]  // usageCount 1
+            ]).substitutionsByFrequency().first?.from,
+            "clod code")
+    }
+
+    /// Part C plumbing end-to-end: a captured type-over pair flows EditDiff →
+    /// proposeSubstitution → CorrectionProposalState as a user-visible proposal;
+    /// accepting adds a real, applied substitution; a second reject-then-recapture
+    /// of the same fix is suppressed. Pure — models exactly what the AX watcher
+    /// feeds AppState, without any AX.
+    func testCorrectionCaptureBecomesProposalThenAcceptedRule() {
+        // The watcher observes "kubernetis" inserted, "kubernetes" surviving.
+        guard let pair = EditDiff.singleTokenCorrection(
+            afterInsert: "we run kubernetis in prod",
+            later: "we run kubernetes in prod"
+        ) else { return XCTFail("clean single-word edit should be captured") }
+
+        var vocab = Vocabulary(terms: [], substitutions: [])
+        let (state, added) = CorrectionProposalState.empty.considering(
+            inserted: pair.inserted, surviving: pair.surviving,
+            existingSubstitutions: vocab.substitutions, now: at(0))
+        XCTAssertEqual(added?.from, "kubernetis")
+        XCTAssertEqual(added?.to, "kubernetes")
+
+        // Accept → substitution added and now actually rewrites future transcripts.
+        let (afterAccept, accepted) = state.accepting(added!.id)
+        vocab.substitutions.append(accepted!)
+        XCTAssertTrue(afterAccept.pending.isEmpty)
+        XCTAssertEqual(
+            VocabularySubstitutor(substitutions: vocab.substitutions)
+                .apply(to: "deploy kubernetis now"),
+            "deploy kubernetes now")
+
+        // Reject path on a fresh capture suppresses the identical re-proposal.
+        let (s1, p1) = CorrectionProposalState.empty.considering(
+            inserted: "run helo there", surviving: "run hello there",
+            existingSubstitutions: [], now: at(1))
+        let afterReject = s1.rejecting(p1!.id)
+        let (s2, again) = afterReject.considering(
+            inserted: "say helo again", surviving: "say hello again",
+            existingSubstitutions: [], now: at(2))
+        XCTAssertNil(again, "a declined fix must never be re-proposed")
+        XCTAssertTrue(s2.pending.isEmpty)
+    }
+
 }

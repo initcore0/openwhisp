@@ -74,6 +74,20 @@ struct Vocabulary: Codable, Equatable {
         return copy
     }
 
+    /// Increment the usage count of every substitution whose id is in `ids`, once
+    /// each, returning a new Vocabulary. Multiple firings of the same rule in one
+    /// transcript count as ONE use (the caller passes a *set*), so a term that
+    /// rewrote three words in a sentence doesn't leap ahead of a term used across
+    /// three separate dictations. Unknown ids are ignored; empty set is a no-op.
+    func incrementingUsage(of ids: Set<Substitution.ID>) -> Vocabulary {
+        guard !ids.isEmpty else { return self }
+        var copy = self
+        for idx in copy.substitutions.indices where ids.contains(copy.substitutions[idx].id) {
+            copy.substitutions[idx].usageCount += 1
+        }
+        return copy
+    }
+
     /// The initial-prompt string passed to whisper to bias recognition.
     /// whisper.cpp treats the prompt as prior context, so a comma-separated list
     /// of terms is a reasonable, low-risk biasing signal.
@@ -118,22 +132,51 @@ struct VocabularySubstitutor: PostProcessor {
     func apply(to text: String) -> String {
         var result = text
         for sub in substitutions {
-            let from = sub.from.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !from.isEmpty else { continue }
-            let to = sub.to
+            guard let from = Self.effectiveFrom(sub) else { continue }
             // Whole-phrase, case-insensitive replacement with word boundaries so
             // we don't rewrite substrings inside larger words. Lookarounds instead
             // of \b: at a non-word edge (e.g. "C++", ".net") \b inverts and
             // demands a word character outside the phrase, so the rule would
             // silently never match. (?<!\w)/(?!\w) equal \b at word-char edges
             // and degrade to "not glued to a word char" at punctuation edges.
-            let pattern = "(?<!\\w)\(NSRegularExpression.escapedPattern(for: from))(?!\\w)"
             result = result.replacingOccurrences(
-                of: pattern,
-                with: NSRegularExpression.escapedTemplate(for: to),
+                of: Self.pattern(for: from),
+                with: NSRegularExpression.escapedTemplate(for: sub.to),
                 options: [.regularExpression, .caseInsensitive]
             )
         }
         return result
+    }
+
+    /// Which substitutions would actually *match* (fire) against `text`, by id.
+    /// Pure and side-effect free — used to bump `usageCount` for exactly the rules
+    /// that rewrote the transcript, so the editor's usage sort reflects real use.
+    /// Uses the SAME whole-phrase, case-insensitive, lookaround-bounded match as
+    /// `apply(to:)`, so "counted as used" and "actually rewrote" can never diverge.
+    /// A rule whose `to` equals its `from` (a no-op edit) still counts as matched:
+    /// it fired, the user just wrote it as an identity rule.
+    func firedSubstitutionIDs(in text: String) -> Set<Vocabulary.Substitution.ID> {
+        var fired: Set<Vocabulary.Substitution.ID> = []
+        for sub in substitutions {
+            guard let from = Self.effectiveFrom(sub) else { continue }
+            let regex = try? NSRegularExpression(pattern: Self.pattern(for: from),
+                                                 options: [.caseInsensitive])
+            let range = NSRange(text.startIndex..., in: text)
+            if regex?.firstMatch(in: text, options: [], range: range) != nil {
+                fired.insert(sub.id)
+            }
+        }
+        return fired
+    }
+
+    /// The trimmed `from` phrase, or nil when it's blank (a blank rule never fires).
+    private static func effectiveFrom(_ sub: Vocabulary.Substitution) -> String? {
+        let from = sub.from.trimmingCharacters(in: .whitespacesAndNewlines)
+        return from.isEmpty ? nil : from
+    }
+
+    /// The whole-phrase, punctuation-edge-safe match pattern for a `from` phrase.
+    private static func pattern(for from: String) -> String {
+        "(?<!\\w)\(NSRegularExpression.escapedPattern(for: from))(?!\\w)"
     }
 }

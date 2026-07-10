@@ -138,4 +138,64 @@ final class VocabularyTests: XCTestCase {
         let same = v.incrementingUsage(of: UUID())
         XCTAssertEqual(same, v)
     }
+
+    // MARK: - Part A: usageCount bumps when a rule fires against a transcript
+
+    func testFiredSubstitutionIDsReportsMatchingRules() {
+        let a = sub("clod code", "Claude Code")
+        let b = sub("kube", "kubectl")
+        let c = sub("nomatch", "x")
+        let s = VocabularySubstitutor(substitutions: [a, b, c])
+        let fired = s.firedSubstitutionIDs(in: "i use clod code with kube daily")
+        XCTAssertEqual(fired, [a.id, b.id])   // c never appears in the text
+    }
+
+    func testFiredSubstitutionIDsIsCaseInsensitiveAndWholePhrase() {
+        let a = sub("cat", "dog")
+        let s = VocabularySubstitutor(substitutions: [a])
+        // Whole-word, case-insensitive: "category" must NOT count "cat" as fired.
+        XCTAssertTrue(s.firedSubstitutionIDs(in: "my CAT sat").contains(a.id))
+        XCTAssertFalse(s.firedSubstitutionIDs(in: "the category list").contains(a.id))
+    }
+
+    func testFiredSubstitutionIDsSkipsBlankFrom() {
+        let blank = sub("   ", "x")
+        let s = VocabularySubstitutor(substitutions: [blank])
+        XCTAssertTrue(s.firedSubstitutionIDs(in: "anything at all").isEmpty)
+    }
+
+    func testFiredMatchesApplyExactly() {
+        // A rule fires iff apply() rewrites — the two must never disagree.
+        let a = sub("c++", "C++")           // punctuation-edged
+        let b = sub("dollars", "$5")
+        let s = VocabularySubstitutor(substitutions: [a, b])
+        let text = "i like c++ and five dollars"
+        let fired = s.firedSubstitutionIDs(in: text)
+        let changed = s.apply(to: text) != text
+        XCTAssertEqual(fired, [a.id, b.id])
+        XCTAssertTrue(changed)
+    }
+
+    func testUsageBumpForFiredRulesCountsEachRuleOnce() {
+        // The pipeline flow: figure out which rules fired, then bump each once even
+        // if the rule matched multiple words in the same transcript.
+        let a = Vocabulary.Substitution(from: "clod", to: "Claude", usageCount: 0)
+        let b = Vocabulary.Substitution(from: "kube", to: "kubectl", usageCount: 3)
+        let v = Vocabulary(terms: [], substitutions: [a, b])
+        let transcript = "clod told clod to run kube"   // "clod" appears twice
+        let fired = VocabularySubstitutor(substitutions: v.substitutions)
+            .firedSubstitutionIDs(in: transcript)
+        let bumped = v.incrementingUsage(of: fired)
+        XCTAssertEqual(bumped.substitutions[0].usageCount, 1)   // clod: counted ONCE
+        XCTAssertEqual(bumped.substitutions[1].usageCount, 4)   // kube: 3 -> 4
+    }
+
+    func testUsageBumpNoOpWhenNothingFires() {
+        let a = Vocabulary.Substitution(from: "clod", to: "Claude", usageCount: 5)
+        let v = Vocabulary(terms: [], substitutions: [a])
+        let fired = VocabularySubstitutor(substitutions: v.substitutions)
+            .firedSubstitutionIDs(in: "nothing to replace here")
+        XCTAssertTrue(fired.isEmpty)
+        XCTAssertEqual(v.incrementingUsage(of: fired), v)   // unchanged
+    }
 }

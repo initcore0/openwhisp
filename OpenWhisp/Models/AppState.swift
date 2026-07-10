@@ -585,6 +585,24 @@ class AppState: ObservableObject {
         didSet { VocabularyStore.save(vocabulary) }
     }
 
+    /// Self-learning dictionary (MAK-41): watch AX-path inserts for a
+    /// type-over-the-word correction and PROPOSE it (never auto-apply). Default-on;
+    /// gated further by `customVocabularyEnabled`. Off = the watcher never arms.
+    @Published var correctionLearningEnabled: Bool {
+        didSet { UserDefaults.standard.set(correctionLearningEnabled, forKey: "correctionLearningEnabled") }
+    }
+
+    /// Pending learned-correction proposals + declined keys, persisted locally.
+    /// The editor renders `pending`; `acceptCorrectionProposal` / `rejectCorrectionProposal`
+    /// mutate it. Never leaves the machine.
+    @Published var correctionProposals: CorrectionProposalState {
+        didSet { CorrectionProposalStore.save(correctionProposals) }
+    }
+
+    /// macOS AX watcher that captures a post-insert single-word correction. Nil on
+    /// platforms/builds without it; armed after a completed AX-path final insert.
+    private let correctionWatcher = AXCorrectionWatcher()
+
 
     // MARK: - Runtime State
 
@@ -1139,6 +1157,8 @@ class AppState: ObservableObject {
         history = TranscriptionHistoryStore.load()
         customVocabularyEnabled = UserDefaults.standard.object(forKey: "customVocabularyEnabled") as? Bool ?? true
         vocabulary = VocabularyStore.load()
+        correctionLearningEnabled = UserDefaults.standard.object(forKey: "correctionLearningEnabled") as? Bool ?? true
+        correctionProposals = CorrectionProposalStore.load()
         didCompleteOnboarding = UserDefaults.standard.bool(forKey: "didCompleteOnboarding")
 
         wireUpServices()
@@ -2655,6 +2675,9 @@ class AppState: ObservableObject {
         recordingElapsed = 0
         recordingStartedAt = Date()
         transcriptionStartedAt = nil
+        // A new dictation invalidates any pending correction re-read from the last
+        // one — the field is about to change for a different reason (MAK-41 Part C).
+        correctionWatcher.cancel()
         targetApplication = currentTextTargetApplication()
         isStreamingSession = streaming
         isTranscribing = false
@@ -3230,6 +3253,17 @@ class AppState: ObservableObject {
             return
         }
 
+        // Self-learning dictionary (MAK-41), Part A: bump usageCount for exactly
+        // the substitution rules that fired against THIS dictation's final
+        // transcript, so the editor's "most used" sort reflects real use. Keyed on
+        // `originalText` — the pre-enhancement final transcript the vocabulary
+        // stage actually ran against (an LLM rephrase downstream may no longer
+        // contain the rewritten word). Called once per delivered session, from the
+        // single insert choke point, so counts don't double per chunk. Runs for
+        // agent sessions too (they also apply vocabulary) — a rule that rewrote
+        // text was used regardless of where the text ends up.
+        recordVocabularyUsage(inFinalTranscript: originalText)
+
         // Agent-initiated session: return the transcript to the caller instead of
         // pasting. Skip the script post-processor, the paste, and the clipboard
         // write — but still record history so history.list and the tray reflect it.
@@ -3276,11 +3310,17 @@ class AppState: ObservableObject {
                     mode: currentInsertionMode,
                     restoreClipboard: restoreClipboard
                 ) { [weak self] outcome in
+                    guard let self else { return }
                     // If the insert couldn't be confirmed, the text was left on the
                     // clipboard — tell the user so it isn't silently lost. (Arrives after
                     // the success status below; overrides it only on fallback.)
-                    guard let self, outcome == .copiedToClipboard else { return }
-                    self.showClipboardFallbackNotice()
+                    if outcome == .copiedToClipboard {
+                        self.showClipboardFallbackNotice()
+                    } else {
+                        // Confirmed insert: watch for a type-over-the-word correction
+                        // (MAK-41 Part C). The watcher itself gates on AX-readable focus.
+                        self.armCorrectionWatcherIfEligible(finalText: text)
+                    }
                 }
             } else {
                 // A configured sink is selected. Build a fresh router (default =
@@ -3313,6 +3353,10 @@ class AppState: ObservableObject {
             // A direct main-thread NSPasteboard write here would race the async
             // paste queue and could clobber (or be clobbered by) a late chunk.
             textOutput.setClipboard(text)
+
+            // Live-chunk sessions inserted incrementally via AX/paste; the field now
+            // holds the whole dictation, so watch for a type-over correction too.
+            armCorrectionWatcherIfEligible(finalText: text)
         }
 
         // The actually-inserted text is the canonical result — update lastTranscription
@@ -3449,6 +3493,76 @@ class AppState: ObservableObject {
             basicMarkdownEnabled: basicMarkdownEnabled,
             fileTaggingEnabled: fileTaggingIsActive
         )
+    }
+
+    /// Self-learning dictionary (MAK-41), Part A: bump `usageCount` for the
+    /// substitution rules that fired against `finalTranscript`, and persist. The
+    /// firing decision is the SAME whole-phrase, case-insensitive match the
+    /// pipeline uses (`VocabularySubstitutor.firedSubstitutionIDs`), so a rule is
+    /// counted iff it actually rewrote text; multiple hits of one rule count once
+    /// (set semantics). Gated on the feature being on, so disabling vocabulary
+    /// stops counting too. `vocabulary`'s `didSet` persists the bump to
+    /// Application Support automatically.
+    private func recordVocabularyUsage(inFinalTranscript finalTranscript: String) {
+        guard customVocabularyEnabled, !vocabulary.substitutions.isEmpty else { return }
+        let fired = VocabularySubstitutor(substitutions: vocabulary.substitutions)
+            .firedSubstitutionIDs(in: finalTranscript)
+        guard !fired.isEmpty else { return }
+        vocabulary = vocabulary.incrementingUsage(of: fired)
+    }
+
+    // MARK: - Self-learning dictionary: correction capture (MAK-41 Part C)
+
+    /// Arm the AX correction watcher after a confirmed insert, if the feature is on.
+    /// The watcher itself is the second gate — it only captures when the same
+    /// AX-readable element is still focused a moment later and the user made a clean
+    /// single-word edit. On such an edit `handleObservedCorrection` runs the pair
+    /// through the conservative learner and, if it survives, queues a PROPOSAL (never
+    /// an auto-applied rule). We deliberately don't try to distinguish an AX-path
+    /// insert from a paste fallback here — the watcher reads the field value back and
+    /// simply captures nothing when the value isn't AX-readable.
+    private func armCorrectionWatcherIfEligible(finalText: String) {
+        guard correctionLearningEnabled, customVocabularyEnabled else { return }
+        guard !suppressOutput else { return }   // agent sessions don't type into a field
+        correctionWatcher.arm(insertedText: finalText) { [weak self] inserted, surviving in
+            self?.handleObservedCorrection(inserted: inserted, surviving: surviving)
+        }
+    }
+
+    /// A captured (inserted, surviving) single-word edit: run it through the learner
+    /// + proposal state. Adds a user-facing proposal iff it's an unambiguous
+    /// correction that isn't already a rule / pending / previously declined. NEVER
+    /// mutates the dictionary here — acceptance is an explicit user action.
+    private func handleObservedCorrection(inserted: String, surviving: String) {
+        let (newState, added) = correctionProposals.considering(
+            inserted: inserted,
+            surviving: surviving,
+            existingSubstitutions: vocabulary.substitutions
+        )
+        guard added != nil else { return }
+        correctionProposals = newState   // didSet persists
+    }
+
+    /// Accept a pending correction proposal: fold it into the real vocabulary (so it
+    /// rewrites future transcripts) and dequeue it. Called from the editor.
+    func acceptCorrectionProposal(_ id: CorrectionProposal.ID) {
+        let (newState, accepted) = correctionProposals.accepting(id)
+        guard let accepted else { return }
+        correctionProposals = newState
+        // Don't duplicate an identical rule if one somehow already exists.
+        let key = CorrectionProposal.key(from: accepted.from, to: accepted.to)
+        let exists = vocabulary.substitutions.contains {
+            CorrectionProposal.key(from: $0.from, to: $0.to) == key
+        }
+        if !exists {
+            vocabulary.substitutions.append(accepted)
+        }
+    }
+
+    /// Reject a pending correction proposal: dequeue it and remember not to re-offer
+    /// the same fix. Does not touch the dictionary.
+    func rejectCorrectionProposal(_ id: CorrectionProposal.ID) {
+        correctionProposals = correctionProposals.rejecting(id)
     }
 
     /// File-tagging (MAK-48) fires ONLY when the user opted in AND the app being
@@ -3742,10 +3856,12 @@ class AppState: ObservableObject {
         fillerRemovalEnabled = true
         fileTaggingEnabled = false
         customVocabularyEnabled = true
+        correctionLearningEnabled = true
         perAppModesEnabled = false
         historyEnabled = true
 
         vocabulary = .empty
+        correctionProposals = .empty
         profiles = []
         clearHistory()
 
