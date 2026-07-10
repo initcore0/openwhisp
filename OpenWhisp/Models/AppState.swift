@@ -4461,6 +4461,36 @@ class AppState: ObservableObject {
         #endif
     }
 
+    // MARK: - Insights (MAK-38)
+
+    /// Derive the local Usage Insights summary from the in-memory metadata
+    /// aggregates. Pure computation over `dictationStats` (already the live copy,
+    /// mutated on every completed dictation) — nothing here leaves the device.
+    ///
+    /// App bundle ids are mapped to readable names using currently-running apps
+    /// (best source) with a fallback to the last app name seen in local history,
+    /// then to a prettified bundle id inside `InsightsSummary` itself.
+    var insightsSummary: InsightsSummary {
+        InsightsSummary(
+            stats: dictationStats,
+            today: DictationStats.dayKey(for: Date()),
+            appName: { [weak self] bundleID in self?.displayName(forBundleID: bundleID) },
+            engineName: { InsightsSummary.prettifyEngine($0) }
+        )
+    }
+
+    /// Best-effort human name for a bundle id, using running apps then history.
+    private func displayName(forBundleID bundleID: String) -> String? {
+        if let running = NSWorkspace.shared.runningApplications.first(where: {
+            $0.bundleIdentifier == bundleID
+        })?.localizedName {
+            return running
+        }
+        return history.first(where: {
+            $0.appBundleID == bundleID && ($0.appName?.isEmpty == false)
+        })?.appName
+    }
+
     func copyHistoryEntry(_ entry: TranscriptionEntry) {
         textOutput.setClipboard(entry.text)
     }
