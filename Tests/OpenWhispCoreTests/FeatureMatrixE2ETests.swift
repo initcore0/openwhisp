@@ -1248,4 +1248,110 @@ final class FeatureMatrixE2ETests: XCTestCase {
     }
     }
 
+    // MARK: - Voice editing in live dictation (MAK-19)
+    //
+    // These drive a session's finalized utterances through the SAME seam the app
+    // wiring uses — `VoiceEditRouter` mutating a session-scoped `VoiceEditBuffer` —
+    // and assert the pending text is edited BEFORE it would be pasted. This is the
+    // integration point `handleAppleSpeechFinal` calls when `voiceEditingEnabled`
+    // is on in a preview session; the AppState/SwiftUI glue around it is build-
+    // verified, but the routing decision is pinned here.
+
+    /// The headline flow: dictate, then a standalone "scratch that" drops exactly
+    /// the last utterance — and its literal words never reach the pasted text.
+    func testVoiceEditScratchThatDropsLastUtterance() {
+        var buffer = VoiceEditBuffer()
+        // Utterances arrive finalized, one at a time, as the router segments them.
+        XCTAssertFalse(VoiceEditRouter.route("hello world", into: &buffer))
+        XCTAssertTrue(VoiceEditRouter.route("scratch that", into: &buffer),
+                      "\"scratch that\" must be recognized as a command")
+        XCTAssertEqual(buffer.text, "", "scratch that drops the only utterance")
+
+        // A second dictation, then scratch: only the last chunk is dropped.
+        _ = VoiceEditRouter.route("keep this", into: &buffer)
+        _ = VoiceEditRouter.route("drop this", into: &buffer)
+        XCTAssertTrue(VoiceEditRouter.route("scratch that", into: &buffer))
+        XCTAssertEqual(buffer.text, "keep this")
+        XCTAssertFalse(buffer.text.lowercased().contains("scratch"),
+                       "the command words must never appear in the final text")
+    }
+
+    /// "delete last word" removes just the trailing word across the flattened text.
+    func testVoiceEditDeleteLastWord() {
+        var buffer = VoiceEditBuffer()
+        _ = VoiceEditRouter.route("the quick brown fox", into: &buffer)
+        XCTAssertTrue(VoiceEditRouter.route("delete last word", into: &buffer))
+        XCTAssertEqual(buffer.text, "the quick brown")
+        XCTAssertFalse(buffer.text.contains("delete"))
+    }
+
+    /// "undo" restores whatever the previous destructive edit removed (one level).
+    func testVoiceEditUndoRestores() {
+        var buffer = VoiceEditBuffer()
+        _ = VoiceEditRouter.route("first thought", into: &buffer)
+        _ = VoiceEditRouter.route("second thought", into: &buffer)
+        XCTAssertTrue(VoiceEditRouter.route("scratch that", into: &buffer))
+        XCTAssertEqual(buffer.text, "first thought")
+        XCTAssertTrue(VoiceEditRouter.route("undo", into: &buffer))
+        XCTAssertEqual(buffer.text, "first thought second thought",
+                       "undo restores the scratched utterance verbatim")
+    }
+
+    /// A whole cumulative transcript (what the streaming recognizers actually
+    /// deliver — one blob per hold, not one utterance at a time) is segmented on
+    /// sentence boundaries so a standalone command punctuated as its own sentence
+    /// is still recognized. This is the exact call `handleAppleSpeechFinal` makes.
+    func testVoiceEditRoutesWholeFinalTranscript() {
+        var buffer = VoiceEditBuffer()
+        VoiceEditRouter.route(final: "Hello world. Scratch that. Fresh start.",
+                              into: &buffer)
+        XCTAssertEqual(buffer.text, "Fresh start.",
+                       "the standalone command sentence edits; its words are gone")
+        XCTAssertFalse(buffer.text.lowercased().contains("scratch"))
+    }
+
+    /// The safe-failure boundary: a command buried INSIDE a larger utterance is NOT
+    /// recognized (parse requires the whole unit to be the command), so it stays as
+    /// literal text rather than silently eating real speech. Documents the limit.
+    func testVoiceEditBundledCommandStaysLiteral() {
+        var buffer = VoiceEditBuffer()
+        // No sentence boundary isolates "scratch that" — the whole thing is one unit.
+        VoiceEditRouter.route(final: "finish the report scratch that let me redo it",
+                              into: &buffer)
+        XCTAssertEqual(buffer.text, "finish the report scratch that let me redo it",
+                       "a mid-utterance command is left as text — the safe failure")
+    }
+
+    /// Ordinary prose that merely CONTAINS a command's words is never hijacked, and
+    /// round-trips unchanged through segmentation + routing.
+    func testVoiceEditOrdinaryDictationUnchanged() {
+        var buffer = VoiceEditBuffer()
+        VoiceEditRouter.route(final: "Please scratch the surface of this idea.",
+                              into: &buffer)
+        XCTAssertEqual(buffer.text, "Please scratch the surface of this idea.")
+    }
+
+    /// "new paragraph" / "new line" insert breaks that survive later edits and the
+    /// flattening for the paste-ready string.
+    func testVoiceEditBreakCommands() {
+        var buffer = VoiceEditBuffer()
+        _ = VoiceEditRouter.route("first line", into: &buffer)
+        XCTAssertTrue(VoiceEditRouter.route("new paragraph", into: &buffer))
+        _ = VoiceEditRouter.route("second block", into: &buffer)
+        XCTAssertEqual(buffer.text, "first line\n\nsecond block")
+    }
+
+    /// Segmentation contract: sentence terminators and newlines split units;
+    /// empties are dropped; a terminator-free transcript is a single unit.
+    func testVoiceEditSegmentation() {
+        XCTAssertEqual(VoiceEditRouter.segmentUtterances("one continuous phrase"),
+                       ["one continuous phrase"])
+        XCTAssertEqual(VoiceEditRouter.segmentUtterances("A. B! C?"),
+                       ["A.", "B!", "C?"])
+        XCTAssertEqual(VoiceEditRouter.segmentUtterances("line one\nline two"),
+                       ["line one", "line two"])
+        XCTAssertEqual(VoiceEditRouter.segmentUtterances("   "), [])
+        XCTAssertEqual(VoiceEditRouter.segmentUtterances(""), [])
+    }
+
 }

@@ -410,6 +410,17 @@ class AppState: ObservableObject {
         didSet { UserDefaults.standard.set(instructionChainEnabled, forKey: "instructionChainEnabled") }
     }
 
+    /// Enable spoken *edit commands* in preview-mode dictation: a standalone
+    /// "scratch that" / "delete last word" / "delete last sentence" / "new
+    /// paragraph" / "new line" / "undo" edits the pending transcript instead of
+    /// being typed as literal words. Only active in "preview" output mode (the text
+    /// is held until the end, so an edit can still change what gets pasted) — see
+    /// `VoiceEditRouter`. On by default: the parser only fires on a whole-utterance
+    /// match, so it's false-positive-safe, and the payoff is high.
+    @Published var voiceEditingEnabled: Bool {
+        didSet { UserDefaults.standard.set(voiceEditingEnabled, forKey: "voiceEditingEnabled") }
+    }
+
 
     /// Opt-in custom **script** post-processor. When enabled with a valid
     /// executable path, the final transcript is piped through the script (stdin →
@@ -809,6 +820,17 @@ class AppState: ObservableObject {
     private var isAppleSpeechSession = false
     private var appleLiveInsertedText = ""
     private var appleDidCompleteFinal = false
+    /// Whether spoken edit commands (`voiceEditingEnabled`) are honored for THIS
+    /// session — snapshotted at beginSession alongside `isPreviewSession`, so a
+    /// mid-session settings flip can't change how the pending text is finalized.
+    /// Only ever true in a preview session (the mode where text is held until the
+    /// end and can therefore still be edited before the single paste).
+    private var voiceEditingActiveForSession = false
+    /// The session's edit buffer: finalized dictation utterances accumulate here and
+    /// standalone edit commands ("scratch that" / "undo" / …) mutate it, so the
+    /// pasted text is `voiceEditBuffer.text` — the dictation AFTER the spoken edits.
+    /// Reset at beginSession; only read when `voiceEditingActiveForSession`.
+    private var voiceEditBuffer = VoiceEditBuffer()
     /// True when the current streaming session is WhisperKit (vs Apple Speech).
     /// Selects the engine and whether to run the Speech-framework authorization.
     private var streamingUsesWhisperKit = false
@@ -1116,6 +1138,7 @@ class AppState: ObservableObject {
         agentCLICustomArgsText = UserDefaults.standard.string(forKey: "agentCLICustomArgsText") ?? ""
         agentCLITimeout = UserDefaults.standard.object(forKey: "agentCLITimeout") as? Double ?? 30.0
         instructionChainEnabled = UserDefaults.standard.object(forKey: "instructionChainEnabled") as? Bool ?? true
+        voiceEditingEnabled = UserDefaults.standard.object(forKey: "voiceEditingEnabled") as? Bool ?? true
         scriptPostProcessorEnabled = UserDefaults.standard.object(forKey: "scriptPostProcessorEnabled") as? Bool ?? false
         scriptPostProcessorPath = UserDefaults.standard.string(forKey: "scriptPostProcessorPath") ?? ""
         outputTargetSettings = Self.loadOutputTargetSettings()
@@ -2407,7 +2430,24 @@ class AppState: ObservableObject {
     private func handleAppleSpeechFinal(_ rawText: String) {
         guard isAppleSpeechSession, !appleDidCompleteFinal else { return }
         appleDidCompleteFinal = true
-        let finalText = postProcess(rawText.isEmpty ? streamingText : rawText, isFinalTranscript: true)
+        let rawTranscript = rawText.isEmpty ? streamingText : rawText
+
+        // Spoken edit commands (MAK-19): in a preview session with the feature on,
+        // route the recognizer's transcript through the session's edit buffer BEFORE
+        // cleanup. A standalone "scratch that" / "undo" / … then edits the pending
+        // dictation instead of being pasted as literal words; `voiceEditBuffer.text`
+        // is the dictation AFTER those edits, and the normal cleanup runs on THAT.
+        // Only the preview path reaches here with the flag set (guaranteed in
+        // beginSession), and the isLiveChunkSession delta-paste block below is
+        // skipped in preview, so nothing else changes for other modes.
+        let editedRaw: String
+        if voiceEditingActiveForSession {
+            VoiceEditRouter.route(final: rawTranscript, into: &voiceEditBuffer)
+            editedRaw = voiceEditBuffer.text
+        } else {
+            editedRaw = rawTranscript
+        }
+        let finalText = postProcess(editedRaw, isFinalTranscript: true)
 
         // liveChunks: completeFinalText only sets the clipboard for non-finalOnly, so words
         // in the final transcript that were not in the last pasted partial would be dropped.
@@ -2651,6 +2691,12 @@ class AppState: ObservableObject {
         // pasting. Snapshot from the initiator (set by the bridge before this call)
         // so a mid-session change can't alter the paste-vs-return disposition.
         suppressOutput = sessionInitiator.isAgent
+        // Spoken edit commands (MAK-19) only apply in preview mode — the text is
+        // held until finalize there, so an edit can still change what's pasted.
+        // Never in agent sessions (they return the raw transcript over the bridge).
+        // Snapshot the gate + start each hold with a fresh buffer.
+        voiceEditingActiveForSession = isPreviewSession && voiceEditingEnabled && !suppressOutput
+        voiceEditBuffer = VoiceEditBuffer()
         audioLevel = 0
         recordingElapsed = 0
         recordingStartedAt = Date()
@@ -3501,6 +3547,8 @@ class AppState: ObservableObject {
         isLiveChunkSession = false
         isPreviewSession = false
         isStreamingSession = false
+        voiceEditingActiveForSession = false
+        voiceEditBuffer = VoiceEditBuffer()
         // Deliver the outcome to an agent-initiated waiter exactly once. This is
         // the single terminal site for every session path (success, empty, secure
         // field, cancel, error) — abortSessionBeforeStart() also ends here — so one
@@ -3711,6 +3759,7 @@ class AppState: ObservableObject {
         agentCLICustomArgsText = ""
         agentCLITimeout = 30.0
         instructionChainEnabled = true
+        voiceEditingEnabled = true
 
         triggerMode = "fn"
         refineKey = RefineKey.defaultKey.rawValue

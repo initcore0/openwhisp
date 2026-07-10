@@ -365,3 +365,88 @@ public struct VoiceEditBuffer: Equatable, Sendable {
 
     private static let sentenceTerminators: Set<Character> = [".", "!", "?"]
 }
+
+/// The pure decision that wires the parser + buffer into a live dictation session,
+/// kept Foundation-only so the app's session glue and `swift test` share EXACTLY
+/// the same routing logic (the AppState/SwiftUI layer only calls these — it makes
+/// no routing decision of its own).
+///
+/// The recognizers OpenWhisp streams from (Apple Speech, WhisperKit) never deliver
+/// one finalized-utterance-at-a-time: each emits a single, cumulative transcript
+/// for the whole hold. `VoiceEditCommand.parse` only fires when the WHOLE utterance
+/// is the command, so to make a spoken "scratch that" actually edit, that blob must
+/// first be split into utterance-sized units. `segmentUtterances` does that on the
+/// recognizer's own strong boundaries (sentence terminators / line breaks): a
+/// "Scratch that." spoken as its own sentence becomes its own unit and is
+/// recognized, while a command buried mid-sentence ("…the report scratch that let
+/// me redo") stays in one unit and is left as literal text — the deliberate, safe
+/// failure that matches the parser's zero-false-positive bias.
+public enum VoiceEditRouter {
+    /// Route ONE finalized utterance into the buffer. Returns `true` when it was an
+    /// edit command (applied to the buffer, its literal words never entering the
+    /// text), `false` when it was ordinary dictation (appended verbatim).
+    ///
+    /// This is the single seam the session wiring drives and the tests exercise, so
+    /// "was this an edit command?" is decided in exactly one place.
+    @discardableResult
+    public static func route(_ utterance: String, into buffer: inout VoiceEditBuffer) -> Bool {
+        if let command = VoiceEditCommand.parse(utterance) {
+            buffer.apply(command)
+            return true
+        }
+        buffer.append(utterance)
+        return false
+    }
+
+    /// Route a whole (possibly multi-utterance) final transcript into the buffer by
+    /// splitting it into utterance units first, then routing each in order. This is
+    /// what turns a cumulative recognizer transcript ("Hello world. Scratch that.")
+    /// into the sequence the buffer expects (append "Hello world.", then apply
+    /// `scratchThat`). Ordinary prose with no standalone command lands as a single
+    /// unit and is appended unchanged.
+    ///
+    /// The buffer is populated from empty here (the session owns one buffer, reset at
+    /// the start of the hold), so routing the whole final is the one place utterances
+    /// enter — the caller then reads `buffer.text` for the preview + the paste.
+    public static func route(final transcript: String, into buffer: inout VoiceEditBuffer) {
+        for unit in segmentUtterances(transcript) {
+            route(unit, into: &buffer)
+        }
+    }
+
+    /// Split a transcript into utterance units on the recognizer's strong
+    /// boundaries — end-of-sentence punctuation (`.`/`!`/`?`) and line breaks — so a
+    /// standalone spoken command that the recognizer punctuated as its own sentence
+    /// surfaces as its own unit. The terminator stays attached to the unit it ends
+    /// (so ordinary dictation round-trips: "Hi there." → one unit "Hi there.").
+    ///
+    /// Deliberately coarse: it does NOT try to find commands mid-sentence (that's
+    /// out of scope by design). A transcript with no terminators is a single unit,
+    /// exactly matching today's behavior for one continuous phrase.
+    public static func segmentUtterances(_ transcript: String) -> [String] {
+        var units: [String] = []
+        var current = ""
+        for ch in transcript {
+            if ch == "\n" {
+                // A line break ends the current unit but is not carried forward: the
+                // buffer's own break markers come from "new line" / "new paragraph"
+                // commands, not from raw transcript newlines.
+                units.append(current)
+                current = ""
+                continue
+            }
+            current.append(ch)
+            if ch == "." || ch == "!" || ch == "?" {
+                units.append(current)
+                current = ""
+            }
+        }
+        units.append(current)
+        // Trim each unit and drop the empties left by consecutive terminators /
+        // trailing whitespace. A transcript that segments to nothing (empty /
+        // whitespace only) yields no units, so the caller appends nothing.
+        return units
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+    }
+}
