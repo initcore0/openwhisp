@@ -174,6 +174,12 @@ struct ModesPane: View {
                 Text("On").tag("on")
                 Text("Off").tag("off")
             }
+
+            // App auto-activation binding: when set (and per-app modes are on),
+            // this Mode activates automatically when dictating into that app.
+            TextField("Auto-activate for app (bundle ID)", text: appBinding(idx),
+                      prompt: Text("e.g. com.apple.mail"))
+                .font(.system(.body, design: .monospaced))
         } header: {
             Text("Edit mode")
         } footer: {
@@ -181,7 +187,8 @@ struct ModesPane: View {
                 "The key is normalized (lowercased, spaces → hyphens). Tone + " +
                 "instruction steer the AI refine. Language/output/AI-cleanup apply " +
                 "for that session; a per-mode transcription-model swap is not wired " +
-                "yet (see the changelog).")
+                "yet (see the changelog). App auto-activation also needs per-app " +
+                "modes enabled in the Dictation pane.")
         }
     }
 
@@ -214,6 +221,13 @@ struct ModesPane: View {
     private func outputBinding(_ idx: Int) -> Binding<String> {
         Binding(get: { appState.modes[safe: idx]?.outputMode ?? "__inherit__" },
                 set: { appState.modes[idx].outputMode = $0 == "__inherit__" ? nil : $0 })
+    }
+    private func appBinding(_ idx: Int) -> Binding<String> {
+        Binding(get: { appState.modes[safe: idx]?.appBundleID ?? "" },
+                set: {
+                    let trimmed = $0.trimmingCharacters(in: .whitespacesAndNewlines)
+                    appState.modes[idx].appBundleID = trimmed.isEmpty ? nil : trimmed
+                })
     }
     private func aiBinding(_ idx: Int) -> Binding<String> {
         Binding(

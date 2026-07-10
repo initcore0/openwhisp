@@ -4387,10 +4387,20 @@ class AppState: ObservableObject {
         guard profileOverrideBackup == nil else { return }
         let frontmost = currentTextTargetApplication()
 
-        // A pending (switch-mode) key is one-shot: consume it now regardless of
-        // whether it resolves, so a stale key can't stick to future dictations.
-        let explicitKey = pendingModeKey ?? activeModeKey
-        if pendingModeKey != nil { pendingModeKey = nil }
+        // Agent-initiated sessions (agent-dictate) must NOT consume or apply the
+        // user's explicit Mode selection: a `switch-mode` the user queued for
+        // THEIR next dictation would otherwise be silently eaten (and applied) by
+        // an agent asking a question in between. Agents get only the pre-Mode
+        // behavior: app auto-activation via the per-app toggle.
+        let explicitKey: String?
+        if sessionInitiator.isAgent {
+            explicitKey = nil
+        } else {
+            // A pending (switch-mode) key is one-shot: consume it now regardless of
+            // whether it resolves, so a stale key can't stick to future dictations.
+            explicitKey = pendingModeKey ?? activeModeKey
+            if pendingModeKey != nil { pendingModeKey = nil }
+        }
 
         guard let mode = ModeResolver.resolveActive(
             explicitKey: explicitKey,
