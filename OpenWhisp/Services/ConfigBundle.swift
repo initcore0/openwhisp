@@ -17,18 +17,29 @@ struct ConfigBundle: Codable, Equatable {
     var schemaVersion: Int
     /// Per-app override profiles (nil = section absent, distinct from empty list).
     var profiles: [AppProfile]?
+    /// First-class user-authored Modes (MAK-39). nil = section absent (an older
+    /// bundle, or a profiles/vocab-only pack), distinct from an empty list. Because
+    /// every section is optional-on-decode, a v1 bundle with no `modes` still
+    /// round-trips cleanly; a v2 bundle a v1 app can't fully represent is rejected
+    /// by the schema-version guard rather than mis-parsed.
+    var modes: [Mode]?
     /// Custom vocabulary (terms + substitutions).
     var vocabulary: Vocabulary?
 
-    static let currentSchemaVersion = 1
+    /// Bumped 1 → 2 for the `modes` section (MAK-39). The decode path stays
+    /// tolerant (all sections optional), so the bump only stops a v1 app from
+    /// silently dropping Modes it can't represent.
+    static let currentSchemaVersion = 2
 
     init(
         schemaVersion: Int = ConfigBundle.currentSchemaVersion,
         profiles: [AppProfile]? = nil,
+        modes: [Mode]? = nil,
         vocabulary: Vocabulary? = nil
     ) {
         self.schemaVersion = schemaVersion
         self.profiles = profiles
+        self.modes = modes
         self.vocabulary = vocabulary
     }
 
@@ -73,6 +84,9 @@ struct ConfigBundle: Codable, Equatable {
         var parts: [String] = []
         if let profiles, !profiles.isEmpty {
             parts.append("\(profiles.count) app profile\(profiles.count == 1 ? "" : "s")")
+        }
+        if let modes, !modes.isEmpty {
+            parts.append("\(modes.count) mode\(modes.count == 1 ? "" : "s")")
         }
         if let vocabulary {
             let t = vocabulary.terms.count
