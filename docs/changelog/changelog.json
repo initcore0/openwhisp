@@ -333,7 +333,9 @@
           "tickets": [
             "MAK-24"
           ],
-          "prs": []
+          "prs": [
+            140
+          ]
         },
         {
           "category": "improvement",
