@@ -11,7 +11,7 @@
       "stats": {
         "changesShipped": 24,
         "newFeatures": 14,
-        "testsPassing": 1097,
+        "testsPassing": 1098,
         "onDevicePercent": 100,
         "newFeaturesLive": 14,
         "newFeaturesCorePending": 0
@@ -34,7 +34,7 @@
               "Mouse trigger: Settings › Dictation › Activation → “Mouse-button trigger” → pick Middle button or a side button (Mouse 4-10). “Off” disables it.",
               "The mouse trigger uses your existing activation style — hold to talk, or tap to lock hands-free."
             ],
-            "note": "The AppleScript method never touches the clipboard, and your transcript is always safely escaped into the script (quotes, backslashes, and newlines can't break or inject it) — it falls back to paste if the script can't run (grant Accessibility/Automation permission if prompted). The left and right mouse buttons are deliberately not bindable, since they're needed for normal clicking."
+            "note": "The AppleScript method never touches the clipboard, and your transcript is always safely escaped into the script (quotes, backslashes, and newlines can't break or inject it) — it falls back to paste if the script can't run (grant Accessibility/Automation permission if prompted) or if the transcript is very long (keystroke types at keyboard speed). The left and right mouse buttons are deliberately not bindable, since they're needed for normal clicking."
           }
         },
         {

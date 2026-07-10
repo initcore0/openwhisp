@@ -212,12 +212,28 @@ final class TextInserter: TextOutput {
     /// transcript can't break or inject script. Returns false when the script
     /// couldn't run (no Accessibility/Automation permission, compile/exec error) so
     /// the caller falls back to paste rather than dropping text.
+    ///
+    /// Two guards:
+    /// - Over-long transcripts (`AppleScriptInsert.maxKeystrokeLength`) are refused
+    ///   up-front — `keystroke` types synchronously at keyboard speed with no way
+    ///   to interrupt, so an unbounded transcript would "type" for a very long
+    ///   time. The false return routes them to the instant paste fallback.
+    /// - `NSAppleScript` is documented main-thread-only; this is called on the
+    ///   serial insert queue, so hop to the main thread for the execution. Safe:
+    ///   nothing ever blocks the main thread on the insert queue, and the length
+    ///   cap bounds how long the main thread is held.
     private static func insertViaAppleScript(_ text: String) -> Bool {
+        guard AppleScriptInsert.isKeystrokeSized(text) else { return false }
         let source = AppleScriptInsert.keystrokeScript(for: text)
-        guard let script = NSAppleScript(source: source) else { return false }
-        var error: NSDictionary?
-        script.executeAndReturnError(&error)
-        return error == nil
+        var succeeded = false
+        let execute = {
+            guard let script = NSAppleScript(source: source) else { return }
+            var error: NSDictionary?
+            script.executeAndReturnError(&error)
+            succeeded = (error == nil)
+        }
+        if Thread.isMainThread { execute() } else { DispatchQueue.main.sync(execute: execute) }
+        return succeeded
     }
 
     // MARK: - AX read helper

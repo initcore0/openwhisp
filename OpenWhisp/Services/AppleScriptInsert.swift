@@ -23,6 +23,18 @@ import Foundation
 /// execution stays in the app-only `TextInserter`.
 enum AppleScriptInsert {
 
+    /// The longest transcript we'll type via `keystroke`. System Events types at
+    /// keyboard speed, synchronously, with no way to interrupt — an unbounded
+    /// transcript could keep "typing" for a very long time. Beyond this the caller
+    /// must fall back to paste (instant, with its own clipboard safety net).
+    static let maxKeystrokeLength = 3000
+
+    /// Whether `text` is small enough to type via `keystroke`
+    /// (see `maxKeystrokeLength`); anything larger should be pasted instead.
+    static func isKeystrokeSized(_ text: String) -> Bool {
+        text.count <= maxKeystrokeLength
+    }
+
     /// Escape `text` so it is a safe AppleScript double-quoted string LITERAL
     /// (WITHOUT the surrounding quotes — the caller wraps it). Inside an
     /// AppleScript `"..."` literal only backslash and double-quote need escaping;

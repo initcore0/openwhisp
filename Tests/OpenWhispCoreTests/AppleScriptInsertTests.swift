@@ -56,6 +56,16 @@ final class AppleScriptInsertTests: XCTestCase {
         }
     }
 
+    func testKeystrokeSizeGuard() {
+        // keystroke types synchronously at keyboard speed — over-long transcripts
+        // must be refused so the caller falls back to the instant paste path.
+        XCTAssertTrue(AppleScriptInsert.isKeystrokeSized(""))
+        XCTAssertTrue(AppleScriptInsert.isKeystrokeSized(
+            String(repeating: "a", count: AppleScriptInsert.maxKeystrokeLength)))
+        XCTAssertFalse(AppleScriptInsert.isKeystrokeSized(
+            String(repeating: "a", count: AppleScriptInsert.maxKeystrokeLength + 1)))
+    }
+
     func testFullScriptWrapsEscapedLiteralInKeystroke() {
         let script = AppleScriptInsert.keystrokeScript(for: #"a"b"#)
         XCTAssertTrue(script.contains(#"keystroke "a\"b""#))
