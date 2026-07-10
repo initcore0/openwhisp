@@ -56,6 +56,7 @@ let package = Package(
                 "ConfigBundle.swift",
                 "BridgeWire.swift",
                 "BridgeRouter.swift",
+                "URLScheme.swift",
                 "DictationSession.swift",
                 "SilenceAutoStop.swift",
                 "AgentSetup.swift",

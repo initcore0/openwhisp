@@ -126,6 +126,16 @@ class OpenWhispApp: NSObject, NSApplicationDelegate {
         appState?.shutdown()
     }
 
+    /// `openwhisp://` URL scheme entry point (Raycast / Alfred / `open` launcher
+    /// control surface, MAK-37). AppKit routes `open openwhisp://…` here once the
+    /// scheme is declared in Info.plist's CFBundleURLTypes. Parsing/validation +
+    /// the verb allow-list live in the pure `URLScheme` core type; this just hands
+    /// the URLs to the executor, which reuses existing AppState actions.
+    func application(_ application: NSApplication, open urls: [URL]) {
+        guard let appState else { return }
+        URLSchemeHandler.handle(urls: urls, appState: appState)
+    }
+
     private func requestNotifications() {
         // UNUserNotificationCenter.current() crashes with NSInternalInconsistencyException
         // when the app is not run from a proper .app bundle.
