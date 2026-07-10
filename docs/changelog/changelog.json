@@ -9,9 +9,9 @@
       "date": "2026-07-10",
       "summary": "A batch of new features, fixes, and under-the-hood hardening — all landed on main, all covered by tests, all on your machine. All twenty new features are live today: opt-in on-device audio retention with one-click re-transcription and an auto-cleanup policy, a fully-remappable dictation trigger with a record-a-shortcut field, an AppleScript keystroke insert method and mouse-button dictation triggers, a local Usage Insights dashboard, opt-in screen-context awareness that biases transcription toward the names already on screen, batch file transcription with watch folders, hands-free (tap-to-lock) dictation, adjustable AI cleanup, voice editing, a self-learning dictionary, rich local formatting, spoken-filename @-mentions for code editors, agent-CLI cleanup, output targets that route a dictation to a file/Shortcut/webhook, first-class Modes you can invoke by name, a Rules engine that runs your own actions when a dictation finishes, and an openwhisp:// URL scheme so Raycast, Alfred, or any launcher can drive dictation.",
       "stats": {
-        "changesShipped": 31,
+        "changesShipped": 32,
         "newFeatures": 20,
-        "testsPassing": 1283,
+        "testsPassing": 1290,
         "onDevicePercent": 100,
         "newFeaturesLive": 20,
         "newFeaturesCorePending": 0
@@ -600,13 +600,24 @@
         {
           "category": "improvement",
           "headline": "End-to-end audio testing, so features stay working",
-          "body": "A full regression suite now feeds pre-recorded audio through the whole pipeline — the reason \"1283 tests passing\" is more than a number. Every feature above ships with coverage.",
+          "body": "A full regression suite now feeds pre-recorded audio through the whole pipeline — the reason \"1290 tests passing\" is more than a number. Every feature above ships with coverage.",
           "tickets": [],
           "prs": [
             107,
             108,
             109,
             110
+          ]
+        },
+        {
+          "category": "improvement",
+          "headline": "One subprocess lifecycle for both bundled servers",
+          "body": "OpenWhisp runs two local helper processes — whisper-server for transcription and llama-server for on-device refine. Their start/stop/cleanup code was copy-pasted between the two; now it lives in one shared, tested place, so a fix to how a server is launched or reaped applies to both. The port a server binds is also acquired more safely, closing a race where two starts could collide on one port.",
+          "tickets": [
+            "MAK-21"
+          ],
+          "prs": [
+            152
           ]
         }
       ]
