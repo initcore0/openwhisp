@@ -208,6 +208,29 @@ struct PrivacyPane: View {
                 isOn: $appState.historyEnabled
             )
 
+            // MAK-40: opt-in raw-audio retention + on-device retention policy.
+            SubtitledToggle(
+                "Keep raw audio for re-transcription",
+                subtitle: "Opt-in. Saves each dictation's audio on this Mac so you can re-transcribe it later (e.g. after switching models). Audio never leaves this device. Turning this off deletes every saved clip.",
+                isOn: $appState.retainRawAudioEnabled
+            )
+            if appState.retainRawAudioEnabled {
+                Stepper(
+                    "Keep at most \(appState.audioRetentionMaxClips) clips",
+                    value: $appState.audioRetentionMaxClips,
+                    in: 0...500,
+                    step: 10
+                )
+                Stepper(
+                    appState.audioRetentionDays == 0
+                        ? "Delete audio + history after: never"
+                        : "Delete audio + history after: \(appState.audioRetentionDays) days",
+                    value: $appState.audioRetentionDays,
+                    in: 0...365,
+                    step: 1
+                )
+            }
+
             if appState.history.isEmpty {
                 Text("No transcriptions yet. Recent dictations will appear here.")
                     .font(.caption)
@@ -233,6 +256,15 @@ struct PrivacyPane: View {
                             } label: { Image(systemName: "arrow.uturn.backward") }
                             .buttonStyle(.borderless)
                             .help("Revert to original — restore the exact words you dictated (before AI cleanup)")
+                        }
+                        // MAK-40: re-transcribe from stored audio — shown only when a
+                        // retained clip for this entry still exists on disk.
+                        if appState.retainedAudioURL(for: entry) != nil {
+                            Button {
+                                appState.reTranscribeHistoryEntry(entry)
+                            } label: { Image(systemName: "waveform.badge.magnifyingglass") }
+                            .buttonStyle(.borderless)
+                            .help("Re-transcribe — run the saved audio through the current engine again")
                         }
                         Button {
                             appState.copyHistoryEntry(entry)

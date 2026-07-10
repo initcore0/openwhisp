@@ -291,6 +291,53 @@ struct OverlayView: View {
         )
     }
 
+    /// MAK-25: the rotating first-run discoverability hint to show right now, or nil.
+    /// Which hint (and whether the feature is still on) is `AppState.currentOverlayHint`
+    /// (pure `HintRotation`); WHETHER it may show given the live overlay state is the
+    /// pure `OverlayHintGate`. A hint is a calm, ambient tip — it yields to every other
+    /// overlay cue and never appears during agent/refine/lock/finalize.
+    private var overlayHint: TipsCatalog.Hint? {
+        guard let hint = appState.currentOverlayHint else { return nil }
+        let show = OverlayHintGate.shouldShow(
+            phase: phase,
+            isTranscribing: appState.isTranscribing,
+            agentActive: appState.agentDictatePrompt != nil || appState.agentDictateReadingQuestion,
+            refineArmed: appState.refineArmed,
+            dictationLocked: appState.dictationLocked,
+            showTranscript: showTranscript,
+            clipboardFallbackActive: appState.clipboardFallbackActive,
+            revertActive: revertTarget != nil
+        )
+        return show ? hint : nil
+    }
+
+    /// The dismissible hint row: a small tip line with an × to dismiss it forever.
+    @ViewBuilder private func hintRow(_ hint: TipsCatalog.Hint) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: "lightbulb.fill")
+                .font(.system(size: 9, weight: .semibold))
+            Text(hint.text)
+                .font(.system(size: 10.5, weight: .medium, design: .rounded))
+                .lineLimit(2)
+                .multilineTextAlignment(.leading)
+                .fixedSize(horizontal: false, vertical: true)
+            Button {
+                appState.dismissOverlayHint(hint.id)
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 8, weight: .bold))
+            }
+            .buttonStyle(.plain)
+            .help("Dismiss this tip")
+        }
+        .foregroundColor(Color(red: 0.72, green: 0.75, blue: 0.82).opacity(0.9))
+        .padding(.horizontal, 10)
+        .padding(.vertical, 5)
+        .background(
+            Capsule().fill(Color.white.opacity(0.06))
+        )
+    }
+
     var body: some View {
         VStack(spacing: 10) {
             waveformPill
@@ -368,6 +415,15 @@ struct OverlayView: View {
                     .transition(.opacity.combined(with: .move(edge: .top)))
             }
 
+            // MAK-25: rotating first-run discoverability hint. Calm/ambient — the
+            // gate (OverlayHintGate) already ensures it's nil unless we're in a quiet
+            // listening/speaking user session with nothing else on screen, so it never
+            // competes with a caption, transcript, agent question, or revert control.
+            if let overlayHint {
+                hintRow(overlayHint)
+                    .transition(.opacity)
+            }
+
             #if OPENWHISP_INSTRUMENTATION
             if appState.debugOverlayEnabled {
                 debugHUD
@@ -384,6 +440,7 @@ struct OverlayView: View {
         .animation(.easeInOut(duration: 0.18), value: revertTarget != nil)
         .animation(.easeInOut(duration: 0.18), value: appState.isTranscribing)
         .animation(.easeInOut(duration: 0.18), value: appState.agentDictateReadingQuestion)
+        .animation(.easeInOut(duration: 0.18), value: overlayHint?.id)
         #if OPENWHISP_INSTRUMENTATION
         .onAppear { if appState.debugOverlayEnabled { debugSnapshot = appState.debugHUDSnapshot() } }
         .onReceive(debugTimer) { _ in if appState.debugOverlayEnabled { debugSnapshot = appState.debugHUDSnapshot() } }

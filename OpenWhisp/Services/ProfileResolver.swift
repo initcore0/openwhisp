@@ -19,6 +19,10 @@ enum ProfileResolver {
         var translateToEnglish: Bool
         var outputMode: String
         var aiCleanupEnabled: Bool
+        /// The effective text-insert method (`InsertionMode` raw value) for the
+        /// session — the profile's override, or the global when the profile
+        /// inherits (MAK-42).
+        var insertionMode: String
     }
 
     /// The current global values a profile overrides on top of.
@@ -27,6 +31,8 @@ enum ProfileResolver {
         var translateToEnglish: Bool
         var outputMode: String
         var aiCleanupEnabled: Bool
+        /// The global text-insert method (`InsertionMode` raw value).
+        var insertionMode: String
     }
 
     /// Resolve the effective settings for `profile` layered over `globals`.
@@ -44,7 +50,8 @@ enum ProfileResolver {
             language: globals.language,
             translateToEnglish: globals.translateToEnglish,
             outputMode: globals.outputMode,
-            aiCleanupEnabled: globals.aiCleanupEnabled
+            aiCleanupEnabled: globals.aiCleanupEnabled,
+            insertionMode: globals.insertionMode
         )
 
         if let lang = profile.language {
@@ -58,6 +65,7 @@ enum ProfileResolver {
         }
         if let mode = profile.outputMode { out.outputMode = mode }
         if let ai = profile.aiCleanupEnabled { out.aiCleanupEnabled = ai }
+        if let insert = profile.insertionMode { out.insertionMode = insert }
 
         return out
     }
