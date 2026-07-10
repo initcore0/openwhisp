@@ -692,7 +692,7 @@
       <li class="entry">
         <h3>One subprocess lifecycle for both bundled servers</h3>
         <p>OpenWhisp runs two local helper processes — whisper-server for transcription and llama-server for on-device refine. Their start/stop/cleanup code was copy-pasted between the two; now it lives in one shared, tested place, so a fix to how a server is launched or reaped applies to both. The port a server binds is also acquired more safely, closing a race where two starts could collide on one port.</p>
-        <div class="receipts"><span class="tag ticket">MAK-21</span></div>
+        <div class="receipts"><span class="tag ticket">MAK-21</span><span class="tag pr">#152</span></div>
       </li>
     </ul>
   </section>
