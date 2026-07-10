@@ -89,7 +89,10 @@ let package = Package(
                 "RefineTap.swift",
                 "ServerProcessIdentity.swift",
                 "ServerLaunchRetry.swift",
-                "WhisperResponseClassifier.swift"
+                "WhisperResponseClassifier.swift",
+                "FileTranscriptionQueue.swift",
+                "SubtitleFormatter.swift",
+                "WatchFolderPolicy.swift"
             ]
         ),
         .executableTarget(
