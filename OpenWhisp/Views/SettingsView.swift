@@ -12,10 +12,13 @@ import Cocoa
 /// General-first.
 enum SettingsPane: String, CaseIterable, Identifiable {
     case general
+    case insights
     case dictation
     case models
     case cleanup
     case output
+    case rules
+    case modes
     case files
     case profiles
     case agentBridge
@@ -27,10 +30,13 @@ enum SettingsPane: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .general:     return "General"
+        case .insights:    return "Insights"
         case .dictation:   return "Dictation"
         case .models:      return "Models"
         case .cleanup:     return "Cleanup"
         case .output:      return "Output"
+        case .rules:       return "Rules"
+        case .modes:       return "Modes"
         case .files:       return "File Transcription"
         case .profiles:    return "Per-App Profiles"
         case .agentBridge: return "Agent Bridge"
@@ -42,10 +48,13 @@ enum SettingsPane: String, CaseIterable, Identifiable {
     var symbol: String {
         switch self {
         case .general:     return "gearshape"
+        case .insights:    return "chart.bar.xaxis"
         case .dictation:   return "mic"
         case .models:      return "cpu"
         case .cleanup:     return "wand.and.stars"
         case .output:      return "text.cursor"
+        case .rules:       return "flowchart"
+        case .modes:       return "square.stack.3d.up"
         case .files:       return "waveform.and.magnifyingglass"
         case .profiles:    return "square.grid.2x2"
         case .agentBridge: return "point.3.connected.trianglepath.dotted"
@@ -99,10 +108,13 @@ struct SettingsView: View {
     private var detailView: some View {
         switch selectedPane {
         case .general:   GeneralPane(appState: appState)
+        case .insights:  InsightsPane(appState: appState)
         case .dictation: DictationPane(appState: appState)
         case .models:    ModelsPane(appState: appState)
         case .cleanup:   CleanupPane(appState: appState)
         case .output:    OutputPane(appState: appState)
+        case .rules:     RulesPane(appState: appState)
+        case .modes:     ModesPane(appState: appState)
         case .files:     FileTranscriptionPane(coordinator: appState.fileCoordinator)
         case .profiles:  ProfilesPane(appState: appState)
         case .agentBridge: AgentBridgePane(appState: appState)

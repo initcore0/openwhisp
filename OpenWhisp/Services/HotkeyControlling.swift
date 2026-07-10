@@ -7,8 +7,17 @@ import Foundation
 /// (Windows: `RegisterHotKey` / `WH_KEYBOARD_LL`). The callbacks carry no
 /// platform types, so the orchestration in AppState never names AppKit.
 protocol HotkeyControlling: AnyObject {
-    /// Which gesture triggers dictation: "fn" or "controlSpace".
+    /// Which gesture triggers dictation: "fn", "controlSpace", or "custom".
+    /// For "custom", `customTrigger` supplies the recorded keycode + modifiers.
     var triggerMode: String { get set }
+    /// The user-recorded arbitrary trigger, consulted only when
+    /// `triggerMode == "custom"` (MAK-17). nil leaves the two presets in charge.
+    var customTrigger: DictationTrigger? { get set }
+    /// True while the Settings capture field is recording a new shortcut. The
+    /// backend pauses ALL trigger/refine/Esc handling so pressing the current
+    /// trigger to re-record it can't start dictation mid-recording (and the
+    /// recording's Esc-cancel can't fire the session cancel).
+    var isSuspendedForCapture: Bool { get set }
     /// How the trigger activates dictation: "hold" (press-to-talk) or "toggle"
     /// (hands-free lock — tap to start, tap/Esc to stop). See
     /// `ActivationInteraction`. In hold mode a quick double-tap still escalates
@@ -17,6 +26,10 @@ protocol HotkeyControlling: AnyObject {
     /// Which single key triggers refine (held-to-talk). One of the ids in
     /// `RefineKey` (e.g. "rightOption"); "off" disables the refine key.
     var refineKey: String { get set }
+    /// Which non-primary mouse button also triggers dictation (MAK-42), as a
+    /// `MouseTrigger` id (e.g. "mouse2" for the middle button); "off" disables the
+    /// mouse trigger. It shares the same hold/toggle activation as the key trigger.
+    var mouseTrigger: String { get set }
     /// Dictation begins. `locked` is true for a hands-free (toggle/double-tap)
     /// session that stays open until an explicit stop/cancel; false for an
     /// ordinary press-to-talk hold.

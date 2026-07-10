@@ -11,7 +11,7 @@ struct OnboardingView: View {
     var onClose: () -> Void
 
     enum Step: Int, CaseIterable {
-        case welcome, microphone, accessibility, model, hotkey, ai, tryIt
+        case welcome, microphone, accessibility, model, hotkey, ai, tryIt, whatsNext
     }
 
     @State private var step: Step = .welcome
@@ -56,6 +56,7 @@ struct OnboardingView: View {
         case .hotkey:        hotkeyStep
         case .ai:            aiStep
         case .tryIt:         tryItStep
+        case .whatsNext:     whatsNextStep
         }
     }
 
@@ -363,6 +364,34 @@ struct OnboardingView: View {
         }
     }
 
+    /// The closing "What's next" card (MAK-25): 2–3 features to explore now that
+    /// setup is done, each with its real Settings path. Content is `TipsCatalog.whatsNext`.
+    private var whatsNextStep: some View {
+        stepLayout(
+            icon: "sparkles",
+            iconColor: .accentColor,
+            title: "You're set — here's what to try next",
+            subtitle: "A few features worth discovering once you've got the basics. Find the full list anytime under “Tips & Commands” in the menu."
+        ) {
+            VStack(alignment: .leading, spacing: 12) {
+                ForEach(Array(TipsCatalog.whatsNext.enumerated()), id: \.offset) { _, step in
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(step.title)
+                            .font(.headline)
+                        Text(step.pitch)
+                            .font(.callout)
+                            .foregroundColor(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Label(step.settingsPath, systemImage: "gearshape")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+        }
+    }
+
     // MARK: - Footer / navigation
 
     private var footer: some View {
@@ -384,7 +413,7 @@ struct OnboardingView: View {
 
     private var primaryButtonTitle: String {
         switch step {
-        case .tryIt: return "Done"
+        case .whatsNext: return "Done"
         case .welcome: return "Get Started"
         default: return "Continue"
         }
@@ -401,7 +430,7 @@ struct OnboardingView: View {
     }
 
     private func advance() {
-        if step == .tryIt {
+        if step == .whatsNext {
             finish()
             return
         }

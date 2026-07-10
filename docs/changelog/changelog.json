@@ -7,16 +7,165 @@
       "id": "2026-07",
       "title": "July 2026",
       "date": "2026-07-10",
-      "summary": "A batch of new features, fixes, and under-the-hood hardening — all landed on main, all covered by tests, all on your machine. All fourteen new features are live today: quiet-dictation mode for whispering, batch file transcription with watch folders, hands-free (tap-to-lock) dictation, adjustable AI cleanup, voice editing, a self-learning dictionary, rich local formatting, spoken-filename @-mentions for code editors, agent-CLI cleanup, output targets that route a dictation to a file/Shortcut/webhook, and an openwhisp:// URL scheme so Raycast, Alfred, or any launcher can drive dictation.",
+      "summary": "A batch of new features, fixes, and under-the-hood hardening — all landed on main, all covered by tests, all on your machine. All twenty-one new features are live today: quiet-dictation mode for whispering into your mic, opt-in on-device audio retention with one-click re-transcription and an auto-cleanup policy, a fully-remappable dictation trigger with a record-a-shortcut field, an AppleScript keystroke insert method and mouse-button dictation triggers, a local Usage Insights dashboard, opt-in screen-context awareness that biases transcription toward the names already on screen, batch file transcription with watch folders, hands-free (tap-to-lock) dictation, adjustable AI cleanup, voice editing, a self-learning dictionary, rich local formatting, spoken-filename @-mentions for code editors, agent-CLI cleanup, output targets that route a dictation to a file/Shortcut/webhook, first-class Modes you can invoke by name, a Rules engine that runs your own actions when a dictation finishes, and an openwhisp:// URL scheme so Raycast, Alfred, or any launcher can drive dictation.",
       "stats": {
-        "changesShipped": 24,
-        "newFeatures": 14,
-        "testsPassing": 1097,
+        "changesShipped": 33,
+        "newFeatures": 21,
+        "testsPassing": 1309,
         "onDevicePercent": 100,
-        "newFeaturesLive": 14,
+        "newFeaturesLive": 21,
         "newFeaturesCorePending": 0
       },
       "entries": [
+        {
+          "category": "improvement",
+          "headline": "Discover what OpenWhisp can do — a Tips & Commands cheat sheet + first-run overlay hints",
+          "body": "A new “Tips & Commands” menu item opens a cheat sheet of every gesture, spoken command, and feature that actually ships — with the real Settings path for each. Onboarding now ends with a short “What's next” card, and for your first few sessions the dictation overlay rotates a dismissible one-line tip (“say ‘scratch that’ to undo”) so the deeper features aren't buried. Hints auto-off after the first-run window and never interrupt an agent question or a refine.",
+          "tickets": [
+            "MAK-25"
+          ],
+          "prs": [
+            149
+          ],
+          "howTo": {
+            "availability": "live",
+            "summary": "Open “Tips & Commands…” from the menu bar for the full cheat sheet; new users also get a closing onboarding card and a few rotating overlay hints.",
+            "steps": [
+              "Click the OpenWhisp menu-bar icon and choose “Tips & Commands…” to open the cheat sheet — grouped by voice editing, hands-free, spoken formatting, file @-mentions, AI cleanup, output targets, launcher automation, and the self-learning dictionary, each row with its real Settings path.",
+              "First-run onboarding now closes with a “What's next” card pointing at 2–3 features to try (voice editing, hands-free mode, the AI cleanup dial).",
+              "For roughly your first ten dictations, the overlay shows a small rotating tip while you speak; click its × to dismiss one forever."
+            ],
+            "note": "Live now. The overlay hints are calm and ambient — they only appear in a quiet listening moment of an ordinary dictation, never during an agent question, a refine, a hands-free-locked session, or while a transcript or revert control is on screen, and they auto-off after the first-run window. Every tip and Settings path in the cheat sheet is checked against what the running app actually does."
+          }
+        },
+        {
+          "category": "feature",
+          "headline": "Keep your dictation audio on-device — re-transcribe any past dictation, with an auto-cleanup policy",
+          "body": "Turn on opt-in audio retention and OpenWhisp saves each dictation's raw audio on this Mac — and only this Mac; it never leaves the device. A re-transcribe button on any saved history entry runs that audio back through your current engine (handy after you switch or upgrade a model) and keeps the old text as a one-click revert. A retention policy sweeps automatically: keep at most N clips and/or delete audio + history older than N days. Retention is OFF by default, and turning it off deletes every saved clip. The cleanup only ever removes files OpenWhisp itself created.",
+          "tickets": [
+            "MAK-40"
+          ],
+          "prs": [],
+          "howTo": {
+            "availability": "live",
+            "summary": "Settings › Privacy › turn on “Keep raw audio for re-transcription”, set the clip/day caps, then use the re-transcribe button on any saved history entry.",
+            "steps": [
+              "Open Settings › Privacy & Permissions › History.",
+              "Turn on “Keep transcription history” (needed to associate audio with an entry), then turn on “Keep raw audio for re-transcription”. It's off by default — the audio stays on this Mac and is never uploaded.",
+              "Set the policy: “Keep at most N clips” and/or “Delete audio + history after N days” (0 = no cap). The sweep runs after each dictation and on launch.",
+              "Dictate as usual (standard hold-to-talk sessions). Each dictation's audio is saved beside its history entry.",
+              "On a saved entry, click the re-transcribe (waveform) button to run its audio through your current engine again; the new text replaces the old, and the revert arrow restores the previous words.",
+              "Turn the toggle off (or use Clear History) to delete every saved clip immediately."
+            ],
+            "note": "On-device only — audio never leaves your Mac. Retention covers standard hold-to-talk dictations (which produce a single whole-session recording); live-chunk/streaming sessions aren't retained yet. Crash recovery of an interrupted in-progress recording is scaffolded and tested in core but not yet wired to a launch prompt — that's a follow-up; retention, re-transcribe, and the cleanup policy are live now."
+          }
+        },
+        {
+          "category": "feature",
+          "headline": "Two new ways to get your words in: an AppleScript keystroke insert method and mouse-button triggers",
+          "body": "Some apps mangle the usual paste (⌘V) and direct-insert methods — Electron apps, remote-desktop (VNC) windows, and non-QWERTY keyboard layouts. A new AppleScript keystroke insert method types your transcript in as if from the keyboard, which those surfaces accept; pick it globally or per-app. And you can now bind a non-primary mouse button (middle, or a side button) as a dictation trigger, using the same hold or hands-free style as your trigger key.",
+          "tickets": [
+            "MAK-42"
+          ],
+          "prs": [],
+          "howTo": {
+            "availability": "live",
+            "summary": "Settings › Output › Insertion → “AppleScript keystroke”, and Settings › Dictation › Activation → “Mouse-button trigger”. Both can also be set per-app under Per-App Profiles.",
+            "steps": [
+              "Insert method: Settings › Output › Insertion → choose “AppleScript keystroke” if paste/direct insert misbehaves in an app (Electron, VNC, non-QWERTY).",
+              "Per-app override: Settings › Per-App Profiles → add the app and set its “Insert” column (Inherit / Auto / Direct / Paste / AppleScript).",
+              "Mouse trigger: Settings › Dictation › Activation → “Mouse-button trigger” → pick Middle button or a side button (Mouse 4-10). “Off” disables it.",
+              "The mouse trigger uses your existing activation style — hold to talk, or tap to lock hands-free."
+            ],
+            "note": "The AppleScript method never touches the clipboard, and your transcript is always safely escaped into the script (quotes, backslashes, and newlines can't break or inject it) — it falls back to paste if the script can't run (grant Accessibility/Automation permission if prompted) or if the transcript is very long (keystroke types at keyboard speed). The left and right mouse buttons are deliberately not bindable, since they're needed for normal clicking."
+          }
+        },
+        {
+          "category": "feature",
+          "headline": "Set any key or combo as your dictation trigger — record-a-shortcut in Settings",
+          "body": "The dictation trigger is no longer limited to Fn or Control + Space. Open Settings › Dictation › Activation, click “Record shortcut”, and press any key or modifier combo (⌥⌘R, ⌃⇧Space, a lone Option — whatever you like). OpenWhisp warns before you pick something that would fire on ordinary typing, shadow a system shortcut like ⌘Space, or clash with your Refine key. Your custom trigger works in both hold-to-talk and hands-free modes, and the two original presets stay one click away.",
+          "tickets": [
+            "MAK-17"
+          ],
+          "prs": [],
+          "howTo": {
+            "availability": "live",
+            "summary": "Settings › Dictation › Activation → “Record shortcut”, press your combo; the two presets remain as quick picks.",
+            "steps": [
+              "Open Settings › Dictation › Activation.",
+              "Click “Record shortcut” and press the key or modifier combo you want (e.g. ⌥⌘R, ⌃⇧Space, or a lone Option). Press Esc to cancel a recording.",
+              "If the combo would fire on ordinary typing, shadow a system shortcut (⌘Space, ⌘Q…), or clash with your Refine key, a warning appears — pick another.",
+              "Prefer a built-in? The “Trigger key” menu keeps Fn (Globe) and Control + Space as one-click quick picks.",
+              "Your custom trigger works in both Hold-to-talk and Hands-free activation styles."
+            ],
+            "note": "Live in Settings today. A single typing key with no modifier is rejected (it would fire as you type); add a modifier or bind a non-text key (function row, Esc, arrows) instead."
+          }
+        },
+        {
+          "category": "feature",
+          "headline": "See your dictation stats — words, speaking speed, time saved, streaks — all on this Mac",
+          "body": "A new Insights tab in Settings surfaces what OpenWhisp was quietly counting: total words dictated, your words-per-minute, an estimated time saved versus typing, current and longest daily streaks, and a breakdown of which apps you dictate into. It's all computed on-device from metadata only — counts and durations, never your transcripts — and there's a one-click share card (a PNG rendered locally) if you want to post your numbers. No accounts, no cloud.",
+          "tickets": [
+            "MAK-38"
+          ],
+          "prs": [
+            144
+          ],
+          "howTo": {
+            "availability": "live",
+            "summary": "Open Settings › Insights to see your words, WPM, time saved, and streaks; Save/Copy the share card to post them.",
+            "steps": [
+              "Open OpenWhisp Settings and pick the “Insights” tab.",
+              "Read your lifetime words, speaking speed (WPM), and estimated time saved (the card states the typing-speed assumption behind that estimate).",
+              "Check your current and longest streaks and which apps you dictate into most.",
+              "Click “Save share card…” to write a PNG, or “Copy image” to put it on the clipboard — the image is rendered entirely on your Mac; nothing is uploaded."
+            ],
+            "note": "Time saved is an estimate: it compares your speaking time to typing the same words at 40 wpm (a common average). Your real typing speed will differ. Stats are metadata only — no transcript text is ever stored or shown here, and sessions recorded while a password field was focused are excluded."
+          }
+        },
+        {
+          "category": "feature",
+          "headline": "Screen-context awareness — dictation that knows the names already on screen",
+          "body": "Opt in per app and, at dictation start, OpenWhisp reads the focused field's existing text on your Mac to do two things: harvest the proper nouns and code identifiers already there (Anthropic, kubectl.apply, getUserProfile) and feed them to the transcription engine so it spells them right, and — only with a local AI cleanup provider — hand the surrounding text to the cleanup model so it matches the thread's tone. Off by default, gated to apps you list, never reads password fields, and nothing read is saved to disk.",
+          "tickets": [
+            "MAK-34"
+          ],
+          "prs": [],
+          "howTo": {
+            "availability": "live",
+            "summary": "Settings › Privacy › Screen Context: turn it on, add the apps you want, then dictate — names on screen bias transcription; local cleanup also gets the surrounding text.",
+            "steps": [
+              "Grant Accessibility (Settings › Privacy › Permissions) — it's how OpenWhisp reads the focused field.",
+              "Settings › Privacy › Screen Context → turn on “Read screen context (advanced)”. It's off by default.",
+              "Click “Add Last-Used App” to allowlist the app you were just typing in. Context is only ever read in apps you list.",
+              "Dictate as usual. Proper nouns and identifiers on screen bias the on-device transcription so they come out right.",
+              "For the surrounding-text cleanup boost, keep your AI cleanup provider on Built-in or your own local LLM (Cleanup › AI Cleanup) — with OpenAI or an agent CLI selected, no surrounding text is shared."
+            ],
+            "note": "Live now. Bias terms only prime the on-device transcription engine (whisper.cpp) and never leave your Mac; the WhisperKit engine ignores the term prompt today (a known pilot gap), so bias terms apply on the whisper.cpp backend. Surrounding text is shared ONLY with a local cleanup provider and never with a cloud/agent-CLI one. Password fields are excluded entirely, and nothing read is written to disk. Vision/OCR of non-text UI is out of scope for this version."
+          }
+        },
+        {
+          "category": "feature",
+          "headline": "Rules — run your own actions when a dictation finishes",
+          "body": "OpenWhisp can now do something with a dictation the moment it's done: append it to a Markdown log, run a Shortcut, POST it to a webhook, run a script, open a URL, or type a canned snippet — automatically, when the transcript matches a rule you set. A rule is a match (starts-with / contains / exact / regex, optionally scoped to one app) plus a list of actions, and it's a pure side channel: if a rule or its action fails, your words are still typed exactly as before — nothing is dropped or delayed. It generalizes the old “run my script” toggle and reuses the same file / Shortcut / webhook delivery under the hood.",
+          "tickets": [
+            "MAK-43"
+          ],
+          "prs": [],
+          "howTo": {
+            "availability": "live",
+            "summary": "Settings › Rules › Add rule: pick when it fires and what it matches, then add one or more actions.",
+            "steps": [
+              "Open Settings › Rules and click “Add rule”.",
+              "Choose when it fires: “After transcribe” (the raw transcript, pre-refine) or “After refine” (the final text that gets typed).",
+              "Set the match: Always, Exact, Starts with, Contains, or Regex — optionally scope it to one app by bundle ID (e.g. com.apple.Notes).",
+              "Add actions in order: Insert snippet, Open URL (use {{text}} for the transcript), Run script, Run Shortcut, POST webhook, or Append to file.",
+              "Save. Rules run automatically on your next matching dictation.",
+              "To run a rule on agent-bridge sessions too, set its “Sessions” to “Agent only” or “Both” — it's dictation-only by default so an agent's transcript never leaves your machine unless you opt in."
+            ],
+            "note": "Live in Settings today. Actions are fail-open: a failing or slow action is skipped and never affects the normal insert. Scripts and Shortcuts receive the transcript on stdin (never interpolated into a command line); webhooks receive it as JSON; an Open-URL template's {{text}} is percent-encoded. Regex is guarded against catastrophic backtracking. The old Output › Script toggle still works and is unchanged."
+          }
+        },
         {
           "category": "feature",
           "headline": "Drop in an audio or video file — batch transcription with a live queue and subtitle export",
@@ -82,7 +231,28 @@
               "Chain verbs in one URL — open \"openwhisp://?switch-mode=email&record\" — they run in order, all-or-nothing.",
               "For a one-key setup, add the Raycast Script Commands or the Alfred recipe from the integrations/ folder and bind them to hotkeys."
             ],
-            "note": "record, refine, and paste-last-result work today. switch-mode / activate-mode are parsed and validated now but not yet wired to a runtime action — OpenWhisp's modes are per-app profiles keyed by bundle ID today, with no named-mode registry to switch by key; those URLs are accepted and logged as pending rather than doing something misleading. See integrations/README.md for the full grammar."
+            "note": "record, refine, paste-last-result, switch-mode, and activate-mode all work today. switch-mode?key=… queues a Mode for your next dictation; activate-mode?key=… sets it as the sticky active Mode without recording (MAK-39 wired the named-mode registry). An unknown key is logged as a miss rather than silently pinning a phantom mode. See integrations/README.md for the full grammar."
+          }
+        },
+        {
+          "category": "feature",
+          "headline": "Modes — save a dictation style and invoke it by name",
+          "body": "A Mode bundles a tone (Formal / Casual / Legal / Chat / Personalized), an AI instruction, optional model and language/output/AI-cleanup overrides, a custom icon, and a stable key you can invoke. Pick one as your active mode in Settings, bind a mode to an app so it auto-activates, or switch modes from a launcher with openwhisp://switch-mode?key=…. Modes generalize the old per-app profiles and travel inside config export/import and packs, so a style is shareable.",
+          "tickets": [
+            "MAK-39"
+          ],
+          "prs": [],
+          "howTo": {
+            "availability": "live",
+            "summary": "Create a Mode in Settings › Modes, give it a tone/instruction, then set it active there or invoke it by key from an openwhisp:// URL.",
+            "steps": [
+              "Settings › Modes → “+” to add a Mode. Give it a name, a key (it's normalized to lowercase-with-hyphens), a tone, and optionally an AI instruction, icon, or language/output/AI-cleanup overrides.",
+              "Set your “Active mode” at the top of the pane — it governs your next dictations until you change it (or pick “None” for global settings).",
+              "Bind a Mode to an app (its bundle ID) and turn on per-app modes to have it auto-activate when you dictate into that app.",
+              "From a launcher: open \"openwhisp://switch-mode?key=email\" to use a Mode for just your next dictation, or \"openwhisp://activate-mode?key=email\" to make it the sticky active Mode.",
+              "Share a Mode by exporting your config (it now includes Modes) or shipping it in a config pack."
+            ],
+            "note": "The tone/instruction, language/output/AI-cleanup overrides, LLM-model override, active-mode picker, app auto-activation, and both URL verbs are live. Two pieces are deferred honestly: a per-Mode transcription-model swap is carried and round-trips but is NOT yet applied to the live engine mid-session, and per-Mode global hotkeys are not wired (key-based invocation via the URL scheme + picker is the shipped path). The old Per-App Profiles pane still exists; Modes are seeded from your profiles on first launch."
           }
         },
         {
@@ -430,7 +600,7 @@
         {
           "category": "improvement",
           "headline": "End-to-end audio testing, so features stay working",
-          "body": "A full regression suite now feeds pre-recorded audio through the whole pipeline — the reason \"999 tests passing\" is more than a number. Every feature above ships with coverage.",
+          "body": "A full regression suite now feeds pre-recorded audio through the whole pipeline — the reason \"1290 tests passing\" is more than a number. Every feature above ships with coverage.",
           "tickets": [],
           "prs": [
             107,
@@ -460,6 +630,17 @@
             ],
             "note": "v1 is a preprocessing preset — a stronger auto-gain plus whisper-friendly VAD/silence thresholds — not a custom whisper model. The boost never clips (hard-limited), and it won't amplify near-silence into hiss. In a noisy room the aggressive gain can raise background noise, so quiet mode is best close to the mic."
           }
+        },
+        {
+          "category": "improvement",
+          "headline": "One subprocess lifecycle for both bundled servers",
+          "body": "OpenWhisp runs two local helper processes — whisper-server for transcription and llama-server for on-device refine. Their start/stop/cleanup code was copy-pasted between the two; now it lives in one shared, tested place, so a fix to how a server is launched or reaped applies to both. The port a server binds is also acquired more safely, closing a race where two starts could collide on one port.",
+          "tickets": [
+            "MAK-21"
+          ],
+          "prs": [
+            152
+          ]
         }
       ]
     }

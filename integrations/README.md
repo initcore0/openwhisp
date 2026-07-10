@@ -42,16 +42,17 @@ following named key (`switch-mode&key=email`).
 | `record` | — | **live** | Start (or stop) a dictation — same as the hotkey. |
 | `refine` | `instruction` (required), `text` (optional, defaults to last result) | **live** | Rewrite text with the on-device AI; result goes to the clipboard. |
 | `paste-last-result` | — | **live** | Paste the last dictation/refine result into the focused app. |
-| `switch-mode` | `key` (required) | **coming soon** | Switch the active mode/profile by key and apply it to the next dictation. |
-| `activate-mode` | `key` (required) | **coming soon** | Activate a mode/profile without recording. |
+| `switch-mode` | `key` (required) | **live** | Queue a Mode (by key) for your **next dictation** only, then revert. |
+| `activate-mode` | `key` (required) | **live** | Set a Mode (by key) as the **sticky active Mode** — no recording. |
 
-`switch-mode` / `activate-mode` are **parsed and validated today** (the grammar and
-the security boundary are in place and tested), but not yet wired to a runtime
-action: OpenWhisp's "modes" are currently per-app profiles keyed by bundle ID and
-applied automatically at dictation start, so there's no named-mode registry to
-switch by key yet. Those URLs are accepted and logged as recognized-but-pending
-rather than doing something that reads as success. The `record`, `refine`, and
-`paste-last-result` verbs work now.
+All five verbs work today. `switch-mode` / `activate-mode` invoke the first-class
+**Modes** registry (MAK-39): a Mode bundles a tone, an AI instruction, and optional
+overrides under a stable `key`. `switch-mode?key=email` applies that Mode to just
+your next dictation; `activate-mode?key=email` makes it the sticky active Mode until
+you change it. The `key` is normalized (lowercased, spaces → hyphens), so
+`key=Email%20Reply` and `key=email-reply` address the same Mode. An **unknown key**
+is logged as a miss and changes nothing, rather than silently pinning a phantom
+mode. Create and name Modes in **Settings › Modes**.
 
 ## Security
 
