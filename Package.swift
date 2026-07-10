@@ -78,6 +78,7 @@ let package = Package(
                 "WhisperTask.swift",
                 "InstructionChain.swift",
                 "CleanupIntensity.swift",
+                "RefineOutputGuard.swift",
                 "VoiceEditCommand.swift",
                 "RefineFlow.swift",
                 "RefineKey.swift",

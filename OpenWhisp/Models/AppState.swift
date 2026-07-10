@@ -3499,8 +3499,25 @@ class AppState: ObservableObject {
                     switch result {
                     case .success(let processedText):
                         let cleaned = self.postProcess(processedText)
-                        textToInsert = cleaned.isEmpty ? item : cleaned
-                        self.translationStatus = cleaned.isEmpty ? "LLM returned empty chunk" : "Rephrased"
+                        // Language guard (fix): reject a chunk the model translated
+                        // away (non-Latin → Latin) and keep the raw chunk. Same
+                        // fail-open behavior as an LLM error. Live chunks only ever run
+                        // "rephrase" and never agent sessions, so the exemptions reduce
+                        // to translateToEnglish.
+                        let guardChunk = RefineOutputGuard.shouldLanguageGuard(
+                            translateToEnglish: self.translateToEnglish,
+                            mode: self.openAIEnhancementMode,
+                            isSpokenInstructionRefine: false,
+                            isAgentBridgeRefine: false
+                        ) && RefineOutputGuard.outputTranslatedAway(input: item, output: cleaned)
+                        if guardChunk {
+                            self.refineDebug("language guard REJECTED chunk cleanup (looked translated); keeping raw chunk")
+                            textToInsert = item
+                            self.translationStatus = "Kept your language (cleanup translated)"
+                        } else {
+                            textToInsert = cleaned.isEmpty ? item : cleaned
+                            self.translationStatus = cleaned.isEmpty ? "LLM returned empty chunk" : "Rephrased"
+                        }
                     case .failure(let error):
                         textToInsert = item
                         self.translationStatus = "Rephrase failed"
@@ -3681,6 +3698,25 @@ class AppState: ObservableObject {
                         self.openAIEnhancementEnabledForSession = false
                         self.insertCompletedText(finalText, originalText: finalText)
                         self.statusMessage = "Refinement failed; inserted local text"
+                        return
+                    }
+                    // Language guard (fix): small cleanup models sometimes TRANSLATE
+                    // a non-Latin dictation (e.g. Russian → English) even though the
+                    // prompt says to keep the language. Reject that and keep the raw
+                    // transcript — the same fail-open path used when the LLM errors.
+                    // Skip the guard when a translation is legitimately intended (this
+                    // path is never the spoken-instruction refine — that returned early
+                    // above — and agent sessions never enhance, so both are false here).
+                    if RefineOutputGuard.shouldLanguageGuard(
+                        translateToEnglish: self.translateToEnglish,
+                        mode: self.openAIEnhancementMode,
+                        isSpokenInstructionRefine: false,
+                        isAgentBridgeRefine: false
+                    ), RefineOutputGuard.outputTranslatedAway(input: finalText, output: cleaned) {
+                        self.refineDebug("language guard REJECTED cleanup (looked translated); keeping raw transcript")
+                        self.translationStatus = "Kept your language (cleanup translated)"
+                        self.rememberLastDictation(finalText)
+                        self.insertCompletedText(finalText, originalText: finalText)
                         return
                     }
                     self.translationStatus = self.openAIEnhancementMode == "rephrase" ? "Rephrased" : "Improved"

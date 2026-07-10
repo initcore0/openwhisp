@@ -9,14 +9,21 @@
       "date": "2026-07-10",
       "summary": "A batch of new features, fixes, and under-the-hood hardening — all landed on main, all covered by tests, all on your machine. All twenty-two new features are live today: a floating Scratchpad to dictate into with no target app, quiet-dictation mode for whispering into your mic, opt-in on-device audio retention with one-click re-transcription and an auto-cleanup policy, a fully-remappable dictation trigger with a record-a-shortcut field, an AppleScript keystroke insert method and mouse-button dictation triggers, a local Usage Insights dashboard, opt-in screen-context awareness that biases transcription toward the names already on screen, batch file transcription with watch folders, hands-free (tap-to-lock) dictation, adjustable AI cleanup, voice editing, a self-learning dictionary, rich local formatting, spoken-filename @-mentions for code editors, agent-CLI cleanup, output targets that route a dictation to a file/Shortcut/webhook, first-class Modes you can invoke by name, a Rules engine that runs your own actions when a dictation finishes, and an openwhisp:// URL scheme so Raycast, Alfred, or any launcher can drive dictation.",
       "stats": {
-        "changesShipped": 35,
+        "changesShipped": 36,
         "newFeatures": 22,
-        "testsPassing": 1361,
+        "testsPassing": 1374,
         "onDevicePercent": 100,
         "newFeaturesLive": 22,
         "newFeaturesCorePending": 0
       },
       "entries": [
+        {
+          "category": "fix",
+          "headline": "Cleanup can no longer silently translate your dictation",
+          "body": "When you dictated in Russian (or any non-Latin script) with automatic AI cleanup on, a small cleanup model would sometimes translate the text to English — the overlay showed your Russian words but the pasted text came back in English. OpenWhisp now checks the cleaned text against what you dictated: if the cleanup dropped your writing system and swapped it for Latin, it's treated as a bad translation and OpenWhisp keeps your original transcript instead (the same fail-open path it already uses when the LLM errors). The check is deliberately conservative — same-language cleanups, Latin‑to‑Latin, short phrases, and Russian prose mixed with English code or URLs all pass untouched — and it never runs when you actually asked to translate (Translate to English, the Improve‑translation mode, a spoken refine instruction, or an agent‑bridge refine). The cleanup prompts were also hardened to spell out “reply in the same language, never translated”.",
+          "tickets": [],
+          "prs": []
+        },
         {
           "category": "improvement",
           "headline": "Discover what OpenWhisp can do — a Tips & Commands cheat sheet + first-run overlay hints",
