@@ -6,6 +6,10 @@ import Foundation
 ///   accessibility API — never touches the clipboard (preserves copied content).
 /// - `paste`: set the clipboard and synthesize a paste keystroke (the universal
 ///   fallback).
+/// - `appleScript`: type the text via AppleScript / System Events `keystroke` —
+///   for apps that mangle CGEvent ⌘V and don't expose a settable AX value
+///   (Electron, VNC / remote desktop, non-QWERTY layouts). Never touches the
+///   clipboard. See `AppleScriptInsert`.
 /// - `auto`: try the accessibility path, fall back to paste.
 ///
 /// Foundation-only (just a string-backed enum) so it lives in OpenWhispCore and
@@ -14,6 +18,22 @@ enum InsertionMode: String {
     case auto
     case directAX
     case paste
+    case appleScript
+
+    /// Human-readable label for the settings picker.
+    var label: String {
+        switch self {
+        case .auto:        return "Auto (accessibility, then paste)"
+        case .directAX:    return "Accessibility (no clipboard)"
+        case .paste:       return "Paste (⌘V)"
+        case .appleScript: return "AppleScript keystroke (Electron / VNC / non-QWERTY)"
+        }
+    }
+
+    /// Parse a stored id, falling back to `.auto` for unknown values.
+    static func from(id: String) -> InsertionMode {
+        InsertionMode(rawValue: id) ?? .auto
+    }
 }
 
 /// Result of an insertion attempt, reported back so the UI can tell the user when

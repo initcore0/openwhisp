@@ -246,14 +246,14 @@
 <div class="wrap">
   <header>
     <p class="eyebrow">Shipped · July 2026</p>
-    <h1>Twenty-four ways OpenWhisp got<br><span class="accent">sharper, safer, and more yours.</span></h1>
-    <p class="lede">A batch of new features, fixes, and under-the-hood hardening — all landed on main, all covered by tests, all on your machine. All fourteen new features are live today: opt-in on-device audio retention with one-click re-transcription and an auto-cleanup policy, batch file transcription with watch folders, hands-free (tap-to-lock) dictation, adjustable AI cleanup, voice editing, a self-learning dictionary, rich local formatting, spoken-filename @-mentions for code editors, agent-CLI cleanup, output targets that route a dictation to a file/Shortcut/webhook, and an openwhisp:// URL scheme so Raycast, Alfred, or any launcher can drive dictation.</p>
+    <h1>Twenty-eight ways OpenWhisp got<br><span class="accent">sharper, safer, and more yours.</span></h1>
+    <p class="lede">A batch of new features, fixes, and under-the-hood hardening — all landed on main, all covered by tests, all on your machine. All eighteen new features are live today: opt-in on-device audio retention with one-click re-transcription and an auto-cleanup policy, a fully-remappable dictation trigger with a record-a-shortcut field, an AppleScript keystroke insert method and mouse-button dictation triggers, a local Usage Insights dashboard, batch file transcription with watch folders, hands-free (tap-to-lock) dictation, adjustable AI cleanup, voice editing, a self-learning dictionary, rich local formatting, spoken-filename @-mentions for code editors, agent-CLI cleanup, output targets that route a dictation to a file/Shortcut/webhook, first-class Modes you can invoke by name, and an openwhisp:// URL scheme so Raycast, Alfred, or any launcher can drive dictation.</p>
   </header>
 
   <div class="stats">
-    <div class="stat"><div class="n">24</div><div class="k">changes shipped</div></div>
-    <div class="stat"><div class="n">14<small> live</small></div><div class="k">new features</div></div>
-    <div class="stat"><div class="n">1099</div><div class="k">tests passing</div></div>
+    <div class="stat"><div class="n">28</div><div class="k">changes shipped</div></div>
+    <div class="stat"><div class="n">18<small> live</small></div><div class="k">new features</div></div>
+    <div class="stat"><div class="n">1192</div><div class="k">tests passing</div></div>
     <div class="stat"><div class="n">100<small>%</small></div><div class="k">on-device</div></div>
   </div>
 
@@ -262,7 +262,7 @@
     <div class="sec-head">
       <span class="dot feature"></span>
       <h2>New features</h2>
-      <span class="count">14 live</span>
+      <span class="count">18 live</span>
     </div>
     <ul class="entries">
       <li>
@@ -289,6 +289,82 @@
               <li>Turn the toggle off (or use Clear History) to delete every saved clip immediately.</li>
             </ol>
             <p class="g-note">On-device only — audio never leaves your Mac. Retention covers standard hold-to-talk dictations (which produce a single whole-session recording); live-chunk/streaming sessions aren't retained yet. Crash recovery of an interrupted in-progress recording is scaffolded and tested in core but not yet wired to a launch prompt — that's a follow-up; retention, re-transcribe, and the cleanup policy are live now.</p>
+          </div>
+        </details>
+      </li>
+      <li>
+        <details class="entry">
+          <summary>
+            <div class="sum-left">
+              <h3>Two new ways to get your words in: an AppleScript keystroke insert method and mouse-button triggers</h3>
+              <p>Some apps mangle the usual paste (⌘V) and direct-insert methods — Electron apps, remote-desktop (VNC) windows, and non-QWERTY keyboard layouts. A new AppleScript keystroke insert method types your transcript in as if from the keyboard, which those surfaces accept; pick it globally or per-app. And you can now bind a non-primary mouse button (middle, or a side button) as a dictation trigger, using the same hold or hands-free style as your trigger key.</p>
+            </div>
+            <div class="sum-right">
+              <span class="try">How to use<svg class="howto-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span>
+              <div class="receipts"><span class="tag ticket">MAK-42</span></div>
+            </div>
+          </summary>
+          <div class="guide">
+            <span class="avail live">Available now</span>
+            <p class="g-sum">Settings › Output › Insertion → “AppleScript keystroke”, and Settings › Dictation › Activation → “Mouse-button trigger”. Both can also be set per-app under Per-App Profiles.</p>
+            <ol>
+              <li>Insert method: Settings › Output › Insertion → choose “AppleScript keystroke” if paste/direct insert misbehaves in an app (Electron, VNC, non-QWERTY).</li>
+              <li>Per-app override: Settings › Per-App Profiles → add the app and set its “Insert” column (Inherit / Auto / Direct / Paste / AppleScript).</li>
+              <li>Mouse trigger: Settings › Dictation › Activation → “Mouse-button trigger” → pick Middle button or a side button (Mouse 4-10). “Off” disables it.</li>
+              <li>The mouse trigger uses your existing activation style — hold to talk, or tap to lock hands-free.</li>
+            </ol>
+            <p class="g-note">The AppleScript method never touches the clipboard, and your transcript is always safely escaped into the script (quotes, backslashes, and newlines can't break or inject it) — it falls back to paste if the script can't run (grant Accessibility/Automation permission if prompted) or if the transcript is very long (keystroke types at keyboard speed). The left and right mouse buttons are deliberately not bindable, since they're needed for normal clicking.</p>
+          </div>
+        </details>
+      </li>
+      <li>
+        <details class="entry">
+          <summary>
+            <div class="sum-left">
+              <h3>Set any key or combo as your dictation trigger — record-a-shortcut in Settings</h3>
+              <p>The dictation trigger is no longer limited to Fn or Control + Space. Open Settings › Dictation › Activation, click “Record shortcut”, and press any key or modifier combo (⌥⌘R, ⌃⇧Space, a lone Option — whatever you like). OpenWhisp warns before you pick something that would fire on ordinary typing, shadow a system shortcut like ⌘Space, or clash with your Refine key. Your custom trigger works in both hold-to-talk and hands-free modes, and the two original presets stay one click away.</p>
+            </div>
+            <div class="sum-right">
+              <span class="try">How to use<svg class="howto-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span>
+              <div class="receipts"><span class="tag ticket">MAK-17</span></div>
+            </div>
+          </summary>
+          <div class="guide">
+            <span class="avail live">Available now</span>
+            <p class="g-sum">Settings › Dictation › Activation → “Record shortcut”, press your combo; the two presets remain as quick picks.</p>
+            <ol>
+              <li>Open Settings › Dictation › Activation.</li>
+              <li>Click “Record shortcut” and press the key or modifier combo you want (e.g. ⌥⌘R, ⌃⇧Space, or a lone Option). Press Esc to cancel a recording.</li>
+              <li>If the combo would fire on ordinary typing, shadow a system shortcut (⌘Space, ⌘Q…), or clash with your Refine key, a warning appears — pick another.</li>
+              <li>Prefer a built-in? The “Trigger key” menu keeps Fn (Globe) and Control + Space as one-click quick picks.</li>
+              <li>Your custom trigger works in both Hold-to-talk and Hands-free activation styles.</li>
+            </ol>
+            <p class="g-note">Live in Settings today. A single typing key with no modifier is rejected (it would fire as you type); add a modifier or bind a non-text key (function row, Esc, arrows) instead.</p>
+          </div>
+        </details>
+      </li>
+      <li>
+        <details class="entry">
+          <summary>
+            <div class="sum-left">
+              <h3>See your dictation stats — words, speaking speed, time saved, streaks — all on this Mac</h3>
+              <p>A new Insights tab in Settings surfaces what OpenWhisp was quietly counting: total words dictated, your words-per-minute, an estimated time saved versus typing, current and longest daily streaks, and a breakdown of which apps you dictate into. It's all computed on-device from metadata only — counts and durations, never your transcripts — and there's a one-click share card (a PNG rendered locally) if you want to post your numbers. No accounts, no cloud.</p>
+            </div>
+            <div class="sum-right">
+              <span class="try">How to use<svg class="howto-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span>
+              <div class="receipts"><span class="tag ticket">MAK-38</span><span class="tag pr">#144</span></div>
+            </div>
+          </summary>
+          <div class="guide">
+            <span class="avail live">Available now</span>
+            <p class="g-sum">Open Settings › Insights to see your words, WPM, time saved, and streaks; Save/Copy the share card to post them.</p>
+            <ol>
+              <li>Open OpenWhisp Settings and pick the “Insights” tab.</li>
+              <li>Read your lifetime words, speaking speed (WPM), and estimated time saved (the card states the typing-speed assumption behind that estimate).</li>
+              <li>Check your current and longest streaks and which apps you dictate into most.</li>
+              <li>Click “Save share card…” to write a PNG, or “Copy image” to put it on the clipboard — the image is rendered entirely on your Mac; nothing is uploaded.</li>
+            </ol>
+            <p class="g-note">Time saved is an estimate: it compares your speaking time to typing the same words at 40 wpm (a common average). Your real typing speed will differ. Stats are metadata only — no transcript text is ever stored or shown here, and sessions recorded while a password field was focused are excluded.</p>
           </div>
         </details>
       </li>
@@ -365,7 +441,33 @@
               <li>Chain verbs in one URL — open "openwhisp://?switch-mode=email&amp;record" — they run in order, all-or-nothing.</li>
               <li>For a one-key setup, add the Raycast Script Commands or the Alfred recipe from the integrations/ folder and bind them to hotkeys.</li>
             </ol>
-            <p class="g-note">record, refine, and paste-last-result work today. switch-mode / activate-mode are parsed and validated now but not yet wired to a runtime action — OpenWhisp's modes are per-app profiles keyed by bundle ID today, with no named-mode registry to switch by key; those URLs are accepted and logged as pending rather than doing something misleading. See integrations/README.md for the full grammar.</p>
+            <p class="g-note">record, refine, paste-last-result, switch-mode, and activate-mode all work today. switch-mode?key=… queues a Mode for your next dictation; activate-mode?key=… sets it as the sticky active Mode without recording (MAK-39 wired the named-mode registry). An unknown key is logged as a miss rather than silently pinning a phantom mode. See integrations/README.md for the full grammar.</p>
+          </div>
+        </details>
+      </li>
+      <li>
+        <details class="entry">
+          <summary>
+            <div class="sum-left">
+              <h3>Modes — save a dictation style and invoke it by name</h3>
+              <p>A Mode bundles a tone (Formal / Casual / Legal / Chat / Personalized), an AI instruction, optional model and language/output/AI-cleanup overrides, a custom icon, and a stable key you can invoke. Pick one as your active mode in Settings, bind a mode to an app so it auto-activates, or switch modes from a launcher with openwhisp://switch-mode?key=…. Modes generalize the old per-app profiles and travel inside config export/import and packs, so a style is shareable.</p>
+            </div>
+            <div class="sum-right">
+              <span class="try">How to use<svg class="howto-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span>
+              <div class="receipts"><span class="tag ticket">MAK-39</span></div>
+            </div>
+          </summary>
+          <div class="guide">
+            <span class="avail live">Available now</span>
+            <p class="g-sum">Create a Mode in Settings › Modes, give it a tone/instruction, then set it active there or invoke it by key from an openwhisp:// URL.</p>
+            <ol>
+              <li>Settings › Modes → “+” to add a Mode. Give it a name, a key (normalized to lowercase-with-hyphens), a tone, and optionally an AI instruction, icon, or language/output/AI-cleanup overrides.</li>
+              <li>Set your “Active mode” at the top of the pane — it governs your next dictations until you change it (or pick “None” for global settings).</li>
+              <li>Bind a Mode to an app (its bundle ID) and turn on per-app modes to have it auto-activate when you dictate into that app.</li>
+              <li>From a launcher: open "openwhisp://switch-mode?key=email" to use a Mode for just your next dictation, or "openwhisp://activate-mode?key=email" to make it the sticky active Mode.</li>
+              <li>Share a Mode by exporting your config (it now includes Modes) or shipping it in a config pack.</li>
+            </ol>
+            <p class="g-note">The tone/instruction, language/output/AI-cleanup overrides, LLM-model override, active-mode picker, app auto-activation, and both URL verbs are live. Two pieces are deferred honestly: a per-Mode transcription-model swap is carried and round-trips but is NOT yet applied to the live engine mid-session, and per-Mode global hotkeys are not wired (key-based invocation via the URL scheme + picker is the shipped path). The old Per-App Profiles pane still exists; Modes are seeded from your profiles on first launch.</p>
           </div>
         </details>
       </li>
@@ -713,7 +815,7 @@
       </li>
       <li class="entry">
         <h3>End-to-end audio testing, so features stay working</h3>
-        <p>A full regression suite now feeds pre-recorded audio through the whole pipeline — the reason "1099 tests passing" is more than a number. Every feature above ships with coverage.</p>
+        <p>A full regression suite now feeds pre-recorded audio through the whole pipeline — the reason "1192 tests passing" is more than a number. Every feature above ships with coverage.</p>
         <div class="receipts"><span class="tag ticket">E2E</span><span class="tag pr">#107–110</span></div>
       </li>
     </ul>
@@ -724,7 +826,7 @@
   </div>
 
   <div class="foot">
-    <span>OpenWhisp · shipped July 9, 2026</span>
+    <span>OpenWhisp · shipped July 10, 2026</span>
     <span><a href="https://github.com/initcore0/openwhisp">github.com/initcore0/openwhisp</a></span>
   </div>
 </div>
