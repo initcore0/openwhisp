@@ -35,6 +35,7 @@ let package = Package(
                 "AppProfile.swift",
                 "TranscriptionHistory.swift",
                 "SecureFieldPolicy.swift",
+                "ScreenContext.swift",
                 "DownloadProgressFormatter.swift",
                 "PrivacyStatus.swift",
                 "TranscriptCleaner.swift",

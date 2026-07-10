@@ -1,22 +1,43 @@
 {
   "$schema": "./changelog.schema.md",
   "project": "OpenWhisp",
-  "generated": "2026-07-09",
+  "generated": "2026-07-10",
   "releases": [
     {
       "id": "2026-07",
       "title": "July 2026",
       "date": "2026-07-09",
-      "summary": "A batch of new features, fixes, and under-the-hood hardening — all landed on main, all covered by tests, all on your machine. All thirteen new features are live today: batch file transcription with watch folders, hands-free (tap-to-lock) dictation, adjustable AI cleanup, voice editing, a self-learning dictionary, rich local formatting, spoken-filename @-mentions for code editors, agent-CLI cleanup, output targets that route a dictation to a file/Shortcut/webhook, and an openwhisp:// URL scheme so Raycast, Alfred, or any launcher can drive dictation.",
+      "summary": "A batch of new features, fixes, and under-the-hood hardening — all landed on main, all covered by tests, all on your machine. All fourteen new features are live today: opt-in screen-context awareness that biases transcription toward the names already on screen, batch file transcription with watch folders, hands-free (tap-to-lock) dictation, adjustable AI cleanup, voice editing, a self-learning dictionary, rich local formatting, spoken-filename @-mentions for code editors, agent-CLI cleanup, output targets that route a dictation to a file/Shortcut/webhook, and an openwhisp:// URL scheme so Raycast, Alfred, or any launcher can drive dictation.",
       "stats": {
-        "changesShipped": 23,
-        "newFeatures": 13,
-        "testsPassing": 1078,
+        "changesShipped": 24,
+        "newFeatures": 14,
+        "testsPassing": 1116,
         "onDevicePercent": 100,
-        "newFeaturesLive": 13,
+        "newFeaturesLive": 14,
         "newFeaturesCorePending": 0
       },
       "entries": [
+        {
+          "category": "feature",
+          "headline": "Screen-context awareness — dictation that knows the names already on screen",
+          "body": "Opt in per app and, at dictation start, OpenWhisp reads the focused field's existing text on your Mac to do two things: harvest the proper nouns and code identifiers already there (Anthropic, kubectl.apply, getUserProfile) and feed them to the transcription engine so it spells them right, and — only with a local AI cleanup provider — hand the surrounding text to the cleanup model so it matches the thread's tone. Off by default, gated to apps you list, never reads password fields, and nothing read is saved to disk.",
+          "tickets": [
+            "MAK-34"
+          ],
+          "prs": [],
+          "howTo": {
+            "availability": "live",
+            "summary": "Settings › Privacy › Screen Context: turn it on, add the apps you want, then dictate — names on screen bias transcription; local cleanup also gets the surrounding text.",
+            "steps": [
+              "Grant Accessibility (Settings › Privacy › Permissions) — it's how OpenWhisp reads the focused field.",
+              "Settings › Privacy › Screen Context → turn on “Read screen context (advanced)”. It's off by default.",
+              "Click “Add Last-Used App” to allowlist the app you were just typing in. Context is only ever read in apps you list.",
+              "Dictate as usual. Proper nouns and identifiers on screen bias the on-device transcription so they come out right.",
+              "For the surrounding-text cleanup boost, keep your AI cleanup provider on Built-in or your own local LLM (Cleanup › AI Cleanup) — with OpenAI or an agent CLI selected, no surrounding text is shared."
+            ],
+            "note": "Live now. Bias terms only prime the on-device transcription engine (whisper.cpp) and never leave your Mac; the WhisperKit engine ignores the term prompt today (a known pilot gap), so bias terms apply on the whisper.cpp backend. Surrounding text is shared ONLY with a local cleanup provider and never with a cloud/agent-CLI one. Password fields are excluded entirely, and nothing read is written to disk. Vision/OCR of non-text UI is out of scope for this version."
+          }
+        },
         {
           "category": "feature",
           "headline": "Drop in an audio or video file — batch transcription with a live queue and subtitle export",
@@ -430,7 +451,7 @@
         {
           "category": "improvement",
           "headline": "End-to-end audio testing, so features stay working",
-          "body": "A full regression suite now feeds pre-recorded audio through the whole pipeline — the reason \"999 tests passing\" is more than a number. Every feature above ships with coverage.",
+          "body": "A full regression suite now feeds pre-recorded audio through the whole pipeline — the reason \"1116 tests passing\" is more than a number. Every feature above ships with coverage.",
           "tickets": [],
           "prs": [
             107,

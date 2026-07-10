@@ -7,15 +7,106 @@ import Cocoa
 struct PrivacyPane: View {
     @ObservedObject var appState: AppState
 
+    @State private var screenContextAddMessage: String?
+
     var body: some View {
         Form {
             summarySection
             permissionsSection
+            screenContextSection
             troubleshootingSection
             historySection
         }
         .formStyle(.grouped)
         .onAppear { appState.refreshPermissionLabels() }
+    }
+
+    // MARK: - Screen context (MAK-34)
+
+    private var screenContextSection: some View {
+        Section {
+            SubtitledToggle(
+                "Read screen context (advanced)",
+                subtitle: "When on, at dictation start OpenWhisp reads the focused field's existing text on this Mac to (1) bias transcription toward the names and identifiers already on screen and (2) — with a local AI cleanup provider only — give the cleanup model the surrounding text so it matches the thread. Off by default. Never reads password fields. Surrounding text is NEVER sent to a cloud or agent-CLI provider, and nothing read is saved to disk.",
+                isOn: $appState.screenContext.enabled
+            )
+
+            if appState.screenContext.enabled {
+                Toggle("Bias transcription with on-screen terms", isOn: $appState.screenContext.biasTermsEnabled)
+                Toggle("Give surrounding text to local AI cleanup", isOn: $appState.screenContext.llmContextEnabled)
+
+                Divider()
+
+                Text("Allowed apps")
+                    .font(.subheadline).bold()
+                Text("Screen context is only ever read in apps you list here. Nothing happens until you add at least one.")
+                    .font(.caption).foregroundColor(.secondary)
+
+                if appState.screenContext.allowedBundleIDs.isEmpty {
+                    Text("No apps allowed yet — add one below.")
+                        .font(.caption).foregroundColor(.secondary)
+                } else {
+                    ForEach(appState.screenContext.allowedBundleIDs, id: \.self) { bid in
+                        HStack {
+                            Text(displayName(for: bid))
+                                .lineLimit(1).truncationMode(.middle)
+                            Spacer()
+                            Button(role: .destructive) {
+                                removeAllowedApp(bid)
+                            } label: { Image(systemName: "trash") }
+                            .buttonStyle(.borderless)
+                            .help("Remove \(displayName(for: bid))")
+                        }
+                    }
+                }
+
+                Button("Add Last-Used App") { addAllowedFrontmostApp() }
+                if let msg = screenContextAddMessage {
+                    Text(msg).font(.caption).foregroundColor(.secondary)
+                }
+            }
+        } header: {
+            Text("Screen Context")
+        } footer: {
+            SettingsFootnote("Requires Accessibility permission (granted above). Bias terms only prime the on-device transcription engine and never leave your Mac. Surrounding text is gated to local cleanup providers (Built-in or your own local LLM) — with OpenAI or an agent CLI selected, no surrounding text is shared.")
+        }
+    }
+
+    /// Friendly name for a bundle ID from a running app, else the bundle ID.
+    private func displayName(for bundleID: String) -> String {
+        if let app = NSWorkspace.shared.runningApplications.first(where: { $0.bundleIdentifier == bundleID }),
+           let name = app.localizedName {
+            return name
+        }
+        return bundleID
+    }
+
+    private func removeAllowedApp(_ bundleID: String) {
+        appState.screenContext.allowedBundleIDs.removeAll { $0 == bundleID }
+        screenContextAddMessage = "Removed \(displayName(for: bundleID))."
+    }
+
+    /// Add the last-used regular app (the one focused before Settings opened), so
+    /// the user can allowlist "the app I was just typing in" in one click.
+    private func addAllowedFrontmostApp() {
+        let candidate = NSWorkspace.shared.runningApplications.first {
+            $0.activationPolicy == .regular
+                && $0.bundleIdentifier != Bundle.main.bundleIdentifier
+                && !$0.isActive
+        } ?? NSWorkspace.shared.runningApplications.first {
+            $0.activationPolicy == .regular && $0.bundleIdentifier != Bundle.main.bundleIdentifier
+        }
+        guard let app = candidate, let bid = app.bundleIdentifier else {
+            screenContextAddMessage = "Couldn't determine the last-used app."
+            return
+        }
+        let name = app.localizedName ?? bid
+        if appState.screenContext.allowedBundleIDs.contains(bid) {
+            screenContextAddMessage = "“\(name)” is already allowed."
+            return
+        }
+        appState.screenContext.allowedBundleIDs.append(bid)
+        screenContextAddMessage = "Allowed “\(name)”."
     }
 
     // MARK: - Privacy summary

@@ -694,6 +694,29 @@ class AppState: ObservableObject {
         didSet { CorrectionProposalStore.save(correctionProposals) }
     }
 
+    /// MAK-34 — live screen-context awareness config. Strictly opt-in (off by
+    /// default), per-app allowlisted. Persisted as a single JSON blob in
+    /// UserDefaults (it carries an array, so the per-bool key idiom doesn't fit).
+    /// The captured context itself is NEVER persisted — only this config is.
+    @Published var screenContext: ScreenContextSettings {
+        didSet { Self.persistScreenContext(screenContext) }
+    }
+
+    /// The screen context captured at the start of the CURRENT session (bias terms
+    /// + bounded surrounding text), or nil when the gate denied it / nothing was
+    /// read. Held in memory for the session only; cleared on the next start and on
+    /// finish. Never written to disk.
+    private var sessionScreenContext: SessionScreenContext?
+
+    /// In-memory capture from `ScreenContextGate` + `ScreenContextReader` for one
+    /// dictation session.
+    struct SessionScreenContext {
+        /// Extra bias terms appended to the whisper initial prompt for this session.
+        var biasTerms: [String]
+        /// Bounded surrounding text for the local refine LLM, or nil.
+        var llmContext: String?
+    }
+
     /// macOS AX watcher that captures a post-insert single-word correction. Nil on
     /// platforms/builds without it; armed after a completed AX-path final insert.
     private let correctionWatcher = AXCorrectionWatcher()
@@ -1122,17 +1145,32 @@ class AppState: ObservableObject {
         // translation-polish branch, so `wholeTextCustomInstruction` returns nil for
         // it (see that resolver). `.none` never reaches here (the enhance guard in
         // completeFinalText skips the whole pass).
+        let baseInstruction = CleanupIntensity.wholeTextCustomInstruction(
+            intensity: cleanupIntensity,
+            mode: openAIEnhancementMode,
+            translateToEnglish: translateToEnglish
+        )
+        // MAK-34: when the gate captured surrounding text this session (only ever
+        // for a LOCAL provider — see ScreenContextGate), append it to the cleanup
+        // system prompt as reference-only material so the local model matches the
+        // thread's tone/vocabulary. Only augments a non-nil base instruction; a nil
+        // one is the translation-polish carve-out that must reach its own branch, so
+        // we leave it alone. The local-only guarantee is enforced by the gate at
+        // capture time, so `sessionScreenContext.llmContext` is non-nil ONLY for
+        // bundled/local here.
+        let customInstruction: String?
+        if let base = baseInstruction, let ctx = sessionScreenContext?.llmContext {
+            customInstruction = ScreenContextTruncator.augmentedInstruction(base, withContext: ctx)
+        } else {
+            customInstruction = baseInstruction
+        }
         return OpenAIRefiner(
             service: translationService,
             mode: refinementMode(openAIEnhancementMode),
             targetLanguage: translationTargetLanguage,
             endpoint: llmEndpoint,
             model: llmModel,
-            customInstruction: CleanupIntensity.wholeTextCustomInstruction(
-                intensity: cleanupIntensity,
-                mode: openAIEnhancementMode,
-                translateToEnglish: translateToEnglish
-            )
+            customInstruction: customInstruction
         )
     }
 
@@ -1341,6 +1379,7 @@ class AppState: ObservableObject {
         scriptPostProcessorEnabled = UserDefaults.standard.object(forKey: "scriptPostProcessorEnabled") as? Bool ?? false
         scriptPostProcessorPath = UserDefaults.standard.string(forKey: "scriptPostProcessorPath") ?? ""
         outputTargetSettings = Self.loadOutputTargetSettings()
+        screenContext = Self.loadScreenContext()
         perAppModesEnabled = UserDefaults.standard.object(forKey: "perAppModesEnabled") as? Bool ?? false
         historyEnabled = UserDefaults.standard.object(forKey: "historyEnabled") as? Bool ?? true
         // Agent Bridge (M8) — default off; started at launch via startAgentBridgeIfEnabled().
@@ -1794,6 +1833,11 @@ class AppState: ObservableObject {
         // outputMode/language/AI-cleanup affects the whole session including the
         // streaming-vs-recording decision below. Restored when the session ends.
         applyProfileForFrontmostApp()
+        // MAK-34: capture screen context (bias terms + bounded surrounding text)
+        // once, now, while the user's original field is still focused — after the
+        // secure-field refusal guard above and profile resolution, before any
+        // routing. The gate re-checks the secure-field and per-app rules.
+        captureScreenContext()
         let liveMode = outputMode == "liveChunks" || outputMode == "preview"
         // Streaming backends (Apple Speech always; WhisperKit when a live preview is
         // wanted) run the real-time path. Both go through the shared streaming
@@ -1887,6 +1931,9 @@ class AppState: ObservableObject {
         isRecording = false
         currentSessionText = ""
         streamingText = ""
+        // MAK-34: drop any captured screen context so a cancelled session can never
+        // leak surrounding text into a later refine.
+        sessionScreenContext = nil
         statusMessage = "Cancelled"
         finishSessionUI()
     }
@@ -3076,7 +3123,10 @@ class AppState: ObservableObject {
             language: engineLanguageSetting,
             wavPath: path.path,
             backend: whisperBackend == "serverAPI" ? .serverAPI : .cli,
-            prompt: customVocabularyEnabled ? vocabulary.whisperPrompt : ""
+            // MAK-34: custom vocabulary + any screen-context bias terms harvested
+            // this session. Both only prime the on-device engine (whisper.cpp CLI /
+            // server); WhisperKit ignores the string prompt today (known pilot gap).
+            prompt: effectiveWhisperPrompt
         )
     }
 
@@ -3787,6 +3837,70 @@ class AppState: ObservableObject {
               let decoded = try? JSONDecoder().decode(OutputTargetSettings.self, from: data)
         else { return OutputTargetSettings() }
         return decoded
+    }
+
+    private static func persistScreenContext(_ settings: ScreenContextSettings) {
+        guard let data = try? JSONEncoder().encode(settings) else { return }
+        UserDefaults.standard.set(data, forKey: "screenContextSettings")
+    }
+
+    /// Load the persisted screen-context config, defaulting to OFF (opt-in) when
+    /// absent or unreadable.
+    private static func loadScreenContext() -> ScreenContextSettings {
+        guard let data = UserDefaults.standard.data(forKey: "screenContextSettings"),
+              let decoded = try? JSONDecoder().decode(ScreenContextSettings.self, from: data)
+        else { return ScreenContextSettings.default }
+        return decoded
+    }
+
+    /// Capture screen context for the session that is starting, applying the full
+    /// `ScreenContextGate` (opt-in, per-app allowlist, secure-field guard,
+    /// local-provider-only for LLM context). Reads the focused field via AX ONLY
+    /// when the gate permits it; nothing is persisted. Called from `startDictation`
+    /// AFTER the secure-field refusal guard and target-app resolution.
+    private func captureScreenContext() {
+        sessionScreenContext = nil
+
+        let decision = ScreenContextGate.decide(
+            settings: screenContext,
+            bundleID: currentTextTargetApplication()?.bundleIdentifier,
+            focusedFieldIsSecure: SecureFieldDetector.focusedFieldIsSecure(),
+            refineEnhancementEnabled: openAIEnhancementEnabled,
+            refineProvider: llmProvider
+        )
+        guard decision.readsField else { return }
+
+        // A single AX read serves both uses (bias terms + LLM context).
+        guard let fieldText = ScreenContextReader.readFocusedFieldText() else { return }
+
+        var biasTerms: [String] = []
+        if decision.harvestBiasTerms {
+            biasTerms = ScreenContextHarvester.harvest(
+                from: fieldText,
+                existingTerms: customVocabularyEnabled ? vocabulary.terms : [],
+                limit: screenContext.maxBiasTerms
+            )
+        }
+        var llmContext: String?
+        if decision.provideLLMContext {
+            llmContext = ScreenContextTruncator.prepareContext(
+                from: fieldText, maxChars: screenContext.maxContextChars
+            )
+        }
+        if biasTerms.isEmpty && llmContext == nil { return }
+        sessionScreenContext = SessionScreenContext(biasTerms: biasTerms, llmContext: llmContext)
+    }
+
+    /// The whisper initial-prompt string for the current session: the user's custom
+    /// vocabulary prompt plus any bias terms harvested from screen context this
+    /// session. Empty when neither applies. Bias terms never leave the machine —
+    /// they only prime the on-device transcription engine.
+    private var effectiveWhisperPrompt: String {
+        let base = customVocabularyEnabled ? vocabulary.whisperPrompt : ""
+        let extra = sessionScreenContext?.biasTerms ?? []
+        guard !extra.isEmpty else { return base }
+        let extraJoined = extra.joined(separator: ", ")
+        return base.isEmpty ? extraJoined : "\(base), \(extraJoined)"
     }
 
     /// Local transcript cleanup. Delegates to TranscriptCleaner (in OpenWhispCore)
