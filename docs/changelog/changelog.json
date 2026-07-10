@@ -7,16 +7,37 @@
       "id": "2026-07",
       "title": "July 2026",
       "date": "2026-07-10",
-      "summary": "A batch of new features, fixes, and under-the-hood hardening — all landed on main, all covered by tests, all on your machine. All fourteen new features are live today: a local Usage Insights dashboard, batch file transcription with watch folders, hands-free (tap-to-lock) dictation, adjustable AI cleanup, voice editing, a self-learning dictionary, rich local formatting, spoken-filename @-mentions for code editors, agent-CLI cleanup, output targets that route a dictation to a file/Shortcut/webhook, and an openwhisp:// URL scheme so Raycast, Alfred, or any launcher can drive dictation.",
+      "summary": "A batch of new features, fixes, and under-the-hood hardening — all landed on main, all covered by tests, all on your machine. All fifteen new features are live today: a fully-remappable dictation trigger with a record-a-shortcut field, a local Usage Insights dashboard, batch file transcription with watch folders, hands-free (tap-to-lock) dictation, adjustable AI cleanup, voice editing, a self-learning dictionary, rich local formatting, spoken-filename @-mentions for code editors, agent-CLI cleanup, output targets that route a dictation to a file/Shortcut/webhook, and an openwhisp:// URL scheme so Raycast, Alfred, or any launcher can drive dictation.",
       "stats": {
-        "changesShipped": 24,
-        "newFeatures": 14,
-        "testsPassing": 1099,
+        "changesShipped": 25,
+        "newFeatures": 15,
+        "testsPassing": 1131,
         "onDevicePercent": 100,
-        "newFeaturesLive": 14,
+        "newFeaturesLive": 15,
         "newFeaturesCorePending": 0
       },
       "entries": [
+        {
+          "category": "feature",
+          "headline": "Set any key or combo as your dictation trigger — record-a-shortcut in Settings",
+          "body": "The dictation trigger is no longer limited to Fn or Control + Space. Open Settings › Dictation › Activation, click “Record shortcut”, and press any key or modifier combo (⌥⌘R, ⌃⇧Space, a lone Option — whatever you like). OpenWhisp warns before you pick something that would fire on ordinary typing, shadow a system shortcut like ⌘Space, or clash with your Refine key. Your custom trigger works in both hold-to-talk and hands-free modes, and the two original presets stay one click away.",
+          "tickets": [
+            "MAK-17"
+          ],
+          "prs": [],
+          "howTo": {
+            "availability": "live",
+            "summary": "Settings › Dictation › Activation → “Record shortcut”, press your combo; the two presets remain as quick picks.",
+            "steps": [
+              "Open Settings › Dictation › Activation.",
+              "Click “Record shortcut” and press the key or modifier combo you want (e.g. ⌥⌘R, ⌃⇧Space, or a lone Option). Press Esc to cancel a recording.",
+              "If the combo would fire on ordinary typing, shadow a system shortcut (⌘Space, ⌘Q…), or clash with your Refine key, a warning appears — pick another.",
+              "Prefer a built-in? The “Trigger key” menu keeps Fn (Globe) and Control + Space as one-click quick picks.",
+              "Your custom trigger works in both Hold-to-talk and Hands-free activation styles."
+            ],
+            "note": "Live in Settings today. A single typing key with no modifier is rejected (it would fire as you type); add a modifier or bind a non-text key (function row, Esc, arrows) instead."
+          }
+        },
         {
           "category": "feature",
           "headline": "See your dictation stats — words, speaking speed, time saved, streaks — all on this Mac",
@@ -452,7 +473,7 @@
         {
           "category": "improvement",
           "headline": "End-to-end audio testing, so features stay working",
-          "body": "A full regression suite now feeds pre-recorded audio through the whole pipeline — the reason \"999 tests passing\" is more than a number. Every feature above ships with coverage.",
+          "body": "A full regression suite now feeds pre-recorded audio through the whole pipeline — the reason \"1131 tests passing\" is more than a number. Every feature above ships with coverage.",
           "tickets": [],
           "prs": [
             107,

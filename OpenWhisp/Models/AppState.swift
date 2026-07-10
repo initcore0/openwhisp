@@ -64,6 +64,45 @@ class AppState: ObservableObject {
         }
     }
 
+    /// The primary keycode of a fully-custom dictation trigger (MAK-17), or -1
+    /// when the custom trigger is a bare modifier (e.g. lone ⌥). Only consulted
+    /// when `triggerMode == "custom"`. Persisted as an Int; -1 is the nil sentinel.
+    @Published var customTriggerKeyCode: Int {
+        didSet {
+            UserDefaults.standard.set(customTriggerKeyCode, forKey: "customTriggerKeyCode")
+            pushCustomTriggerToMonitor()
+        }
+    }
+
+    /// The modifier bitmask (TriggerModifiers.rawValue) of the custom trigger.
+    @Published var customTriggerModifiers: Int {
+        didSet {
+            UserDefaults.standard.set(customTriggerModifiers, forKey: "customTriggerModifiers")
+            pushCustomTriggerToMonitor()
+        }
+    }
+
+    /// The resolved custom trigger from the two persisted fields (-1 keycode means
+    /// a bare-modifier binding). Used to push to the monitor and to display.
+    var customTrigger: DictationTrigger {
+        DictationTrigger(
+            keyCode: customTriggerKeyCode >= 0 ? Int64(customTriggerKeyCode) : nil,
+            modifiers: TriggerModifiers(rawValue: customTriggerModifiers)
+        )
+    }
+
+    /// Record a captured shortcut as the custom trigger and switch to it. Writing
+    /// the fields persists and re-pushes to the monitor.
+    func setCustomTrigger(keyCode: Int64?, modifiers: TriggerModifiers) {
+        customTriggerKeyCode = keyCode.map(Int.init) ?? -1
+        customTriggerModifiers = modifiers.rawValue
+        triggerMode = "custom"
+    }
+
+    private func pushCustomTriggerToMonitor() {
+        hotkeyMonitor?.customTrigger = customTrigger
+    }
+
     /// How the trigger activates dictation: "hold" (press-to-talk, the default)
     /// or "toggle" (hands-free lock — tap to start, tap/Esc to stop). A quick
     /// double-tap reaches lock even in hold mode. The interaction logic lives in
@@ -1170,7 +1209,12 @@ class AppState: ObservableObject {
     }
 
     var hotkeyHelpText: String {
-        let trigger = triggerMode == "fn" ? "Release Fn" : "Release Control+Space"
+        let trigger: String
+        switch triggerMode {
+        case "fn":     trigger = "Release Fn"
+        case "custom": trigger = "Release \(customTrigger.displayName)"
+        default:       trigger = "Release Control+Space"
+        }
         return "\(trigger) to insert - Esc to cancel"
     }
 
@@ -1252,6 +1296,9 @@ class AppState: ObservableObject {
         language = UserDefaults.standard.string(forKey: "language") ?? "auto"
         translateToEnglish = UserDefaults.standard.object(forKey: "translateToEnglish") as? Bool ?? false
         triggerMode = UserDefaults.standard.string(forKey: "triggerMode") ?? "fn"
+        // Custom trigger (MAK-17): -1 keycode = bare-modifier binding / unset.
+        customTriggerKeyCode = UserDefaults.standard.object(forKey: "customTriggerKeyCode") as? Int ?? -1
+        customTriggerModifiers = UserDefaults.standard.object(forKey: "customTriggerModifiers") as? Int ?? 0
         // Press-to-talk stays the default activation; hands-free lock (toggle) is opt-in.
         hotkeyMode = UserDefaults.standard.string(forKey: "hotkeyMode") ?? "hold"
         // Left Control: the old rightControl default doesn't exist on MacBook
@@ -1521,6 +1568,7 @@ class AppState: ObservableObject {
 
         hotkeyMonitor = HotkeyMonitor()
         hotkeyMonitor.triggerMode = triggerMode
+        hotkeyMonitor.customTrigger = customTrigger
         hotkeyMonitor.hotkeyMode = hotkeyMode
         hotkeyMonitor.refineKey = refineKey
         hotkeyMonitor.onPermissionStateChanged = { [weak self] isGranted in
@@ -4270,6 +4318,8 @@ class AppState: ObservableObject {
         voiceEditingEnabled = true
 
         triggerMode = "fn"
+        customTriggerKeyCode = -1
+        customTriggerModifiers = 0
         hotkeyMode = "hold"
         handsFreeSilenceAutoStop = true
         refineKey = RefineKey.defaultKey.rawValue

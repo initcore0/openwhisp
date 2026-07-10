@@ -72,6 +72,7 @@ let package = Package(
                 "VoiceEditCommand.swift",
                 "RefineFlow.swift",
                 "RefineKey.swift",
+                "DictationTrigger.swift",
                 "AudioLevel.swift",
                 "FinalizingCaption.swift",
                 "AsyncTimeout.swift",
