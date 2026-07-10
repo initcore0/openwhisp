@@ -23,10 +23,17 @@ struct DictationPane: View {
 
                 HotkeyCaptureField(
                     current: appState.customTrigger,
-                    isActive: appState.triggerMode == "custom"
-                ) { keyCode, modifiers in
-                    appState.setCustomTrigger(keyCode: keyCode, modifiers: modifiers)
-                }
+                    isActive: appState.triggerMode == "custom",
+                    onCapture: { keyCode, modifiers in
+                        appState.setCustomTrigger(keyCode: keyCode, modifiers: modifiers)
+                    },
+                    // Pause the global monitor while recording, so pressing the
+                    // CURRENT trigger to rebind it can't start dictation and the
+                    // recording's Esc-cancel can't fire the session cancel.
+                    onRecordingChanged: { recording in
+                        appState.hotkeyMonitor?.isSuspendedForCapture = recording
+                    }
+                )
 
                 if appState.triggerMode == "custom",
                    let conflict = appState.customTrigger.conflict(refineKey: RefineKey.from(id: appState.refineKey)) {
@@ -148,6 +155,8 @@ struct DictationPane: View {
             return "This combo is already \(name). OpenWhisp would fight the system for it — pick another combo."
         case .refineKey:
             return "This clashes with your Refine key (Cleanup › Refine) — they'd react to the same press. Change one of them."
+        case .escapeKey:
+            return "Esc is the cancel key — a trigger on Esc would cancel the dictation it just started. Pick a different key."
         }
     }
 }

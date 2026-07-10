@@ -102,9 +102,23 @@ final class DictationTriggerTests: XCTestCase {
     }
 
     func testBareFunctionKeyIsNotAConflict() {
-        // F-row and Esc don't produce text, so a lone binding is fine.
+        // F-row keys don't produce text, so a lone binding is fine.
         XCTAssertNil(DictationTrigger(keyCode: 0x7A, modifiers: []).conflict(refineKey: .off)) // F1
-        XCTAssertNil(DictationTrigger(keyCode: 0x35, modifiers: []).conflict(refineKey: .off)) // Esc
+    }
+
+    // MARK: - Escape conflict
+
+    func testEscapeKeyIsAlwaysAConflict() {
+        // Esc is the session cancel key: an Esc trigger (with ANY modifiers)
+        // would cancel the session it just started.
+        XCTAssertEqual(DictationTrigger(keyCode: 0x35, modifiers: []).conflict(refineKey: .off), .escapeKey)
+        XCTAssertEqual(DictationTrigger(keyCode: 0x35, modifiers: [.command, .option]).conflict(refineKey: .off), .escapeKey)
+    }
+
+    func testForceQuitDigitZeroIsNotFalselyReserved() {
+        // ⌘⌥0 (keycode 0x1D is the digit 0, NOT Esc) must not be flagged as
+        // Force Quit — regression for a wrong-keycode reserved entry.
+        XCTAssertNil(DictationTrigger(keyCode: 0x1D, modifiers: [.command, .option]).conflict(refineKey: .off))
     }
 
     func testModifiedTypingKeyIsNotBareConflict() {
@@ -157,6 +171,48 @@ final class DictationTriggerTests: XCTestCase {
         XCTAssertEqual(DictationTrigger.modifier(forRefineKey: .rightShift), .shift)
         XCTAssertEqual(DictationTrigger.modifier(forRefineKey: .leftCommand), .command)
         XCTAssertNil(DictationTrigger.modifier(forRefineKey: .off))
+    }
+
+    // MARK: - Event-flag matching (exact vs. superset)
+
+    private let ctrl = DictationTrigger.EventFlagBits.control
+    private let opt  = DictationTrigger.EventFlagBits.option
+    private let shft = DictationTrigger.EventFlagBits.shift
+    private let cmd  = DictationTrigger.EventFlagBits.command
+    private let fn   = DictationTrigger.EventFlagBits.function
+
+    func testModifiersHeldIsSupersetMatch() {
+        XCTAssertTrue(DictationTrigger.modifiersHeld([.command, .shift], rawFlags: cmd | shft))
+        // Extra modifier held: still satisfied (keeps an active session alive).
+        XCTAssertTrue(DictationTrigger.modifiersHeld([.command, .shift], rawFlags: cmd | shft | opt))
+        // Missing a required modifier: not held.
+        XCTAssertFalse(DictationTrigger.modifiersHeld([.command, .shift], rawFlags: cmd))
+    }
+
+    func testModifiersExactlyRejectsExtraModifiers() {
+        // A ⌘⇧X binding must NOT activate on ⌘⇧⌥X — that's a different shortcut.
+        XCTAssertTrue(DictationTrigger.modifiersExactly([.command, .shift], rawFlags: cmd | shft))
+        XCTAssertFalse(DictationTrigger.modifiersExactly([.command, .shift], rawFlags: cmd | shft | opt))
+        XCTAssertFalse(DictationTrigger.modifiersExactly([.command, .shift], rawFlags: cmd))
+        // A lone-⌥ trigger must not fire inside an ⌥⌘ chord.
+        XCTAssertFalse(DictationTrigger.modifiersExactly(.option, rawFlags: opt | cmd))
+        XCTAssertTrue(DictationTrigger.modifiersExactly(.option, rawFlags: opt))
+    }
+
+    func testExactMatchToleratesImplicitFnFlag() {
+        // Arrows/F-keys set the Fn flag implicitly — a ⌘← binding must still
+        // activate even though the event carries the Fn bit.
+        XCTAssertTrue(DictationTrigger.modifiersExactly(.command, rawFlags: cmd | fn))
+        // But a required Fn is still required.
+        XCTAssertFalse(DictationTrigger.modifiersExactly([.command, .function], rawFlags: cmd))
+        XCTAssertTrue(DictationTrigger.modifiersExactly([.command, .function], rawFlags: cmd | fn))
+    }
+
+    func testImpliesFnFlag() {
+        XCTAssertTrue(DictationTrigger.impliesFnFlag(0x7B))  // ←
+        XCTAssertTrue(DictationTrigger.impliesFnFlag(0x7A))  // F1
+        XCTAssertFalse(DictationTrigger.impliesFnFlag(0x0F)) // R
+        XCTAssertFalse(DictationTrigger.impliesFnFlag(DictationTrigger.spaceKeyCode))
     }
 
     // MARK: - Conflict severity ordering

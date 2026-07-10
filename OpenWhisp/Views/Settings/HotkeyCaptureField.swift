@@ -19,6 +19,11 @@ struct HotkeyCaptureField: View {
     let isActive: Bool
     /// Called with the captured binding when the user completes a recording.
     let onCapture: (_ keyCode: Int64?, _ modifiers: TriggerModifiers) -> Void
+    /// Recording started/stopped — the owner uses this to suspend the global
+    /// hotkey monitor, so pressing the CURRENT trigger while recording a new one
+    /// can't start dictation (and Esc-cancelling the recording can't fire the
+    /// session cancel).
+    var onRecordingChanged: ((Bool) -> Void)? = nil
 
     @State private var recording = false
     @State private var monitor: Any?
@@ -54,6 +59,7 @@ struct HotkeyCaptureField: View {
     private func startRecording() {
         pendingModifiers = []
         recording = true
+        onRecordingChanged?(true)
         monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .flagsChanged]) { event in
             handle(event)
             return nil // swallow while recording so we don't type into the field
@@ -63,20 +69,30 @@ struct HotkeyCaptureField: View {
     private func stopRecording() {
         if let monitor { NSEvent.removeMonitor(monitor) }
         monitor = nil
+        if recording { onRecordingChanged?(false) }
         recording = false
         pendingModifiers = []
     }
 
     private func handle(_ event: NSEvent) {
-        let mods = Self.modifiers(from: event.modifierFlags)
+        var mods = Self.modifiers(from: event.modifierFlags)
 
         if event.type == .keyDown {
-            // Esc with no modifiers cancels the recording without changing anything.
-            if event.keyCode == 0x35, mods.isEmpty {
+            let keyCode = Int64(event.keyCode)
+            // Esc (however modified) cancels the recording without changing
+            // anything — an Esc-keyed trigger can't work anyway (Esc is the
+            // session cancel key; DictationTrigger rejects it as `.escapeKey`).
+            if keyCode == DictationTrigger.escapeKeyCode {
                 stopRecording()
                 return
             }
-            onCapture(Int64(event.keyCode), mods)
+            // Arrows/F-row/nav keys set the Fn flag implicitly on macOS — strip
+            // it for those keys so recording ⌘← isn't stored (and displayed)
+            // as Fn+⌘←.
+            if DictationTrigger.impliesFnFlag(keyCode) {
+                mods.remove(.function)
+            }
+            onCapture(keyCode, mods)
             stopRecording()
             return
         }
