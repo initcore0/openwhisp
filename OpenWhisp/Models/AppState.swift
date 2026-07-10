@@ -580,10 +580,17 @@ class AppState: ObservableObject {
     }
 
     /// User's custom vocabulary (bias terms + heard→correct substitutions).
-    /// Persisted to a JSON file in Application Support via VocabularyStore.
+    /// Persisted to a JSON file in Application Support via VocabularyStore. The save
+    /// is DEBOUNCED (see `scheduleVocabularySave`): the usage-count bump now fires on
+    /// the paste hot path every dictation, and a synchronous atomic JSON write there
+    /// would be needless main-thread I/O. A short coalescing window turns rapid
+    /// dictations into one write while still persisting an explicit edit (star / add
+    /// rule) within a fraction of a second.
     @Published var vocabulary: Vocabulary {
-        didSet { VocabularyStore.save(vocabulary) }
+        didSet { scheduleVocabularySave() }
     }
+    /// Debounce timer coalescing vocabulary saves. Main-actor only.
+    private var vocabularySaveTimer: Timer?
 
     /// Self-learning dictionary (MAK-41): watch AX-path inserts for a
     /// type-over-the-word correction and PROPOSE it (never auto-apply). Default-on;
@@ -1650,6 +1657,9 @@ class AppState: ObservableObject {
 
     func shutdown() {
         cancelDictation()
+        // Persist any pending debounced vocabulary usage-count bump before we exit,
+        // so a rapid dictate-then-quit doesn't lose the last increment (MAK-41).
+        flushVocabularySave()
         agentBridgeServer.stop()
         whisperEngine.stopServer()
         llamaEngine?.stopServer()
@@ -2916,6 +2926,16 @@ class AppState: ObservableObject {
     private func completeFinalText(_ text: String) {
         let finalText = postProcess(text, isFinalTranscript: true)
 
+        // Self-learning dictionary (MAK-41), Part A: bump usageCount for exactly the
+        // substitution rules that fired against this dictation, keyed on the RAW
+        // pre-clean `text` — the string the vocabulary stage inside `postProcess`
+        // actually matched `from` against. Keying on the POST-postProcess output
+        // would be wrong: vocab has already rewritten `from`→`to`, so a normal
+        // (from != to) rule could never match its own output. Recorded here, once
+        // per final, before any refine/enhance/insert branch, so it counts even for
+        // agent sessions and mid-refine finals (vocab ran on `text` in all of them).
+        recordVocabularyUsage(inRawTranscript: text)
+
         // Mid-dictation refine: the user tapped Refine while holding Fn, so this
         // session's final splits into CONTENT (snapshot at the tap) + INSTRUCTION
         // (spoken after). Run the refine via RefineFlow.
@@ -3253,17 +3273,6 @@ class AppState: ObservableObject {
             return
         }
 
-        // Self-learning dictionary (MAK-41), Part A: bump usageCount for exactly
-        // the substitution rules that fired against THIS dictation's final
-        // transcript, so the editor's "most used" sort reflects real use. Keyed on
-        // `originalText` — the pre-enhancement final transcript the vocabulary
-        // stage actually ran against (an LLM rephrase downstream may no longer
-        // contain the rewritten word). Called once per delivered session, from the
-        // single insert choke point, so counts don't double per chunk. Runs for
-        // agent sessions too (they also apply vocabulary) — a rule that rewrote
-        // text was used regardless of where the text ends up.
-        recordVocabularyUsage(inFinalTranscript: originalText)
-
         // Agent-initiated session: return the transcript to the caller instead of
         // pasting. Skip the script post-processor, the paste, and the clipboard
         // write — but still record history so history.list and the tray reflect it.
@@ -3496,19 +3505,54 @@ class AppState: ObservableObject {
     }
 
     /// Self-learning dictionary (MAK-41), Part A: bump `usageCount` for the
-    /// substitution rules that fired against `finalTranscript`, and persist. The
-    /// firing decision is the SAME whole-phrase, case-insensitive match the
-    /// pipeline uses (`VocabularySubstitutor.firedSubstitutionIDs`), so a rule is
-    /// counted iff it actually rewrote text; multiple hits of one rule count once
-    /// (set semantics). Gated on the feature being on, so disabling vocabulary
-    /// stops counting too. `vocabulary`'s `didSet` persists the bump to
-    /// Application Support automatically.
-    private func recordVocabularyUsage(inFinalTranscript finalTranscript: String) {
+    /// substitution rules that fired against `rawTranscript`, and persist. `rawTranscript`
+    /// MUST be the pre-clean transcript the vocabulary stage matched `from` against
+    /// — NOT the post-`postProcess` text, in which `from` has already been rewritten
+    /// to `to` so a normal (from != to) rule could never match its own output. The
+    /// firing decision is the SAME whole-phrase, case-insensitive match the pipeline
+    /// uses (`VocabularySubstitutor.firedSubstitutionIDs`), so a rule is counted iff
+    /// it actually rewrote text; multiple hits of one rule count once (set
+    /// semantics). Gated on the feature being on. The persist is debounced off the
+    /// main actor (see `scheduleVocabularySave`) so the paste hot path doesn't do a
+    /// synchronous atomic disk write every dictation.
+    private func recordVocabularyUsage(inRawTranscript rawTranscript: String) {
         guard customVocabularyEnabled, !vocabulary.substitutions.isEmpty else { return }
         let fired = VocabularySubstitutor(substitutions: vocabulary.substitutions)
-            .firedSubstitutionIDs(in: finalTranscript)
+            .firedSubstitutionIDs(in: rawTranscript)
         guard !fired.isEmpty else { return }
+        // The `vocabulary` didSet coalesces the disk write (scheduleVocabularySave),
+        // so this main-actor assignment updates the live "used N×"/sort immediately
+        // but doesn't do a synchronous atomic write on the paste hot path.
         vocabulary = vocabulary.incrementingUsage(of: fired)
+    }
+
+    /// Coalesce vocabulary persistence: (re)start a short debounce timer whose fire
+    /// writes the CURRENT `vocabulary` once, off the main thread. Rapid dictations
+    /// (each bumping a usage count) collapse into one write instead of one atomic
+    /// JSON encode + temp-file rename per paste; an explicit edit (star toggle, add
+    /// rule) still persists within the window. The write is dispatched to a background
+    /// queue — `VocabularyStore.save` is a value-type snapshot, so ordering is
+    /// preserved by the serial queue and there's no shared-state race.
+    private func scheduleVocabularySave() {
+        vocabularySaveTimer?.invalidate()
+        let snapshot = vocabulary
+        vocabularySaveTimer = Timer.scheduledTimer(withTimeInterval: 0.6, repeats: false) { _ in
+            Self.vocabularySaveQueue.async { VocabularyStore.save(snapshot) }
+        }
+    }
+
+    /// Serial queue for the (debounced) vocabulary disk write, so coalesced saves
+    /// stay strictly ordered and never block the main actor.
+    private static let vocabularySaveQueue = DispatchQueue(label: "com.openwhisp.app.vocab-save")
+
+    /// Flush any pending debounced vocabulary write immediately (e.g. app teardown /
+    /// reset), so an in-flight bump isn't lost if the process exits before the timer.
+    private func flushVocabularySave() {
+        guard vocabularySaveTimer?.isValid == true else { return }
+        vocabularySaveTimer?.invalidate()
+        vocabularySaveTimer = nil
+        let snapshot = vocabulary
+        Self.vocabularySaveQueue.async { VocabularyStore.save(snapshot) }
     }
 
     // MARK: - Self-learning dictionary: correction capture (MAK-41 Part C)
@@ -3861,6 +3905,7 @@ class AppState: ObservableObject {
         historyEnabled = true
 
         vocabulary = .empty
+        flushVocabularySave()   // reset must persist the cleared vocab promptly
         correctionProposals = .empty
         profiles = []
         clearHistory()

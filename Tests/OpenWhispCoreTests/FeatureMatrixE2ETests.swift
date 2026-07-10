@@ -1288,6 +1288,48 @@ final class FeatureMatrixE2ETests: XCTestCase {
             "clod code")
     }
 
+    /// REGRESSION GUARD for the keying bug (MAJOR 1): usage counting MUST key on the
+    /// PRE-clean transcript the vocabulary stage matched against, NOT the
+    /// post-`postProcess` output. This test drives the REAL cleaner to produce the
+    /// cleaned text, then asserts:
+    ///   1. keying on the cleaned OUTPUT (the old, buggy behavior) FAILS to count a
+    ///      normal (from != to) rule — because vocab already rewrote `from`→`to`, so
+    ///      `from` no longer appears; and
+    ///   2. keying on the RAW pre-clean input (the fixed behavior) DOES count it.
+    /// If someone reverts recordVocabularyUsage to key on the cleaned text, assertion
+    /// (2) breaks and this test fails — which is exactly the guard the reviewer asked
+    /// for. `completeFinalText` passes the raw `text`, so this models the shipped path.
+    func testUsageCountingKeysOnPreCleanTranscriptNotCleanedOutput() {
+        let clodID = UUID()
+        let rule = Vocabulary.Substitution(id: clodID, from: "clod code", to: "Claude Code")
+        let vocab = Vocabulary(terms: [], substitutions: [rule])
+
+        let config = TranscriptCleaner.Config(
+            language: "en", customVocabularyEnabled: true, substitutions: vocab.substitutions,
+            smartFormattingEnabled: true, fillerRemovalEnabled: false, spokenPunctuationEnabled: false)
+
+        let rawTranscript = "i love clod code"
+        let cleanedOutput = TranscriptCleaner(config: config).clean(rawTranscript, isFinalTranscript: true)
+        XCTAssertTrue(cleanedOutput.contains("Claude Code"))
+        XCTAssertFalse(cleanedOutput.lowercased().contains("clod code"),
+                       "precondition: the rule's `from` is gone from the cleaned output")
+
+        let sub = VocabularySubstitutor(substitutions: vocab.substitutions)
+
+        // (1) BUGGY keying on the cleaned output → the rule can't match its own `to`.
+        let firedFromCleaned = sub.firedSubstitutionIDs(in: cleanedOutput)
+        XCTAssertFalse(firedFromCleaned.contains(clodID),
+                       "keying on post-clean text must NOT count a from != to rule (the bug)")
+
+        // (2) FIXED keying on the raw pre-clean transcript → the rule is counted.
+        let firedFromRaw = sub.firedSubstitutionIDs(in: rawTranscript)
+        XCTAssertTrue(firedFromRaw.contains(clodID),
+                      "keying on the raw pre-clean transcript must count the rule (the fix)")
+
+        let bumped = vocab.incrementingUsage(of: firedFromRaw)
+        XCTAssertEqual(bumped.substitutions.first(where: { $0.id == clodID })?.usageCount, 1)
+    }
+
     /// Part C plumbing end-to-end: a captured type-over pair flows EditDiff →
     /// proposeSubstitution → CorrectionProposalState as a user-visible proposal;
     /// accepting adds a real, applied substitution; a second reject-then-recapture

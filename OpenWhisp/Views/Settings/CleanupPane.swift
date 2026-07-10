@@ -19,6 +19,14 @@ struct CleanupPane: View {
     // Substitutions table selection (for the − footer button).
     @State private var selectedSubstitutionID: UUID?
 
+    // FROZEN display order for the substitutions table (MAK-41). The frequency sort
+    // key includes `from`, so recomputing it every render would re-sort the list
+    // under the cursor while you type into "Heard" (row jumps, focus lost), and a
+    // usageCount bump from a dictation-while-Settings-open would shuffle rows too.
+    // We snapshot the ORDER (ids) once on appear + on explicit refresh; in-place
+    // edits, the star toggle, and "used N×" still read live from appState.vocabulary.
+    @State private var displayedOrder: [UUID] = []
+
     // Draft of the OpenAI API key; committed to the Keychain on submit/focus
     // loss rather than per keystroke (each write is a blocking SecItem call).
     @State private var openAIKeyDraft: String = ""
@@ -140,7 +148,7 @@ struct CleanupPane: View {
 
             VStack(alignment: .leading, spacing: 4) {
                 Text("Substitutions")
-                SettingsFootnote("Fix recurring mishearings — applied locally after transcription. Sorted with your starred and most-used rules first.")
+                SettingsFootnote("Fix recurring mishearings — applied locally after transcription. Ordered starred-first, then most-used; “Sort by use” reorders on demand so rows don't jump while you type.")
                 substitutionsTable
             }
             .padding(.vertical, 2)
@@ -196,19 +204,31 @@ struct CleanupPane: View {
 
     // MARK: - Substitutions table
 
-    /// The substitutions the table shows, in `substitutionsByFrequency()` order
-    /// (starred first, then most-used). The order depends only on star/usage/`from`,
-    /// not on the live `to` text, so editing a row's replacement never reorders it
-    /// mid-keystroke.
-    private var sortedSubstitutions: [Vocabulary.Substitution] {
-        appState.vocabulary.substitutionsByFrequency()
+    /// The rows to render, in the FROZEN `displayedOrder` (ids), resolved to LIVE
+    /// substitution values so each cell shows current from/to/star/usage. Any rule
+    /// not yet in the snapshot (e.g. a just-added blank row, or one accepted from a
+    /// proposal) is appended at the END so it appears next to the + button rather
+    /// than jumping into a frequency slot mid-list. The order only changes on appear
+    /// or an explicit "Sort by use" — never on a keystroke or a background bump.
+    private var orderedSubstitutions: [Vocabulary.Substitution] {
+        let byID = Dictionary(uniqueKeysWithValues: appState.vocabulary.substitutions.map { ($0.id, $0) })
+        var rows = displayedOrder.compactMap { byID[$0] }
+        let shown = Set(displayedOrder)
+        rows.append(contentsOf: appState.vocabulary.substitutions.filter { !shown.contains($0.id) })
+        return rows
+    }
+
+    /// Recompute the frozen order from the current frequency sort (starred first,
+    /// then most-used). Called on appear and when the user asks to re-sort.
+    private func refreshDisplayedOrder() {
+        displayedOrder = appState.vocabulary.substitutionsByFrequency().map(\.id)
     }
 
     /// Standard macOS table + ± footer, same pattern as Per-App Profiles, now with a
     /// star toggle and a "used N×" count so the self-learning is visible.
     private var substitutionsTable: some View {
         VStack(spacing: 0) {
-            Table(sortedSubstitutions, selection: $selectedSubstitutionID) {
+            Table(orderedSubstitutions, selection: $selectedSubstitutionID) {
                 TableColumn("★") { sub in
                     Button {
                         toggleStar(sub.id)
@@ -242,6 +262,9 @@ struct CleanupPane: View {
                 Button {
                     let new = Vocabulary.Substitution(from: "", to: "")
                     appState.vocabulary.substitutions.append(new)
+                    // Show the new row now, at the end (next to +), without re-sorting
+                    // the rest — it's blank so a frequency slot would hide it mid-list.
+                    displayedOrder.append(new.id)
                     selectedSubstitutionID = new.id
                 } label: {
                     Image(systemName: "plus").frame(width: 24, height: 20)
@@ -254,6 +277,7 @@ struct CleanupPane: View {
                 Button {
                     if let id = selectedSubstitutionID {
                         appState.vocabulary.substitutions.removeAll { $0.id == id }
+                        displayedOrder.removeAll { $0 == id }
                         selectedSubstitutionID = nil
                     }
                 } label: {
@@ -263,11 +287,20 @@ struct CleanupPane: View {
                 .disabled(selectedSubstitutionID == nil)
                 .accessibilityLabel("Remove selected substitution")
 
+                Divider().frame(height: 14)
+
+                Button("Sort by use") { refreshDisplayedOrder() }
+                    .buttonStyle(.borderless)
+                    .font(.caption)
+                    .padding(.horizontal, 6)
+                    .help("Reorder: starred first, then most-used")
+
                 Spacer()
             }
             .background(Color.secondary.opacity(0.05))
         }
         .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.2)))
+        .onAppear { refreshDisplayedOrder() }
     }
 
     /// Whether the substitution with `id` is currently starred.
