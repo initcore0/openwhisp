@@ -246,14 +246,14 @@
 <div class="wrap">
   <header>
     <p class="eyebrow">Shipped · July 2026</p>
-    <h1>Fourteen ways OpenWhisp got<br><span class="accent">sharper, safer, and more yours.</span></h1>
-    <p class="lede">A batch of fixes and under-the-hood hardening, plus new features landing on <code style="font-family:var(--font-mono);font-size:.85em">main</code> — all covered by tests, all on your machine. One new feature is live in Settings today; four more shipped their tested engine with the UI landing next. Each is marked below.</p>
+    <h1>Nineteen ways OpenWhisp got<br><span class="accent">sharper, safer, and more yours.</span></h1>
+    <p class="lede">A batch of new features, fixes, and under-the-hood hardening — all landed on main, all covered by tests, all on your machine. All ten new features are live in Settings today: adjustable AI cleanup, voice editing, a self-learning dictionary, rich local formatting, spoken-filename @-mentions for code editors, agent-CLI cleanup, and output targets that route a dictation to a file, a macOS Shortcut, or a webhook.</p>
   </header>
 
   <div class="stats">
-    <div class="stat"><div class="n">14</div><div class="k">changes shipped</div></div>
-    <div class="stat"><div class="n">1<small> live</small></div><div class="k">new feature · 4 in progress</div></div>
-    <div class="stat"><div class="n">762</div><div class="k">tests passing</div></div>
+    <div class="stat"><div class="n">19</div><div class="k">changes shipped</div></div>
+    <div class="stat"><div class="n">10<small> live</small></div><div class="k">new features</div></div>
+    <div class="stat"><div class="n">983</div><div class="k">tests passing</div></div>
     <div class="stat"><div class="n">100<small>%</small></div><div class="k">on-device</div></div>
   </div>
 
@@ -262,9 +262,93 @@
     <div class="sec-head">
       <span class="dot feature"></span>
       <h2>New features</h2>
-      <span class="count">1 live · 4 in progress</span>
+      <span class="count">10 live</span>
     </div>
     <ul class="entries">
+      <li>
+        <details class="entry">
+          <summary>
+            <div class="sum-left">
+              <h3>Say a filename, get an @-mention — hands-free file references in Cursor &amp; Windsurf</h3>
+              <p>Speak a file the way you'd read it aloud — “main dot t s”, “at main”, “index dot j s x” — and OpenWhisp writes @main.ts / @main / @index.jsx so your editor's own file autocomplete pops up. It's a pure, offline text transform, and it's deliberately timid: only clear filename forms are rewritten, so ordinary speech (“I ate lunch”, “the main point”, “at noon”) is never touched.</p>
+            </div>
+            <div class="sum-right">
+              <span class="try">How to use<svg class="howto-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span>
+              <div class="receipts"><span class="tag ticket">MAK-48</span><span class="tag pr">#131</span></div>
+            </div>
+          </summary>
+          <div class="guide">
+            <span class="avail live">Available now</span>
+            <p class="g-sum">Turn it on once in Settings, then say the filename in Cursor or Windsurf; the “dot &lt;ext&gt;” or leading “at” cue becomes an @-mention.</p>
+            <ol>
+              <li>Turn it on: Settings › Cleanup › Formatting › “Enable file tagging in code editors” (off by default).</li>
+              <li>Dictate into Cursor or Windsurf and say the filename the way you'd read it: the name, the word “dot”, then the extension spelled out letter-by-letter (“main dot t s”) or as a whole word (“main dot swift”).</li>
+              <li>Or lead with “at” for a bare mention: “at main” → @main.</li>
+              <li>The @-mention lands in your editor and its file autocomplete disambiguates the rest.</li>
+            </ol>
+            <div class="say-block">
+              <p class="say-label">Say</p>
+              <ul class="say-list">
+                <li>“main dot t s” → @main.ts</li>
+                <li>“index dot j s x” → @index.jsx</li>
+                <li>“main dot swift” → @main.swift</li>
+                <li>“at main” → @main</li>
+                <li>“open main dot t s and fix it” → open @main.ts and fix it</li>
+              </ul>
+            </div>
+            <p class="g-note">Works in Cursor and Windsurf when the Settings toggle is on — OpenWhisp only converts spoken filenames while one of those editors is frontmost, so ordinary dictation everywhere else (chat, docs) is never touched. Off by default. An optional AX read of the open workspace to auto-pick the exact extension is still a stretch goal.</p>
+          </div>
+        </details>
+      </li>
+      <li>
+        <details class="entry">
+          <summary>
+            <div class="sum-left">
+              <h3>Use your Claude or Codex CLI as the AI cleanup engine</h3>
+              <p>Pipe your dictation through a coding-agent CLI you already have installed — claude, codex, or any command that reads stdin — and reuse the subscription you already pay for as the cleanup model. No separate API key, no extra service: it's the inverse of Agent Bridge, consuming an agent as the refine engine.</p>
+            </div>
+            <div class="sum-right">
+              <span class="try">How to use<svg class="howto-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span>
+              <div class="receipts"><span class="tag ticket">MAK-44</span><span class="tag pr">#130</span></div>
+            </div>
+          </summary>
+          <div class="guide">
+            <span class="avail live">Available now</span>
+            <p class="g-sum">Point OpenWhisp at a local agent CLI (e.g. claude -p) and it cleans up each dictation using your own subscription.</p>
+            <ol>
+              <li>Open Settings › Cleanup › AI Model and set Provider to “Agent CLI (Claude / Codex)”.</li>
+              <li>Pick a preset — Claude Code (claude -p) or Codex (codex exec) — or choose Custom and enter any command that reads stdin and writes the cleaned text to stdout.</li>
+              <li>Turn on “Improve every dictation automatically” below (or use Refine on demand). OpenWhisp feeds your transcript to the CLI on stdin — never on the command line, so nothing you say can be interpreted as a command — and uses its output as the refined text.</li>
+              <li>If the CLI is missing, errors, times out, or returns nothing, OpenWhisp keeps your original words — you never lose a dictation.</li>
+            </ol>
+            <p class="g-note">Reuses your locally-installed CLI and its own login — no API key needed here. Where your text goes depends on which CLI you pick (a cloud coding agent, or a fully local model).</p>
+          </div>
+        </details>
+      </li>
+      <li>
+        <details class="entry">
+          <summary>
+            <div class="sum-left">
+              <h3>Send your dictation straight into a macOS Shortcut</h3>
+              <p>Route the final transcript into any Shortcut you've built — add it to Things or Reminders, append to a note, fire a webhook, run AppleScript. One OS-level integration reaches the whole Shortcuts ecosystem, and if the shortcut can't run, your text falls back to normal insertion so nothing is ever lost.</p>
+            </div>
+            <div class="sum-right">
+              <span class="try">How to use<svg class="howto-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span>
+              <div class="receipts"><span class="tag ticket">MAK-13</span><span class="tag pr">#129</span><span class="tag pr">#134</span></div>
+            </div>
+          </summary>
+          <div class="guide">
+            <span class="avail live">Available now</span>
+            <p class="g-sum">Pick a Shortcut in Settings; OpenWhisp runs it with your transcript as the input.</p>
+            <ol>
+              <li>Build a Shortcut in Shortcuts.app that starts with “Receive input” (text) and does whatever you want with it.</li>
+              <li>Open Settings › Output › Output target and choose Shortcut, then pick your Shortcut from the list (or type its name and Refresh).</li>
+              <li>Dictate as usual — OpenWhisp runs `shortcuts run &lt;name&gt;` with your transcript on stdin and hands the text off.</li>
+            </ol>
+            <p class="g-note">Live now. Runs on the final transcript only (live-typing always goes to the focused app). On any error or timeout it fails open to normal insertion, so your words are never lost.</p>
+          </div>
+        </details>
+      </li>
       <li>
         <details class="entry">
           <summary>
@@ -277,15 +361,15 @@
               <div class="receipts"><span class="tag ticket">MAK-35</span><span class="tag pr">#121</span></div>
             </div>
           </summary>
-          <div class="guide pending">
-            <span class="avail soon">Coming soon</span>
-            <p class="g-sum">When it ships, you'll choose a cleanup level in Settings and be able to revert to your exact words anytime.</p>
+          <div class="guide">
+            <span class="avail live">Available now</span>
+            <p class="g-sum">Choose a cleanup level in Settings; revert to your exact words anytime.</p>
             <ol>
-              <li>Open Settings › Cleanup and pick a level: None (verbatim), Low (fixes caps, punctuation, spelling), Medium (also removes fillers and lightly rephrases), or High (also resolves spoken self-corrections like “3, no wait, 4” → “4”).</li>
-              <li>Dictate as usual — the level you chose is applied automatically.</li>
-              <li>In History or the overlay, hit “revert to original” to swap the cleaned text back to your raw words.</li>
+              <li>Open Settings › Cleanup › Automatic Cleanup and pick a level on the dial: None (verbatim, no AI pass), Low (fixes caps, punctuation, spelling), Medium (also removes fillers and lightly rephrases), or High (also resolves spoken self-corrections like “3, no wait, 4” → “4”).</li>
+              <li>Dictate as usual — the level you chose is applied automatically to each final transcript. None skips the AI entirely.</li>
+              <li>In Settings › Privacy › History, click the revert (↺) button next to any entry the AI reshaped to swap the cleaned text back to your raw words — the originals are copied to your clipboard.</li>
             </ol>
-            <p class="g-note">The four levels and the raw-transcript revert are built and tested. The Settings dial and the revert button are landing next — today the older on/off “Improve every dictation” toggle is still what's live.</p>
+            <p class="g-note">Live now. The dial is the single source of truth for AI cleanup — the old on/off “Improve every dictation” toggle (tray + onboarding) now just reflects it. Higher levels trade literal fidelity for polish; the revert button appears only when the AI actually changed your words. Revert currently covers the standard preview and insert-at-end dictation modes (not the live-streaming per-chunk mode, which pastes as it types) and lives in History; a one-tap revert in the post-dictation overlay is a small follow-up.</p>
           </div>
         </details>
       </li>
@@ -341,13 +425,13 @@
             <span class="avail live">Available now</span>
             <p class="g-sum">Star and reorder your rules by use, and accept the corrections OpenWhisp learns from your type-overs.</p>
             <ol>
-              <li>Open Settings › Cleanup › Vocabulary. Your Substitutions open sorted starred-first then most-used, each with a “used N×” count; “Sort by use” re-sorts on demand (rows stay put while you type so nothing jumps under the cursor).</li>
+              <li>Open Settings › Cleanup › Vocabulary. Your Substitutions open sorted starred-first then most-used, each with a 'used N×' count; 'Sort by use' re-sorts on demand (rows stay put while you type so nothing jumps under the cursor).</li>
               <li>Click the star on any rule to keep it at the top on the next sort.</li>
-              <li>Dictate into a normal text field, then immediately type over a single misheard word to fix it (e.g. “kubernetis” → “kubernetes”).</li>
-              <li>OpenWhisp adds that fix to “Suggested corrections” at the top of the Vocabulary section — click Add to make it a rule, or Dismiss to never be offered it again.</li>
-              <li>Turn the whole capture off with “Learn corrections as I type over them” if you don't want it.</li>
+              <li>Dictate into a normal text field, then immediately type over a single misheard word to fix it (e.g. 'kubernetis' → 'kubernetes').</li>
+              <li>OpenWhisp adds that fix to 'Suggested corrections' at the top of the Vocabulary section — click Add to make it a rule, or Dismiss to never be offered it again.</li>
+              <li>Turn the whole capture off with 'Learn corrections as I type over them' if you don't want it.</li>
             </ol>
-            <p class="g-note">Live today: star + usage sort + per-rule usage counts, and the full accept/dismiss flow — an accepted suggestion becomes a real substitution that rewrites future transcripts, and nothing is ever added silently. How a suggestion appears today: after an insert made via the Accessibility path, if you type over ONE word within a couple of seconds while the SAME field stays focused and its text is readable via Accessibility, that edit is captured and run through the conservative learner (single-word casing/spelling fixes only). Deferred: capture is a single short-delay re-read, not continuous observation — corrections you make after that window, in paste-only or some web/Electron fields, or that span multiple words, aren't captured yet. You can always add those rules by hand in the same list.</p>
+            <p class="g-note">Live today: star + usage sort + per-rule usage counts, and the full accept/dismiss flow — an accepted suggestion becomes a real substitution that rewrites future transcripts, and nothing is ever added silently. How a suggestion appears today: after an insert made via the Accessibility path, if you type over ONE word within a couple of seconds while the SAME field stays focused and its text is readable via Accessibility, that edit is captured and run through the conservative learner (single-word casing/spelling fixes only). Deferred: capture is a single short-delay re-read, not continuous observation — corrections you make after that window, in paste-only or some web/Electron fields (where the field text isn't Accessibility-readable), or that span multiple words, aren't captured yet. You can always add those rules by hand in the same list.</p>
           </div>
         </details>
       </li>
@@ -356,7 +440,7 @@
           <summary>
             <div class="sum-left">
               <h3>Richer local formatting — numbers, lists, and markdown</h3>
-              <p>Opt-in rules turn spoken structure into clean text: “bullet…” into a list, “twenty twenty-six” into 2026, “bold that” into markdown — all deterministic, all off by default so nothing surprises you.</p>
+              <p>Opt-in rules turn spoken structure into clean text: "bullet…" into a list, "twenty twenty-six" into 2026, "bold that" into markdown — all deterministic, all off by default so nothing surprises you.</p>
             </div>
             <div class="sum-right">
               <span class="try">How to use<svg class="howto-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span>
@@ -373,10 +457,10 @@
             <div class="say-block">
               <p class="say-label">Say</p>
               <ul class="say-list">
-                <li>“five dollars” → $5,&nbsp;&nbsp;“ten cents” → 10¢</li>
-                <li>“twenty twenty six” → 2026&nbsp;&nbsp;(spoken times like “ten thirty” are left alone)</li>
-                <li>“bullet buy milk” → - buy milk,&nbsp;&nbsp;“number one …” → 1. …</li>
-                <li>“heading intro” → # intro,&nbsp;&nbsp;“bold ship it” → **ship it**</li>
+                <li>“five dollars” → $5,  “ten cents” → 10¢</li>
+                <li>“twenty twenty six” → 2026  (spoken times like “ten thirty” are left alone)</li>
+                <li>“bullet buy milk” → - buy milk,  “number one …” → 1. …</li>
+                <li>“heading intro” → # intro,  “bold ship it” → **ship it**</li>
               </ul>
             </div>
             <p class="g-note">Live now. Each group is off by default so it never touches ordinary prose until you turn it on.</p>
@@ -392,18 +476,67 @@
             </div>
             <div class="sum-right">
               <span class="try">How to use<svg class="howto-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span>
-              <div class="receipts"><span class="tag ticket">MAK-11</span><span class="tag pr">#122</span></div>
+              <div class="receipts"><span class="tag ticket">MAK-11</span><span class="tag pr">#122</span><span class="tag pr">#134</span></div>
             </div>
           </summary>
-          <div class="guide pending">
-            <span class="avail soon">Coming soon</span>
-            <p class="g-sum">When it ships, you'll route a dictation to a file, Shortcut, or webhook — chosen per app.</p>
+          <div class="guide">
+            <span class="avail live">Available now</span>
+            <p class="g-sum">Route a dictation to a file, Shortcut, or webhook instead of the focused app.</p>
             <ol>
-              <li>In Settings, pick an output target for an app or profile (e.g. your notes app → a Markdown file).</li>
-              <li>Dictate into that app — the text goes to the target instead of being typed in.</li>
-              <li>Everything else keeps typing into the focused app, exactly as before.</li>
+              <li>Open Settings › Output › Output target and pick a destination: Focused app (default), File, Shortcut, or Webhook.</li>
+              <li>Fill in that target's details (a file path, a Shortcut, or a webhook URL).</li>
+              <li>Dictate as usual — the final text goes to your chosen target. If it isn't configured or a delivery fails, your words still land in the focused app — never dropped.</li>
             </ol>
-            <p class="g-note">The routing protocol and its fail-open safety net (if a target fails, your words still land in the focused app — never dropped) are shipped and tested. The Settings picker and the actual file / Shortcut / webhook destinations are the next tickets (MAK-12/13/14).</p>
+            <p class="g-note">Live now. The choice is global (one destination for all apps) for this version. Live-typing (“Type live as you speak”) always goes to the focused app; only the final transcript is routed.</p>
+          </div>
+        </details>
+      </li>
+      <li>
+        <details class="entry">
+          <summary>
+            <div class="sum-left">
+              <h3>Dictate straight into a Markdown or text file</h3>
+              <p>Point OpenWhisp at a file — an Obsidian daily note, a Logseq journal, a scratch .md — and your dictation gets appended there instead of typed into the focused app. Add a dated heading if you like, or overwrite for a rolling "last dictation" buffer. All local; if the file can't be written, your words still land in the focused app — never dropped.</p>
+            </div>
+            <div class="sum-right">
+              <span class="try">How to use<svg class="howto-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span>
+              <div class="receipts"><span class="tag ticket">MAK-12</span><span class="tag pr">#127</span><span class="tag pr">#134</span></div>
+            </div>
+          </summary>
+          <div class="guide">
+            <span class="avail live">Available now</span>
+            <p class="g-sum">Choose File as the output target; each dictation is appended with an optional dated heading.</p>
+            <ol>
+              <li>Open Settings › Output › Output target and choose File, then Choose… the file to write to (any .md or .txt — e.g. your vault's daily note).</li>
+              <li>Optionally set a heading template with {{date}}, {{time}}, or {{datetime}} tokens (e.g. "## {{datetime}}") to stamp each entry.</li>
+              <li>Choose Append (add each dictation to the end, blank-line separated) or Overwrite (keep only the latest).</li>
+              <li>Dictate — the final text is written to the file; live partials are ignored so you get one clean entry.</li>
+            </ol>
+            <p class="g-note">Live now. All local; if the file can't be written, your words still land in the focused app — never dropped.</p>
+          </div>
+        </details>
+      </li>
+      <li>
+        <details class="entry">
+          <summary>
+            <div class="sum-left">
+              <h3>Send a dictation straight to a webhook (Notion, Obsidian, Zapier, n8n…)</h3>
+              <p>POST your finished transcript as JSON — text, language, app, and timestamp — to any URL you configure, with optional auth headers. If the endpoint is down or slow, your words still land in the focused app as usual. Never dropped.</p>
+            </div>
+            <div class="sum-right">
+              <span class="try">How to use<svg class="howto-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span>
+              <div class="receipts"><span class="tag ticket">MAK-14</span><span class="tag pr">#128</span><span class="tag pr">#134</span></div>
+            </div>
+          </summary>
+          <div class="guide">
+            <span class="avail live">Available now</span>
+            <p class="g-sum">Point the output target at a URL; OpenWhisp POSTs each dictation there as JSON.</p>
+            <ol>
+              <li>Open Settings › Output › Output target and choose Webhook, then enter your URL and add any headers your endpoint needs (e.g. an Authorization token).</li>
+              <li>Dictate as usual — OpenWhisp POSTs { text, language, appBundleID, timestamp } as JSON to your URL.</li>
+              <li>If the POST fails (non-2xx, network error, or timeout), the same text is typed into the focused app instead — you never lose it.</li>
+            </ol>
+            <p class="g-note">Live now. Content-Type: application/json is always set; your custom headers are applied verbatim, with a short timeout so a slow endpoint fails open quickly.</p>
           </div>
         </details>
       </li>
@@ -471,7 +604,7 @@
       </li>
       <li class="entry">
         <h3>End-to-end audio testing, so features stay working</h3>
-        <p>A full regression suite now feeds pre-recorded audio through the whole pipeline — the reason "762 tests passing" is more than a number. Every feature above ships with coverage.</p>
+        <p>A full regression suite now feeds pre-recorded audio through the whole pipeline — the reason "983 tests passing" is more than a number. Every feature above ships with coverage.</p>
         <div class="receipts"><span class="tag ticket">E2E</span><span class="tag pr">#107–110</span></div>
       </li>
     </ul>
