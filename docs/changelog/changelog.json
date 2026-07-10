@@ -24,7 +24,9 @@
           "tickets": [
             "MAK-38"
           ],
-          "prs": [],
+          "prs": [
+            144
+          ],
           "howTo": {
             "availability": "live",
             "summary": "Open Settings › Insights to see your words, WPM, time saved, and streaks; Save/Copy the share card to post them.",
