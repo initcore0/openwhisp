@@ -73,19 +73,9 @@ struct TranscriptCleaner {
     /// meta-instruction strip (only meaningful on the whole final utterance, not
     /// per live chunk). Returns "" when the transcript is empty/ignorable.
     func clean(_ text: String, isFinalTranscript: Bool) -> String {
-        // 1) Normalize whitespace and strip whisper's leading space / stray quotes,
-        //    after removing non-speech markers like [music] / (laughter).
-        var normalized = Self.removeNonSpeechMarkers(from: text)
-            .replacingOccurrences(of: "\n", with: " ")
-            .components(separatedBy: .whitespacesAndNewlines)
-            .filter { !$0.isEmpty }
-            .joined(separator: " ")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        normalized = normalized.trimmingCharacters(in: CharacterSet(charactersIn: "\"'` "))
-
-        // 2) Drop ignorable transcripts BEFORE formatting so we never
-        //    capitalize/punctuate a marker we're about to discard.
-        guard !Self.isIgnorable(normalized) else { return "" }
+        // 1+2) Normalize and drop ignorable transcripts BEFORE formatting so we
+        //      never capitalize/punctuate a marker we're about to discard.
+        guard var normalized = preVocabularyNormalized(text) else { return "" }
 
         // 3) Vocabulary substitutions before formatting, so a corrected term
         //    (e.g. "claude code" -> "Claude Code") is then cased/spaced consistently.
@@ -113,6 +103,43 @@ struct TranscriptCleaner {
             normalized = MetaInstructionStripper.strip(normalized)
         }
 
+        return normalized
+    }
+
+    /// Which vocabulary substitutions would fire against `rawTranscript` — matched
+    /// against the SAME normalized, pre-substitution text `clean` feeds the
+    /// vocabulary stage (steps 1–2 above), so "counted as used" and "actually
+    /// rewrote" can't diverge. This exists because a post-`clean` transcript has
+    /// already had its `from` phrases rewritten to `to` — matching THAT would
+    /// (almost) never fire, silently zeroing the self-learning dictionary's usage
+    /// counts (MAK-41 Part A). Crucially, live-chunk sessions clean each CHUNK
+    /// (vocabulary applied per chunk) and accumulate the substituted text, so the
+    /// firing decision must be captured per `clean` call on the raw input — the
+    /// session's final accumulated text no longer contains the `from` phrases.
+    /// Empty when vocabulary is off / no rules / the transcript is ignorable.
+    func firedSubstitutionIDs(inRawTranscript rawTranscript: String) -> Set<Vocabulary.Substitution.ID> {
+        guard let sub = vocabularyStage,
+              let normalized = preVocabularyNormalized(rawTranscript) else { return [] }
+        return sub.firedSubstitutionIDs(in: normalized)
+    }
+
+    /// Steps 1–2 of `clean`: whitespace/marker normalization + the ignorable
+    /// guard, i.e. exactly the text the vocabulary stage runs against. Nil when
+    /// the transcript is ignorable. Shared by `clean` and
+    /// `firedSubstitutionIDs(inRawTranscript:)` so they can never disagree.
+    private func preVocabularyNormalized(_ text: String) -> String? {
+        // 1) Normalize whitespace and strip whisper's leading space / stray quotes,
+        //    after removing non-speech markers like [music] / (laughter).
+        var normalized = Self.removeNonSpeechMarkers(from: text)
+            .replacingOccurrences(of: "\n", with: " ")
+            .components(separatedBy: .whitespacesAndNewlines)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        normalized = normalized.trimmingCharacters(in: CharacterSet(charactersIn: "\"'` "))
+
+        // 2) Drop ignorable transcripts.
+        guard !Self.isIgnorable(normalized) else { return nil }
         return normalized
     }
 

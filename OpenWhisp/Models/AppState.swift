@@ -2688,6 +2688,9 @@ class AppState: ObservableObject {
         // A new dictation invalidates any pending correction re-read from the last
         // one — the field is about to change for a different reason (MAK-41 Part C).
         correctionWatcher.cancel()
+        // And drop any un-consumed fired-rule stash from a session that post-
+        // processed but never delivered (MAK-41 Part A, consume-once semantics).
+        sessionFiredSubstitutionIDs = []
         targetApplication = currentTextTargetApplication()
         isStreamingSession = streaming
         isTranscribing = false
@@ -3482,9 +3485,22 @@ class AppState: ObservableObject {
     /// `isFinalTranscript` enables the trailing meta-instruction strip (only on the
     /// whole final utterance, never per chunk or on already-LLM-processed output).
     private func postProcess(_ text: String, isFinalTranscript: Bool = false) -> String {
-        TranscriptCleaner(config: transcriptCleanerConfig)
-            .clean(text, isFinalTranscript: isFinalTranscript)
+        let cleaner = TranscriptCleaner(config: transcriptCleanerConfig)
+        // Self-learning dictionary (MAK-41 Part A): record which rules fire HERE,
+        // against this call's raw input, unioned across the session. Live-chunk
+        // sessions apply vocabulary per CHUNK and accumulate the substituted text,
+        // so by finalization the `from` phrases are gone — the firing decision has
+        // to be captured at each clean call, not re-derived from the final text.
+        // Set-union keeps "once per dictation" semantics across chunks/re-cleans;
+        // consumed once by recordVocabularyUsage, cleared at session start.
+        sessionFiredSubstitutionIDs.formUnion(cleaner.firedSubstitutionIDs(inRawTranscript: text))
+        return cleaner.clean(text, isFinalTranscript: isFinalTranscript)
     }
+
+    /// Substitution rules that fired against any raw text this session post-
+    /// processed (per-chunk and final). See `postProcess`; consume-once via
+    /// `recordVocabularyUsage`, cleared at session start.
+    private var sessionFiredSubstitutionIDs: Set<Vocabulary.Substitution.ID> = []
 
     /// Snapshot of the formatting/vocabulary settings the cleaner needs, built on
     /// each call so toggles take effect immediately.
@@ -3517,8 +3533,15 @@ class AppState: ObservableObject {
     /// synchronous atomic disk write every dictation.
     private func recordVocabularyUsage(inRawTranscript rawTranscript: String) {
         guard customVocabularyEnabled, !vocabulary.substitutions.isEmpty else { return }
-        let fired = VocabularySubstitutor(substitutions: vocabulary.substitutions)
+        // Union of (a) rules firing against the text handed to completeFinalText —
+        // raw for the plain finalOnly path — and (b) the session stash captured in
+        // `postProcess` per clean call. (b) is what makes live-chunk and Apple
+        // Speech sessions count: there the accumulated/final text is already
+        // substituted, so (a) alone would fire on nothing. Consume-once.
+        var fired = VocabularySubstitutor(substitutions: vocabulary.substitutions)
             .firedSubstitutionIDs(in: rawTranscript)
+        fired.formUnion(sessionFiredSubstitutionIDs)
+        sessionFiredSubstitutionIDs = []
         guard !fired.isEmpty else { return }
         // The `vocabulary` didSet coalesces the disk write (scheduleVocabularySave),
         // so this main-actor assignment updates the live "used N×"/sort immediately

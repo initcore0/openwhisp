@@ -1330,6 +1330,48 @@ final class FeatureMatrixE2ETests: XCTestCase {
         XCTAssertEqual(bumped.substitutions.first(where: { $0.id == clodID })?.usageCount, 1)
     }
 
+    /// REGRESSION GUARD for the LIVE-CHUNK variant of the keying bug: streaming
+    /// sessions clean each CHUNK (vocabulary applied per chunk) and accumulate the
+    /// SUBSTITUTED text into the session buffer, so even the "raw" text handed to
+    /// completeFinalText no longer contains the `from` phrases. The fix captures
+    /// the firing decision inside every postProcess call, via
+    /// `TranscriptCleaner.firedSubstitutionIDs(inRawTranscript:)`, unioned across
+    /// the session. This pins both halves:
+    ///   1. the accumulated post-chunk session text does NOT fire the rule (so
+    ///      keying only on completeFinalText's input can't count streaming use);
+    ///   2. the per-chunk cleaner capture DOES fire it — including through the
+    ///      cleaner's own normalization (whisper's newline/marker noise), which a
+    ///      bare VocabularySubstitutor match on the raw chunk would miss.
+    func testLiveChunkUsageCountingRequiresPerCleanCapture() {
+        let rule = Vocabulary.Substitution(from: "clod code", to: "Claude Code")
+        let config = TranscriptCleaner.Config(
+            language: "en", customVocabularyEnabled: true, substitutions: [rule],
+            smartFormattingEnabled: true, fillerRemovalEnabled: false, spokenPunctuationEnabled: false)
+        let cleaner = TranscriptCleaner(config: config)
+
+        // Simulate the live pipeline: chunks cleaned individually, then joined —
+        // exactly what insertLiveChunk accumulates into currentSessionText.
+        let rawChunks = [" i love\nclod code", "every day"]
+        let sessionText = rawChunks.map { cleaner.clean($0, isFinalTranscript: false) }
+            .joined(separator: " ")
+        XCTAssertTrue(sessionText.contains("Claude Code"))
+
+        // (1) The accumulated session text can no longer fire the rule.
+        XCTAssertTrue(
+            VocabularySubstitutor(substitutions: [rule])
+                .firedSubstitutionIDs(in: sessionText).isEmpty,
+            "post-chunk session text must not be the usage-count key (the bug)")
+
+        // (2) Per-clean capture on each raw chunk fires it (union across chunks),
+        //     surviving whisper's leading-space/newline noise via the cleaner's
+        //     shared normalization.
+        var fired: Set<Vocabulary.Substitution.ID> = []
+        for chunk in rawChunks {
+            fired.formUnion(cleaner.firedSubstitutionIDs(inRawTranscript: chunk))
+        }
+        XCTAssertEqual(fired, [rule.id], "per-clean capture must count the rule once")
+    }
+
     /// Part C plumbing end-to-end: a captured type-over pair flows EditDiff →
     /// proposeSubstitution → CorrectionProposalState as a user-visible proposal;
     /// accepting adds a real, applied substitution; a second reject-then-recapture
