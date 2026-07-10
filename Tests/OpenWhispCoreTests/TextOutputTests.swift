@@ -148,4 +148,21 @@ final class TextOutputTests: XCTestCase {
     func testVerifyEmptyExpectedIsUnverifiable() {
         XCTAssertNil(InsertVerifier.axInsertReflected(expected: "   ", before: "", current: "anything"))
     }
+
+    // MARK: - InsertionMode (MAK-42 adds .appleScript)
+
+    func testInsertionModeFromIdRoundTrip() {
+        XCTAssertEqual(InsertionMode.from(id: "auto"), .auto)
+        XCTAssertEqual(InsertionMode.from(id: "directAX"), .directAX)
+        XCTAssertEqual(InsertionMode.from(id: "paste"), .paste)
+        XCTAssertEqual(InsertionMode.from(id: "appleScript"), .appleScript)
+        // Unknown ids fall back to the safe default, never a crash.
+        XCTAssertEqual(InsertionMode.from(id: "bogus"), .auto)
+    }
+
+    func testEveryInsertionModeHasALabel() {
+        for mode in [InsertionMode.auto, .directAX, .paste, .appleScript] {
+            XCTAssertFalse(mode.label.isEmpty)
+        }
+    }
 }
