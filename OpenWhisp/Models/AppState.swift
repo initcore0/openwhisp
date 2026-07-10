@@ -793,6 +793,52 @@ class AppState: ObservableObject {
 
     var audioRecorder: AudioCapture!
     var whisperEngine: FileTranscriptionEngine!
+
+    /// Batch audio/video file transcription (MAK-36). Lazily built so it only
+    /// spins up its queue/watcher when the Files pane is first opened. Uses a
+    /// DEDICATED engine per job (never the live-dictation `whisperEngine`).
+    lazy var fileCoordinator: FileTranscriptionCoordinator = {
+        FileTranscriptionCoordinator(engineConfig: { [weak self] in
+            self?.fileEngineConfig() ?? .init(
+                makeEngine: { WhisperEngine() }, binaryPath: "", modelPath: "",
+                languageSetting: "auto", backend: .cli, prompt: "", enhance: nil
+            )
+        })
+    }()
+
+    /// The current engine/model/backend config for batch file transcription,
+    /// mirroring the live-dictation `startTranscription` wiring.
+    func fileEngineConfig() -> FileTranscriptionCoordinator.EngineConfig {
+        let engineName = transcriptionEngine
+        let model = modelName
+        let wkModel = whisperKitModel
+        return .init(
+            makeEngine: { Self.makeFileEngine(for: engineName, model: model, whisperKitModel: wkModel) },
+            binaryPath: whisperBinaryPath,
+            modelPath: modelPath,
+            languageSetting: engineLanguageSetting,
+            backend: whisperBackend == "serverAPI" ? .serverAPI : .cli,
+            prompt: customVocabularyEnabled ? vocabulary.whisperPrompt : "",
+            enhance: llmConfigured ? { [weak self] raw in
+                // Reuse the overlay-refine LLM primitive. Fail-open: any error
+                // (LLM busy, unavailable, mid-dictation) returns the raw text.
+                await withCheckedContinuation { cont in
+                    Task { @MainActor in
+                        guard let self else { cont.resume(returning: raw); return }
+                        self.refineText(
+                            text: raw,
+                            instruction: "Clean up this transcript: fix punctuation, casing, and obvious transcription mistakes. Keep the wording and meaning; do not summarize or omit content."
+                        ) { result in
+                            switch result {
+                            case .success(let enhanced): cont.resume(returning: enhanced)
+                            case .failure: cont.resume(returning: raw)
+                            }
+                        }
+                    }
+                }
+            } : nil
+        )
+    }
     var appleSpeechEngine: StreamingTranscriptionEngine!
     /// Experimental real-time WhisperKit engine. Shares the streaming session
     /// machinery with Apple Speech (same handlers) but uses WhisperKit's
