@@ -9,9 +9,9 @@
       "date": "2026-07-10",
       "summary": "A batch of new features, fixes, and under-the-hood hardening — all landed on main, all covered by tests, all on your machine. All twenty-one new features are live today: quiet-dictation mode for whispering into your mic, opt-in on-device audio retention with one-click re-transcription and an auto-cleanup policy, a fully-remappable dictation trigger with a record-a-shortcut field, an AppleScript keystroke insert method and mouse-button dictation triggers, a local Usage Insights dashboard, opt-in screen-context awareness that biases transcription toward the names already on screen, batch file transcription with watch folders, hands-free (tap-to-lock) dictation, adjustable AI cleanup, voice editing, a self-learning dictionary, rich local formatting, spoken-filename @-mentions for code editors, agent-CLI cleanup, output targets that route a dictation to a file/Shortcut/webhook, first-class Modes you can invoke by name, a Rules engine that runs your own actions when a dictation finishes, and an openwhisp:// URL scheme so Raycast, Alfred, or any launcher can drive dictation.",
       "stats": {
-        "changesShipped": 33,
+        "changesShipped": 34,
         "newFeatures": 21,
-        "testsPassing": 1309,
+        "testsPassing": 1341,
         "onDevicePercent": 100,
         "newFeaturesLive": 21,
         "newFeaturesCorePending": 0
@@ -641,6 +641,15 @@
           "prs": [
             152
           ]
+        },
+        {
+          "category": "improvement",
+          "headline": "Sturdier agent bridge — the MCP adapter now speaks a typed protocol and holds one connection",
+          "body": "The MCP server that lets coding agents drive OpenWhisp was rebuilt on the same typed, tested message envelopes the rest of the bridge uses, instead of hand-assembled JSON. It also keeps a single connection to the app open across tool calls (reconnecting by itself if the app restarts) rather than reconnecting every time — fewer moving parts, same behavior, now covered by its own tests.",
+          "tickets": [
+            "MAK-5"
+          ],
+          "prs": []
         }
       ]
     }

@@ -109,15 +109,29 @@ let package = Package(
                 "HintRotation.swift"
             ]
         ),
+        // The Agent Bridge client + MCP stdio adapter. A library (not folded into
+        // the executable) so its pure logic — the typed MCP wire and the
+        // persistent-connection cache/retry — is unit-testable with `swift test`;
+        // the `openwhisp` executable is a thin `main` on top.
+        .target(
+            name: "OpenWhispBridgeKit",
+            dependencies: ["OpenWhispCore"],
+            path: "Sources/OpenWhispBridgeKit"
+        ),
         .executableTarget(
             name: "openwhisp",
-            dependencies: ["OpenWhispCore"],
+            dependencies: ["OpenWhispCore", "OpenWhispBridgeKit"],
             path: "Sources/OpenWhispCLI"
         ),
         .testTarget(
             name: "OpenWhispCoreTests",
             dependencies: ["OpenWhispCore"],
             path: "Tests/OpenWhispCoreTests"
+        ),
+        .testTarget(
+            name: "OpenWhispBridgeKitTests",
+            dependencies: ["OpenWhispBridgeKit", "OpenWhispCore"],
+            path: "Tests/OpenWhispBridgeKitTests"
         )
     ]
 )

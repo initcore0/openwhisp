@@ -246,14 +246,14 @@
 <div class="wrap">
   <header>
     <p class="eyebrow">Shipped · July 2026</p>
-    <h1>Thirty-three ways OpenWhisp got<br><span class="accent">sharper, safer, and more yours.</span></h1>
+    <h1>Thirty-four ways OpenWhisp got<br><span class="accent">sharper, safer, and more yours.</span></h1>
     <p class="lede">A batch of new features, fixes, and under-the-hood hardening — all landed on main, all covered by tests, all on your machine. All twenty-one new features are live today: quiet-dictation mode for whispering into your mic, opt-in on-device audio retention with one-click re-transcription and an auto-cleanup policy, a fully-remappable dictation trigger with a record-a-shortcut field, an AppleScript keystroke insert method and mouse-button dictation triggers, a local Usage Insights dashboard, opt-in screen-context awareness that biases transcription toward the names already on screen, batch file transcription with watch folders, hands-free (tap-to-lock) dictation, adjustable AI cleanup, voice editing, a self-learning dictionary, rich local formatting, spoken-filename @-mentions for code editors, agent-CLI cleanup, output targets that route a dictation to a file/Shortcut/webhook, first-class Modes you can invoke by name, a Rules engine that runs your own actions when a dictation finishes, and an openwhisp:// URL scheme so Raycast, Alfred, or any launcher can drive dictation.</p>
   </header>
 
   <div class="stats">
-    <div class="stat"><div class="n">33</div><div class="k">changes shipped</div></div>
+    <div class="stat"><div class="n">34</div><div class="k">changes shipped</div></div>
     <div class="stat"><div class="n">21<small> live</small></div><div class="k">new features</div></div>
-    <div class="stat"><div class="n">1309</div><div class="k">tests passing</div></div>
+    <div class="stat"><div class="n">1341</div><div class="k">tests passing</div></div>
     <div class="stat"><div class="n">100<small>%</small></div><div class="k">on-device</div></div>
   </div>
 
@@ -878,7 +878,7 @@
     <div class="sec-head">
       <span class="dot improve"></span>
       <h2>Under the hood</h2>
-      <span class="count">5 shipped</span>
+      <span class="count">6 shipped</span>
     </div>
     <ul class="entries">
       <li class="entry">
@@ -898,13 +898,18 @@
       </li>
       <li class="entry">
         <h3>End-to-end audio testing, so features stay working</h3>
-        <p>A full regression suite now feeds pre-recorded audio through the whole pipeline — the reason "1309 tests passing" is more than a number. Every feature above ships with coverage.</p>
+        <p>A full regression suite now feeds pre-recorded audio through the whole pipeline — the reason "1341 tests passing" is more than a number. Every feature above ships with coverage.</p>
         <div class="receipts"><span class="tag ticket">E2E</span><span class="tag pr">#107–110</span></div>
       </li>
       <li class="entry">
         <h3>One subprocess lifecycle for both bundled servers</h3>
         <p>OpenWhisp runs two local helper processes — whisper-server for transcription and llama-server for on-device refine. Their start/stop/cleanup code was copy-pasted between the two; now it lives in one shared, tested place, so a fix to how a server is launched or reaped applies to both. The port a server binds is also acquired more safely, closing a race where two starts could collide on one port.</p>
         <div class="receipts"><span class="tag ticket">MAK-21</span><span class="tag pr">#152</span></div>
+      </li>
+      <li class="entry">
+        <h3>Sturdier agent bridge — the MCP adapter now speaks a typed protocol and holds one connection</h3>
+        <p>The MCP server that lets coding agents drive OpenWhisp was rebuilt on the same typed, tested message envelopes the rest of the bridge uses, instead of hand-assembled JSON. It also keeps a single connection to the app open across tool calls (reconnecting by itself if the app restarts) rather than reconnecting every time — fewer moving parts, same behavior, now covered by its own tests.</p>
+        <div class="receipts"><span class="tag ticket">MAK-5</span></div>
       </li>
     </ul>
   </section>

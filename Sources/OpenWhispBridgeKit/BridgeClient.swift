@@ -12,10 +12,10 @@ private struct ResponseEnvelope<T: Decodable>: Decodable {
 /// Connects to the app's UNIX-domain socket, performs the `bridge.hello`
 /// handshake, and issues typed request/response calls. Used by both the CLI
 /// verbs and (later) the MCP adapter.
-final class BridgeClient {
+public final class BridgeClient {
 
     /// Failure modes, mapped to CLI exit codes by the caller.
-    enum ClientError: Error {
+    public enum ClientError: Error {
         /// Socket missing or refused — app not running, or the bridge is off.
         case unreachable
         /// The app rejected our protocol version (CLI newer than the app).
@@ -35,7 +35,7 @@ final class BridgeClient {
 
     // MARK: - Connect + handshake
 
-    init() throws {
+    public init() throws {
         // Discovery contract (pointer file for the $TMPDIR fallback, default App
         // Support path) is defined once in BridgeWire.SocketLocation.
         let path = BridgeWire.SocketLocation.discoverSocketPath()
@@ -71,7 +71,7 @@ final class BridgeClient {
     /// Perform the mandatory handshake. Returns the app version; stores
     /// capabilities. Throws `.unsupportedVersion` if the app is too old for us.
     @discardableResult
-    func handshake(clientName: String, clientVersion: String = BridgeClient.version) throws -> BridgeWire.HelloResult {
+    public func handshake(clientName: String, clientVersion: String = BridgeClient.version) throws -> BridgeWire.HelloResult {
         let params = BridgeWire.HelloParams(
             protocolVersion: BridgeWire.protocolVersion,
             clientName: clientName,
@@ -87,7 +87,7 @@ final class BridgeClient {
 
     // MARK: - Typed call
 
-    func call<P: Codable & Sendable, R: Decodable>(method: String, params: P?, resultType: R.Type) throws -> R {
+    public func call<P: Codable & Sendable, R: Decodable>(method: String, params: P?, resultType: R.Type) throws -> R {
         nextRequestID += 1
         let id = nextRequestID
         let request = BridgeWire.Request(id: .number(id), method: method, params: params)
@@ -145,7 +145,7 @@ final class BridgeClient {
 
     // MARK: - Client identity
 
-    static let version: String = "0.1.0"
+    public static let version: String = "0.1.0"
 
     private static func parentProcessName() -> String? {
         // A best-effort display hint only (never trusted for authorization). The
