@@ -253,7 +253,7 @@
   <div class="stats">
     <div class="stat"><div class="n">21</div><div class="k">changes shipped</div></div>
     <div class="stat"><div class="n">11<small> live</small></div><div class="k">new features</div></div>
-    <div class="stat"><div class="n">1014</div><div class="k">tests passing</div></div>
+    <div class="stat"><div class="n">1032</div><div class="k">tests passing</div></div>
     <div class="stat"><div class="n">100<small>%</small></div><div class="k">on-device</div></div>
   </div>
 
@@ -394,7 +394,7 @@
               <li>Dictate as usual — the level you chose is applied automatically to each final transcript. None skips the AI entirely.</li>
               <li>In Settings › Privacy › History, click the revert (↺) button next to any entry the AI reshaped to swap the cleaned text back to your raw words — the originals are copied to your clipboard.</li>
             </ol>
-            <p class="g-note">Live now. The dial is the single source of truth for AI cleanup — the old on/off “Improve every dictation” toggle (tray + onboarding) now just reflects it. Higher levels trade literal fidelity for polish; the revert button appears only when the AI actually changed your words. Revert currently covers the standard preview and insert-at-end dictation modes (not the live-streaming per-chunk mode, which pastes as it types) and lives in History; a one-tap revert in the post-dictation overlay is a small follow-up.</p>
+            <p class="g-note">Live now. The dial is the single source of truth for AI cleanup — the old on/off “Improve every dictation” toggle (tray + onboarding) now just reflects it. Higher levels trade literal fidelity for polish; the revert button appears only when the AI actually changed your words. Revert currently covers the standard preview and insert-at-end dictation modes (not the live-streaming per-chunk mode, which pastes as it types). It lives in History and, right after a dictation lands, in the post-dictation overlay — a one-tap “Revert to original” pill that swaps the cleaned text back to your raw words in place when it safely can, and otherwise leaves them on the clipboard for ⌘V.</p>
           </div>
         </details>
       </li>
@@ -634,7 +634,7 @@
       </li>
       <li class="entry">
         <h3>End-to-end audio testing, so features stay working</h3>
-        <p>A full regression suite now feeds pre-recorded audio through the whole pipeline — the reason "1014 tests passing" is more than a number. Every feature above ships with coverage.</p>
+        <p>A full regression suite now feeds pre-recorded audio through the whole pipeline — the reason "1032 tests passing" is more than a number. Every feature above ships with coverage.</p>
         <div class="receipts"><span class="tag ticket">E2E</span><span class="tag pr">#107–110</span></div>
       </li>
     </ul>

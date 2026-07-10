@@ -12,8 +12,16 @@ final class SpyTextOutput: TextOutput {
         let mode: InsertionMode
         let restoreClipboard: Bool
     }
+    struct Replacement: Equatable {
+        let inserted: String
+        let raw: String
+    }
     private(set) var insertions: [Insertion] = []
     private(set) var clipboardWrites: [String] = []
+    private(set) var replacements: [Replacement] = []
+    /// What `replaceLastInsertion` reports — defaults to "no AX replace happened"
+    /// (the common test path where the caller falls back to the clipboard copy).
+    var replaceSucceeds = false
 
     func insert(_ text: String, mode: InsertionMode, restoreClipboard: Bool,
                 completion: ((InsertionOutcome) -> Void)?) {
@@ -22,6 +30,11 @@ final class SpyTextOutput: TextOutput {
     }
     func setClipboard(_ text: String) {
         clipboardWrites.append(text)
+    }
+    func replaceLastInsertion(inserted: String, raw: String,
+                              completion: @escaping (Bool) -> Void) {
+        replacements.append(.init(inserted: inserted, raw: raw))
+        completion(replaceSucceeds)
     }
 }
 

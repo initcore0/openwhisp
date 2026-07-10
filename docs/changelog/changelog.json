@@ -11,7 +11,7 @@
       "stats": {
         "changesShipped": 21,
         "newFeatures": 11,
-        "testsPassing": 1014,
+        "testsPassing": 1032,
         "onDevicePercent": 100,
         "newFeaturesLive": 11,
         "newFeaturesCorePending": 0
@@ -130,7 +130,7 @@
               "Dictate as usual — the level you chose is applied automatically to each final transcript. None skips the AI entirely.",
               "In Settings › Privacy › History, click the revert (↺) button next to any entry the AI reshaped to swap the cleaned text back to your raw words — the originals are copied to your clipboard."
             ],
-            "note": "Live now. The dial is the single source of truth for AI cleanup — the old on/off “Improve every dictation” toggle (tray + onboarding) now just reflects it. Higher levels trade literal fidelity for polish; the revert button appears only when the AI actually changed your words. Revert currently covers the standard preview and insert-at-end dictation modes (not the live-streaming per-chunk mode, which pastes as it types) and lives in History; a one-tap revert in the post-dictation overlay is a small follow-up."
+            "note": "Live now. The dial is the single source of truth for AI cleanup — the old on/off “Improve every dictation” toggle (tray + onboarding) now just reflects it. Higher levels trade literal fidelity for polish; the revert button appears only when the AI actually changed your words. Revert currently covers the standard preview and insert-at-end dictation modes (not the live-streaming per-chunk mode, which pastes as it types). It lives in History and, right after a dictation lands, in the post-dictation overlay — a one-tap “Revert to original” pill that swaps the cleaned text back to your raw words in place when it safely can, and otherwise leaves them on the clipboard for ⌘V."
           }
         },
         {
