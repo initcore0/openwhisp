@@ -5,6 +5,7 @@ import UserNotifications
 import Cocoa
 import ApplicationServices
 import Speech
+import IOKit.hid
 
 // MARK: - App State
 
@@ -3958,6 +3959,19 @@ class AppState: ObservableObject {
 
     var accessibilityPermissionLabel: String {
         AXIsProcessTrusted() ? "Granted" : "Needs permission"
+    }
+
+    /// LIVE Input-Monitoring authorization, read on demand via the IOKit HID
+    /// preflight (`IOHIDCheckAccess` for ListenEvent). Unlike `inputMonitoringGranted`
+    /// — which is only *inferred* after the hotkey CGEventTap has been attempted —
+    /// this can be queried before any hotkey fires, so onboarding can tell the user
+    /// their push-to-talk key is dead BEFORE the "try it" step (MAK-24).
+    var liveInputMonitoringStatus: OnboardingHotkeyGate.InputMonitoringStatus {
+        switch IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) {
+        case kIOHIDAccessTypeGranted: return .granted
+        case kIOHIDAccessTypeDenied:  return .denied
+        default:                      return .unknown // includes kIOHIDAccessTypeUnknown
+        }
     }
 
     var runningBundlePath: String {
