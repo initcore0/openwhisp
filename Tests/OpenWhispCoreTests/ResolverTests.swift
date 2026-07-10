@@ -61,19 +61,36 @@ final class LanguageResolverTests: XCTestCase {
 final class ProfileResolverTests: XCTestCase {
 
     private let baseGlobals = ProfileResolver.Globals(
-        language: "auto", translateToEnglish: false, outputMode: "preview", aiCleanupEnabled: false)
+        language: "auto", translateToEnglish: false, outputMode: "preview",
+        aiCleanupEnabled: false, insertionMode: "auto")
 
     private func profile(
-        language: String? = nil, outputMode: String? = nil, aiCleanup: Bool? = nil
+        language: String? = nil, outputMode: String? = nil, aiCleanup: Bool? = nil,
+        insertionMode: String? = nil
     ) -> AppProfile {
         AppProfile(appBundleID: "com.test.app", displayName: "Test",
-                   language: language, outputMode: outputMode, aiCleanupEnabled: aiCleanup)
+                   language: language, outputMode: outputMode, aiCleanupEnabled: aiCleanup,
+                   insertionMode: insertionMode)
     }
 
     func testNilFieldsInheritGlobals() {
         let r = ProfileResolver.resolve(profile: profile(), over: baseGlobals)
         XCTAssertEqual(r, ProfileResolver.Resolved(
-            language: "auto", translateToEnglish: false, outputMode: "preview", aiCleanupEnabled: false))
+            language: "auto", translateToEnglish: false, outputMode: "preview",
+            aiCleanupEnabled: false, insertionMode: "auto"))
+    }
+
+    func testInsertionModeInheritsGlobalWhenNil() {
+        var g = baseGlobals; g.insertionMode = "paste"
+        let r = ProfileResolver.resolve(profile: profile(), over: g)
+        XCTAssertEqual(r.insertionMode, "paste")
+    }
+
+    func testInsertionModeOverride() {
+        // A per-app profile forcing AppleScript keystroke for an Electron/VNC app.
+        let r = ProfileResolver.resolve(
+            profile: profile(insertionMode: "appleScript"), over: baseGlobals)
+        XCTAssertEqual(r.insertionMode, "appleScript")
     }
 
     func testEnLanguageRemapsToAutoPlusTranslate() {
