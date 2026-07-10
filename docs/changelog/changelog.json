@@ -24,7 +24,9 @@
           "tickets": [
             "MAK-16"
           ],
-          "prs": [],
+          "prs": [
+            143
+          ],
           "howTo": {
             "availability": "live",
             "summary": "Turn on Hands-free in Settings (or double-tap the trigger key), tap to start, tap again or press Esc to stop.",
