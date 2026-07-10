@@ -7,8 +7,17 @@ import Foundation
 /// (Windows: `RegisterHotKey` / `WH_KEYBOARD_LL`). The callbacks carry no
 /// platform types, so the orchestration in AppState never names AppKit.
 protocol HotkeyControlling: AnyObject {
-    /// Which gesture triggers dictation: "fn" or "controlSpace".
+    /// Which gesture triggers dictation: "fn", "controlSpace", or "custom".
+    /// For "custom", `customTrigger` supplies the recorded keycode + modifiers.
     var triggerMode: String { get set }
+    /// The user-recorded arbitrary trigger, consulted only when
+    /// `triggerMode == "custom"` (MAK-17). nil leaves the two presets in charge.
+    var customTrigger: DictationTrigger? { get set }
+    /// True while the Settings capture field is recording a new shortcut. The
+    /// backend pauses ALL trigger/refine/Esc handling so pressing the current
+    /// trigger to re-record it can't start dictation mid-recording (and the
+    /// recording's Esc-cancel can't fire the session cancel).
+    var isSuspendedForCapture: Bool { get set }
     /// How the trigger activates dictation: "hold" (press-to-talk) or "toggle"
     /// (hands-free lock — tap to start, tap/Esc to stop). See
     /// `ActivationInteraction`. In hold mode a quick double-tap still escalates
