@@ -27,6 +27,7 @@ final class FileAudioCapture: AudioCapture {
     // MARK: AudioCapture protocol surface
 
     var autoGainEnabled: Bool = true          // accepted for parity; replay is verbatim.
+    var quietModeEnabled: Bool = false        // accepted for parity; replay is verbatim.
     var onStateChanged: ((RecorderState) -> Void)?
     var onLevelChanged: ((Float) -> Void)?
 

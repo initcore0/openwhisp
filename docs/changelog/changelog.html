@@ -246,14 +246,14 @@
 <div class="wrap">
   <header>
     <p class="eyebrow">Shipped · July 2026</p>
-    <h1>Twenty-three ways OpenWhisp got<br><span class="accent">sharper, safer, and more yours.</span></h1>
-    <p class="lede">A batch of new features, fixes, and under-the-hood hardening — all landed on main, all covered by tests, all on your machine. All thirteen new features are live today: batch file transcription with watch folders, hands-free (tap-to-lock) dictation, adjustable AI cleanup, voice editing, a self-learning dictionary, rich local formatting, spoken-filename @-mentions for code editors, agent-CLI cleanup, output targets that route a dictation to a file/Shortcut/webhook, and an openwhisp:// URL scheme so Raycast, Alfred, or any launcher can drive dictation.</p>
+    <h1>Twenty-four ways OpenWhisp got<br><span class="accent">sharper, safer, and more yours.</span></h1>
+    <p class="lede">A batch of new features, fixes, and under-the-hood hardening — all landed on main, all covered by tests, all on your machine. All fourteen new features are live today: quiet-dictation mode for whispering, batch file transcription with watch folders, hands-free (tap-to-lock) dictation, adjustable AI cleanup, voice editing, a self-learning dictionary, rich local formatting, spoken-filename @-mentions for code editors, agent-CLI cleanup, output targets that route a dictation to a file/Shortcut/webhook, and an openwhisp:// URL scheme so Raycast, Alfred, or any launcher can drive dictation.</p>
   </header>
 
   <div class="stats">
-    <div class="stat"><div class="n">23</div><div class="k">changes shipped</div></div>
-    <div class="stat"><div class="n">13<small> live</small></div><div class="k">new features</div></div>
-    <div class="stat"><div class="n">1078</div><div class="k">tests passing</div></div>
+    <div class="stat"><div class="n">24</div><div class="k">changes shipped</div></div>
+    <div class="stat"><div class="n">14<small> live</small></div><div class="k">new features</div></div>
+    <div class="stat"><div class="n">1093</div><div class="k">tests passing</div></div>
     <div class="stat"><div class="n">100<small>%</small></div><div class="k">on-device</div></div>
   </div>
 
@@ -262,7 +262,7 @@
     <div class="sec-head">
       <span class="dot feature"></span>
       <h2>New features</h2>
-      <span class="count">13 live</span>
+      <span class="count">14 live</span>
     </div>
     <ul class="entries">
       <li>
@@ -614,6 +614,31 @@
               <li>If the POST fails (non-2xx, network error, or timeout), the same text is typed into the focused app instead — you never lose it.</li>
             </ol>
             <p class="g-note">Live now. Content-Type: application/json is always set; your custom headers are applied verbatim, with a short timeout so a slow endpoint fails open quickly.</p>
+          </div>
+        </details>
+      </li>
+      <li>
+        <details class="entry">
+          <summary>
+            <div class="sum-left">
+              <h3>Quiet-dictation mode — whisper into your mic and still get clean text</h3>
+              <p>A new toggle tuned for whispering and very soft speech. It applies a much stronger on-device audio boost (a high-gain normalizer with a hard no-clip limiter) and lowers the speech-detection threshold so quiet words still register as speech instead of being dropped as silence. Pair it with getting close to the mic in a quiet room. Off by default; everything runs locally.</p>
+            </div>
+            <div class="sum-right">
+              <span class="try">How to use<svg class="howto-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span>
+              <div class="receipts"><span class="tag ticket">MAK-45</span><span class="tag pr">#152</span></div>
+            </div>
+          </summary>
+          <div class="guide">
+            <span class="avail live">Available now</span>
+            <p class="g-sum">Settings › Dictation › Microphone › turn on “Quiet-dictation mode”, get within a few inches of the mic, and dictate softly.</p>
+            <ol>
+              <li>Open Settings › Dictation › Microphone.</li>
+              <li>Turn on “Quiet-dictation mode”. (Leave “Auto-boost quiet microphone” on too — quiet mode is the stronger boost curve.)</li>
+              <li>Position the mic within a few inches of your mouth and pick a quiet spot — the boost is aggressive, so it will also lift background noise.</li>
+              <li>Dictate softly or whisper; the lowered speech threshold keeps quiet words from being treated as silence.</li>
+            </ol>
+            <p class="g-note">v1 is a preprocessing preset — a stronger auto-gain plus whisper-friendly VAD/silence thresholds — not a custom whisper model. The boost never clips (hard-limited), and it won't amplify near-silence into hiss. In a noisy room the aggressive gain can raise background noise, so quiet mode is best close to the mic.</p>
           </div>
         </details>
       </li>
