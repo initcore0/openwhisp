@@ -9,9 +9,9 @@
       "date": "2026-07-09",
       "summary": "A batch of new features, fixes, and under-the-hood hardening — all landed on main, all covered by tests, all on your machine. All eleven new features are live today: adjustable AI cleanup, voice editing, a self-learning dictionary, rich local formatting, spoken-filename @-mentions for code editors, agent-CLI cleanup, output targets that route a dictation to a file/Shortcut/webhook, and an openwhisp:// URL scheme so Raycast, Alfred, or any launcher can drive dictation.",
       "stats": {
-        "changesShipped": 20,
+        "changesShipped": 21,
         "newFeatures": 11,
-        "testsPassing": 1010,
+        "testsPassing": 1014,
         "onDevicePercent": 100,
         "newFeaturesLive": 11,
         "newFeaturesCorePending": 0
@@ -346,6 +346,17 @@
           ],
           "prs": [
             114
+          ]
+        },
+        {
+          "category": "fix",
+          "headline": "Onboarding catches a dead hotkey before you test it",
+          "body": "The setup flow now does a live Input Monitoring check on the hotkey step. If OpenWhisp can't detect key presses, you get an inline “Open System Settings → Input Monitoring” fix that re-checks itself — so you never reach the “try it” step with a push-to-talk key that silently can't fire.",
+          "tickets": [
+            "MAK-24"
+          ],
+          "prs": [
+            140
           ]
         },
         {

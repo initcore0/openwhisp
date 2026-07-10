@@ -81,6 +81,7 @@ let package = Package(
                 "WhisperKitBridge.swift",
                 "WhisperKitModelCatalog.swift",
                 "PermissionBannerPolicy.swift",
+                "OnboardingHotkeyGate.swift",
                 "ModelStorage.swift",
                 "SettingsMigration.swift",
                 "RefineTap.swift",
