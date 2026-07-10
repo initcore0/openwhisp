@@ -280,6 +280,20 @@ enum ScreenContextHarvester {
         let hasDigit = term.unicodeScalars.contains { CharacterSet.decimalDigits.contains($0) }
         let hasJoiner = term.contains("_") || term.contains(".") || term.contains("-")
 
+        // Secret guard: long tokens mixing digits with letters (especially both
+        // cases) look like API keys / session tokens / hashes far more often than
+        // like dictation-worthy vocabulary — and a whisper prompt can echo its
+        // tokens into the transcript, which IS inserted and saved to history. A
+        // privacy feature must not launder credentials off the screen, so reject
+        // them outright. A false positive (some rare 16+-char digit-bearing
+        // identifier) costs one missed bias term; a false negative leaks a secret.
+        if count >= 16 && hasDigit {
+            let hasLower = term.unicodeScalars.contains { CharacterSet.lowercaseLetters.contains($0) }
+            let digitCount = term.unicodeScalars.filter { CharacterSet.decimalDigits.contains($0) }.count
+            let digitHeavy = Double(digitCount) / Double(count) >= 0.25
+            if (hasUpper && hasLower) || digitHeavy { return nil }
+        }
+
         var score = 0
         // camelCase / PascalCase: an internal uppercase after a lowercase, or a
         // capital following the first char, is a strong identifier signal.

@@ -227,6 +227,35 @@ final class ScreenContextHarvesterTests: XCTestCase {
     func testZeroLimitReturnsEmpty() {
         XCTAssertTrue(harvest("Anthropic Slack", limit: 0).isEmpty)
     }
+
+    // Secret guard: credential-looking tokens must never become bias terms — a
+    // whisper prompt can echo its tokens into the transcript (inserted + saved to
+    // history), so a leaked key would escape the "never leaves the field" story.
+    func testRejectsAPIKeyLookingTokens() {
+        let terms = harvest("my key is sk-Abc123XyZ9Qr8LmNop42 for OpenWhisp")
+        XCTAssertFalse(terms.contains(where: { $0.contains("Abc123XyZ9Qr8LmNop42") }),
+                       "mixed-case digit-bearing 16+ char token must be rejected as a likely secret")
+        XCTAssertTrue(terms.contains("OpenWhisp"))
+    }
+
+    func testRejectsUUIDLookingTokens() {
+        let terms = harvest("request id 550e8400-e29b-41d4-a716 done by Anthropic")
+        XCTAssertFalse(terms.contains(where: { $0.contains("550e8400") }),
+                       "digit-heavy long token (UUID fragment) must be rejected")
+        XCTAssertTrue(terms.contains("Anthropic"))
+    }
+
+    func testKeepsLongDigitLightLowercaseIdentifier() {
+        // 16+ chars with a digit but lowercase-only and digit-light: a plausible
+        // identifier, not a secret — must survive the guard.
+        let terms = harvest("set user_display_name2 in config")
+        XCTAssertTrue(terms.contains("user_display_name2"))
+    }
+
+    func testShortDigitBearingIdentifiersUnaffectedBySecretGuard() {
+        let terms = harvest("The HTTP API uses OAuth2 and S3v4 today")
+        XCTAssertTrue(terms.contains("OAuth2"))
+    }
 }
 
 // MARK: - Truncator

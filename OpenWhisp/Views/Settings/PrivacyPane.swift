@@ -68,7 +68,7 @@ struct PrivacyPane: View {
         } header: {
             Text("Screen Context")
         } footer: {
-            SettingsFootnote("Requires Accessibility permission (granted above). Bias terms only prime the on-device transcription engine and never leave your Mac. Surrounding text is gated to local cleanup providers (Built-in or your own local LLM) — with OpenAI or an agent CLI selected, no surrounding text is shared.")
+            SettingsFootnote("Requires Accessibility permission (granted above). Bias terms only prime the on-device transcription engine and never leave your Mac — note they currently apply on the whisper.cpp engine only (WhisperKit ignores the term prompt today). Surrounding text is gated to local cleanup providers (Built-in or your own local LLM) — with OpenAI or an agent CLI selected, no surrounding text is shared. Agent-initiated dictations never read screen context.")
         }
     }
 

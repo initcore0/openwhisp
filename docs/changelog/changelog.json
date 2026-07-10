@@ -11,7 +11,7 @@
       "stats": {
         "changesShipped": 24,
         "newFeatures": 14,
-        "testsPassing": 1116,
+        "testsPassing": 1120,
         "onDevicePercent": 100,
         "newFeaturesLive": 14,
         "newFeaturesCorePending": 0
@@ -451,7 +451,7 @@
         {
           "category": "improvement",
           "headline": "End-to-end audio testing, so features stay working",
-          "body": "A full regression suite now feeds pre-recorded audio through the whole pipeline — the reason \"1116 tests passing\" is more than a number. Every feature above ships with coverage.",
+          "body": "A full regression suite now feeds pre-recorded audio through the whole pipeline — the reason \"1120 tests passing\" is more than a number. Every feature above ships with coverage.",
           "tickets": [],
           "prs": [
             107,

@@ -1156,10 +1156,15 @@ class AppState: ObservableObject {
         // thread's tone/vocabulary. Only augments a non-nil base instruction; a nil
         // one is the translation-polish carve-out that must reach its own branch, so
         // we leave it alone. The local-only guarantee is enforced by the gate at
-        // capture time, so `sessionScreenContext.llmContext` is non-nil ONLY for
-        // bundled/local here.
+        // capture time — but this refiner is deliberately built per call so
+        // mid-session settings changes are reflected, which means the provider can
+        // have CHANGED since capture (e.g. bundled → openai while dictating). So the
+        // local-only rule is re-checked HERE, at use time, against the provider the
+        // request will actually hit: a non-local provider never sees the context,
+        // even when it was legitimately captured under a local one.
         let customInstruction: String?
-        if let base = baseInstruction, let ctx = sessionScreenContext?.llmContext {
+        if let base = baseInstruction, let ctx = sessionScreenContext?.llmContext,
+           ScreenContextGate.localRefineProviders.contains(llmProvider) {
             customInstruction = ScreenContextTruncator.augmentedInstruction(base, withContext: ctx)
         } else {
             customInstruction = baseInstruction
@@ -3861,6 +3866,13 @@ class AppState: ObservableObject {
     private func captureScreenContext() {
         sessionScreenContext = nil
 
+        // NEVER capture for an agent-initiated session: its transcript is returned
+        // to the agent raw, and a whisper prompt can echo (hallucinate) prompt
+        // tokens into the output — screen text harvested as bias terms could
+        // otherwise leak to the agent through the transcript. Screen context is a
+        // user-session-only feature.
+        guard !sessionInitiator.isAgent else { return }
+
         let decision = ScreenContextGate.decide(
             settings: screenContext,
             bundleID: currentTextTargetApplication()?.bundleIdentifier,
@@ -4136,6 +4148,10 @@ class AppState: ObservableObject {
         isLiveChunkSession = false
         isPreviewSession = false
         isStreamingSession = false
+        // MAK-34: drop the captured screen context at every session terminal, not
+        // just cancel — stale context from app A must never survive into anything
+        // that runs between sessions or into a later session in app B.
+        sessionScreenContext = nil
         voiceEditingActiveForSession = false
         voiceEditBuffer = VoiceEditBuffer()
         // Deliver the outcome to an agent-initiated waiter exactly once. This is
