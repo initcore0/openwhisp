@@ -100,6 +100,28 @@ public enum QuietDictationMode {
         gain(forPeak: max(0, rms) * max(1, crestFactor), config: config)
     }
 
+    /// Final-stage limiter for a gain that has been *smoothed across buffers*.
+    ///
+    /// `gain(forPeak:)` guarantees no clipping for the buffer it was computed
+    /// from, but the recorder smooths gain across buffers to avoid pumping — so
+    /// the gain actually *applied* to a buffer can come from earlier, much
+    /// quieter buffers (e.g. ~40× lingering when the input suddenly gets loud).
+    /// Applied unlimited, that would slam the loud buffer into the hard clamp
+    /// (audible square-wave distortion). This clamps the applied gain so the
+    /// CURRENT buffer's peak still can't cross the clip ceiling, restoring the
+    /// no-clip guarantee end-to-end. Never returns less than 1 (never ducks a
+    /// signal that was already at/over the ceiling — the recorder's hard clamp
+    /// handles pre-existing over-level samples).
+    public static func limitedGain(
+        _ gain: Float,
+        forPeak peak: Float,
+        config: GainConfig = .default
+    ) -> Float {
+        guard gain.isFinite else { return 1.0 }
+        guard peak.isFinite, peak > 0 else { return max(1.0, gain) }
+        return max(1.0, min(gain, config.clipCeiling / peak))
+    }
+
     // MARK: - VAD / silence thresholds (pause-based live-chunk recorder)
 
     /// The pause-based recorder's tuning knobs, in the same units

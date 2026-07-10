@@ -702,9 +702,20 @@ class AudioRecorder: NSObject, AVAudioRecorderDelegate, AudioCapture {
         let rate: Float = desiredGain > smoothedGain ? 0.5 : 0.2
         smoothedGain += (desiredGain - smoothedGain) * rate
 
-        guard smoothedGain > 1.0001 else { return }   // nothing meaningful to apply
+        // Quiet mode: the smoothed gain can lag well above what THIS buffer can
+        // take (a ~40× boost lingering from quiet buffers when the input suddenly
+        // gets loud — release only steps 20%/buffer). Limit the APPLIED gain to
+        // the current buffer's clip ceiling so the no-clip guarantee holds across
+        // smoothing, not just per-buffer. `smoothedGain` itself keeps tracking so
+        // the release curve is unchanged. Non-quiet mode is untouched (its 12×
+        // ceiling made this a non-issue, and the off path must stay identical).
+        let appliedGain = quietModeEnabled
+            ? QuietDictationMode.limitedGain(smoothedGain, forPeak: peak)
+            : smoothedGain
+
+        guard appliedGain > 1.0001 else { return }   // nothing meaningful to apply
         for i in 0..<frames {
-            let v = samples[i] * smoothedGain
+            let v = samples[i] * appliedGain
             samples[i] = v > 1.0 ? 1.0 : (v < -1.0 ? -1.0 : v)   // hard clamp, no clip
         }
     }

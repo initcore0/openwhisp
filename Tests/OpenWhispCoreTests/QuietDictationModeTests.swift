@@ -103,6 +103,49 @@ final class QuietDictationModeTests: XCTestCase {
         XCTAssertLessThanOrEqual(outPeak, 1.0, "must never clip")
     }
 
+    // MARK: - Smoothed-gain limiter (cross-buffer no-clip guarantee)
+
+    func testLimitedGainClampsStaleHighGainOnLoudBuffer() {
+        // A ~40× smoothed gain lingering from quiet buffers must not be applied
+        // to a suddenly loud buffer: the limiter caps it at clipCeiling / peak.
+        let cfg = QuietDictationMode.GainConfig.default
+        let peak: Float = 0.8
+        let g = QuietDictationMode.limitedGain(40.0, forPeak: peak)
+        XCTAssertEqual(g, cfg.clipCeiling / peak, accuracy: 1e-5)
+        XCTAssertLessThanOrEqual(peak * g, cfg.clipCeiling + 1e-6)
+    }
+
+    func testLimitedGainPassesThroughSafeGain() {
+        // A gain that already fits under the ceiling is unchanged.
+        XCTAssertEqual(QuietDictationMode.limitedGain(5.0, forPeak: 0.05), 5.0, accuracy: 1e-6)
+    }
+
+    func testLimitedGainNeverDucksAndHandlesEdges() {
+        // Peak already over the ceiling: floors at 1 (never ducks; the hard clamp
+        // handles pre-existing over-level samples).
+        XCTAssertEqual(QuietDictationMode.limitedGain(3.0, forPeak: 0.99), 1.0, accuracy: 1e-6)
+        // Zero / non-finite peaks and non-finite gains are safe.
+        XCTAssertEqual(QuietDictationMode.limitedGain(4.0, forPeak: 0.0), 4.0, accuracy: 1e-6)
+        XCTAssertEqual(QuietDictationMode.limitedGain(.nan, forPeak: 0.5), 1.0)
+        XCTAssertEqual(QuietDictationMode.limitedGain(4.0, forPeak: .nan), 4.0)
+    }
+
+    func testSmoothedGainSequenceNeverClipsWithLimiter() {
+        // Simulate the recorder's smoothing over a quiet→loud transition and
+        // assert the limiter keeps every applied buffer under the ceiling.
+        let cfg = QuietDictationMode.GainConfig.default
+        var smoothed: Float = 1.0
+        let peaks: [Float] = [0.02, 0.02, 0.02, 0.02, 0.9, 0.9, 0.6, 0.3]
+        for peak in peaks {
+            let desired = QuietDictationMode.gain(forPeak: peak)
+            let rate: Float = desired > smoothed ? 0.5 : 0.2
+            smoothed += (desired - smoothed) * rate
+            let applied = QuietDictationMode.limitedGain(smoothed, forPeak: peak)
+            XCTAssertLessThanOrEqual(peak * applied, max(peak, cfg.clipCeiling) + 1e-5,
+                                     "peak \(peak) clipped under smoothed gain \(smoothed)")
+        }
+    }
+
     // MARK: - RMS convenience
 
     func testGainFromRMSUsesCrestFactor() {
