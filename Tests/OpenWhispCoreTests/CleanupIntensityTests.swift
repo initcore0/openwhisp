@@ -232,6 +232,93 @@ final class CleanupIntensityTests: XCTestCase {
         )
     }
 
+    // MARK: - "last non-none" restore memory (persisted across relaunch)
+
+    func testResolveLastNonNonePrefersStoredRunningTier() {
+        // The remembered strength wins even when the LIVE dial is currently .none
+        // (cleanup toggled off before quitting). This is the relaunch-restore fix:
+        // dial=.high → toggle off (dial persists .none) → relaunch → the tray toggle
+        // must restore .high, not the default.
+        XCTAssertEqual(
+            CleanupIntensity.resolveLastNonNone(storedRawValue: "high", resolvedIntensity: .none),
+            .high
+        )
+    }
+
+    func testResolveLastNonNoneIgnoresStoredNoneAndFallsToResolvedTier() {
+        // A stored `.none` is not a real strength → ignore it; fall back to the
+        // resolved dial when IT runs the LLM.
+        XCTAssertEqual(
+            CleanupIntensity.resolveLastNonNone(storedRawValue: "none", resolvedIntensity: .medium),
+            .medium
+        )
+    }
+
+    func testResolveLastNonNoneFallsToDefaultWhenNothingRuns() {
+        // No stored memory and the resolved dial is .none → the standard default.
+        XCTAssertEqual(
+            CleanupIntensity.resolveLastNonNone(storedRawValue: nil, resolvedIntensity: .none),
+            .default
+        )
+        // Garbage stored value is also ignored.
+        XCTAssertEqual(
+            CleanupIntensity.resolveLastNonNone(storedRawValue: "garbage", resolvedIntensity: .none),
+            .default
+        )
+    }
+
+    // MARK: - Whole-text refiner customInstruction (translation-mode carve-out)
+
+    func testWholeTextInstructionUsesTierPromptForSameLanguageCleanup() {
+        // The normal case: a running tier feeds its own system prompt.
+        for tier in [CleanupIntensity.low, .medium, .high] {
+            XCTAssertEqual(
+                CleanupIntensity.wholeTextCustomInstruction(
+                    intensity: tier, mode: "rephrase", translateToEnglish: false
+                ),
+                tier.systemPrompt,
+                "\(tier) should feed its tier prompt for same-language cleanup"
+            )
+            XCTAssertNotNil(
+                CleanupIntensity.wholeTextCustomInstruction(
+                    intensity: tier, mode: "rephrase", translateToEnglish: false
+                )
+            )
+        }
+    }
+
+    func testWholeTextInstructionIsNilForTranslationImproveMode() {
+        // The carve-out: improveTranslation + translateToEnglish must NOT be
+        // overridden by the tier prompt — it returns nil so the refiner reaches its
+        // translation-polish branch (the mode/target-language pickers keep working).
+        for tier in [CleanupIntensity.low, .medium, .high] {
+            XCTAssertNil(
+                CleanupIntensity.wholeTextCustomInstruction(
+                    intensity: tier, mode: "improveTranslation", translateToEnglish: true
+                ),
+                "\(tier) must defer to translation mode (no tier-prompt override)"
+            )
+        }
+        // Case/whitespace-insensitive on the mode string.
+        XCTAssertNil(
+            CleanupIntensity.wholeTextCustomInstruction(
+                intensity: .high, mode: "  ImproveTranslation ", translateToEnglish: true
+            )
+        )
+    }
+
+    func testWholeTextInstructionKeepsTierPromptWhenTranslateOff() {
+        // improveTranslation is meaningless without translate-to-English on: the tier
+        // prompt still applies (matches the UI, which only offers the mode when
+        // translation is on).
+        XCTAssertEqual(
+            CleanupIntensity.wholeTextCustomInstruction(
+                intensity: .medium, mode: "improveTranslation", translateToEnglish: false
+            ),
+            CleanupIntensity.medium.systemPrompt
+        )
+    }
+
     // MARK: - rawText → revertTarget round-trips through the saved history store
 
     /// Mirrors `AppState.recordHistory`'s storedRaw rule (only keep a raw baseline

@@ -274,8 +274,15 @@ class AppState: ObservableObject {
 
     /// The last intensity the user picked that actually runs the LLM, so turning
     /// AI cleanup off then on again via the legacy toggle restores THAT tier
-    /// (not a hard-coded default). Seeded from the migrated/loaded value.
-    private var lastNonNoneCleanupIntensity: CleanupIntensity = .default
+    /// (not a hard-coded default). Persisted so the restore survives a relaunch:
+    /// dial=.high → toggle off (dial persists .none) → quit → relaunch → toggle on
+    /// must restore .high, not the default. Seeded in init from the stored key,
+    /// falling back to the migrated/loaded value.
+    private var lastNonNoneCleanupIntensity: CleanupIntensity = .default {
+        didSet {
+            persist(lastNonNoneCleanupIntensity.rawValue, "lastNonNoneCleanupIntensity")
+        }
+    }
 
     /// Legacy on/off AI-cleanup switch, now DERIVED from `cleanupIntensity` so the
     /// dial is the one source of truth (MAK-35). Reads true iff a tier runs the LLM;
@@ -963,15 +970,21 @@ class AppState: ObservableObject {
         // HTTP provider (bundled / OpenAI / local). Feed the selected tier's system
         // prompt as `customInstruction` so low/medium/high map to their preset
         // prompts; it overrides the mode-derived one in OpenAITranslationService.
-        // `.none` never reaches here (the enhance guard in completeFinalText skips
-        // the whole pass), but fall back to the mode prompt if it somehow does.
+        // EXCEPTION: the "Improve English translation" mode must still reach the
+        // translation-polish branch, so `wholeTextCustomInstruction` returns nil for
+        // it (see that resolver). `.none` never reaches here (the enhance guard in
+        // completeFinalText skips the whole pass).
         return OpenAIRefiner(
             service: translationService,
             mode: refinementMode(openAIEnhancementMode),
             targetLanguage: translationTargetLanguage,
             endpoint: llmEndpoint,
             model: llmModel,
-            customInstruction: cleanupIntensity.systemPrompt
+            customInstruction: CleanupIntensity.wholeTextCustomInstruction(
+                intensity: cleanupIntensity,
+                mode: openAIEnhancementMode,
+                translateToEnglish: translateToEnglish
+            )
         )
     }
 
@@ -1136,11 +1149,15 @@ class AppState: ObservableObject {
             legacyMode: UserDefaults.standard.string(forKey: "openAIEnhancementMode") ?? "rephrase"
         )
         cleanupIntensity = resolvedIntensity
-        // Seed the "last non-none" memory so the legacy toggle restores a sensible
-        // tier. If the resolved dial already runs the LLM, use it; otherwise default.
-        // (Read the local, not the stored property — Swift forbids reading a stored
-        // property mid-init before all are initialized.)
-        lastNonNoneCleanupIntensity = resolvedIntensity.runsLLM ? resolvedIntensity : .default
+        // Seed the "last non-none" memory so the legacy toggle restores the user's
+        // chosen strength — from the persisted key first (survives a relaunch while
+        // cleanup was toggled off), else the resolved dial / default. (Read the
+        // local `resolvedIntensity`, not the stored property — Swift forbids reading
+        // a stored property mid-init before all are initialized.)
+        lastNonNoneCleanupIntensity = CleanupIntensity.resolveLastNonNone(
+            storedRawValue: UserDefaults.standard.string(forKey: "lastNonNoneCleanupIntensity"),
+            resolvedIntensity: resolvedIntensity
+        )
         translationTargetLanguage = UserDefaults.standard.string(forKey: "translationTargetLanguage") ?? "en"
         // One-time migration: move any legacy plaintext key out of UserDefaults into the
         // Keychain. didSet does not fire during init, so the keychain write must be explicit.
@@ -2874,8 +2891,15 @@ class AppState: ObservableObject {
                 // MAK-35: apply the same intensity-tier prompt to live chunks that
                 // the whole-text final uses, so the dial is authoritative in the
                 // liveChunks output mode too (not just preview/finalOnly). `.none`
-                // never reaches here — shouldEnhanceLiveChunks gates it out.
-                customInstruction: self.cleanupIntensity.systemPrompt
+                // never reaches here — shouldEnhanceLiveChunks gates it out. Uses the
+                // same translation-mode carve-out resolver for consistency, though in
+                // practice shouldEnhanceLiveChunks already restricts this path to the
+                // "rephrase" mode, so improveTranslation can't reach it anyway.
+                customInstruction: CleanupIntensity.wholeTextCustomInstruction(
+                    intensity: self.cleanupIntensity,
+                    mode: self.openAIEnhancementMode,
+                    translateToEnglish: self.translateToEnglish
+                )
             ) { [weak self] result in
                 Task { @MainActor in
                     // Close the engine's in-flight bracket on EVERY completion path
@@ -3995,9 +4019,11 @@ class AppState: ObservableObject {
         )
         TranscriptionHistoryStore.save(history)
         // Put the original words on the clipboard so the user can paste them right
-        // away — matching how copyHistoryEntry works.
+        // away — matching how copyHistoryEntry works. Deliberately does NOT touch
+        // `lastTranscription`: that tracks the LIVE session's last output (used by
+        // the tray "copy last" / "refine last"), not an arbitrary historical entry —
+        // reverting a history row must not repoint those at the reverted words.
         textOutput.setClipboard(raw)
-        if lastTranscription != nil { lastTranscription = raw }
         return raw
     }
 

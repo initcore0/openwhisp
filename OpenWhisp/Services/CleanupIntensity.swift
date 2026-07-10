@@ -164,4 +164,54 @@ extension CleanupIntensity {
         }
         return migrated(enhancementEnabled: legacyEnabled, enhancementMode: legacyMode)
     }
+
+    /// The value to seed AppState's "last non-none tier" memory with at launch,
+    /// used to restore the user's chosen strength when they flip AI cleanup back on
+    /// (MAK-35). Persisted separately from the live dial so a dial that is currently
+    /// `.none` (cleanup toggled off) still remembers what to restore across relaunch.
+    ///
+    /// - A stored value that actually runs the LLM wins (the user's remembered tier).
+    /// - Otherwise fall back to the freshly-resolved dial if IT runs the LLM, else
+    ///   the default. (A stored `.none`/garbage is ignored — the memory must be a
+    ///   real strength, never `.none`.)
+    ///
+    /// Pure so the seeding is unit-tested without AppState/AppKit.
+    static func resolveLastNonNone(
+        storedRawValue: String?,
+        resolvedIntensity: CleanupIntensity
+    ) -> CleanupIntensity {
+        if let raw = storedRawValue,
+           let stored = CleanupIntensity(rawValue: raw),
+           stored.runsLLM {
+            return stored
+        }
+        return resolvedIntensity.runsLLM ? resolvedIntensity : .default
+    }
+
+    /// The system prompt the whole-text (and live-chunk) LLM refiner should use as
+    /// its `customInstruction`, or `nil` to let the refiner fall through to its
+    /// mode-derived instruction (MAK-35).
+    ///
+    /// The intensity dial owns the SAME-language cleanup prompt, so low/medium/high
+    /// normally return the tier prompt. The ONE carve-out is the distinct "Improve
+    /// English translation" flow: when the user is translating to English AND has
+    /// picked the `improveTranslation` mode, this returns `nil` so the refiner reaches
+    /// its translation-polish branch instead of being overridden by a same-language
+    /// cleanup prompt. Without this, the visible/persisted mode + target-language
+    /// pickers would do nothing (a regression vs. the pre-dial behavior).
+    ///
+    /// `.none` returns `nil` too, but it never reaches a refiner — the enhance guard
+    /// skips the whole pass — so the value is moot there.
+    ///
+    /// Pure so the carve-out is unit-tested without AppState/AppKit.
+    static func wholeTextCustomInstruction(
+        intensity: CleanupIntensity,
+        mode: String,
+        translateToEnglish: Bool
+    ) -> String? {
+        let usesTranslationMode = translateToEnglish
+            && mode.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "improvetranslation"
+        if usesTranslationMode { return nil }
+        return intensity.systemPrompt
+    }
 }
