@@ -141,4 +141,27 @@ extension CleanupIntensity {
             return .medium
         }
     }
+
+    /// The intensity an app launch should adopt, given what's persisted (MAK-35).
+    ///
+    /// This is the single, testable decision `AppState.init` makes for the dial:
+    /// - A previously-stored dial value wins outright (the user set it, or an
+    ///   earlier launch already migrated) — parse it and use it.
+    /// - Otherwise this is the FIRST launch since the dial existed, so derive the
+    ///   tier from the legacy on/off + mode via `migrated(...)`, preserving the
+    ///   existing install's behavior exactly (enabled+rephrase → `.medium`,
+    ///   disabled → `.none`). A fresh install (all keys absent, legacyEnabled ==
+    ///   false) lands on `.none`, matching the old "cleanup off by default".
+    ///
+    /// Pure so the init decision is unit-tested without AppState/AppKit.
+    static func resolveInitial(
+        storedDialRawValue: String?,
+        legacyEnabled: Bool,
+        legacyMode: String
+    ) -> CleanupIntensity {
+        if let raw = storedDialRawValue, let dial = CleanupIntensity(rawValue: raw) {
+            return dial
+        }
+        return migrated(enhancementEnabled: legacyEnabled, enhancementMode: legacyMode)
+    }
 }

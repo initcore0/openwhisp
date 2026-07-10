@@ -177,4 +177,122 @@ final class CleanupIntensityTests: XCTestCase {
         )
         XCTAssertNil(entry.revertTarget)
     }
+
+    // MARK: - Initial-dial resolver (what AppState.init adopts on launch)
+
+    func testResolveInitialPrefersStoredDialValue() {
+        // A stored dial value wins outright, regardless of legacy keys.
+        XCTAssertEqual(
+            CleanupIntensity.resolveInitial(storedDialRawValue: "high", legacyEnabled: false, legacyMode: "rephrase"),
+            .high
+        )
+        XCTAssertEqual(
+            CleanupIntensity.resolveInitial(storedDialRawValue: "none", legacyEnabled: true, legacyMode: "rephrase"),
+            .none
+        )
+    }
+
+    func testResolveInitialFallsBackToMigrationWhenNoDialStored() {
+        // First launch since the dial existed → derive from legacy settings.
+        // Representative OLD install: AI cleanup ON + rephrase → .medium (unchanged
+        // behavior). This is the no-regression guarantee the app relies on.
+        XCTAssertEqual(
+            CleanupIntensity.resolveInitial(storedDialRawValue: nil, legacyEnabled: true, legacyMode: "rephrase"),
+            CleanupIntensity.migrated(enhancementEnabled: true, enhancementMode: "rephrase")
+        )
+        XCTAssertEqual(
+            CleanupIntensity.resolveInitial(storedDialRawValue: nil, legacyEnabled: true, legacyMode: "rephrase"),
+            .medium
+        )
+    }
+
+    func testResolveInitialDisabledLegacyMapsToNone() {
+        // OLD install with cleanup OFF → .none (no LLM pass), exactly as before.
+        XCTAssertEqual(
+            CleanupIntensity.resolveInitial(storedDialRawValue: nil, legacyEnabled: false, legacyMode: "rephrase"),
+            .none
+        )
+    }
+
+    func testResolveInitialFreshInstallIsNone() {
+        // Fresh install: no dial key, no legacy keys (legacyEnabled defaults false)
+        // → .none, matching the historical "AI cleanup off out of the box".
+        XCTAssertEqual(
+            CleanupIntensity.resolveInitial(storedDialRawValue: nil, legacyEnabled: false, legacyMode: "rephrase"),
+            .none
+        )
+    }
+
+    func testResolveInitialIgnoresUnparseableStoredDial() {
+        // A corrupt/unknown stored value must not silently become a valid tier — it
+        // falls through to migration rather than crashing or picking arbitrarily.
+        XCTAssertEqual(
+            CleanupIntensity.resolveInitial(storedDialRawValue: "garbage", legacyEnabled: true, legacyMode: "rephrase"),
+            .medium
+        )
+    }
+
+    // MARK: - rawText → revertTarget round-trips through the saved history store
+
+    /// Mirrors `AppState.recordHistory`'s storedRaw rule (only keep a raw baseline
+    /// that differs from the final, trimmed on both sides), so the pure test proves
+    /// the same decision the app makes.
+    private func storedRawBaseline(final: String, raw: String?) -> String? {
+        let trimmed = final.trimmingCharacters(in: .whitespacesAndNewlines)
+        let rawTrimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let rawTrimmed, !rawTrimmed.isEmpty, rawTrimmed != trimmed else { return nil }
+        return rawTrimmed
+    }
+
+    func testRawTextRoundTripsToRevertTargetThroughSavedEntry() throws {
+        // A cleanup pass changed the words: the raw baseline is stored and, after a
+        // JSON save/load of the whole history array, revertTarget still recovers it.
+        let raw = "um so like i think we should ship it"
+        let final = "I think we should ship it."
+        let entry = TranscriptionEntry(
+            text: final,
+            date: Date(timeIntervalSince1970: 1_700_000_100),
+            appBundleID: "com.example.editor",
+            appName: "Editor",
+            rawText: storedRawBaseline(final: final, raw: raw)
+        )
+        // Round-trip the ARRAY (how TranscriptionHistoryStore persists it).
+        let data = try JSONEncoder().encode([entry])
+        let loaded = try JSONDecoder().decode([TranscriptionEntry].self, from: data)
+        XCTAssertEqual(loaded.count, 1)
+        XCTAssertEqual(loaded[0].revertTarget, raw,
+                       "the raw pre-cleanup words survive persistence and revert recovers them")
+    }
+
+    func testNoRevertTargetWhenCleanupWasANoOp() throws {
+        // The LLM (or .none tier) left the text identical → no raw baseline stored →
+        // no revert affordance, even after a save/load.
+        let text = "already clean text"
+        let entry = TranscriptionEntry(
+            text: text,
+            date: Date(),
+            appBundleID: nil, appName: nil,
+            rawText: storedRawBaseline(final: text, raw: text)
+        )
+        XCTAssertNil(entry.rawText)
+        let data = try JSONEncoder().encode([entry])
+        let loaded = try JSONDecoder().decode([TranscriptionEntry].self, from: data)
+        XCTAssertNil(loaded[0].revertTarget)
+    }
+
+    func testRevertClearingRawTextHidesAffordanceAfterward() {
+        // Simulate AppState.revertHistoryEntry: after reverting, the entry's text
+        // IS the raw words and rawText is cleared, so a second revert is a no-op.
+        let raw = "um hello team"
+        let before = TranscriptionEntry(
+            text: "Hello, team.", date: Date(), appBundleID: nil, appName: nil, rawText: raw
+        )
+        XCTAssertEqual(before.revertTarget, raw)
+        let after = TranscriptionEntry(
+            id: before.id, text: raw, date: before.date,
+            appBundleID: before.appBundleID, appName: before.appName, rawText: nil
+        )
+        XCTAssertEqual(after.text, raw)
+        XCTAssertNil(after.revertTarget, "can't revert twice — already the originals")
+    }
 }

@@ -113,7 +113,7 @@ struct PrivacyPane: View {
         Section {
             SubtitledToggle(
                 "Keep transcription history",
-                subtitle: "Stores your recent transcriptions on this Mac (history.json); the list shows the last 15. Nothing is recorded while a password field is focused.",
+                subtitle: "Stores your recent transcriptions on this Mac (history.json); the list shows the last 15. When AI cleanup changed your words, use the revert button to restore the original. Nothing is recorded while a password field is focused.",
                 isOn: $appState.historyEnabled
             )
 
@@ -133,6 +133,16 @@ struct PrivacyPane: View {
                                 .foregroundColor(.secondary)
                         }
                         Spacer()
+                        // MAK-35: revert to the raw pre-cleanup words. Shown only
+                        // when the AI pass actually changed the text (revertTarget
+                        // != nil) — copies the originals to the clipboard.
+                        if entry.revertTarget != nil {
+                            Button {
+                                appState.revertHistoryEntry(entry)
+                            } label: { Image(systemName: "arrow.uturn.backward") }
+                            .buttonStyle(.borderless)
+                            .help("Revert to original — restore the exact words you dictated (before AI cleanup)")
+                        }
                         Button {
                             appState.copyHistoryEntry(entry)
                         } label: { Image(systemName: "doc.on.clipboard") }
