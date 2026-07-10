@@ -83,14 +83,16 @@ final class HotkeyMonitor: HotkeyControlling {
     func start() {
         guard !isRunning else { return }
 
-        let mask: CGEventMask = CGEventMask(
-            (Int64(1) << CGEventType.keyDown.rawValue) |
-            (Int64(1) << CGEventType.keyUp.rawValue) |
-            (Int64(1) << CGEventType.flagsChanged.rawValue) |
-            // Non-primary mouse buttons (middle, Mouse 4-10) for the mouse trigger.
-            (Int64(1) << CGEventType.otherMouseDown.rawValue) |
-            (Int64(1) << CGEventType.otherMouseUp.rawValue)
-        )
+        // Built up statement-by-statement: a single OR-chain of shifted enum
+        // rawValues is too much for the release toolchain's type-checker.
+        var maskBits: UInt64 = 0
+        maskBits |= UInt64(1) << CGEventType.keyDown.rawValue
+        maskBits |= UInt64(1) << CGEventType.keyUp.rawValue
+        maskBits |= UInt64(1) << CGEventType.flagsChanged.rawValue
+        // Non-primary mouse buttons (middle, Mouse 4-10) for the mouse trigger.
+        maskBits |= UInt64(1) << CGEventType.otherMouseDown.rawValue
+        maskBits |= UInt64(1) << CGEventType.otherMouseUp.rawValue
+        let mask = CGEventMask(maskBits)
 
         let port = createEventTap(mask: mask, tap: .cghidEventTap)
             ?? createEventTap(mask: mask, tap: .cgSessionEventTap)
