@@ -88,6 +88,7 @@ let package = Package(
                 "RefineTap.swift",
                 "ServerProcessIdentity.swift",
                 "ServerLaunchRetry.swift",
+                "ManagedServerSpec.swift",
                 "WhisperResponseClassifier.swift",
                 "FileTranscriptionQueue.swift",
                 "SubtitleFormatter.swift",

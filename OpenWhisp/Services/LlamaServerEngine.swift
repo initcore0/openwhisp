@@ -48,7 +48,15 @@ final class LlamaServerEngine {
     private var serverModelPath: String?
     private var serverStdoutPipe: Pipe?
     private var serverStderrPipe: Pipe?
-    private let pidFileURL: URL
+
+    /// Identity (basename, PID/log file names, log tag) of the llama-server this
+    /// engine manages. Drives the shared `ManagedServerProcess` glue.
+    private static let serverSpec = ManagedServerSpec(
+        executableBasename: "llama-server",
+        logTag: "llama-server",
+        pidFileName: "llama-server.pid",
+        logFileName: "llama-engine.log"
+    )
 
     /// Generation counter, guarded by `serverLock`. Bumped on every start/stop/
     /// replace so a concurrent operation can detect that the process it was
@@ -71,9 +79,16 @@ final class LlamaServerEngine {
     private var inFlight = 0
 
     init() {
-        serverPort = Self.availableLoopbackPort(in: Self.portRange) ?? Self.portRange.lowerBound
-        pidFileURL = Self.serverPIDFileURL()
-        Self.stopStaleServerIfNeeded(pidFileURL: pidFileURL)
+        // The init-time port is a placeholder; each (re)launch reserves a FRESH
+        // port (MAK-28). Reserve-and-immediately-release just to seed a plausible
+        // value for logging.
+        if let reservation = ManagedServerProcess.reservePort(in: Self.portRange) {
+            serverPort = reservation.port
+            reservation.release()
+        } else {
+            serverPort = Self.portRange.lowerBound
+        }
+        ManagedServerProcess.reapStaleServer(spec: Self.serverSpec, ownedPrefixes: Self.ownedServerPrefixes())
         log("LlamaServerEngine initialized with server port \(serverPort)")
     }
 
@@ -181,18 +196,19 @@ final class LlamaServerEngine {
                 return
             }
 
-            // Pick a FRESH port for this launch instead of reusing the one cached
-            // at init. Reusing one port across restarts widens the window in which
-            // the child hasn't bound yet and something else can claim it; re-picking
-            // (plus the retry below) is the MAK-28 fix. Keep the previous port if
-            // discovery fails so we still attempt a launch.
-            if let freshPort = Self.availableLoopbackPort(in: Self.portRange) {
-                self.serverPort = freshPort
+            // Reserve a FRESH port for this launch instead of reusing the one
+            // cached at init. The reservation HOLDS its bind-probe socket open
+            // until the instant before the child binds (MAK-21 TOCTOU fix), so a
+            // concurrent in-process start can't pick the same port and the
+            // bind-then-child-run window shrinks to a couple of instructions.
+            // Re-picking + the retry below is the MAK-28 fix. Keep the previous
+            // port if discovery fails so we still attempt a launch.
+            let reservation = ManagedServerProcess.reservePort(in: Self.portRange)
+            if let reservation {
+                self.serverPort = reservation.port
             }
 
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: serverPath)
-            process.arguments = [
+            let arguments = [
                 "--host", "127.0.0.1",
                 "--port", "\(self.serverPort)",
                 "-m", modelPath,
@@ -200,36 +216,18 @@ final class LlamaServerEngine {
                 "-ngl", "99",
                 "--no-webui"
             ]
-            self.log("Starting llama-server: \(serverPath) \(process.arguments?.joined(separator: " ") ?? "")")
+            self.log("Starting llama-server: \(serverPath) \(arguments.joined(separator: " "))")
 
-            let stdoutPipe = Pipe()
-            let stderrPipe = Pipe()
-            stdoutPipe.fileHandleForReading.readabilityHandler = { handle in
-                let data = handle.availableData
-                guard !data.isEmpty else {
-                    // EOF: unhook, or the dispatch read source fires forever.
-                    handle.readabilityHandler = nil
-                    return
-                }
-                if let line = String(data: data, encoding: .utf8), !line.isEmpty {
-                    print("[llama-server] \(line.trimmingCharacters(in: .whitespacesAndNewlines))")
-                }
-            }
-            stderrPipe.fileHandleForReading.readabilityHandler = { handle in
-                let data = handle.availableData
-                guard !data.isEmpty else {
-                    handle.readabilityHandler = nil
-                    return
-                }
-                if let line = String(data: data, encoding: .utf8), !line.isEmpty {
-                    print("[llama-server] \(line.trimmingCharacters(in: .whitespacesAndNewlines))")
-                }
-            }
-            process.standardOutput = stdoutPipe
-            process.standardError = stderrPipe
-
+            let launched: ManagedServerProcess.Launched
             do {
-                try process.run()
+                // `spawn` releases the reservation's held socket the instant
+                // before `process.run()`.
+                launched = try ManagedServerProcess.spawn(
+                    executablePath: serverPath,
+                    arguments: arguments,
+                    spec: Self.serverSpec,
+                    releasing: reservation
+                )
             } catch {
                 self.serverLock.unlock()
                 self.log("Failed to start llama-server: \(error.localizedDescription)")
@@ -237,16 +235,17 @@ final class LlamaServerEngine {
                 return
             }
 
+            let process = launched.process
             self.serverGeneration += 1
             let myGeneration = self.serverGeneration
             self.serverProcess = process
             self.serverModelPath = modelPath
-            self.serverStdoutPipe = stdoutPipe
-            self.serverStderrPipe = stderrPipe
+            self.serverStdoutPipe = launched.stdoutPipe
+            self.serverStderrPipe = launched.stderrPipe
             self.starting = true
             self.startingModelPath = modelPath
             self.pendingCompletions = [completion]
-            self.writeServerPID(process.processIdentifier)
+            ManagedServerProcess.writePID(process.processIdentifier, spec: Self.serverSpec)
 
             self.serverLock.unlock()
 
@@ -378,47 +377,15 @@ final class LlamaServerEngine {
             }
         }
 
-        serverStdoutPipe?.fileHandleForReading.readabilityHandler = nil
-        serverStderrPipe?.fileHandleForReading.readabilityHandler = nil
+        ManagedServerProcess.stopDraining(stdoutPipe: serverStdoutPipe, stderrPipe: serverStderrPipe)
         if let process = serverProcess, process.isRunning {
-            Self.terminateAsync(process)
+            ManagedServerProcess.terminateAsync(process)
         }
         serverProcess = nil
         serverModelPath = nil
         serverStdoutPipe = nil
         serverStderrPipe = nil
-        try? FileManager.default.removeItem(at: pidFileURL)
-    }
-
-    /// SIGTERM the process now, then escalate to SIGKILL on a background queue
-    /// if it hasn't exited within ~2s. Never blocks the caller: `stopServer()`
-    /// runs synchronously on the main actor (Settings toggles, quit) with
-    /// `serverLock` held, and llama-server can take seconds to free a large
-    /// model. Its SIGTERM handler closes the listen socket immediately, so a
-    /// replacement server can bind the port while the old one drains. Mirrors
-    /// WhisperEngine.terminateAsync.
-    ///
-    /// Both signals target the RETAINED `Process`: SIGKILL is only sent while
-    /// `process.isRunning` is still true, and a running child has NOT been
-    /// reaped by Foundation's waitpid — so its PID cannot have been recycled.
-    /// The path-prefix identity gate (`isOwnLlamaServerProcess`) deliberately
-    /// does NOT apply here: it guards a bare PID read from a stale PID file
-    /// (`stopStaleServerIfNeeded`), where recycling IS the risk. Applying it to a
-    /// retained process would strand a server we launched whose path is outside
-    /// `ownedServerPrefixes()`, leaking RAM + the bound port. See MAK-27 review #1.
-    private static func terminateAsync(_ process: Process) {
-        let pid = process.processIdentifier
-        process.terminate()
-        DispatchQueue.global(qos: .utility).async {
-            for _ in 0..<20 where process.isRunning {
-                Thread.sleep(forTimeInterval: 0.1)
-            }
-            // Gate the SIGKILL on `isRunning` (not on path identity): a still-
-            // running retained child hasn't been reaped, so `pid` still names it.
-            if process.isRunning {
-                kill(pid, SIGKILL)
-            }
-        }
+        try? FileManager.default.removeItem(at: Self.serverSpec.pidFileURL)
     }
 
     // MARK: - Binary resolution
@@ -501,115 +468,15 @@ final class LlamaServerEngine {
     /// MAK-28. Llama uses the upper band; whisper the lower.
     static let portRange: ClosedRange<Int> = 8678...9177
 
-    /// Probes for a free loopback port inside `range` by attempting to bind each
-    /// candidate (randomised order) and returning the first that binds. There is
-    /// still a race window before the child re-binds it, closed by the caller
-    /// retrying with a fresh port on a failed launch (MAK-28). Binding an
-    /// explicit candidate (not port 0) is what keeps whisper and llama in
-    /// disjoint ranges.
-    private static func availableLoopbackPort(in range: ClosedRange<Int>) -> Int? {
-        for candidate in range.shuffled() {
-            if canBindLoopbackPort(candidate) {
-                return candidate
-            }
-        }
-        return nil
+    // MARK: - Logging
+
+    static func logFileURL() -> URL { serverSpec.logFileURL }
+
+    private func log(_ message: String) {
+        ManagedServerProcess.appendLog(message, spec: Self.serverSpec)
     }
 
-    /// Attempts to bind `port` on 127.0.0.1; true iff the bind succeeds. Closes
-    /// the probe socket before returning.
-    private static func canBindLoopbackPort(_ port: Int) -> Bool {
-        let socketFD = socket(AF_INET, SOCK_STREAM, 0)
-        guard socketFD >= 0 else { return false }
-        defer { close(socketFD) }
-
-        var reuse: Int32 = 1
-        setsockopt(socketFD, SOL_SOCKET, SO_REUSEADDR, &reuse, socklen_t(MemoryLayout<Int32>.size))
-
-        var addr = sockaddr_in()
-        addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
-        addr.sin_family = sa_family_t(AF_INET)
-        addr.sin_port = in_port_t(UInt16(port)).bigEndian
-        addr.sin_addr = in_addr(s_addr: inet_addr("127.0.0.1"))
-
-        let bindResult = withUnsafePointer(to: &addr) {
-            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                bind(socketFD, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
-            }
-        }
-        return bindResult == 0
-    }
-
-    // MARK: - PID file + stale reaping
-
-    private func writeServerPID(_ pid: Int32) {
-        do {
-            try FileManager.default.createDirectory(
-                at: pidFileURL.deletingLastPathComponent(),
-                withIntermediateDirectories: true
-            )
-            try "\(pid)".write(to: pidFileURL, atomically: true, encoding: .utf8)
-        } catch {
-            print("[LlamaServerEngine] failed to write PID: \(error.localizedDescription)")
-        }
-    }
-
-    private static func serverPIDFileURL() -> URL {
-        URL(fileURLWithPath: NSHomeDirectory())
-            .appendingPathComponent("Library/Caches/com.openwhisp.app/llama-server.pid")
-    }
-
-    static func logFileURL() -> URL {
-        URL(fileURLWithPath: NSHomeDirectory())
-            .appendingPathComponent("Library/Caches/com.openwhisp.app/llama-engine.log")
-    }
-
-    private static func stopStaleServerIfNeeded(pidFileURL: URL) {
-        guard
-            let rawPID = try? String(contentsOf: pidFileURL, encoding: .utf8)
-                .trimmingCharacters(in: .whitespacesAndNewlines),
-            let pid = Int32(rawPID),
-            pid > 0
-        else { return }
-
-        // Only signal if the PID is alive AND its executable is actually OUR
-        // llama-server (basename + path inside the app bundle or dev build dir).
-        // After a crash + PID reuse the persisted PID can point at an unrelated
-        // process — e.g. a user's Homebrew llama-server — which we must never
-        // kill. Re-verify identity immediately before EACH signal: between
-        // SIGTERM and the SIGKILL escalation the PID can be recycled, so a
-        // liveness-only re-check would let us SIGKILL whatever inherited it.
-        guard kill(pid, 0) == 0, isOwnLlamaServerProcess(pid: pid) else {
-            try? FileManager.default.removeItem(at: pidFileURL)
-            return
-        }
-
-        print("[LlamaServerEngine] stopping stale llama-server pid \(pid)")
-        kill(pid, SIGTERM)
-        Thread.sleep(forTimeInterval: 0.5)
-        if kill(pid, 0) == 0, isOwnLlamaServerProcess(pid: pid) {
-            kill(pid, SIGKILL)
-        }
-
-        try? FileManager.default.removeItem(at: pidFileURL)
-    }
-
-    /// True only if `pid`'s executable basename is `llama-server` AND it resolves
-    /// inside our app bundle (Resources/llama) or the dev build dir
-    /// (llama.cpp/build/bin). Returns false if the path can't be resolved, so we
-    /// never signal an unknown process. Shares the decision logic with
-    /// WhisperEngine via `ServerProcessIdentity`.
-    private static func isOwnLlamaServerProcess(pid: Int32) -> Bool {
-        var buffer = [CChar](repeating: 0, count: 4 * Int(MAXPATHLEN))
-        let length = proc_pidpath(pid, &buffer, UInt32(buffer.count))
-        guard length > 0 else { return false }
-        let path = String(cString: buffer)
-        return ServerProcessIdentity.isOwnedServerProcess(
-            executablePath: path,
-            ownedPrefixes: ownedServerPrefixes(),
-            expectedBasename: "llama-server"
-        )
-    }
+    // MARK: - Owned paths
 
     /// Directory prefixes under which a llama-server we launched can live: the
     /// app bundle's `Resources/llama` dir and the dev build dir. Kept in sync
@@ -621,28 +488,5 @@ final class LlamaServerEngine {
         }
         prefixes.append("\(NSHomeDirectory())/llama.cpp/build/bin")
         return prefixes
-    }
-
-    // MARK: - Logging
-
-    private func log(_ message: String) {
-        let logFileURL = Self.logFileURL()
-        do {
-            try FileManager.default.createDirectory(
-                at: logFileURL.deletingLastPathComponent(),
-                withIntermediateDirectories: true
-            )
-            let line = "[\(ISO8601DateFormatter().string(from: Date()))] \(message)\n"
-            if FileManager.default.fileExists(atPath: logFileURL.path),
-               let handle = try? FileHandle(forWritingTo: logFileURL) {
-                defer { try? handle.close() }
-                try handle.seekToEnd()
-                handle.write(Data(line.utf8))
-            } else {
-                try line.write(to: logFileURL, atomically: true, encoding: .utf8)
-            }
-        } catch {
-            print("[LlamaServerEngine] log write failed: \(error.localizedDescription)")
-        }
     }
 }

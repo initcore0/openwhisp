@@ -35,8 +35,15 @@ class WhisperEngine: FileTranscriptionEngine {
     private var serverModelPath: String?
     private var serverStdoutPipe: Pipe?
     private var serverStderrPipe: Pipe?
-    private let pidFileURL: URL
-    private let logFileURL: URL
+
+    /// Identity (basename, PID/log file names, log tag) of the whisper-server
+    /// this engine manages. Drives the shared `ManagedServerProcess` glue.
+    private static let serverSpec = ManagedServerSpec(
+        executableBasename: "whisper-server",
+        logTag: "whisper-server",
+        pidFileName: "whisper-server.pid",
+        logFileName: "whisper-engine.log"
+    )
 
     /// Generation counter, guarded by `serverLock`. Bumped every time the server
     /// state is started, stopped, or replaced. `ensureServer` snapshots it before
@@ -51,10 +58,16 @@ class WhisperEngine: FileTranscriptionEngine {
     private var startingGeneration: Int?
 
     init() {
-        serverPort = Self.availableLoopbackPort(in: Self.portRange) ?? Self.portRange.lowerBound
-        pidFileURL = Self.workerPIDFileURL()
-        logFileURL = Self.logFileURL()
-        Self.stopStaleServerIfNeeded(pidFileURL: pidFileURL)
+        // The init-time port is a placeholder; each (re)launch reserves a FRESH
+        // port (MAK-28). Reserve-and-immediately-release here just to seed a
+        // plausible value for logging.
+        if let reservation = ManagedServerProcess.reservePort(in: Self.portRange) {
+            serverPort = reservation.port
+            reservation.release()
+        } else {
+            serverPort = Self.portRange.lowerBound
+        }
+        ManagedServerProcess.reapStaleServer(spec: Self.serverSpec, ownedPrefixes: Self.ownedServerPrefixes())
         log("WhisperEngine initialized with server port \(serverPort)")
     }
 
@@ -429,51 +442,27 @@ class WhisperEngine: FileTranscriptionEngine {
             return .healthFailed
         }
 
-        // Pick a FRESH port for this launch instead of reusing the one cached at
-        // init. Reusing one port across restarts widens the window in which the
-        // child hasn't bound yet and something else can claim it; re-picking (and
-        // the caller's retry-on-failure) is the MAK-28 fix. Keep the previous
-        // port if discovery fails so we still attempt a launch.
-        if let freshPort = Self.availableLoopbackPort(in: Self.portRange) {
-            serverPort = freshPort
+        // Reserve a FRESH port for this launch instead of reusing the one cached
+        // at init. The reservation HOLDS its bind-probe socket open until the
+        // instant before the child binds (MAK-21 TOCTOU fix), so a concurrent
+        // in-process start can't pick the same port and the bind-then-child-run
+        // window shrinks to a couple of instructions. Re-picking + the caller's
+        // retry-on-failure is the MAK-28 fix. Keep the previous port if discovery
+        // fails so we still attempt a launch.
+        let reservation = ManagedServerProcess.reservePort(in: Self.portRange)
+        if let reservation {
+            serverPort = reservation.port
         }
 
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: serverPath)
-        process.arguments = [
+        let arguments = [
             "--host", "127.0.0.1",
             "--port", "\(serverPort)",
             "-m", modelPath,
             "--no-timestamps"
         ]
-        log("Starting whisper-server: \(serverPath) \(process.arguments?.joined(separator: " ") ?? "")")
+        log("Starting whisper-server: \(serverPath) \(arguments.joined(separator: " "))")
 
-        let stdoutPipe = Pipe()
-        let stderrPipe = Pipe()
-        stdoutPipe.fileHandleForReading.readabilityHandler = { handle in
-            let data = handle.availableData
-            guard !data.isEmpty else {
-                // EOF: unhook, or the dispatch read source fires forever.
-                handle.readabilityHandler = nil
-                return
-            }
-            if let line = String(data: data, encoding: .utf8), !line.isEmpty {
-                print("[whisper-server] \(line.trimmingCharacters(in: .whitespacesAndNewlines))")
-            }
-        }
-        stderrPipe.fileHandleForReading.readabilityHandler = { handle in
-            let data = handle.availableData
-            guard !data.isEmpty else {
-                handle.readabilityHandler = nil
-                return
-            }
-            if let line = String(data: data, encoding: .utf8), !line.isEmpty {
-                print("[whisper-server] \(line.trimmingCharacters(in: .whitespacesAndNewlines))")
-            }
-        }
-        process.standardOutput = stdoutPipe
-        process.standardError = stderrPipe
-
+        let launched: ManagedServerProcess.Launched
         do {
             // Capture the port under the lock (held here) so the deferred
             // main-thread status closure doesn't read the mutable `serverPort`
@@ -482,7 +471,14 @@ class WhisperEngine: FileTranscriptionEngine {
             DispatchQueue.main.async {
                 self.onWorkerStatus?("Loading on port \(launchPort)...")
             }
-            try process.run()
+            // `spawn` releases the reservation's held socket the instant before
+            // `process.run()`.
+            launched = try ManagedServerProcess.spawn(
+                executablePath: serverPath,
+                arguments: arguments,
+                spec: Self.serverSpec,
+                releasing: reservation
+            )
         } catch {
             serverLock.unlock()
             log("Failed to start worker: \(error.localizedDescription)")
@@ -495,6 +491,8 @@ class WhisperEngine: FileTranscriptionEngine {
             return .healthFailed
         }
 
+        let process = launched.process
+
         // Commit the freshly-started process into shared state and bump the
         // generation so a concurrent stop/replace can be detected after we
         // release the lock.
@@ -503,9 +501,9 @@ class WhisperEngine: FileTranscriptionEngine {
         startingGeneration = myGeneration
         serverProcess = process
         serverModelPath = modelPath
-        serverStdoutPipe = stdoutPipe
-        serverStderrPipe = stderrPipe
-        writeWorkerPID(process.processIdentifier)
+        serverStdoutPipe = launched.stdoutPipe
+        serverStderrPipe = launched.stderrPipe
+        ManagedServerProcess.writePID(process.processIdentifier, spec: Self.serverSpec)
 
         serverLock.unlock()
 
@@ -564,49 +562,15 @@ class WhisperEngine: FileTranscriptionEngine {
         // Invalidate any in-progress health wait for the current generation.
         serverGeneration += 1
 
-        serverStdoutPipe?.fileHandleForReading.readabilityHandler = nil
-        serverStderrPipe?.fileHandleForReading.readabilityHandler = nil
+        ManagedServerProcess.stopDraining(stdoutPipe: serverStdoutPipe, stderrPipe: serverStderrPipe)
         if let process = serverProcess, process.isRunning {
-            Self.terminateAsync(process)
+            ManagedServerProcess.terminateAsync(process)
         }
         serverProcess = nil
         serverModelPath = nil
         serverStdoutPipe = nil
         serverStderrPipe = nil
-        try? FileManager.default.removeItem(at: pidFileURL)
-    }
-
-    /// SIGTERM the process now, then escalate to SIGKILL on a background queue
-    /// if it hasn't exited within ~2s. Never blocks the caller: `stopServer()`
-    /// is invoked synchronously from the main actor (backend switch, quit), and
-    /// a busy whisper-server can take seconds to finish its graceful shutdown.
-    /// Its SIGTERM handler closes the listen socket immediately, so a
-    /// replacement server can bind the port while the old one drains.
-    ///
-    /// Both signals target the RETAINED `Process`: SIGKILL is only sent while
-    /// `process.isRunning` is still true, and a running child has NOT been
-    /// reaped by Foundation's waitpid — so its PID cannot have been recycled out
-    /// from under us. The path-prefix identity gate (`isOwnWhisperServerProcess`)
-    /// deliberately does NOT apply here: it exists to guard a bare PID read from
-    /// a stale PID file (`stopStaleServerIfNeeded`), where recycling IS the risk.
-    /// Applying it here would strand a server we legitimately launched but whose
-    /// path is outside `ownedServerPrefixes()` (e.g. a `whisper-server` sibling
-    /// to a user-selected Homebrew whisper-cli) — SIGTERM ignored mid-inference,
-    /// SIGKILL never sent, leaking RAM + the bound port. See MAK-27 review #1.
-    private static func terminateAsync(_ process: Process) {
-        let pid = process.processIdentifier
-        process.terminate()
-        DispatchQueue.global(qos: .utility).async {
-            for _ in 0..<20 where process.isRunning {
-                Thread.sleep(forTimeInterval: 0.1)
-            }
-            // Gate the SIGKILL on `isRunning` (not on path identity): a still-
-            // running retained child hasn't been reaped, so `pid` is guaranteed
-            // to still name it.
-            if process.isRunning {
-                kill(pid, SIGKILL)
-            }
-        }
+        try? FileManager.default.removeItem(at: Self.serverSpec.pidFileURL)
     }
 
     private func serverBinaryPath(for cliPath: String) -> String? {
@@ -791,145 +755,10 @@ class WhisperEngine: FileTranscriptionEngine {
     /// MAK-28. Whisper uses the lower half, llama the upper.
     static let portRange: ClosedRange<Int> = 8178...8677
 
-    /// Probes for a free loopback port inside `range` by attempting to bind each
-    /// candidate (in randomised order) and returning the first that binds. The
-    /// probe socket is closed before returning, so — like any bind-then-close
-    /// scheme — there is still a race window before the child re-binds it. The
-    /// caller (`ensureServer`) closes that window by RETRYING with a fresh port
-    /// on a failed launch rather than caching one port forever (MAK-28).
-    ///
-    /// Binding an explicit candidate (not port 0) is what keeps whisper and
-    /// llama in disjoint ranges; port 0 would let the kernel hand either engine
-    /// any ephemeral port, re-opening the sibling collision.
-    private static func availableLoopbackPort(in range: ClosedRange<Int>) -> Int? {
-        for candidate in range.shuffled() {
-            if canBindLoopbackPort(candidate) {
-                return candidate
-            }
-        }
-        return nil
-    }
-
-    /// Attempts to bind `port` on 127.0.0.1; true iff the bind succeeds. Closes
-    /// the probe socket before returning.
-    private static func canBindLoopbackPort(_ port: Int) -> Bool {
-        let socketFD = socket(AF_INET, SOCK_STREAM, 0)
-        guard socketFD >= 0 else { return false }
-        defer { close(socketFD) }
-
-        // Set SO_REUSEADDR so that if whisper-server is launched with the same
-        // option, it can re-bind this port without a stale-binding rejection.
-        // (This does not eliminate the bind-then-close race; it only avoids
-        // SO_REUSEADDR-related rebind failures on the discovered port.)
-        var reuse: Int32 = 1
-        setsockopt(socketFD, SOL_SOCKET, SO_REUSEADDR, &reuse, socklen_t(MemoryLayout<Int32>.size))
-
-        var addr = sockaddr_in()
-        addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
-        addr.sin_family = sa_family_t(AF_INET)
-        addr.sin_port = in_port_t(UInt16(port)).bigEndian
-        addr.sin_addr = in_addr(s_addr: inet_addr("127.0.0.1"))
-
-        let bindResult = withUnsafePointer(to: &addr) {
-            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                bind(socketFD, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
-            }
-        }
-        return bindResult == 0
-    }
-
-    private func writeWorkerPID(_ pid: Int32) {
-        do {
-            try FileManager.default.createDirectory(
-                at: pidFileURL.deletingLastPathComponent(),
-                withIntermediateDirectories: true
-            )
-            try "\(pid)".write(to: pidFileURL, atomically: true, encoding: .utf8)
-        } catch {
-            print("[WhisperEngine] failed to write worker PID: \(error.localizedDescription)")
-        }
-    }
-
-    private static func workerPIDFileURL() -> URL {
-        URL(fileURLWithPath: NSHomeDirectory())
-            .appendingPathComponent("Library/Caches/com.openwhisp.app/whisper-server.pid")
-    }
-
-    static func logFileURL() -> URL {
-        URL(fileURLWithPath: NSHomeDirectory())
-            .appendingPathComponent("Library/Caches/com.openwhisp.app/whisper-engine.log")
-    }
+    static func logFileURL() -> URL { serverSpec.logFileURL }
 
     private func log(_ message: String) {
-        do {
-            try FileManager.default.createDirectory(
-                at: logFileURL.deletingLastPathComponent(),
-                withIntermediateDirectories: true
-            )
-            let line = "[\(ISO8601DateFormatter().string(from: Date()))] \(message)\n"
-            if FileManager.default.fileExists(atPath: logFileURL.path),
-               let handle = try? FileHandle(forWritingTo: logFileURL) {
-                defer { try? handle.close() }
-                try handle.seekToEnd()
-                handle.write(Data(line.utf8))
-            } else {
-                try line.write(to: logFileURL, atomically: true, encoding: .utf8)
-            }
-        } catch {
-            print("[WhisperEngine] log write failed: \(error.localizedDescription)")
-        }
-    }
-
-    private static func stopStaleServerIfNeeded(pidFileURL: URL) {
-        guard
-            let rawPID = try? String(contentsOf: pidFileURL, encoding: .utf8)
-                .trimmingCharacters(in: .whitespacesAndNewlines),
-            let pid = Int32(rawPID),
-            pid > 0
-        else { return }
-
-        // Only signal if the PID is alive AND its executable is actually OUR
-        // whisper-server (basename + a path inside the app bundle or dev build
-        // dir). After a crash + PID reuse the persisted PID can point at an
-        // unrelated process — e.g. a user's Homebrew whisper-server — which we
-        // must never kill. Re-verify identity immediately before EACH signal:
-        // between SIGTERM and the SIGKILL escalation the PID can be recycled, so
-        // a liveness-only re-check (kill(pid, 0)) would let us SIGKILL whatever
-        // process inherited the number.
-        guard kill(pid, 0) == 0, isOwnWhisperServerProcess(pid: pid) else {
-            try? FileManager.default.removeItem(at: pidFileURL)
-            return
-        }
-
-        print("[WhisperEngine] stopping stale whisper-server pid \(pid)")
-        kill(pid, SIGTERM)
-        Thread.sleep(forTimeInterval: 0.5)
-        if kill(pid, 0) == 0, isOwnWhisperServerProcess(pid: pid) {
-            kill(pid, SIGKILL)
-        }
-
-        try? FileManager.default.removeItem(at: pidFileURL)
-    }
-
-    /// True only if `pid`'s executable basename is `whisper-server` AND it
-    /// resolves inside our app bundle (Resources/whisper) or the dev build dir
-    /// (whisper.cpp/build/bin). Mirrors `LlamaServerEngine.isOwnLlamaServerProcess`.
-    /// Returns false if the path can't be resolved, so we never signal an
-    /// unknown process.
-    private static func isOwnWhisperServerProcess(pid: Int32) -> Bool {
-        // proc_pidpath wants PROC_PIDPATHINFO_MAXSIZE (== 4*MAXPATHLEN) of space;
-        // that C macro isn't importable into Swift, so use its expansion directly.
-        // A smaller buffer (e.g. MAXPATHLEN) can truncate long paths, causing a
-        // real stale whisper-server to fail the name check and not be cleaned up.
-        var buffer = [CChar](repeating: 0, count: 4 * Int(MAXPATHLEN))
-        let length = proc_pidpath(pid, &buffer, UInt32(buffer.count))
-        guard length > 0 else { return false }
-        let path = String(cString: buffer)
-        return ServerProcessIdentity.isOwnedServerProcess(
-            executablePath: path,
-            ownedPrefixes: ownedServerPrefixes(),
-            expectedBasename: "whisper-server"
-        )
+        ManagedServerProcess.appendLog(message, spec: Self.serverSpec)
     }
 
     /// Directory prefixes under which a whisper-server we launched can live:
