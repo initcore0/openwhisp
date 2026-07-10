@@ -11,7 +11,7 @@
       "stats": {
         "changesShipped": 36,
         "newFeatures": 22,
-        "testsPassing": 1374,
+        "testsPassing": 1375,
         "onDevicePercent": 100,
         "newFeaturesLive": 22,
         "newFeaturesCorePending": 0
@@ -22,7 +22,9 @@
           "headline": "Cleanup can no longer silently translate your dictation",
           "body": "When you dictated in Russian (or any non-Latin script) with automatic AI cleanup on, a small cleanup model would sometimes translate the text to English — the overlay showed your Russian words but the pasted text came back in English. OpenWhisp now checks the cleaned text against what you dictated: if the cleanup dropped your writing system and swapped it for Latin, it's treated as a bad translation and OpenWhisp keeps your original transcript instead (the same fail-open path it already uses when the LLM errors). The check is deliberately conservative — same-language cleanups, Latin‑to‑Latin, short phrases, and Russian prose mixed with English code or URLs all pass untouched — and it never runs when you actually asked to translate (Translate to English, the Improve‑translation mode, a spoken refine instruction, or an agent‑bridge refine). The cleanup prompts were also hardened to spell out “reply in the same language, never translated”.",
           "tickets": [],
-          "prs": []
+          "prs": [
+            157
+          ]
         },
         {
           "category": "improvement",

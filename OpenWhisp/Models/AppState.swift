@@ -3711,7 +3711,9 @@ class AppState: ObservableObject {
                         translateToEnglish: self.translateToEnglish,
                         mode: self.openAIEnhancementMode,
                         isSpokenInstructionRefine: false,
-                        isAgentBridgeRefine: false
+                        isAgentBridgeRefine: false,
+                        // A Mode's own instruction may legitimately translate (MAK-39).
+                        hasCustomModeInstruction: self.modeRefineInstructionOverride != nil
                     ), RefineOutputGuard.outputTranslatedAway(input: finalText, output: cleaned) {
                         self.refineDebug("language guard REJECTED cleanup (looked translated); keeping raw transcript")
                         self.translationStatus = "Kept your language (cleanup translated)"

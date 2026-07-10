@@ -100,4 +100,23 @@ final class RefineOutputGuardTests: XCTestCase {
             translateToEnglish: false, mode: "rephrase",
             isSpokenInstructionRefine: false, isAgentBridgeRefine: true))
     }
+
+    // A user-authored Mode instruction owns the language contract (it may say
+    // "translate to French") — the guard must never second-guess it.
+    func testCustomModeInstructionExemptsGuard() {
+        XCTAssertFalse(RefineOutputGuard.shouldLanguageGuard(
+            translateToEnglish: false,
+            mode: "rephrase",
+            isSpokenInstructionRefine: false,
+            isAgentBridgeRefine: false,
+            hasCustomModeInstruction: true
+        ))
+        XCTAssertTrue(RefineOutputGuard.shouldLanguageGuard(
+            translateToEnglish: false,
+            mode: "rephrase",
+            isSpokenInstructionRefine: false,
+            isAgentBridgeRefine: false,
+            hasCustomModeInstruction: false
+        ))
+    }
 }

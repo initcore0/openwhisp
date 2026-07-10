@@ -253,7 +253,7 @@
   <div class="stats">
     <div class="stat"><div class="n">36</div><div class="k">changes shipped</div></div>
     <div class="stat"><div class="n">22<small> live</small></div><div class="k">new features</div></div>
-    <div class="stat"><div class="n">1374</div><div class="k">tests passing</div></div>
+    <div class="stat"><div class="n">1375</div><div class="k">tests passing</div></div>
     <div class="stat"><div class="n">100<small>%</small></div><div class="k">on-device</div></div>
   </div>
 
@@ -863,7 +863,7 @@
       <li class="entry">
         <h3>Cleanup can no longer silently translate your dictation</h3>
         <p>Dictating in Russian (or any non-Latin script) with automatic AI cleanup on, a small cleanup model would sometimes translate your text to English — the overlay showed your Russian words but the pasted text came back in English. OpenWhisp now checks the cleaned text against what you dictated: if the cleanup dropped your writing system for Latin, it's treated as a bad translation and your original transcript is kept instead (the same fail-open path used when the LLM errors). The check is deliberately conservative — same-language cleanups, Latin-to-Latin, short phrases, and Russian prose mixed with English code or URLs all pass untouched — and it never runs when you actually asked to translate (Translate to English, Improve-translation mode, a spoken refine instruction, or an agent-bridge refine). The cleanup prompts were hardened too.</p>
-        <div class="receipts"></div>
+        <div class="receipts"><span class="tag pr">#157</span></div>
       </li>
       <li class="entry">
         <h3>Silence no longer errors on one backend but not the other</h3>

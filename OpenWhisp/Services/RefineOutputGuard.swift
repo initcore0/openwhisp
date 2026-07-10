@@ -124,12 +124,17 @@ enum RefineOutputGuard {
         translateToEnglish: Bool,
         mode: String,
         isSpokenInstructionRefine: Bool,
-        isAgentBridgeRefine: Bool
+        isAgentBridgeRefine: Bool,
+        hasCustomModeInstruction: Bool = false
     ) -> Bool {
         if translateToEnglish { return false }
         if mode.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "improvetranslation" { return false }
         if isSpokenInstructionRefine { return false }
         if isAgentBridgeRefine { return false }
+        // A user-authored Mode instruction (MAK-39) owns the language contract the
+        // same way a spoken instruction does — it may legitimately say "translate
+        // to French". Never second-guess it.
+        if hasCustomModeInstruction { return false }
         return true
     }
 
