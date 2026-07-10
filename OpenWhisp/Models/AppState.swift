@@ -832,6 +832,52 @@ class AppState: ObservableObject {
 
     var audioRecorder: AudioCapture!
     var whisperEngine: FileTranscriptionEngine!
+
+    /// Batch audio/video file transcription (MAK-36). Lazily built so it only
+    /// spins up its queue/watcher when the Files pane is first opened. Uses a
+    /// DEDICATED engine per job (never the live-dictation `whisperEngine`).
+    lazy var fileCoordinator: FileTranscriptionCoordinator = {
+        FileTranscriptionCoordinator(engineConfig: { [weak self] in
+            self?.fileEngineConfig() ?? .init(
+                makeEngine: { WhisperEngine() }, binaryPath: "", modelPath: "",
+                languageSetting: "auto", backend: .cli, prompt: "", enhance: nil
+            )
+        })
+    }()
+
+    /// The current engine/model/backend config for batch file transcription,
+    /// mirroring the live-dictation `startTranscription` wiring.
+    func fileEngineConfig() -> FileTranscriptionCoordinator.EngineConfig {
+        let engineName = transcriptionEngine
+        let model = modelName
+        let wkModel = whisperKitModel
+        return .init(
+            makeEngine: { Self.makeFileEngine(for: engineName, model: model, whisperKitModel: wkModel) },
+            binaryPath: whisperBinaryPath,
+            modelPath: modelPath,
+            languageSetting: engineLanguageSetting,
+            backend: whisperBackend == "serverAPI" ? .serverAPI : .cli,
+            prompt: customVocabularyEnabled ? vocabulary.whisperPrompt : "",
+            enhance: llmConfigured ? { [weak self] raw in
+                // Reuse the overlay-refine LLM primitive. Fail-open: any error
+                // (LLM busy, unavailable, mid-dictation) returns the raw text.
+                await withCheckedContinuation { cont in
+                    Task { @MainActor in
+                        guard let self else { cont.resume(returning: raw); return }
+                        self.refineText(
+                            text: raw,
+                            instruction: "Clean up this transcript: fix punctuation, casing, and obvious transcription mistakes. Keep the wording and meaning; do not summarize or omit content."
+                        ) { result in
+                            switch result {
+                            case .success(let enhanced): cont.resume(returning: enhanced)
+                            case .failure: cont.resume(returning: raw)
+                            }
+                        }
+                    }
+                }
+            } : nil
+        )
+    }
     var appleSpeechEngine: StreamingTranscriptionEngine!
     /// Experimental real-time WhisperKit engine. Shares the streaming session
     /// machinery with Apple Speech (same handlers) but uses WhisperKit's
@@ -4463,6 +4509,36 @@ class AppState: ObservableObject {
         #if OPENWHISP_INSTRUMENTATION
         lastDictationEvent = event
         #endif
+    }
+
+    // MARK: - Insights (MAK-38)
+
+    /// Derive the local Usage Insights summary from the in-memory metadata
+    /// aggregates. Pure computation over `dictationStats` (already the live copy,
+    /// mutated on every completed dictation) — nothing here leaves the device.
+    ///
+    /// App bundle ids are mapped to readable names using currently-running apps
+    /// (best source) with a fallback to the last app name seen in local history,
+    /// then to a prettified bundle id inside `InsightsSummary` itself.
+    var insightsSummary: InsightsSummary {
+        InsightsSummary(
+            stats: dictationStats,
+            today: DictationStats.dayKey(for: Date()),
+            appName: { [weak self] bundleID in self?.displayName(forBundleID: bundleID) },
+            engineName: { InsightsSummary.prettifyEngine($0) }
+        )
+    }
+
+    /// Best-effort human name for a bundle id, using running apps then history.
+    private func displayName(forBundleID bundleID: String) -> String? {
+        if let running = NSWorkspace.shared.runningApplications.first(where: {
+            $0.bundleIdentifier == bundleID
+        })?.localizedName {
+            return running
+        }
+        return history.first(where: {
+            $0.appBundleID == bundleID && ($0.appName?.isEmpty == false)
+        })?.appName
     }
 
     func copyHistoryEntry(_ entry: TranscriptionEntry) {

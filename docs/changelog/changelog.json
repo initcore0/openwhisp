@@ -7,13 +7,13 @@
       "id": "2026-07",
       "title": "July 2026",
       "date": "2026-07-10",
-      "summary": "A batch of new features, fixes, and under-the-hood hardening — all landed on main, all covered by tests, all on your machine. All thirteen new features are live today: a fully-remappable dictation trigger with a record-a-shortcut field, hands-free (tap-to-lock) dictation, adjustable AI cleanup, voice editing, a self-learning dictionary, rich local formatting, spoken-filename @-mentions for code editors, agent-CLI cleanup, output targets that route a dictation to a file/Shortcut/webhook, and an openwhisp:// URL scheme so Raycast, Alfred, or any launcher can drive dictation.",
+      "summary": "A batch of new features, fixes, and under-the-hood hardening — all landed on main, all covered by tests, all on your machine. All fifteen new features are live today: a fully-remappable dictation trigger with a record-a-shortcut field, a local Usage Insights dashboard, batch file transcription with watch folders, hands-free (tap-to-lock) dictation, adjustable AI cleanup, voice editing, a self-learning dictionary, rich local formatting, spoken-filename @-mentions for code editors, agent-CLI cleanup, output targets that route a dictation to a file/Shortcut/webhook, and an openwhisp:// URL scheme so Raycast, Alfred, or any launcher can drive dictation.",
       "stats": {
-        "changesShipped": 23,
-        "newFeatures": 13,
-        "testsPassing": 1080,
+        "changesShipped": 25,
+        "newFeatures": 15,
+        "testsPassing": 1131,
         "onDevicePercent": 100,
-        "newFeaturesLive": 13,
+        "newFeaturesLive": 15,
         "newFeaturesCorePending": 0
       },
       "entries": [
@@ -36,6 +36,51 @@
               "Your custom trigger works in both Hold-to-talk and Hands-free activation styles."
             ],
             "note": "Live in Settings today. A single typing key with no modifier is rejected (it would fire as you type); add a modifier or bind a non-text key (function row, Esc, arrows) instead."
+          }
+        },
+        {
+          "category": "feature",
+          "headline": "See your dictation stats — words, speaking speed, time saved, streaks — all on this Mac",
+          "body": "A new Insights tab in Settings surfaces what OpenWhisp was quietly counting: total words dictated, your words-per-minute, an estimated time saved versus typing, current and longest daily streaks, and a breakdown of which apps you dictate into. It's all computed on-device from metadata only — counts and durations, never your transcripts — and there's a one-click share card (a PNG rendered locally) if you want to post your numbers. No accounts, no cloud.",
+          "tickets": [
+            "MAK-38"
+          ],
+          "prs": [
+            144
+          ],
+          "howTo": {
+            "availability": "live",
+            "summary": "Open Settings › Insights to see your words, WPM, time saved, and streaks; Save/Copy the share card to post them.",
+            "steps": [
+              "Open OpenWhisp Settings and pick the “Insights” tab.",
+              "Read your lifetime words, speaking speed (WPM), and estimated time saved (the card states the typing-speed assumption behind that estimate).",
+              "Check your current and longest streaks and which apps you dictate into most.",
+              "Click “Save share card…” to write a PNG, or “Copy image” to put it on the clipboard — the image is rendered entirely on your Mac; nothing is uploaded."
+            ],
+            "note": "Time saved is an estimate: it compares your speaking time to typing the same words at 40 wpm (a common average). Your real typing speed will differ. Stats are metadata only — no transcript text is ever stored or shown here, and sessions recorded while a password field was focused are excluded."
+          }
+        },
+        {
+          "category": "feature",
+          "headline": "Drop in an audio or video file — batch transcription with a live queue and subtitle export",
+          "body": "Point OpenWhisp at MP3/MP4/M4A/WAV/WEBM (and more) and it decodes them to 16 kHz audio, runs your on-device engine, and shows a live per-file queue (Queued → Loading model → Transcribing → Enhancing → Done). Long files are chunked automatically, and finished transcripts export to plain text, SubRip (.srt) or WebVTT (.vtt) with chunk-level timestamps. Set up watch folders and any media dropped in transcribes itself.",
+          "tickets": [
+            "MAK-36"
+          ],
+          "prs": [
+            142
+          ],
+          "howTo": {
+            "availability": "live",
+            "summary": "Settings › File Transcription › Add files, watch the queue, then export .txt/.srt/.vtt from any finished file. Add a watch folder to auto-transcribe drops.",
+            "steps": [
+              "Open Settings › File Transcription.",
+              "Click “Add audio or video files…” and pick one or more media files — they queue up and transcribe one at a time on your current engine.",
+              "Watch each row move through Queued → Loading model → Transcribing → Done; long files are chunked for you.",
+              "On a finished row, use Export to save .txt, .srt, or .vtt (SRT/VTT carry chunk-level timestamps).",
+              "Optional: “Add a watch folder…” so any new media dropped into it is transcribed automatically (files still copying are picked up once they settle)."
+            ],
+            "note": "Timestamps for .srt/.vtt are chunk-level (each cue spans a decode window), since the local engines surface plain text per chunk — finer per-word timing is a future engine-seam upgrade. The optional LLM “Enhance” pass over finished transcripts is present as a toggle but only runs when an LLM is configured."
           }
         },
         {
@@ -428,7 +473,7 @@
         {
           "category": "improvement",
           "headline": "End-to-end audio testing, so features stay working",
-          "body": "A full regression suite now feeds pre-recorded audio through the whole pipeline — the reason \"999 tests passing\" is more than a number. Every feature above ships with coverage.",
+          "body": "A full regression suite now feeds pre-recorded audio through the whole pipeline — the reason \"1131 tests passing\" is more than a number. Every feature above ships with coverage.",
           "tickets": [],
           "prs": [
             107,

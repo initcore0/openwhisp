@@ -78,6 +78,7 @@ let package = Package(
                 "AsyncTimeout.swift",
                 "SerialTaskChain.swift",
                 "DictationStats.swift",
+                "InsightsSummary.swift",
                 "Instrumentation.swift",
                 "VoiceIndicatorStyle.swift",
                 "WhisperKitBridge.swift",
@@ -89,7 +90,10 @@ let package = Package(
                 "RefineTap.swift",
                 "ServerProcessIdentity.swift",
                 "ServerLaunchRetry.swift",
-                "WhisperResponseClassifier.swift"
+                "WhisperResponseClassifier.swift",
+                "FileTranscriptionQueue.swift",
+                "SubtitleFormatter.swift",
+                "WatchFolderPolicy.swift"
             ]
         ),
         .executableTarget(
