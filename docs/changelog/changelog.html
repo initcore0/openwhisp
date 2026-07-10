@@ -251,9 +251,9 @@
   </header>
 
   <div class="stats">
-    <div class="stat"><div class="n">22</div><div class="k">changes shipped</div></div>
-    <div class="stat"><div class="n">12<small> live</small></div><div class="k">new features</div></div>
-    <div class="stat"><div class="n">1048</div><div class="k">tests passing</div></div>
+    <div class="stat"><div class="n">23</div><div class="k">changes shipped</div></div>
+    <div class="stat"><div class="n">13<small> live</small></div><div class="k">new features</div></div>
+    <div class="stat"><div class="n">1068</div><div class="k">tests passing</div></div>
     <div class="stat"><div class="n">100<small>%</small></div><div class="k">on-device</div></div>
   </div>
 
@@ -312,7 +312,33 @@
               <li>Chain verbs in one URL — open "openwhisp://?switch-mode=email&amp;record" — they run in order, all-or-nothing.</li>
               <li>For a one-key setup, add the Raycast Script Commands or the Alfred recipe from the integrations/ folder and bind them to hotkeys.</li>
             </ol>
-            <p class="g-note">record, refine, and paste-last-result work today. switch-mode / activate-mode are parsed and validated now but not yet wired to a runtime action — OpenWhisp's modes are per-app profiles keyed by bundle ID today, with no named-mode registry to switch by key; those URLs are accepted and logged as pending rather than doing something misleading. See integrations/README.md for the full grammar.</p>
+            <p class="g-note">record, refine, paste-last-result, switch-mode, and activate-mode all work today. switch-mode?key=… queues a Mode for your next dictation; activate-mode?key=… sets it as the sticky active Mode without recording (MAK-39 wired the named-mode registry). An unknown key is logged as a miss rather than silently pinning a phantom mode. See integrations/README.md for the full grammar.</p>
+          </div>
+        </details>
+      </li>
+      <li>
+        <details class="entry">
+          <summary>
+            <div class="sum-left">
+              <h3>Modes — save a dictation style and invoke it by name</h3>
+              <p>A Mode bundles a tone (Formal / Casual / Legal / Chat / Personalized), an AI instruction, optional model and language/output/AI-cleanup overrides, a custom icon, and a stable key you can invoke. Pick one as your active mode in Settings, bind a mode to an app so it auto-activates, or switch modes from a launcher with openwhisp://switch-mode?key=…. Modes generalize the old per-app profiles and travel inside config export/import and packs, so a style is shareable.</p>
+            </div>
+            <div class="sum-right">
+              <span class="try">How to use<svg class="howto-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span>
+              <div class="receipts"><span class="tag ticket">MAK-39</span></div>
+            </div>
+          </summary>
+          <div class="guide">
+            <span class="avail live">Available now</span>
+            <p class="g-sum">Create a Mode in Settings › Modes, give it a tone/instruction, then set it active there or invoke it by key from an openwhisp:// URL.</p>
+            <ol>
+              <li>Settings › Modes → “+” to add a Mode. Give it a name, a key (normalized to lowercase-with-hyphens), a tone, and optionally an AI instruction, icon, or language/output/AI-cleanup overrides.</li>
+              <li>Set your “Active mode” at the top of the pane — it governs your next dictations until you change it (or pick “None” for global settings).</li>
+              <li>Bind a Mode to an app (its bundle ID) and turn on per-app modes to have it auto-activate when you dictate into that app.</li>
+              <li>From a launcher: open "openwhisp://switch-mode?key=email" to use a Mode for just your next dictation, or "openwhisp://activate-mode?key=email" to make it the sticky active Mode.</li>
+              <li>Share a Mode by exporting your config (it now includes Modes) or shipping it in a config pack.</li>
+            </ol>
+            <p class="g-note">The tone/instruction, language/output/AI-cleanup overrides, LLM-model override, active-mode picker, app auto-activation, and both URL verbs are live. Two pieces are deferred honestly: a per-Mode transcription-model swap is carried and round-trips but is NOT yet applied to the live engine mid-session, and per-Mode global hotkeys are not wired (key-based invocation via the URL scheme + picker is the shipped path). The old Per-App Profiles pane still exists; Modes are seeded from your profiles on first launch.</p>
           </div>
         </details>
       </li>
@@ -660,7 +686,7 @@
       </li>
       <li class="entry">
         <h3>End-to-end audio testing, so features stay working</h3>
-        <p>A full regression suite now feeds pre-recorded audio through the whole pipeline — the reason "1048 tests passing" is more than a number. Every feature above ships with coverage.</p>
+        <p>A full regression suite now feeds pre-recorded audio through the whole pipeline — the reason "1068 tests passing" is more than a number. Every feature above ships with coverage.</p>
         <div class="receipts"><span class="tag ticket">E2E</span><span class="tag pr">#107–110</span></div>
       </li>
     </ul>

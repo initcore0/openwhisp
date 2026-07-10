@@ -1,19 +1,19 @@
 {
   "$schema": "./changelog.schema.md",
   "project": "OpenWhisp",
-  "generated": "2026-07-09",
+  "generated": "2026-07-10",
   "releases": [
     {
       "id": "2026-07",
       "title": "July 2026",
       "date": "2026-07-09",
-      "summary": "A batch of new features, fixes, and under-the-hood hardening — all landed on main, all covered by tests, all on your machine. All twelve new features are live today: hands-free (tap-to-lock) dictation, adjustable AI cleanup, voice editing, a self-learning dictionary, rich local formatting, spoken-filename @-mentions for code editors, agent-CLI cleanup, output targets that route a dictation to a file/Shortcut/webhook, and an openwhisp:// URL scheme so Raycast, Alfred, or any launcher can drive dictation.",
+      "summary": "A batch of new features, fixes, and under-the-hood hardening — all landed on main, all covered by tests, all on your machine. All thirteen new features are live today: hands-free (tap-to-lock) dictation, adjustable AI cleanup, voice editing, a self-learning dictionary, rich local formatting, spoken-filename @-mentions for code editors, agent-CLI cleanup, output targets that route a dictation to a file/Shortcut/webhook, first-class Modes you can invoke by name, and an openwhisp:// URL scheme so Raycast, Alfred, or any launcher can drive dictation.",
       "stats": {
-        "changesShipped": 22,
-        "newFeatures": 12,
-        "testsPassing": 1048,
+        "changesShipped": 23,
+        "newFeatures": 13,
+        "testsPassing": 1068,
         "onDevicePercent": 100,
-        "newFeaturesLive": 12,
+        "newFeaturesLive": 13,
         "newFeaturesCorePending": 0
       },
       "entries": [
@@ -59,7 +59,28 @@
               "Chain verbs in one URL — open \"openwhisp://?switch-mode=email&record\" — they run in order, all-or-nothing.",
               "For a one-key setup, add the Raycast Script Commands or the Alfred recipe from the integrations/ folder and bind them to hotkeys."
             ],
-            "note": "record, refine, and paste-last-result work today. switch-mode / activate-mode are parsed and validated now but not yet wired to a runtime action — OpenWhisp's modes are per-app profiles keyed by bundle ID today, with no named-mode registry to switch by key; those URLs are accepted and logged as pending rather than doing something misleading. See integrations/README.md for the full grammar."
+            "note": "record, refine, paste-last-result, switch-mode, and activate-mode all work today. switch-mode?key=… queues a Mode for your next dictation; activate-mode?key=… sets it as the sticky active Mode without recording (MAK-39 wired the named-mode registry). An unknown key is logged as a miss rather than silently pinning a phantom mode. See integrations/README.md for the full grammar."
+          }
+        },
+        {
+          "category": "feature",
+          "headline": "Modes — save a dictation style and invoke it by name",
+          "body": "A Mode bundles a tone (Formal / Casual / Legal / Chat / Personalized), an AI instruction, optional model and language/output/AI-cleanup overrides, a custom icon, and a stable key you can invoke. Pick one as your active mode in Settings, bind a mode to an app so it auto-activates, or switch modes from a launcher with openwhisp://switch-mode?key=…. Modes generalize the old per-app profiles and travel inside config export/import and packs, so a style is shareable.",
+          "tickets": [
+            "MAK-39"
+          ],
+          "prs": [],
+          "howTo": {
+            "availability": "live",
+            "summary": "Create a Mode in Settings › Modes, give it a tone/instruction, then set it active there or invoke it by key from an openwhisp:// URL.",
+            "steps": [
+              "Settings › Modes → “+” to add a Mode. Give it a name, a key (it's normalized to lowercase-with-hyphens), a tone, and optionally an AI instruction, icon, or language/output/AI-cleanup overrides.",
+              "Set your “Active mode” at the top of the pane — it governs your next dictations until you change it (or pick “None” for global settings).",
+              "Bind a Mode to an app (its bundle ID) and turn on per-app modes to have it auto-activate when you dictate into that app.",
+              "From a launcher: open \"openwhisp://switch-mode?key=email\" to use a Mode for just your next dictation, or \"openwhisp://activate-mode?key=email\" to make it the sticky active Mode.",
+              "Share a Mode by exporting your config (it now includes Modes) or shipping it in a config pack."
+            ],
+            "note": "The tone/instruction, language/output/AI-cleanup overrides, LLM-model override, active-mode picker, app auto-activation, and both URL verbs are live. Two pieces are deferred honestly: a per-Mode transcription-model swap is carried and round-trips but is NOT yet applied to the live engine mid-session, and per-Mode global hotkeys are not wired (key-based invocation via the URL scheme + picker is the shipped path). The old Per-App Profiles pane still exists; Modes are seeded from your profiles on first launch."
           }
         },
         {

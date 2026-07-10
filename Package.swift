@@ -29,6 +29,8 @@ let package = Package(
                 "EditDiff.swift",
                 "LanguageResolver.swift",
                 "ProfileResolver.swift",
+                "Mode.swift",
+                "ModeResolver.swift",
                 "MetaInstructionStripper.swift",
                 "FileTagTransform.swift",
                 "PostProcessor.swift",
