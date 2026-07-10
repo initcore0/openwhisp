@@ -306,6 +306,12 @@ struct OutputPane: View {
                 isSelected: appState.insertionMode == "paste"
             ) { appState.insertionMode = "paste" }
 
+            SelectableRow(
+                title: "AppleScript keystroke",
+                subtitle: "Types the text via System Events. For apps that mangle ⌘V and direct insert — Electron, remote desktop (VNC), or non-QWERTY layouts.",
+                isSelected: appState.insertionMode == "appleScript"
+            ) { appState.insertionMode = "appleScript" }
+
             SubtitledToggle(
                 "Restore clipboard after pasting",
                 subtitle: appState.insertionMode == "directAX"

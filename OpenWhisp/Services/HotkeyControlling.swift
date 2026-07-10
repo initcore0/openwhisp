@@ -26,6 +26,10 @@ protocol HotkeyControlling: AnyObject {
     /// Which single key triggers refine (held-to-talk). One of the ids in
     /// `RefineKey` (e.g. "rightOption"); "off" disables the refine key.
     var refineKey: String { get set }
+    /// Which non-primary mouse button also triggers dictation (MAK-42), as a
+    /// `MouseTrigger` id (e.g. "mouse2" for the middle button); "off" disables the
+    /// mouse trigger. It shares the same hold/toggle activation as the key trigger.
+    var mouseTrigger: String { get set }
     /// Dictation begins. `locked` is true for a hands-free (toggle/double-tap)
     /// session that stays open until an explicit stop/cancel; false for an
     /// ordinary press-to-talk hold.

@@ -53,6 +53,12 @@ struct DictationPane: View {
                     )
                 }
 
+                Picker("Mouse-button trigger", selection: $appState.mouseTrigger) {
+                    ForEach(MouseTrigger.allSelectable, id: \.id) { trigger in
+                        Text(trigger.label).tag(trigger.id)
+                    }
+                }
+
                 if RefineKey.from(id: appState.refineKey).conflictsWithTrigger(appState.triggerMode) {
                     SettingsCallout(
                         .warning,
@@ -70,6 +76,7 @@ struct DictationPane: View {
                         SettingsFootnote("Hold to talk: dictate while the key is held. Double-tap it to lock the mic open hands-free without changing this setting.")
                     }
                     SettingsFootnote("Record any key or combo above to set your own trigger, or keep a quick pick. The Refine key is configured in Cleanup › Refine.")
+                    SettingsFootnote("A mouse-button trigger binds a non-primary button (middle, or a side button) to start dictation — it uses the same activation style as the trigger key.")
                 }
             }
 

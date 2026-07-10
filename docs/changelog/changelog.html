@@ -246,14 +246,14 @@
 <div class="wrap">
   <header>
     <p class="eyebrow">Shipped · July 2026</p>
-    <h1>Twenty-five ways OpenWhisp got<br><span class="accent">sharper, safer, and more yours.</span></h1>
-    <p class="lede">A batch of new features, fixes, and under-the-hood hardening — all landed on main, all covered by tests, all on your machine. All fifteen new features are live today: a fully-remappable dictation trigger with a record-a-shortcut field, a local Usage Insights dashboard, batch file transcription with watch folders, hands-free (tap-to-lock) dictation, adjustable AI cleanup, voice editing, a self-learning dictionary, rich local formatting, spoken-filename @-mentions for code editors, agent-CLI cleanup, output targets that route a dictation to a file/Shortcut/webhook, and an openwhisp:// URL scheme so Raycast, Alfred, or any launcher can drive dictation.</p>
+    <h1>Twenty-six ways OpenWhisp got<br><span class="accent">sharper, safer, and more yours.</span></h1>
+    <p class="lede">A batch of new features, fixes, and under-the-hood hardening — all landed on main, all covered by tests, all on your machine. All sixteen new features are live today: a fully-remappable dictation trigger with a record-a-shortcut field, an AppleScript keystroke insert method and mouse-button dictation triggers, a local Usage Insights dashboard, batch file transcription with watch folders, hands-free (tap-to-lock) dictation, adjustable AI cleanup, voice editing, a self-learning dictionary, rich local formatting, spoken-filename @-mentions for code editors, agent-CLI cleanup, output targets that route a dictation to a file/Shortcut/webhook, and an openwhisp:// URL scheme so Raycast, Alfred, or any launcher can drive dictation.</p>
   </header>
 
   <div class="stats">
-    <div class="stat"><div class="n">25</div><div class="k">changes shipped</div></div>
-    <div class="stat"><div class="n">15<small> live</small></div><div class="k">new features</div></div>
-    <div class="stat"><div class="n">1131</div><div class="k">tests passing</div></div>
+    <div class="stat"><div class="n">26</div><div class="k">changes shipped</div></div>
+    <div class="stat"><div class="n">16<small> live</small></div><div class="k">new features</div></div>
+    <div class="stat"><div class="n">1151</div><div class="k">tests passing</div></div>
     <div class="stat"><div class="n">100<small>%</small></div><div class="k">on-device</div></div>
   </div>
 
@@ -262,9 +262,34 @@
     <div class="sec-head">
       <span class="dot feature"></span>
       <h2>New features</h2>
-      <span class="count">15 live</span>
+      <span class="count">16 live</span>
     </div>
     <ul class="entries">
+      <li>
+        <details class="entry">
+          <summary>
+            <div class="sum-left">
+              <h3>Two new ways to get your words in: an AppleScript keystroke insert method and mouse-button triggers</h3>
+              <p>Some apps mangle the usual paste (⌘V) and direct-insert methods — Electron apps, remote-desktop (VNC) windows, and non-QWERTY keyboard layouts. A new AppleScript keystroke insert method types your transcript in as if from the keyboard, which those surfaces accept; pick it globally or per-app. And you can now bind a non-primary mouse button (middle, or a side button) as a dictation trigger, using the same hold or hands-free style as your trigger key.</p>
+            </div>
+            <div class="sum-right">
+              <span class="try">How to use<svg class="howto-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span>
+              <div class="receipts"><span class="tag ticket">MAK-42</span></div>
+            </div>
+          </summary>
+          <div class="guide">
+            <span class="avail live">Available now</span>
+            <p class="g-sum">Settings › Output › Insertion → “AppleScript keystroke”, and Settings › Dictation › Activation → “Mouse-button trigger”. Both can also be set per-app under Per-App Profiles.</p>
+            <ol>
+              <li>Insert method: Settings › Output › Insertion → choose “AppleScript keystroke” if paste/direct insert misbehaves in an app (Electron, VNC, non-QWERTY).</li>
+              <li>Per-app override: Settings › Per-App Profiles → add the app and set its “Insert” column (Inherit / Auto / Direct / Paste / AppleScript).</li>
+              <li>Mouse trigger: Settings › Dictation › Activation → “Mouse-button trigger” → pick Middle button or a side button (Mouse 4-10). “Off” disables it.</li>
+              <li>The mouse trigger uses your existing activation style — hold to talk, or tap to lock hands-free.</li>
+            </ol>
+            <p class="g-note">The AppleScript method never touches the clipboard, and your transcript is always safely escaped into the script (quotes, backslashes, and newlines can't break or inject it) — it falls back to paste if the script can't run (grant Accessibility/Automation permission if prompted) or if the transcript is very long (keystroke types at keyboard speed). The left and right mouse buttons are deliberately not bindable, since they're needed for normal clicking.</p>
+          </div>
+        </details>
+      </li>
       <li>
         <details class="entry">
           <summary>
@@ -737,7 +762,7 @@
       </li>
       <li class="entry">
         <h3>End-to-end audio testing, so features stay working</h3>
-        <p>A full regression suite now feeds pre-recorded audio through the whole pipeline — the reason "1131 tests passing" is more than a number. Every feature above ships with coverage.</p>
+        <p>A full regression suite now feeds pre-recorded audio through the whole pipeline — the reason "1151 tests passing" is more than a number. Every feature above ships with coverage.</p>
         <div class="receipts"><span class="tag ticket">E2E</span><span class="tag pr">#107–110</span></div>
       </li>
     </ul>

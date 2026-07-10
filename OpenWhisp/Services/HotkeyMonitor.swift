@@ -57,10 +57,20 @@ final class HotkeyMonitor: HotkeyControlling {
             guard hotkeyMode != oldValue else { return }
             activation = ActivationInteraction(mode: hotkeyMode == "toggle" ? .toggle : .hold)
             isPressed = false
+            isMousePressed = false
         }
     }
     /// Selected refine key id (see RefineKey). "off" disables it.
     var refineKey: String = RefineKey.defaultKey.rawValue
+
+    /// Selected mouse-button trigger id (see `MouseTrigger`). "off" disables it.
+    /// A bound non-primary button feeds the SAME activation machine as the key
+    /// trigger, so it behaves identically (hold / toggle / double-tap → lock).
+    var mouseTrigger: String = MouseTrigger.defaultTrigger.id
+    /// Debounced held-state for the mouse-button trigger, tracked independently of
+    /// the keyboard trigger's `isPressed` so a stray keyboard event can't reset the
+    /// mouse edge detection (and vice-versa). Both drive the one `activation`.
+    private var isMousePressed = false
 
     /// The pure interaction state machine (hold vs. toggle vs. double-tap → lock,
     /// Esc-cancel). The raw debounced `.down`/`.up` edges resolved below are fed
@@ -76,7 +86,10 @@ final class HotkeyMonitor: HotkeyControlling {
         let mask: CGEventMask = CGEventMask(
             (Int64(1) << CGEventType.keyDown.rawValue) |
             (Int64(1) << CGEventType.keyUp.rawValue) |
-            (Int64(1) << CGEventType.flagsChanged.rawValue)
+            (Int64(1) << CGEventType.flagsChanged.rawValue) |
+            // Non-primary mouse buttons (middle, Mouse 4-10) for the mouse trigger.
+            (Int64(1) << CGEventType.otherMouseDown.rawValue) |
+            (Int64(1) << CGEventType.otherMouseUp.rawValue)
         )
 
         let port = createEventTap(mask: mask, tap: .cghidEventTap)
@@ -113,9 +126,9 @@ final class HotkeyMonitor: HotkeyControlling {
     private func startNSEventFallback() {
         let eventMask: NSEvent.EventTypeMask = [
             .keyDown, .keyUp, .flagsChanged,
-            // Only consumed as refine-tap disqualifiers (⌃-click, ⌃-scroll);
-            // handleNSEvent returns before any key handling for these.
-            .leftMouseDown, .rightMouseDown, .otherMouseDown, .scrollWheel,
+            // leftMouseDown/rightMouseDown/scrollWheel are refine-tap disqualifiers
+            // only. otherMouseDown/Up ALSO drive the mouse-button trigger (MAK-42).
+            .leftMouseDown, .rightMouseDown, .otherMouseDown, .otherMouseUp, .scrollWheel,
         ]
 
         globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: eventMask) { [weak self] event in
@@ -160,6 +173,7 @@ final class HotkeyMonitor: HotkeyControlling {
         guard activation.isActive else { return }
         activation.reset()
         isPressed = false
+        isMousePressed = false
     }
 
     // MARK: - Edge dispatch
@@ -176,6 +190,29 @@ final class HotkeyMonitor: HotkeyControlling {
             dispatch(activation.triggerDown(now: now))
         case .up:
             isPressed = false
+            dispatch(activation.triggerUp(now: now))
+        case .none:
+            break
+        }
+    }
+
+    /// Route a non-primary mouse-button event through the SAME activation machine
+    /// as the keyboard trigger (MAK-42), but debounced on its own `isMousePressed`
+    /// so key and mouse edges don't corrupt each other. Only the currently-bound
+    /// button matters; every other button number is ignored (and the reserved
+    /// left/right buttons never reach here — they arrive as leftMouseDown /
+    /// rightMouseDown, not otherMouse*).
+    private func handleMouseButton(buttonNumber: Int, isDown: Bool) {
+        let trigger = MouseTrigger.from(id: mouseTrigger)
+        guard let bound = trigger.buttonNumber, bound == buttonNumber else { return }
+        let now = ProcessInfo.processInfo.systemUptime
+        let gesture = HotkeyGesture.resolve(isActive: isDown, wasPressed: isMousePressed)
+        switch gesture {
+        case .down:
+            isMousePressed = true
+            dispatch(activation.triggerDown(now: now))
+        case .up:
+            isMousePressed = false
             dispatch(activation.triggerUp(now: now))
         case .none:
             break
@@ -296,7 +333,18 @@ final class HotkeyMonitor: HotkeyControlling {
             return
         }
 
+        // While the capture field records a new shortcut, ALL trigger handling is
+        // paused — including a bound mouse button, so a mouse trigger can't start
+        // dictation mid-recording.
         guard !isSuspendedForCapture else { return }
+
+        // Non-primary mouse buttons carry no keycode — handle (and return) before
+        // the keyboard paths read `.keyboardEventKeycode`.
+        if type == .otherMouseDown || type == .otherMouseUp {
+            let button = Int(event.getIntegerValueField(.mouseEventButtonNumber))
+            handleMouseButton(buttonNumber: button, isDown: type == .otherMouseDown)
+            return
+        }
 
         let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
 
@@ -330,6 +378,7 @@ final class HotkeyMonitor: HotkeyControlling {
     private func handleEscape() {
         _ = activation.cancel()
         isPressed = false
+        isMousePressed = false
         Task { @MainActor in self.onCancel?() }
     }
 
@@ -349,7 +398,14 @@ final class HotkeyMonitor: HotkeyControlling {
         // Handle and return BEFORE the key handlers (NSEvent.keyCode is only
         // valid for key events).
         switch event.type {
-        case .leftMouseDown, .rightMouseDown, .otherMouseDown, .scrollWheel:
+        case .otherMouseDown, .otherMouseUp:
+            // A non-primary mouse click is both a refine-tap disqualifier AND (for
+            // the bound button) the mouse trigger.
+            if isRefinePressed { refineTap.otherInput() }
+            handleMouseButton(buttonNumber: event.buttonNumber,
+                              isDown: event.type == .otherMouseDown)
+            return
+        case .leftMouseDown, .rightMouseDown, .scrollWheel:
             if isRefinePressed { refineTap.otherInput() }
             return
         default:
