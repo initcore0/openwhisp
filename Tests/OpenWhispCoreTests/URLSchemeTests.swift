@@ -32,6 +32,15 @@ final class URLSchemeTests: XCTestCase {
         XCTAssertEqual(commands("openwhisp://paste-last-result"), [.pasteLast])
     }
 
+    func testScratchpadHostForm() {
+        XCTAssertEqual(commands("openwhisp://scratchpad"), [.scratchpad])
+    }
+
+    func testScratchpadChainsWithRecord() {
+        // Open the pad, then start dictation into it — a plausible one-URL launcher.
+        XCTAssertEqual(commands("openwhisp://?scratchpad&record"), [.scratchpad, .record])
+    }
+
     func testRefineHostFormWithInstruction() {
         // "make it formal" percent-encoded.
         XCTAssertEqual(
@@ -206,7 +215,7 @@ final class URLSchemeTests: XCTestCase {
         for verb in URLScheme.Verb.allCases {
             let query: String
             switch verb {
-            case .record, .pasteLast:     query = ""
+            case .record, .pasteLast, .scratchpad: query = ""
             case .refine:                 query = "?instruction=x"
             case .switchMode, .activateMode: query = "?key=x"
             }

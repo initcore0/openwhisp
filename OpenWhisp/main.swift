@@ -210,6 +210,10 @@ class OpenWhispApp: NSObject, NSApplicationDelegate {
             menu.addItem(start)
         }
 
+        // Floating Scratchpad (MAK-49): a target-free surface to dictate into.
+        let scratchpad = NSMenuItem(title: "📝 Scratchpad", action: #selector(openScratchpad), keyEquivalent: "s")
+        menu.addItem(scratchpad)
+
         menu.addItem(.separator())
 
         // Quick mid-use toggles only. Engine, live-chunk plumbing, etc. live in
@@ -289,6 +293,7 @@ class OpenWhispApp: NSObject, NSApplicationDelegate {
         appState.openSettings(for: permission)
     }
 
+    @objc private func openScratchpad() { appState.openScratchpad() }
     @objc private func startDictation() { appState.startDictation() }
     @objc private func stopDictation()  { appState.stopDictation() }
     @objc private func cancelDictation() { appState.cancelDictation() }

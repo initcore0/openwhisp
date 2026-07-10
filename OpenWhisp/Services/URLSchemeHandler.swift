@@ -65,6 +65,11 @@ enum URLSchemeHandler {
                 }
             }
 
+        case .scratchpad:
+            // Open/focus the floating Scratchpad. Once it's key, the next dictation
+            // lands in it (MAK-49). A launcher can chain `?scratchpad&record`.
+            appState.openScratchpad()
+
         case .pasteLast:
             guard let last = appState.lastTranscription, !last.isEmpty else {
                 log.notice("openwhisp://paste-last-result: no last result to paste")

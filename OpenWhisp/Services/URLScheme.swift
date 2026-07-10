@@ -46,6 +46,9 @@ public enum URLScheme {
         case activateMode = "activate-mode"
         /// Paste the last dictation/refine result into the focused app.
         case pasteLast = "paste-last-result"
+        /// Open (and focus) the floating Scratchpad panel — a target-free surface
+        /// to dictate into (MAK-49). Takes no parameters.
+        case scratchpad
     }
 
     // MARK: - A validated command
@@ -64,6 +67,8 @@ public enum URLScheme {
         case activateMode(key: String)
         /// Paste the last result.
         case pasteLast
+        /// Open/focus the floating Scratchpad panel.
+        case scratchpad
 
         /// The verb this command came from (for logging / capability gating).
         public var verb: Verb {
@@ -73,6 +78,7 @@ public enum URLScheme {
             case .switchMode:   return .switchMode
             case .activateMode: return .activateMode
             case .pasteLast:    return .pasteLast
+            case .scratchpad:   return .scratchpad
             }
         }
     }
@@ -186,6 +192,9 @@ public enum URLScheme {
 
         case .pasteLast:
             return .success(.pasteLast)
+
+        case .scratchpad:
+            return .success(.scratchpad)
 
         case .refine:
             // instruction is required (a refine with no instruction is a no-op we

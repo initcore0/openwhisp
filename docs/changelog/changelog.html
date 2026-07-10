@@ -246,14 +246,14 @@
 <div class="wrap">
   <header>
     <p class="eyebrow">Shipped · July 2026</p>
-    <h1>Thirty-four ways OpenWhisp got<br><span class="accent">sharper, safer, and more yours.</span></h1>
-    <p class="lede">A batch of new features, fixes, and under-the-hood hardening — all landed on main, all covered by tests, all on your machine. All twenty-one new features are live today: quiet-dictation mode for whispering into your mic, opt-in on-device audio retention with one-click re-transcription and an auto-cleanup policy, a fully-remappable dictation trigger with a record-a-shortcut field, an AppleScript keystroke insert method and mouse-button dictation triggers, a local Usage Insights dashboard, opt-in screen-context awareness that biases transcription toward the names already on screen, batch file transcription with watch folders, hands-free (tap-to-lock) dictation, adjustable AI cleanup, voice editing, a self-learning dictionary, rich local formatting, spoken-filename @-mentions for code editors, agent-CLI cleanup, output targets that route a dictation to a file/Shortcut/webhook, first-class Modes you can invoke by name, a Rules engine that runs your own actions when a dictation finishes, and an openwhisp:// URL scheme so Raycast, Alfred, or any launcher can drive dictation.</p>
+    <h1>Thirty-five ways OpenWhisp got<br><span class="accent">sharper, safer, and more yours.</span></h1>
+    <p class="lede">A batch of new features, fixes, and under-the-hood hardening — all landed on main, all covered by tests, all on your machine. All twenty-two new features are live today: a floating Scratchpad to dictate into with no target app, quiet-dictation mode for whispering into your mic, opt-in on-device audio retention with one-click re-transcription and an auto-cleanup policy, a fully-remappable dictation trigger with a record-a-shortcut field, an AppleScript keystroke insert method and mouse-button dictation triggers, a local Usage Insights dashboard, opt-in screen-context awareness that biases transcription toward the names already on screen, batch file transcription with watch folders, hands-free (tap-to-lock) dictation, adjustable AI cleanup, voice editing, a self-learning dictionary, rich local formatting, spoken-filename @-mentions for code editors, agent-CLI cleanup, output targets that route a dictation to a file/Shortcut/webhook, first-class Modes you can invoke by name, a Rules engine that runs your own actions when a dictation finishes, and an openwhisp:// URL scheme so Raycast, Alfred, or any launcher can drive dictation.</p>
   </header>
 
   <div class="stats">
-    <div class="stat"><div class="n">34</div><div class="k">changes shipped</div></div>
-    <div class="stat"><div class="n">21<small> live</small></div><div class="k">new features</div></div>
-    <div class="stat"><div class="n">1341</div><div class="k">tests passing</div></div>
+    <div class="stat"><div class="n">35</div><div class="k">changes shipped</div></div>
+    <div class="stat"><div class="n">22<small> live</small></div><div class="k">new features</div></div>
+    <div class="stat"><div class="n">1361</div><div class="k">tests passing</div></div>
     <div class="stat"><div class="n">100<small>%</small></div><div class="k">on-device</div></div>
   </div>
 
@@ -262,9 +262,34 @@
     <div class="sec-head">
       <span class="dot feature"></span>
       <h2>New features</h2>
-      <span class="count">21 live</span>
+      <span class="count">22 live</span>
     </div>
     <ul class="entries">
+      <li>
+        <details class="entry">
+          <summary>
+            <div class="sum-left">
+              <h3>A floating Scratchpad — dictate anywhere, even with no app to type into</h3>
+              <p>Open the Scratchpad from the menu bar (or open "openwhisp://scratchpad") and you get an always-on-top note panel to dictate into when nothing else has focus — a quick capture surface that's fully local. Keep several notes in a list, type or dictate freely, and each note shows a small provenance line (when it was last dictated vs. typed). Nothing leaves your Mac; the notes are saved on device.</p>
+            </div>
+            <div class="sum-right">
+              <span class="try">How to use<svg class="howto-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span>
+              <div class="receipts"><span class="tag ticket">MAK-49</span><span class="tag pr">#155</span></div>
+            </div>
+          </summary>
+          <div class="guide">
+            <span class="avail live">Available now</span>
+            <p class="g-sum">Open the Scratchpad from the menu bar (⌘S in the menu) or via openwhisp://scratchpad, then dictate or type; each dictation lands in the active note.</p>
+            <ol>
+              <li>Click the OpenWhisp menu-bar icon → “📝 Scratchpad” (or run open "openwhisp://scratchpad" from any launcher).</li>
+              <li>The floating panel opens on top of your other windows and takes focus. Use “＋ New” for another note; click a note in the left list to switch.</li>
+              <li>With the Scratchpad frontmost, start a dictation (your trigger key) — the text appends into the active note instead of an app. You can also just type.</li>
+              <li>Each note shows a provenance line (e.g. “Dictated 3:14 PM · typed 3:20 PM”); the list is ordered most-recently-touched first. Notes persist locally between launches.</li>
+            </ol>
+            <p class="g-note">v1 is plain text with a simple multi-note list and per-note dictated/typed timestamps. It's local-only (saved under Application Support). Rich text, tabs, checklists, and image paste are intentionally deferred. Dictation lands in the Scratchpad only while it's the frontmost window; otherwise dictation goes to your focused app as usual.</p>
+          </div>
+        </details>
+      </li>
       <li>
         <details class="entry">
           <summary>
@@ -898,7 +923,7 @@
       </li>
       <li class="entry">
         <h3>End-to-end audio testing, so features stay working</h3>
-        <p>A full regression suite now feeds pre-recorded audio through the whole pipeline — the reason "1341 tests passing" is more than a number. Every feature above ships with coverage.</p>
+        <p>A full regression suite now feeds pre-recorded audio through the whole pipeline — the reason "1361 tests passing" is more than a number. Every feature above ships with coverage.</p>
         <div class="receipts"><span class="tag ticket">E2E</span><span class="tag pr">#107–110</span></div>
       </li>
       <li class="entry">

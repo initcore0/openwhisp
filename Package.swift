@@ -65,6 +65,7 @@ let package = Package(
                 "BridgeWire.swift",
                 "BridgeRouter.swift",
                 "URLScheme.swift",
+                "Scratchpad.swift",
                 "DictationSession.swift",
                 "SilenceAutoStop.swift",
                 "QuietDictationMode.swift",

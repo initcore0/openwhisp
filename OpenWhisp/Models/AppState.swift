@@ -1029,6 +1029,11 @@ class AppState: ObservableObject {
     var hotkeyMonitor: HotkeyControlling!
 
     private var overlayController: OverlayWindowController?
+    /// The floating Scratchpad panel (MAK-49) — a target-free surface to dictate
+    /// into. Lazily created on first open so the panel/text-view cost is paid only
+    /// when the feature is used. When the pad is the frontmost key window, a
+    /// completed dictation appends into its active note instead of the focused app.
+    lazy var scratchpadController = ScratchpadWindowController(appState: self)
     private var elapsedTimer: Timer?
     private var recordingStartedAt: Date?
     /// When the current session entered the transcribing/finalize phase (set via the
@@ -2023,6 +2028,13 @@ class AppState: ObservableObject {
     }
 
     // MARK: - Actions
+
+    /// Open (and focus) the floating Scratchpad panel (MAK-49). Idempotent: brings
+    /// an already-open pad to the front. Once it's the key window, a completed
+    /// dictation lands in its active note.
+    func openScratchpad() {
+        scratchpadController.showAndFocus()
+    }
 
     /// - Parameter locked: this dictation is hands-free (toggle/double-tap) — it
     ///   stays open with the trigger released, shows the lock affordance, and arms
@@ -3958,6 +3970,16 @@ class AppState: ObservableObject {
         let pastesWholeOnce = !isLiveChunkSession || isPreviewSession
         if pastesWholeOnce {
             let insertion = addTrailingSpace ? "\(text) " : text
+            // Scratchpad (MAK-49): when our own floating pad is the frontmost key
+            // window, the user is dictating INTO it with no other target. The
+            // focused-app insert path can't serve this (its paste fallback
+            // deliberately declines when OUR app is frontmost), so append straight
+            // into the active note's model + text view instead. This is the
+            // target-free capture the pad exists for; it never touches the
+            // clipboard and always lands the text.
+            if scratchpadController.appendDictationIfKey(text) {
+                lastInsertedIntoFocusedApp = nil
+            } else {
             // Output target (MAK-11..14): when the user has selected AND configured a
             // non-focused sink (file / Shortcut / webhook), route the FINAL text
             // there; otherwise keep the exact historical focused-app insert. Keeping
@@ -4005,6 +4027,7 @@ class AppState: ObservableObject {
                 )
                 router.route(payload) { _ in }
             }
+            } // end: not routed to the Scratchpad
         } else {
             // liveChunks: the text was already pasted incrementally (no trailing space).
             // Type the single conditional trailing space now, honoring addTrailingSpace.
