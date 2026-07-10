@@ -109,7 +109,7 @@ enum TipsCatalog {
                     settingsPath: "Settings › Cleanup › Automatic Cleanup"),
                 Row(invocation: "click Revert (↺)",
                     effect: "Restores your exact raw words — in the post-dictation overlay or in History.",
-                    settingsPath: "Settings › Privacy › History"),
+                    settingsPath: "Settings › Privacy & Permissions › History"),
                 Row(invocation: "use a coding-agent CLI as the engine",
                     effect: "Reuse claude / codex to clean up each dictation with your own subscription.",
                     settingsPath: "Settings › Cleanup › AI Model → “Agent CLI (Claude / Codex)”"),

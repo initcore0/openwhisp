@@ -796,7 +796,11 @@ class AppState: ObservableObject {
     /// own LIVE-state suppression on top (never during arming/finalizing/agent/
     /// refine/lock) — this is only the "which hint, is the feature still on" call.
     var currentOverlayHint: TipsCatalog.Hint? {
-        HintRotation.hint(sessionCount: hintSessionCount, dismissed: dismissedHintIDs)
+        // `hintSessionCount` is bumped at session COMPLETION (recordStats), so during
+        // a live session it counts only the *previous* sessions. HintRotation expects
+        // a 1-based count including the current one — hence the +1 (the very first
+        // dictation is session 1, not 0, so it gets a hint too).
+        HintRotation.hint(sessionCount: hintSessionCount + 1, dismissed: dismissedHintIDs)
     }
 
     /// Permanently dismiss the given overlay hint so it never rotates in again.
