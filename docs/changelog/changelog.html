@@ -246,14 +246,14 @@
 <div class="wrap">
   <header>
     <p class="eyebrow">Shipped · July 2026</p>
-    <h1>Thirty-five ways OpenWhisp got<br><span class="accent">sharper, safer, and more yours.</span></h1>
+    <h1>Thirty-six ways OpenWhisp got<br><span class="accent">sharper, safer, and more yours.</span></h1>
     <p class="lede">A batch of new features, fixes, and under-the-hood hardening — all landed on main, all covered by tests, all on your machine. All twenty-two new features are live today: a floating Scratchpad to dictate into with no target app, quiet-dictation mode for whispering into your mic, opt-in on-device audio retention with one-click re-transcription and an auto-cleanup policy, a fully-remappable dictation trigger with a record-a-shortcut field, an AppleScript keystroke insert method and mouse-button dictation triggers, a local Usage Insights dashboard, opt-in screen-context awareness that biases transcription toward the names already on screen, batch file transcription with watch folders, hands-free (tap-to-lock) dictation, adjustable AI cleanup, voice editing, a self-learning dictionary, rich local formatting, spoken-filename @-mentions for code editors, agent-CLI cleanup, output targets that route a dictation to a file/Shortcut/webhook, first-class Modes you can invoke by name, a Rules engine that runs your own actions when a dictation finishes, and an openwhisp:// URL scheme so Raycast, Alfred, or any launcher can drive dictation.</p>
   </header>
 
   <div class="stats">
-    <div class="stat"><div class="n">35</div><div class="k">changes shipped</div></div>
+    <div class="stat"><div class="n">36</div><div class="k">changes shipped</div></div>
     <div class="stat"><div class="n">22<small> live</small></div><div class="k">new features</div></div>
-    <div class="stat"><div class="n">1361</div><div class="k">tests passing</div></div>
+    <div class="stat"><div class="n">1375</div><div class="k">tests passing</div></div>
     <div class="stat"><div class="n">100<small>%</small></div><div class="k">on-device</div></div>
   </div>
 
@@ -857,9 +857,14 @@
     <div class="sec-head">
       <span class="dot fix"></span>
       <h2>Fixes</h2>
-      <span class="count">7 shipped</span>
+      <span class="count">8 shipped</span>
     </div>
     <ul class="entries">
+      <li class="entry">
+        <h3>Cleanup can no longer silently translate your dictation</h3>
+        <p>Dictating in Russian (or any non-Latin script) with automatic AI cleanup on, a small cleanup model would sometimes translate your text to English — the overlay showed your Russian words but the pasted text came back in English. OpenWhisp now checks the cleaned text against what you dictated: if the cleanup dropped your writing system for Latin, it's treated as a bad translation and your original transcript is kept instead (the same fail-open path used when the LLM errors). The check is deliberately conservative — same-language cleanups, Latin-to-Latin, short phrases, and Russian prose mixed with English code or URLs all pass untouched — and it never runs when you actually asked to translate (Translate to English, Improve-translation mode, a spoken refine instruction, or an agent-bridge refine). The cleanup prompts were hardened too.</p>
+        <div class="receipts"><span class="tag pr">#157</span></div>
+      </li>
       <li class="entry">
         <h3>Silence no longer errors on one backend but not the other</h3>
         <p>Dictating nothing now quietly produces nothing on both whisper backends — no more stray error toast depending on which engine you'd picked in Advanced settings.</p>
