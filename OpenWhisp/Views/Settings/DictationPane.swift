@@ -10,9 +10,27 @@ struct DictationPane: View {
     var body: some View {
         Form {
             Section {
+                // Quick picks for the two built-in presets plus the recorded
+                // custom trigger; "Custom" is offered only once something is
+                // recorded (or already selected), so the row can't dead-end.
                 Picker("Trigger key", selection: $appState.triggerMode) {
                     Text("Fn (Globe)").tag("fn")
                     Text("Control + Space").tag("controlSpace")
+                    if appState.triggerMode == "custom" || appState.customTrigger.isBindable {
+                        Text("Custom: \(appState.customTrigger.displayName)").tag("custom")
+                    }
+                }
+
+                HotkeyCaptureField(
+                    current: appState.customTrigger,
+                    isActive: appState.triggerMode == "custom"
+                ) { keyCode, modifiers in
+                    appState.setCustomTrigger(keyCode: keyCode, modifiers: modifiers)
+                }
+
+                if appState.triggerMode == "custom",
+                   let conflict = appState.customTrigger.conflict(refineKey: RefineKey.from(id: appState.refineKey)) {
+                    SettingsCallout(.warning, Self.conflictMessage(conflict))
                 }
 
                 Picker("Activation style", selection: $appState.hotkeyMode) {
@@ -44,7 +62,7 @@ struct DictationPane: View {
                     } else {
                         SettingsFootnote("Hold to talk: dictate while the key is held. Double-tap it to lock the mic open hands-free without changing this setting.")
                     }
-                    SettingsFootnote("The Refine key is configured in Cleanup › Refine.")
+                    SettingsFootnote("Record any key or combo above to set your own trigger, or keep a quick pick. The Refine key is configured in Cleanup › Refine.")
                 }
             }
 
@@ -119,5 +137,17 @@ struct DictationPane: View {
 
     private func refreshDevices() {
         availableMics = AudioDevice.availableInputs()
+    }
+
+    /// User-facing warning for a custom-trigger conflict.
+    static func conflictMessage(_ conflict: DictationTrigger.Conflict) -> String {
+        switch conflict {
+        case .bareKey:
+            return "This is a single typing key with no modifier — it would fire every time you type it. Add a modifier (⌃ ⌥ ⌘) or pick a different key."
+        case .systemShortcut(let name):
+            return "This combo is already \(name). OpenWhisp would fight the system for it — pick another combo."
+        case .refineKey:
+            return "This clashes with your Refine key (Cleanup › Refine) — they'd react to the same press. Change one of them."
+        }
     }
 }

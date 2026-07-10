@@ -38,6 +38,11 @@ final class HotkeyMonitor: HotkeyControlling {
     /// it was a shortcut chord (⌃C, ⌃-click, …), not a refine request.
     private var refineTap = RefineTapRecognizer()
     var triggerMode: String = "controlSpace"
+    /// The user-recorded arbitrary trigger (MAK-17), consulted only when
+    /// `triggerMode == "custom"`. Its resolved down/up edges flow through the same
+    /// `apply()` → `ActivationInteraction` path as the presets, so a custom
+    /// trigger works identically in BOTH hold and toggle/lock activation styles.
+    var customTrigger: DictationTrigger?
     /// How activation behaves: "hold" (press-to-talk) or "toggle" (hands-free
     /// lock). Setting it rebuilds the interaction machine so a live mode change
     /// starts clean (never mid-gesture). A double-tap still reaches lock from
@@ -283,10 +288,10 @@ final class HotkeyMonitor: HotkeyControlling {
 
         let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
 
-        if triggerMode == "fn" {
-            handleFn(type: type, keyCode: keyCode, event: event)
-        } else {
-            handleControlSpace(type: type, keyCode: keyCode, event: event)
+        switch triggerMode {
+        case "fn":     handleFn(type: type, keyCode: keyCode, event: event)
+        case "custom": handleCustom(type: type, keyCode: keyCode, rawFlags: event.flags.rawValue)
+        default:       handleControlSpace(type: type, keyCode: keyCode, event: event)
         }
 
         // Refine key (a single selectable modifier) — track by its keycode.
@@ -332,10 +337,10 @@ final class HotkeyMonitor: HotkeyControlling {
             refineTap.otherInput()
         }
 
-        if triggerMode == "fn" {
-            handleFnEvent(event)
-        } else {
-            handleControlSpaceEvent(event)
+        switch triggerMode {
+        case "fn":     handleFnEvent(event)
+        case "custom": handleCustomEvent(event)
+        default:       handleControlSpaceEvent(event)
         }
 
         if event.type == .flagsChanged {
@@ -411,6 +416,65 @@ final class HotkeyMonitor: HotkeyControlling {
     /// keyDown is active, keyUp is inactive.
     private func fnKeyGesture(isKeyDown: Bool) -> HotkeyGesture {
         HotkeyGesture.resolve(isActive: isKeyDown, wasPressed: isPressed)
+    }
+
+    // MARK: - Custom trigger (MAK-17)
+
+    /// CGEvent path for an arbitrary recorded trigger. Both the CG and NS paths
+    /// funnel through `applyCustom` with the raw (device-independent) modifier
+    /// flags — `CGEventFlags` and `NSEvent.ModifierFlags` share that layout.
+    private func handleCustom(type: CGEventType, keyCode: Int64, rawFlags: UInt64) {
+        applyCustom(isKeyDown: type == .keyDown, isKeyUp: type == .keyUp,
+                    isFlagsChanged: type == .flagsChanged, keyCode: keyCode, rawFlags: rawFlags)
+    }
+
+    private func handleCustomEvent(_ event: NSEvent) {
+        applyCustom(isKeyDown: event.type == .keyDown, isKeyUp: event.type == .keyUp,
+                    isFlagsChanged: event.type == .flagsChanged,
+                    keyCode: Int64(event.keyCode), rawFlags: UInt64(event.modifierFlags.rawValue))
+    }
+
+    /// Resolve a down/up edge for the custom trigger and feed it through the same
+    /// `apply()` interaction path the presets use (so hold + toggle both work).
+    ///
+    /// - A trigger WITH a primary key: active on that key's keyDown while every
+    ///   required modifier is held; released on the key's keyUp, or as soon as a
+    ///   required modifier drops (flagsChanged) while it was pressed.
+    /// - A BARE-MODIFIER trigger (no primary key): active whenever the full
+    ///   modifier set is held, tracked purely on flagsChanged — like the Fn preset
+    ///   but for an arbitrary modifier chord.
+    private func applyCustom(isKeyDown: Bool, isKeyUp: Bool, isFlagsChanged: Bool,
+                             keyCode: Int64, rawFlags: UInt64) {
+        guard let trigger = customTrigger, trigger.isBindable else { return }
+        let modsHeld = Self.modifiersSatisfied(trigger.modifiers, rawFlags: rawFlags)
+
+        if let target = trigger.keyCode {
+            if isKeyDown, keyCode == target {
+                apply(HotkeyGesture.resolve(isActive: modsHeld, wasPressed: isPressed))
+            } else if isKeyUp, keyCode == target {
+                apply(HotkeyGesture.resolve(isActive: false, wasPressed: isPressed))
+            } else if isFlagsChanged, isPressed, !modsHeld {
+                // A required modifier was released while the key is still down —
+                // end the session so a stuck combo can't hang.
+                apply(HotkeyGesture.resolve(isActive: false, wasPressed: isPressed))
+            }
+        } else if isFlagsChanged {
+            // Bare-modifier trigger: the chord being fully held IS the gesture.
+            apply(HotkeyGesture.resolve(isActive: modsHeld, wasPressed: isPressed))
+        }
+    }
+
+    /// Whether every modifier in `mods` is currently held, per the raw
+    /// device-INDEPENDENT flag bits (custom triggers are side-agnostic, so the
+    /// device-independent masks are exactly the right granularity).
+    static func modifiersSatisfied(_ mods: TriggerModifiers, rawFlags: UInt64) -> Bool {
+        func has(_ mask: CGEventFlags) -> Bool { rawFlags & mask.rawValue != 0 }
+        if mods.contains(.control),  !has(.maskControl)      { return false }
+        if mods.contains(.option),   !has(.maskAlternate)    { return false }
+        if mods.contains(.shift),    !has(.maskShift)        { return false }
+        if mods.contains(.command),  !has(.maskCommand)      { return false }
+        if mods.contains(.function), !has(.maskSecondaryFn)  { return false }
+        return true
     }
 
     // C-compatible callback for the event tap
