@@ -71,6 +71,13 @@ class AppState: ObservableObject {
     @Published var hotkeyMode: String {
         didSet {
             UserDefaults.standard.set(hotkeyMode, forKey: "hotkeyMode")
+            // Setting the monitor's mode rebuilds its interaction machine to idle,
+            // so a hands-free session locked open under the OLD mode could no
+            // longer be stopped by a tap (the tap would read as a fresh start).
+            // Deliver it now instead of stranding it.
+            if oldValue != hotkeyMode, dictationLocked {
+                stopDictation()
+            }
             hotkeyMonitor?.hotkeyMode = hotkeyMode
         }
     }
@@ -1670,10 +1677,6 @@ class AppState: ObservableObject {
     ///   stays open with the trigger released, shows the lock affordance, and arms
     ///   the silence safety auto-stop. Default `false` (ordinary press-to-talk).
     func startDictation(locked: Bool = false) {
-        // Remember the activation style for the whole session so the overlay shows
-        // the lock affordance and the safety auto-stop is armed once capture is
-        // live (see armLockSafetyIfNeeded, called from the recorder .recording hop).
-        dictationLocked = locked
         // The dictation key is now ONLY dictation — refine has its own dedicated
         // chord (see startRefine). So a plain press always starts a normal
         // dictation and pastes instantly (no re-press disambiguation, no deferral).
@@ -1705,7 +1708,14 @@ class AppState: ObservableObject {
             return
         }
 
-        guard !isRecording, !isTranscribing else { return }
+        guard !isRecording, !isTranscribing else {
+            // The press was refused — no session starts. Return the interaction
+            // machine to idle so a locked "start" that never happened can't leave
+            // it lockedOpen (the next tap would then read as a stop for a session
+            // that doesn't exist).
+            hotkeyMonitor?.resetActivation()
+            return
+        }
         // Privacy guard: never dictate into a focused password/secure field. The
         // speech would otherwise be transcribed, typed in, copied to the clipboard
         // and saved to history. Refuse at the source before any session begins.
@@ -1716,6 +1726,11 @@ class AppState: ObservableObject {
             refuseDictationIntoSecureField()
             return
         }
+        // Remember the activation style for the whole session so the overlay shows
+        // the lock affordance and the silence safety auto-stop arms once capture
+        // is live. Set only AFTER every refusal guard above — a refused press must
+        // not overwrite the flag (or leave a phantom lock behind).
+        dictationLocked = locked
         // Apply a per-app profile (if any) BEFORE routing, so an override of
         // outputMode/language/AI-cleanup affects the whole session including the
         // streaming-vs-recording decision below. Restored when the session ends.
@@ -3940,7 +3955,13 @@ class AppState: ObservableObject {
         // a lock is still open, so the next tap would stop-instead-of-start.
         dictationLocked = false
         lockSafetyDetector = nil
-        hotkeyMonitor?.resetActivation()
+        // …but NOT while a preempt-replacement start is queued: there the machine's
+        // current state (mid-press or locked open) describes the user's NEW session,
+        // and wiping it would swallow the upcoming release — in hold mode the
+        // preempt-started mic would then never stop on release.
+        if !pendingPreemptStart {
+            hotkeyMonitor?.resetActivation()
+        }
         agentDictateTimeoutTask?.cancel()
         agentDictateTimeoutTask = nil
         elapsedTimer?.invalidate()

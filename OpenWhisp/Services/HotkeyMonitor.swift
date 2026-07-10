@@ -143,6 +143,11 @@ final class HotkeyMonitor: HotkeyControlling {
     }
 
     func resetActivation() {
+        // Only a machine that still thinks a session is live needs resetting. An
+        // idle machine may be holding the last-tap timestamp that makes the NEXT
+        // press read as a double-tap — a session finalizing quickly between the
+        // two taps must not erase it.
+        guard activation.isActive else { return }
         activation.reset()
         isPressed = false
     }
