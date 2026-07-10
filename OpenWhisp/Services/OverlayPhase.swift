@@ -54,3 +54,116 @@ enum OverlayPhase: Equatable {
         return .listening
     }
 }
+
+/// Pure decision for the post-dictation overlay's "revert to original" affordance
+/// (MAK-35 follow-up). The History list already offers a per-entry revert; this
+/// brings the SAME one-click restore to the overlay the instant a dictation lands,
+/// so the user can undo an AI-cleanup change without opening Settings.
+///
+/// Foundation-only so it lives in OpenWhispCore and is unit-tested independently of
+/// SwiftUI/AppKit — the overlay view just maps this decision to a control.
+enum OverlayRevert {
+    /// Whether the overlay should show the revert control right now, and what the
+    /// raw pre-cleanup words are.
+    ///
+    /// The affordance is shown only when the most-recent history entry actually has
+    /// something to revert to (`revertTarget != nil` — the AI cleanup changed the
+    /// words this session) AND the overlay is in a settled post-dictation state, not
+    /// mid-session. Offering "revert" while still capturing/finalizing would be
+    /// meaningless (the entry isn't recorded yet) and visually noisy.
+    ///
+    /// - Parameters:
+    ///   - mostRecentRevertTarget: `history.first?.revertTarget` — the raw words the
+    ///     newest entry can be restored to, or nil when nothing changed / no history.
+    ///   - isRecording: capture is live.
+    ///   - isTranscribing: the session is finalizing/polishing.
+    ///   - isArming: a session has begun but capture isn't live yet.
+    ///   - refineArmed: a refine (spoken-instruction rewrite) is in progress.
+    /// - Returns: the raw target to restore when the control should be shown; nil to
+    ///   hide it.
+    static func target(
+        mostRecentRevertTarget: String?,
+        isRecording: Bool,
+        isTranscribing: Bool,
+        isArming: Bool,
+        refineArmed: Bool
+    ) -> String? {
+        guard let raw = mostRecentRevertTarget, !raw.isEmpty else { return nil }
+        // Only in a settled, post-dictation overlay — never while a session (or a
+        // refine) is still live. A new dictation supersedes the previous revert.
+        guard !isRecording, !isTranscribing, !isArming, !refineArmed else { return nil }
+        return raw
+    }
+}
+
+/// Pure decision for an in-place replacement of the just-inserted dictation with the
+/// user's raw pre-cleanup words (MAK-35 follow-up). Right after a dictation the caret
+/// sits immediately after the inserted text, so replacing that text in-place is the
+/// higher-value revert (the History revert only copies to the clipboard). But it is
+/// only SAFE when the focused field still ends with exactly what we inserted — if the
+/// user moved the caret, clicked elsewhere, or typed since, a blind replace could
+/// clobber their content. This helper makes that safety call without touching AX, so
+/// it's fully unit-tested; the caller (TextInserter) only performs the field mutation.
+enum ReplaceLastInsertion {
+    /// Decide the exact new value the focused field should hold to swap the inserted
+    /// text for `raw`, or nil when an in-place replace is unsafe/unnecessary (the
+    /// caller then leaves the field alone and relies on the clipboard-copy fallback).
+    ///
+    /// Safe iff the current value ends with the text we inserted (allowing for a
+    /// single trailing space the insert may have appended) — then and only then do we
+    /// know precisely which characters are "ours" to replace, and everything before
+    /// them is the user's untouched content.
+    ///
+    /// - Parameters:
+    ///   - currentValue: the focused element's whole current value (nil = unreadable).
+    ///   - inserted: the text this session inserted (before any trailing space).
+    ///   - raw: the raw pre-cleanup words to restore in its place.
+    /// - Returns: the full replacement value for the field, or nil to skip the replace.
+    static func newValue(currentValue: String?, inserted: String, raw: String) -> String? {
+        guard let currentValue else { return nil }
+        let insertedTrimmed = inserted.trimmingCharacters(in: .whitespacesAndNewlines)
+        let rawTrimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Nothing to swap (empty inserted) or a no-op swap (raw == inserted): skip.
+        guard !insertedTrimmed.isEmpty, insertedTrimmed != rawTrimmed else { return nil }
+
+        // The field must END with our inserted text (optionally followed by the single
+        // trailing space the insert appends) — otherwise we can't identify our slice
+        // and must not touch the field. The comparison folds typography (smart quotes,
+        // dashes, …) so a field that substituted those on insert still matches — the
+        // same normalization the AX insert verifier uses.
+        let candidates = [insertedTrimmed + " ", insertedTrimmed]
+        for tail in candidates {
+            // Walk back through the REAL current string, growing a suffix until its
+            // folded form equals the folded tail. Matching on folded strings but
+            // slicing the real one keeps the user's untouched prefix byte-exact even
+            // when the app rendered our text with different glyphs.
+            guard let prefix = realPrefixDroppingFoldedSuffix(from: currentValue, foldedTail: InsertVerifier.foldTypography(tail))
+            else { continue }
+            let trailer = tail.hasSuffix(" ") ? " " : ""
+            return prefix + rawTrimmed + trailer
+        }
+        return nil
+    }
+
+    /// Return the real (byte-exact) prefix of `value` left after dropping a suffix
+    /// whose typography-folded form equals `foldedTail`, or nil when no such suffix
+    /// exists. Grows the candidate suffix one real character at a time so a glyph the
+    /// app substituted (e.g. a curly apostrophe for a straight one, or `…` for `...`)
+    /// still matches while the returned prefix stays exactly as the field holds it.
+    private static func realPrefixDroppingFoldedSuffix(from value: String, foldedTail: String) -> String? {
+        guard !foldedTail.isEmpty else { return nil }
+        var suffix = ""
+        var idx = value.endIndex
+        // Bound the walk to a few chars beyond the folded length — folding only ever
+        // shrinks or keeps length except ellipsis (1→3), so the real suffix can be at
+        // most `foldedTail.count` characters.
+        while idx > value.startIndex, suffix.count <= foldedTail.count {
+            idx = value.index(before: idx)
+            suffix = String(value[idx]) + suffix
+            if InsertVerifier.foldTypography(suffix) == foldedTail {
+                return String(value[value.startIndex..<idx])
+            }
+        }
+        return nil
+    }
+}

@@ -7,11 +7,11 @@
       "id": "2026-07",
       "title": "July 2026",
       "date": "2026-07-09",
-      "summary": "A batch of new features, fixes, and under-the-hood hardening — all landed on main, all covered by tests, all on your machine. All eleven new features are live in Settings today: hands-free (tap-to-lock) dictation, adjustable AI cleanup, voice editing, a self-learning dictionary, rich local formatting, spoken-filename @-mentions for code editors, agent-CLI cleanup, and output targets that route a dictation to a file, a macOS Shortcut, or a webhook.",
+      "summary": "A batch of new features, fixes, and under-the-hood hardening — all landed on main, all covered by tests, all on your machine. All twelve new features are live today: hands-free (tap-to-lock) dictation, adjustable AI cleanup, voice editing, a self-learning dictionary, rich local formatting, spoken-filename @-mentions for code editors, agent-CLI cleanup, output targets that route a dictation to a file/Shortcut/webhook, and an openwhisp:// URL scheme so Raycast, Alfred, or any launcher can drive dictation.",
       "stats": {
-        "changesShipped": 20,
-        "newFeatures": 11,
-        "testsPassing": 999,
+        "changesShipped": 22,
+        "newFeatures": 12,
+        "testsPassing": 1048,
         "onDevicePercent": 100,
         "newFeaturesLive": 11,
         "newFeaturesCorePending": 0
@@ -38,6 +38,28 @@
               "Optional safety net: “Auto-stop after long silence” (on by default) ends a locked session after a long quiet stretch so a forgotten one can't record forever."
             ],
             "note": "Live in Settings today. Hold-to-talk remains the default and is unchanged. The double-tap gesture reaches lock even without changing the setting; a normal pause to think won't trip the silence safety auto-stop (its hangover is deliberately long)."
+          }
+        },
+        {
+          "category": "feature",
+          "headline": "Trigger OpenWhisp from Raycast, Alfred, or any launcher — the openwhisp:// URL scheme",
+          "body": "OpenWhisp now answers an openwhisp:// URL, so any launcher or script can start a dictation, refine your last result, or paste it — no CLI needed. Point Raycast or Alfred at open \"openwhisp://record\" and bind it to a key. The scheme exposes only a small, validated allow-list of safe verbs — never a shell string or an arbitrary file — and rejects anything malformed as a whole.",
+          "tickets": [
+            "MAK-37"
+          ],
+          "prs": [
+            141
+          ],
+          "howTo": {
+            "availability": "live",
+            "summary": "Hand OpenWhisp a URL like openwhisp://record from Raycast, Alfred, Shortcuts, or a script; ready-made Raycast/Alfred recipes ship in integrations/.",
+            "steps": [
+              "Make sure OpenWhisp is installed (if it isn't running, macOS launches it and delivers the URL on start).",
+              "From any launcher or a terminal: open \"openwhisp://record\" to start/stop dictation, open \"openwhisp://paste-last-result\" to paste the last result, or open \"openwhisp://refine?instruction=make%20it%20formal\" to rewrite the last result onto your clipboard.",
+              "Chain verbs in one URL — open \"openwhisp://?switch-mode=email&record\" — they run in order, all-or-nothing.",
+              "For a one-key setup, add the Raycast Script Commands or the Alfred recipe from the integrations/ folder and bind them to hotkeys."
+            ],
+            "note": "record, refine, and paste-last-result work today. switch-mode / activate-mode are parsed and validated now but not yet wired to a runtime action — OpenWhisp's modes are per-app profiles keyed by bundle ID today, with no named-mode registry to switch by key; those URLs are accepted and logged as pending rather than doing something misleading. See integrations/README.md for the full grammar."
           }
         },
         {
@@ -131,7 +153,7 @@
               "Dictate as usual — the level you chose is applied automatically to each final transcript. None skips the AI entirely.",
               "In Settings › Privacy › History, click the revert (↺) button next to any entry the AI reshaped to swap the cleaned text back to your raw words — the originals are copied to your clipboard."
             ],
-            "note": "Live now. The dial is the single source of truth for AI cleanup — the old on/off “Improve every dictation” toggle (tray + onboarding) now just reflects it. Higher levels trade literal fidelity for polish; the revert button appears only when the AI actually changed your words. Revert currently covers the standard preview and insert-at-end dictation modes (not the live-streaming per-chunk mode, which pastes as it types) and lives in History; a one-tap revert in the post-dictation overlay is a small follow-up."
+            "note": "Live now. The dial is the single source of truth for AI cleanup — the old on/off “Improve every dictation” toggle (tray + onboarding) now just reflects it. Higher levels trade literal fidelity for polish; the revert button appears only when the AI actually changed your words. Revert currently covers the standard preview and insert-at-end dictation modes (not the live-streaming per-chunk mode, which pastes as it types). It lives in History and, right after a dictation lands, in the post-dictation overlay — a one-tap “Revert to original” pill that swaps the cleaned text back to your raw words in place when it safely can, and otherwise leaves them on the clipboard for ⌘V."
           }
         },
         {
@@ -347,6 +369,17 @@
           ],
           "prs": [
             114
+          ]
+        },
+        {
+          "category": "fix",
+          "headline": "Onboarding catches a dead hotkey before you test it",
+          "body": "The setup flow now does a live Input Monitoring check on the hotkey step. If OpenWhisp can't detect key presses, you get an inline “Open System Settings → Input Monitoring” fix that re-checks itself — so you never reach the “try it” step with a push-to-talk key that silently can't fire.",
+          "tickets": [
+            "MAK-24"
+          ],
+          "prs": [
+            140
           ]
         },
         {

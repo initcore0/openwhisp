@@ -5,6 +5,7 @@ import UserNotifications
 import Cocoa
 import ApplicationServices
 import Speech
+import IOKit.hid
 
 // MARK: - App State
 
@@ -719,6 +720,12 @@ class AppState: ObservableObject {
     /// cue instead of the green "speak now" cue. See `OverlayPhase`.
     @Published var isArming = false
     @Published var lastTranscription: String?
+    /// The text this session actually inserted into the FOCUSED app (not a sink), kept
+    /// so the overlay "revert to original" (MAK-35) can attempt an in-place swap of
+    /// exactly those words for the raw pre-cleanup transcript. Set only on the
+    /// focused-app insert path; nil when the last output went to a file/webhook/shortcut
+    /// sink or nothing was inserted. Cleared once reverted so a swap can't run twice.
+    private var lastInsertedIntoFocusedApp: String?
     @Published var streamingText: String = ""
     @Published var statusMessage: String = "Ready"
     @Published var error: String?
@@ -902,6 +909,12 @@ class AppState: ObservableObject {
     private var refineArmGeneration = 0
     /// How long an idle refine arm stays live before expiring.
     private static let idleRefineArmTimeout: TimeInterval = 10
+
+    /// How long the post-dictation overlay lingers when AI cleanup changed the words
+    /// and the "revert to original" control is offered — long enough to read the
+    /// result and click revert, short enough not to overstay (MAK-35). Well under the
+    /// idle-refine window so it never collides with a follow-up refine arm.
+    private static let revertOverlayHold: TimeInterval = 6
 
     /// Set briefly when an insert couldn't be confirmed and the text was left on the
     /// clipboard instead — drives a "copied, press ⌘V" cue in the overlay so the
@@ -2895,6 +2908,11 @@ class AppState: ObservableObject {
         acceptingLiveChunks = streaming
         currentSessionText = ""
         streamingText = ""
+        // Reset the overlay-revert tracker so it's only ever set when THIS session
+        // actually inserts into the focused app — a session that ends empty, in a
+        // secure field, or with an error must not leave a prior session's text as a
+        // revert target (MAK-35). The insert paths set it when they place text.
+        lastInsertedIntoFocusedApp = nil
         openAIEnhancementEnabledForSession = openAIEnhancementEnabled
         isLiveChunkSession = streaming
         // Preview mode captures via the chunk pipeline but defers pasting.
@@ -3382,6 +3400,11 @@ class AppState: ObservableObject {
                 self.syncRefineUI()
                 self.statusMessage = "Ready"
                 self.refineDebug("idle refine arm expired")
+                // The delayed post-dictation hide skips while refineArmed (the arm
+                // owns the overlay) — so when an idle arm expires with the overlay
+                // still up (e.g. armed during the lingering revert hold, MAK-35),
+                // dismiss it here or it stays orphaned until the next session.
+                self.dismissOverlayIfSettled(after: 0)
             }
         }
     }
@@ -3523,6 +3546,9 @@ class AppState: ObservableObject {
         // write — but still record history so history.list and the tray reflect it.
         // The result is delivered via onSessionEnd in finishSessionUI().
         if suppressOutput {
+            // Agent sessions return the transcript to the caller — nothing is inserted
+            // into a focused field, so no overlay in-place revert applies (the tracker
+            // was reset in beginSession and no insert path below runs).
             streamingText = text
             sessionOutcome = .completed(text: text)
             // Agent sessions never enhance (text == originalText), so rawText resolves
@@ -3561,6 +3587,9 @@ class AppState: ObservableObject {
             // means the common case is byte-for-byte unchanged — no regression.
             let effectiveKind = OutputTargetResolver.effectiveKind(outputTargetSettings)
             if effectiveKind == .focusedApp {
+                // The whole final text landed in the focused field — remember it so the
+                // overlay revert can swap it in place for the raw words (MAK-35).
+                lastInsertedIntoFocusedApp = text
                 textOutput.insert(
                     insertion,
                     mode: currentInsertionMode,
@@ -3585,6 +3614,10 @@ class AppState: ObservableObject {
                 // router fails open to that same focused-app insert — matching the
                 // never-drop-text guarantee. The sink receives the un-spaced text; a
                 // trailing space belongs to the focused-app insert path only.
+                // The text went to a sink, not the focused field — an in-place overlay
+                // revert doesn't apply (the tracker stays nil from beginSession; router
+                // fail-open to a focused-app insert is best-effort and the clipboard-copy
+                // revert still covers it).
                 let router = buildOutputRouter(effectiveKind: effectiveKind, focusedAppInsertion: insertion)
                 let payload = OutputPayload(
                     text: text,
@@ -3613,6 +3646,9 @@ class AppState: ObservableObject {
             // Live-chunk sessions inserted incrementally via AX/paste; the field now
             // holds the whole dictation, so watch for a type-over correction too.
             armCorrectionWatcherIfEligible(finalText: text)
+            // The whole dictation is in the focused field — the overlay revert can
+            // swap it for the raw words in place (MAK-35).
+            lastInsertedIntoFocusedApp = text
         }
 
         // The actually-inserted text is the canonical result — update lastTranscription
@@ -3632,7 +3668,13 @@ class AppState: ObservableObject {
         statusMessage = finalWasEnhanced
             ? "Enhanced: \(text.prefix(50))..."
             : "Done: \(originalText.prefix(50))..."
-        finishSessionUI(delay: 0.8)
+
+        // Keep the overlay up longer when AI cleanup changed the words this session, so
+        // the "revert to original" control (shown while `history.first.revertTarget !=
+        // nil`) is actually clickable before the overlay fades (MAK-35). recordHistory
+        // ran above, so history.first reflects THIS dictation.
+        let revertAvailable = history.first?.revertTarget != nil
+        finishSessionUI(delay: revertAvailable ? Self.revertOverlayHold : 0.8)
     }
 
     // MARK: - Output target routing (MAK-11..14)
@@ -3721,8 +3763,12 @@ class AppState: ObservableObject {
             guard self.clipboardFallbackToken == token else { return }
             self.clipboardFallbackActive = false
             // Don't hide a NEW session's overlay while it's still arming
-            // (isRecording flips true only after the async grant + engine start).
-            if !self.isRecording && !self.isTranscribing && !self.sessionActive && !self.isArming {
+            // (isRecording flips true only after the async grant + engine start), and
+            // keep it up while a "revert to original" is still offered so that
+            // affordance stays reachable (MAK-35) — the revert flow dismisses it.
+            let revertOffered = self.history.first?.revertTarget != nil
+            if !self.isRecording && !self.isTranscribing && !self.sessionActive
+                && !self.isArming && !revertOffered {
                 self.hideOverlayNow()
             }
         }
@@ -3979,8 +4025,12 @@ class AppState: ObservableObject {
                 try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
                 // Also check sessionActive/isArming: a new session started during
                 // the delay is "arming" (isRecording still false) and its overlay
-                // must not be hidden by this stale task.
-                if !self.isRecording && !self.isTranscribing && !self.sessionActive && !self.isArming {
+                // must not be hidden by this stale task. Likewise leave the overlay up
+                // if a refine was armed on it or a clipboard-fallback cue is showing —
+                // both actively own the overlay and dismiss it themselves. (The longer
+                // hold used when a revert is offered widens the window these can occur.)
+                if !self.isRecording && !self.isTranscribing && !self.sessionActive
+                    && !self.isArming && !self.refineArmed && !self.clipboardFallbackActive {
                     self.hideOverlayNow()
                 }
             }
@@ -4017,6 +4067,19 @@ class AppState: ObservableObject {
 
     var accessibilityPermissionLabel: String {
         AXIsProcessTrusted() ? "Granted" : "Needs permission"
+    }
+
+    /// LIVE Input-Monitoring authorization, read on demand via the IOKit HID
+    /// preflight (`IOHIDCheckAccess` for ListenEvent). Unlike `inputMonitoringGranted`
+    /// — which is only *inferred* after the hotkey CGEventTap has been attempted —
+    /// this can be queried before any hotkey fires, so onboarding can tell the user
+    /// their push-to-talk key is dead BEFORE the "try it" step (MAK-24).
+    var liveInputMonitoringStatus: OnboardingHotkeyGate.InputMonitoringStatus {
+        switch IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) {
+        case kIOHIDAccessTypeGranted: return .granted
+        case kIOHIDAccessTypeDenied:  return .denied
+        default:                      return .unknown // includes kIOHIDAccessTypeUnknown
+        }
     }
 
     var runningBundlePath: String {
@@ -4386,6 +4449,78 @@ class AppState: ObservableObject {
         // reverting a history row must not repoint those at the reverted words.
         textOutput.setClipboard(raw)
         return raw
+    }
+
+    /// MAK-35 (overlay): one-click "revert to original" surfaced in the post-dictation
+    /// overlay, so the user can restore their raw pre-AI-cleanup words the instant a
+    /// dictation lands — without opening Settings › Privacy.
+    ///
+    /// Reverts the MOST-RECENT history entry via `revertHistoryEntry` (which swaps the
+    /// stored text back to the raw words, copies them to the clipboard, and hides the
+    /// affordance so it can't run twice). Because the overlay fires right after the
+    /// paste, it ALSO attempts the higher-value action the History revert can't: an
+    /// in-place swap of the just-inserted text for the raw words in the focused field.
+    /// That swap is best-effort and self-gating (it only touches the field when it
+    /// still ends with exactly what we inserted); on any miss the clipboard copy from
+    /// `revertHistoryEntry` remains the fallback (⌘V restores the originals) — with the
+    /// ⌘V cue shown. On SUCCESS the clipboard is put back to what it held before, since
+    /// the field already carries the raw words and the copy was unnecessary.
+    ///
+    /// No-op when the newest entry has nothing to revert (`revertTarget == nil`).
+    /// Returns the raw text when a revert happened, else nil.
+    @discardableResult
+    func revertLastDictation() -> String? {
+        guard let entry = history.first, entry.revertTarget != nil else { return nil }
+
+        // Cancel the type-over correction watcher armed at insert BEFORE mutating the
+        // field: the in-place swap would otherwise look like a user correction and the
+        // learner would propose an inverted (cleaned→raw) dictionary rule (MAK-41).
+        correctionWatcher.cancel()
+
+        // Snapshot the clipboard so a successful in-place swap can restore it — the raw
+        // words only need to live on the clipboard when the swap couldn't place them.
+        let clipboardBefore = NSPasteboard.general.string(forType: .string)
+        guard let raw = revertHistoryEntry(entry) else { return nil }
+
+        // Try to replace the words already sitting in the focused field. Consume the
+        // tracker first so a second tap (or a mis-fire) can't run the swap again — the
+        // history entry is already reverted, and the raw words are on the clipboard.
+        if let inserted = lastInsertedIntoFocusedApp {
+            lastInsertedIntoFocusedApp = nil
+            textOutput.replaceLastInsertion(inserted: inserted, raw: raw) { [weak self] replaced in
+                guard let self else { return }
+                if replaced {
+                    // The field now holds the raw words — the clipboard copy was
+                    // unnecessary, so restore what the user had (never clobber it).
+                    if let clipboardBefore { self.textOutput.setClipboard(clipboardBefore) }
+                    self.dismissOverlayIfSettled(after: 0.9)
+                } else {
+                    // The in-place swap didn't take (user moved focus, non-AX field, …)
+                    // — the raw words are on the clipboard from revertHistoryEntry, so
+                    // surface the same "press ⌘V" cue the insert-fallback path uses (it
+                    // owns the overlay's lifetime from here).
+                    self.showClipboardFallbackNotice()
+                }
+            }
+        } else {
+            // No in-place target (last output went to a sink, or nothing was inserted):
+            // the raw words are on the clipboard; leave the ⌘V cue and let it dismiss.
+            showClipboardFallbackNotice()
+        }
+        return raw
+    }
+
+    /// Hide the overlay after `delay`, but only if it's still settled (no session
+    /// started, no refine armed, no clipboard-fallback cue owning it). Used by the
+    /// overlay revert so the lingering post-dictation overlay dismisses once the revert
+    /// has done its job, without fighting the clipboard-fallback notice's own lifetime.
+    private func dismissOverlayIfSettled(after delay: TimeInterval) {
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            guard !self.isRecording, !self.isTranscribing, !self.sessionActive,
+                  !self.isArming, !self.refineArmed, !self.clipboardFallbackActive else { return }
+            self.hideOverlayNow()
+        }
     }
 
     // MARK: - Config import / export

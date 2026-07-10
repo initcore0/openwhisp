@@ -69,6 +69,91 @@ final class TextInserter: TextOutput {
         }
     }
 
+    /// Overlay "revert to original" (MAK-35): swap the text we just inserted for the
+    /// raw pre-cleanup words, IN PLACE, without touching the clipboard. Runs off the
+    /// main thread (FIFO behind any late chunk paste) and reports on the main thread
+    /// whether the swap was actually performed. The whole operation is gated on the
+    /// pure `ReplaceLastInsertion` decision: it only mutates the field when the focused
+    /// element's readable value still ends with exactly our inserted text (so we never
+    /// clobber the user's own edits). Any failure — no AX, no readable value, the field
+    /// changed, the write not settable, or the read-back doesn't reflect the swap —
+    /// reports `false`, and the caller keeps the raw words on the clipboard.
+    func replaceLastInsertion(inserted: String, raw: String,
+                              completion: @escaping (Bool) -> Void) {
+        queue.async {
+            let ok = Self.replaceViaAccessibility(inserted: inserted, raw: raw)
+            DispatchQueue.main.async { completion(ok) }
+        }
+    }
+
+    /// The AX side of `replaceLastInsertion`. Reads the focused element's whole value,
+    /// asks `ReplaceLastInsertion` for the safe new value, and writes it back over a
+    /// full-field selection — verifying the read-back reflects the swap. Returns false
+    /// on any precondition miss so the caller falls back to the clipboard copy.
+    private static func replaceViaAccessibility(inserted: String, raw: String) -> Bool {
+        guard AXIsProcessTrusted(), let element = focusedElement() else { return false }
+
+        // We rewrite the whole field, so both the value AND selected-text must be
+        // settable (selecting the range then replacing the selection).
+        guard isAttributeSettable(element, kAXValueAttribute),
+              isAttributeSettable(element, kAXSelectedTextAttribute) else { return false }
+
+        // Read the field's current value and let the pure decision return the exact
+        // replacement — or nil if it's unsafe (field no longer ends with our text).
+        let current = copyStringAttribute(element, kAXValueAttribute)
+        guard let newValue = ReplaceLastInsertion.newValue(
+            currentValue: current, inserted: inserted, raw: raw
+        ) else { return false }
+
+        // Select the entire field, then replace the selection with the new value —
+        // the same "set selected text" primitive the insert path uses, applied to a
+        // full-range selection so it swaps the whole value atomically.
+        let length = (current as NSString?)?.length ?? 0
+        var range = CFRange(location: 0, length: length)
+        guard let rangeValue = AXValueCreate(.cfRange, &range) else { return false }
+        let selErr = AXUIElementSetAttributeValue(
+            element, kAXSelectedTextRangeAttribute as CFString, rangeValue
+        )
+        guard selErr == .success else { return false }
+
+        let setErr = AXUIElementSetAttributeValue(
+            element, kAXSelectedTextAttribute as CFString, newValue as CFString
+        )
+        guard setErr == .success else { return false }
+
+        // Verify the swap took using the SAME normalized read-back the insert path uses
+        // (InsertVerifier) rather than exact equality — so a field that re-renders the
+        // value with smart quotes/dashes still verifies as success instead of nagging
+        // the user to ⌘V-paste over an already-correct field. `before` is `current` (the
+        // pre-swap value); a readable, changed value that now contains our new text (or
+        // whose change we can't contradict) counts as done.
+        let readBack = copyStringAttribute(element, kAXValueAttribute)
+        switch InsertVerifier.axInsertReflected(expected: newValue, before: current, current: readBack) {
+        case .some(false): return false   // contradicted → clipboard fallback
+        default:           return true    // verified, or unverifiable (trust setErr)
+        }
+    }
+
+    /// True when `attribute` is settable on `element` (AX success + settable flag).
+    private static func isAttributeSettable(_ element: AXUIElement, _ attribute: String) -> Bool {
+        var settable: DarwinBoolean = false
+        let err = AXUIElementIsAttributeSettable(element, attribute as CFString, &settable)
+        return err == .success && settable.boolValue
+    }
+
+    /// The system-wide focused UI element, or nil when AX can't resolve one. Shared by
+    /// the AX insert and the AX in-place replace so the focus lookup lives in one place.
+    private static func focusedElement() -> AXUIElement? {
+        let systemWide = AXUIElementCreateSystemWide()
+        var focused: CFTypeRef?
+        let err = AXUIElementCopyAttributeValue(
+            systemWide, kAXFocusedUIElementAttribute as CFString, &focused
+        )
+        guard err == .success, let focusedRef = focused else { return nil }
+        // CFTypeRef from AX is an AXUIElement; the cast is safe here.
+        return (focusedRef as! AXUIElement)
+    }
+
     // MARK: - Accessibility insertion
 
     /// Attempt to insert `text` at the caret of the focused element via AX, and
@@ -77,28 +162,11 @@ final class TextInserter: TextOutput {
     /// re-read value contradicts it (the "AX silently lied" case in some Electron /
     /// web views) — so the caller falls back to paste rather than dropping text.
     private static func insertViaAccessibility(_ text: String) -> Bool {
-        guard AXIsProcessTrusted() else { return false }
-
-        let systemWide = AXUIElementCreateSystemWide()
-        var focused: CFTypeRef?
-        let focusErr = AXUIElementCopyAttributeValue(
-            systemWide,
-            kAXFocusedUIElementAttribute as CFString,
-            &focused
-        )
-        guard focusErr == .success, let focusedRef = focused else { return false }
-        // CFTypeRef from AX is an AXUIElement; the cast is safe here.
-        let element = focusedRef as! AXUIElement
+        guard AXIsProcessTrusted(), let element = focusedElement() else { return false }
 
         // The element must expose a settable selected-text attribute for this to
         // work as an "insert at caret / replace selection" operation.
-        var settable: DarwinBoolean = false
-        let settableErr = AXUIElementIsAttributeSettable(
-            element,
-            kAXSelectedTextAttribute as CFString,
-            &settable
-        )
-        guard settableErr == .success, settable.boolValue else { return false }
+        guard isAttributeSettable(element, kAXSelectedTextAttribute) else { return false }
 
         // Snapshot the element's value BEFORE the set so verification can tell
         // "the set changed the field" apart from "our text was already there"

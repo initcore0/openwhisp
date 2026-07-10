@@ -246,14 +246,14 @@
 <div class="wrap">
   <header>
     <p class="eyebrow">Shipped · July 2026</p>
-    <h1>Nineteen ways OpenWhisp got<br><span class="accent">sharper, safer, and more yours.</span></h1>
-    <p class="lede">A batch of new features, fixes, and under-the-hood hardening — all landed on main, all covered by tests, all on your machine. All eleven new features are live in Settings today: hands-free (tap-to-lock) dictation, adjustable AI cleanup, voice editing, a self-learning dictionary, rich local formatting, spoken-filename @-mentions for code editors, agent-CLI cleanup, and output targets that route a dictation to a file, a macOS Shortcut, or a webhook.</p>
+    <h1>Twenty-two ways OpenWhisp got<br><span class="accent">sharper, safer, and more yours.</span></h1>
+    <p class="lede">A batch of new features, fixes, and under-the-hood hardening — all landed on main, all covered by tests, all on your machine. All twelve new features are live today: hands-free (tap-to-lock) dictation, adjustable AI cleanup, voice editing, a self-learning dictionary, rich local formatting, spoken-filename @-mentions for code editors, agent-CLI cleanup, output targets that route a dictation to a file/Shortcut/webhook, and an openwhisp:// URL scheme so Raycast, Alfred, or any launcher can drive dictation.</p>
   </header>
 
   <div class="stats">
-    <div class="stat"><div class="n">20</div><div class="k">changes shipped</div></div>
-    <div class="stat"><div class="n">11<small> live</small></div><div class="k">new features</div></div>
-    <div class="stat"><div class="n">999</div><div class="k">tests passing</div></div>
+    <div class="stat"><div class="n">22</div><div class="k">changes shipped</div></div>
+    <div class="stat"><div class="n">12<small> live</small></div><div class="k">new features</div></div>
+    <div class="stat"><div class="n">1048</div><div class="k">tests passing</div></div>
     <div class="stat"><div class="n">100<small>%</small></div><div class="k">on-device</div></div>
   </div>
 
@@ -262,7 +262,7 @@
     <div class="sec-head">
       <span class="dot feature"></span>
       <h2>New features</h2>
-      <span class="count">11 live</span>
+      <span class="count">12 live</span>
     </div>
     <ul class="entries">
       <li>
@@ -288,6 +288,31 @@
               <li>Optional safety net: “Auto-stop after long silence” (on by default) ends a locked session after a long quiet stretch so a forgotten one can't record forever.</li>
             </ol>
             <p class="g-note">Live in Settings today. Hold-to-talk remains the default and is unchanged. The double-tap gesture reaches lock even without changing the setting; a normal pause to think won't trip the silence safety auto-stop (its hangover is deliberately long).</p>
+          </div>
+        </details>
+      </li>
+      <li>
+        <details class="entry">
+          <summary>
+            <div class="sum-left">
+              <h3>Trigger OpenWhisp from Raycast, Alfred, or any launcher — the openwhisp:// URL scheme</h3>
+              <p>OpenWhisp now answers an openwhisp:// URL, so any launcher or script can start a dictation, refine your last result, or paste it — no CLI needed. Point Raycast or Alfred at open "openwhisp://record" and bind it to a key. The scheme exposes only a small, validated allow-list of safe verbs — never a shell string or an arbitrary file — and rejects anything malformed as a whole.</p>
+            </div>
+            <div class="sum-right">
+              <span class="try">How to use<svg class="howto-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span>
+              <div class="receipts"><span class="tag ticket">MAK-37</span><span class="tag pr">#141</span></div>
+            </div>
+          </summary>
+          <div class="guide">
+            <span class="avail live">Available now</span>
+            <p class="g-sum">Hand OpenWhisp a URL like openwhisp://record from Raycast, Alfred, Shortcuts, or a script; ready-made Raycast/Alfred recipes ship in integrations/.</p>
+            <ol>
+              <li>Make sure OpenWhisp is installed (if it isn't running, macOS launches it and delivers the URL on start).</li>
+              <li>From any launcher or a terminal: open "openwhisp://record" to start/stop dictation, open "openwhisp://paste-last-result" to paste the last result, or open "openwhisp://refine?instruction=make%20it%20formal" to rewrite the last result onto your clipboard.</li>
+              <li>Chain verbs in one URL — open "openwhisp://?switch-mode=email&amp;record" — they run in order, all-or-nothing.</li>
+              <li>For a one-key setup, add the Raycast Script Commands or the Alfred recipe from the integrations/ folder and bind them to hotkeys.</li>
+            </ol>
+            <p class="g-note">record, refine, and paste-last-result work today. switch-mode / activate-mode are parsed and validated now but not yet wired to a runtime action — OpenWhisp's modes are per-app profiles keyed by bundle ID today, with no named-mode registry to switch by key; those URLs are accepted and logged as pending rather than doing something misleading. See integrations/README.md for the full grammar.</p>
           </div>
         </details>
       </li>
@@ -395,7 +420,7 @@
               <li>Dictate as usual — the level you chose is applied automatically to each final transcript. None skips the AI entirely.</li>
               <li>In Settings › Privacy › History, click the revert (↺) button next to any entry the AI reshaped to swap the cleaned text back to your raw words — the originals are copied to your clipboard.</li>
             </ol>
-            <p class="g-note">Live now. The dial is the single source of truth for AI cleanup — the old on/off “Improve every dictation” toggle (tray + onboarding) now just reflects it. Higher levels trade literal fidelity for polish; the revert button appears only when the AI actually changed your words. Revert currently covers the standard preview and insert-at-end dictation modes (not the live-streaming per-chunk mode, which pastes as it types) and lives in History; a one-tap revert in the post-dictation overlay is a small follow-up.</p>
+            <p class="g-note">Live now. The dial is the single source of truth for AI cleanup — the old on/off “Improve every dictation” toggle (tray + onboarding) now just reflects it. Higher levels trade literal fidelity for polish; the revert button appears only when the AI actually changed your words. Revert currently covers the standard preview and insert-at-end dictation modes (not the live-streaming per-chunk mode, which pastes as it types). It lives in History and, right after a dictation lands, in the post-dictation overlay — a one-tap “Revert to original” pill that swaps the cleaned text back to your raw words in place when it safely can, and otherwise leaves them on the clipboard for ⌘V.</p>
           </div>
         </details>
       </li>
@@ -574,7 +599,7 @@
     <div class="sec-head">
       <span class="dot fix"></span>
       <h2>Fixes</h2>
-      <span class="count">6 shipped</span>
+      <span class="count">7 shipped</span>
     </div>
     <ul class="entries">
       <li class="entry">
@@ -607,6 +632,11 @@
         <p>The CoreAudio listener that notices when you plug in a mic now removes itself symmetrically — no lingering, unremovable observer.</p>
         <div class="receipts"><span class="tag ticket">MAK-33</span><span class="tag pr">#114</span></div>
       </li>
+      <li class="entry">
+        <h3>Onboarding catches a dead hotkey before you test it</h3>
+        <p>The setup flow now does a live Input Monitoring check on the hotkey step. If OpenWhisp can't detect key presses, you get an inline “Open System Settings → Input Monitoring” fix that re-checks itself — so you never reach the “try it” step with a push-to-talk key that silently can't fire.</p>
+        <div class="receipts"><span class="tag ticket">MAK-24</span><span class="tag pr">#140</span></div>
+      </li>
     </ul>
   </section>
 
@@ -630,7 +660,7 @@
       </li>
       <li class="entry">
         <h3>End-to-end audio testing, so features stay working</h3>
-        <p>A full regression suite now feeds pre-recorded audio through the whole pipeline — the reason "999 tests passing" is more than a number. Every feature above ships with coverage.</p>
+        <p>A full regression suite now feeds pre-recorded audio through the whole pipeline — the reason "1048 tests passing" is more than a number. Every feature above ships with coverage.</p>
         <div class="receipts"><span class="tag ticket">E2E</span><span class="tag pr">#107–110</span></div>
       </li>
     </ul>

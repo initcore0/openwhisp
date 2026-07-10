@@ -72,7 +72,13 @@ enum InsertVerifier {
     /// Fold the typographic substitutions apps commonly apply to inserted text
     /// (smart quotes, dashes, ellipsis, non-breaking spaces) so they don't defeat
     /// the contains() check.
-    private static func normalize(_ s: String) -> String {
+    private static func normalize(_ s: String) -> String { foldTypography(s) }
+
+    /// Shared typographic normalization: map the smart quotes/dashes/ellipsis/NBSP an
+    /// app substitutes on insert back to their plain forms. Exposed so the overlay
+    /// revert's suffix match (`ReplaceLastInsertion`) folds the same way this verifier
+    /// does — otherwise a smart-quoting field (Notes/Pages/Mail) defeats the match.
+    static func foldTypography(_ s: String) -> String {
         var out = s
         for (fancy, plain) in [("\u{2018}", "'"), ("\u{2019}", "'"), ("\u{201C}", "\""),
                                ("\u{201D}", "\""), ("\u{2013}", "-"), ("\u{2014}", "-"),
@@ -99,11 +105,28 @@ protocol TextOutput: AnyObject {
                 completion: ((InsertionOutcome) -> Void)?)
     /// Set the clipboard, ordered behind any in-flight insertions.
     func setClipboard(_ text: String)
+
+    /// Attempt an in-place SWAP of the text we just inserted for `raw`, used by the
+    /// overlay "revert to original" (MAK-35). Only mutates the focused field when it
+    /// still ends with exactly `inserted` (via `ReplaceLastInsertion` + AX), so it
+    /// can't clobber the user's own edits; otherwise it's a no-op. Reports `true`
+    /// only when the replace was performed and verified — the caller keeps the raw
+    /// words on the clipboard as a fallback either way. Default: no-op returning
+    /// `false` (ports/fakes without AX rely on the clipboard fallback).
+    func replaceLastInsertion(inserted: String, raw: String,
+                              completion: @escaping (Bool) -> Void)
 }
 
 extension TextOutput {
     /// Convenience for the common fire-and-forget call (no outcome needed).
     func insert(_ text: String, mode: InsertionMode, restoreClipboard: Bool) {
         insert(text, mode: mode, restoreClipboard: restoreClipboard, completion: nil)
+    }
+
+    /// Default: no in-place replace available (e.g. non-AX ports, sink targets, test
+    /// doubles) — report failure so the caller falls back to the clipboard copy.
+    func replaceLastInsertion(inserted: String, raw: String,
+                              completion: @escaping (Bool) -> Void) {
+        completion(false)
     }
 }
