@@ -298,27 +298,30 @@
             </div>
             <div class="sum-right">
               <span class="try">How to use<svg class="howto-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span>
-              <div class="receipts"><span class="tag ticket">MAK-19</span><span class="tag pr">#117</span></div>
+              <div class="receipts"><span class="tag ticket">MAK-19</span><span class="tag pr">#117</span><span class="tag pr">#136</span></div>
             </div>
           </summary>
-          <div class="guide pending">
-            <span class="avail soon">Coming soon</span>
-            <p class="g-sum">When it ships, you'll edit mid-dictation by saying a command as its own phrase.</p>
+          <div class="guide">
+            <span class="avail live">Available now</span>
+            <p class="g-sum">In Preview mode, say the command on its own and it edits the pending text.</p>
             <ol>
-              <li>Start dictation as usual (hold Fn/Globe, or Control+Space).</li>
-              <li>Pause and say a command on its own — it must be the whole phrase, so ordinary speech like “scratch the surface” is never mistaken for a command.</li>
-              <li>Release to insert the edited text.</li>
+              <li>Set Settings › Output › Delivery to “Preview, then insert” (the mode that holds the text on-screen until you release the key).</li>
+              <li>Leave “Spoken edit commands” on in that same Delivery section (it’s on by default).</li>
+              <li>Dictate as usual, then pause and say a command on its own — “scratch that” drops the last thing you said, “undo” brings it back.</li>
+              <li>Release the key: the edited text is what gets inserted.</li>
             </ol>
             <div class="say-block">
               <p class="say-label">Say</p>
               <ul class="say-list">
                 <li>“scratch that” — drop the last thing you said</li>
-                <li>“delete last word” / “delete last sentence”</li>
-                <li>“new paragraph” / “new line”</li>
+                <li>“delete last word”</li>
+                <li>“delete last sentence”</li>
+                <li>“new paragraph”</li>
+                <li>“new line”</li>
                 <li>“undo” — reverse the last edit</li>
               </ul>
             </div>
-            <p class="g-note">The command parser (case- and punctuation-tolerant, including … and curly quotes) is shipped and tested. Connecting it to live dictation is the next step — until then, these phrases are typed literally rather than acted on.</p>
+            <p class="g-note">Works in Preview mode (the text is held until release, so an edit can still change it). A command is recognized only when the WHOLE phrase is spoken on its own — say it as its own short utterance, with a pause, so the recognizer punctuates it as a separate sentence. A command buried inside a longer phrase (“finish the report scratch that let me redo”) is left as plain text on purpose, so ordinary speech like “scratch the surface” is never eaten. Parser is case- and punctuation-tolerant (including … and curly quotes).</p>
           </div>
         </details>
       </li>

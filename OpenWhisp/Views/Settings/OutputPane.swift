@@ -265,6 +265,15 @@ struct OutputPane: View {
                 isSelected: appState.outputMode == "liveChunks",
                 isEnabled: !isWhisperKit
             ) { appState.outputMode = "liveChunks" }
+
+            SubtitledToggle(
+                "Spoken edit commands",
+                subtitle: appState.outputMode == "preview"
+                    ? "Say \u{201C}scratch that\u{201D}, \u{201C}delete last word\u{201D}, \u{201C}delete last sentence\u{201D}, \u{201C}new paragraph\u{201D}, \u{201C}new line\u{201D}, or \u{201C}undo\u{201D} on its own and it edits the pending text instead of being typed. Recognized only when the whole phrase is spoken alone."
+                    : "Only works with \u{201C}Preview, then insert\u{201D} above — the text is held until you release the key, so an edit can still change it.",
+                isOn: $appState.voiceEditingEnabled
+            )
+            .disabled(appState.outputMode != "preview")
         } header: {
             Text("Delivery")
         } footer: {

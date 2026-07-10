@@ -331,7 +331,13 @@ public struct VoiceEditBuffer: Equatable, Sendable {
     /// doubt it returns `true` (treats it as a boundary), because the whole
     /// feature is "drop the last sentence" and over-keeping is safer than the
     /// decimal/abbreviation corruption the reviewer flagged.
-    private static func isSentenceEndingPeriod(in s: Substring, at dotIndex: Substring.Index) -> Bool {
+    ///
+    /// Shared with `VoiceEditRouter.segmentUtterances`, which must NOT split a
+    /// transcript on a decimal/abbreviation dot (that would corrupt "3.50" /
+    /// "example.com" / "Mr. Smith" in ordinary dictation) — so the split decision
+    /// and the delete-last-sentence decision use exactly one definition of "does
+    /// this period end a sentence."
+    static func isSentenceEndingPeriod(in s: Substring, at dotIndex: Substring.Index) -> Bool {
         // Decimal: a digit on both sides of the dot ("3.50") is never a boundary.
         let after = s.index(after: dotIndex)
         let nextChar: Character? = after < s.endIndex ? s[after] : nil
@@ -364,4 +370,151 @@ public struct VoiceEditBuffer: Equatable, Sendable {
     ]
 
     private static let sentenceTerminators: Set<Character> = [".", "!", "?"]
+}
+
+/// The pure decision that wires the parser + buffer into a live dictation session,
+/// kept Foundation-only so the app's session glue and `swift test` share EXACTLY
+/// the same routing logic (the AppState/SwiftUI layer only calls these — it makes
+/// no routing decision of its own).
+///
+/// The recognizers OpenWhisp streams from (Apple Speech, WhisperKit) never deliver
+/// one finalized-utterance-at-a-time: each emits a single, cumulative transcript
+/// for the whole hold. `VoiceEditCommand.parse` only fires when the WHOLE utterance
+/// is the command, so to make a spoken "scratch that" actually edit, that blob must
+/// first be split into utterance-sized units. `segmentUtterances` does that on the
+/// recognizer's own strong boundaries (sentence terminators / line breaks): a
+/// "Scratch that." spoken as its own sentence becomes its own unit and is
+/// recognized, while a command buried mid-sentence ("…the report scratch that let
+/// me redo") stays in one unit and is left as literal text — the deliberate, safe
+/// failure that matches the parser's zero-false-positive bias.
+///
+/// Because the feature defaults ON, EVERY preview dictation is routed through here,
+/// so segmentation must be lossless for command-free prose: it reuses the same
+/// context-aware period check as "delete last sentence"
+/// (`VoiceEditBuffer.isSentenceEndingPeriod`) and additionally requires whitespace
+/// after a `.` before splitting, so decimals ("3.50"), currency ("$9.99"), version
+/// numbers ("3.2.1"), domains ("example.com"), and abbreviations ("Mr. Smith") stay
+/// in one unit and round-trip byte-for-byte through `VoiceEditBuffer.text`.
+public enum VoiceEditRouter {
+    /// Whether a session should honor spoken edit commands, given its facts. This is
+    /// the EXACT predicate `startStreamingSession()` uses to arm the feature — kept
+    /// here (not inlined in AppState) so the gate itself is unit-tested. Editing is
+    /// on only for a preview-mode session with the setting enabled that isn't an
+    /// agent session (agent sessions return the raw transcript over the bridge).
+    ///
+    /// Guards against the dead-gate regression: the wiring reads `outputMode` on the
+    /// streaming path (where it's authoritative), NOT `isPreviewSession` (which is
+    /// false on that path because it calls `beginSession(streaming: false)`).
+    public static func isActive(outputMode: String, enabled: Bool, suppressOutput: Bool) -> Bool {
+        outputMode == "preview" && enabled && !suppressOutput
+    }
+
+    /// Route ONE finalized utterance into the buffer. Returns `true` when it was an
+    /// edit command (applied to the buffer, its literal words never entering the
+    /// text), `false` when it was ordinary dictation (appended verbatim).
+    ///
+    /// This is the single seam the session wiring drives and the tests exercise, so
+    /// "was this an edit command?" is decided in exactly one place.
+    @discardableResult
+    public static func route(_ utterance: String, into buffer: inout VoiceEditBuffer) -> Bool {
+        if let command = VoiceEditCommand.parse(utterance) {
+            buffer.apply(command)
+            return true
+        }
+        buffer.append(utterance)
+        return false
+    }
+
+    /// Route a whole (possibly multi-utterance) final transcript into the buffer by
+    /// splitting it into utterance units first, then routing each in order. This is
+    /// what turns a cumulative recognizer transcript ("Hello world. Scratch that.")
+    /// into the sequence the buffer expects (append "Hello world.", then apply
+    /// `scratchThat`). Ordinary prose with no standalone command lands as a single
+    /// unit and is appended unchanged.
+    ///
+    /// The buffer is populated from empty here (the session owns one buffer, reset at
+    /// the start of the hold), so routing the whole final is the one place utterances
+    /// enter — the caller then reads `buffer.text` for the preview + the paste.
+    public static func route(final transcript: String, into buffer: inout VoiceEditBuffer) {
+        for unit in segmentUtterances(transcript) {
+            route(unit, into: &buffer)
+        }
+    }
+
+    /// Split a transcript into utterance units on the recognizer's strong
+    /// boundaries so a standalone spoken command punctuated as its own sentence
+    /// surfaces as its own unit. The terminator stays attached to the unit it ends
+    /// (so ordinary dictation round-trips: "Hi there." → one unit "Hi there.").
+    ///
+    /// A boundary is:
+    ///   - a line break (`\n`), or
+    ///   - `!` / `?` (always a boundary), or
+    ///   - a `.` that BOTH ends a sentence per
+    ///     `VoiceEditBuffer.isSentenceEndingPeriod` (not a decimal/abbreviation dot)
+    ///     AND is followed by whitespace or end-of-text — so "3.50", "$9.99",
+    ///     "3.2.1", "example.com", and "Mr. Smith" never split.
+    ///
+    /// A run of terminators ("Wait...", "Yes!!!") is coalesced onto the preceding
+    /// unit rather than emitting lone "." / "!" units, so repeated marks round-trip
+    /// too. Deliberately coarse: it does NOT try to find commands mid-sentence
+    /// (that's out of scope). A transcript with no boundary is a single unit.
+    public static func segmentUtterances(_ transcript: String) -> [String] {
+        var units: [String] = []
+        var current = ""
+
+        let chars = Array(transcript)
+        // A parallel Substring view so the shared period check can inspect context
+        // (the char before/after the dot) using String indices.
+        let s = Substring(transcript)
+        let indices = Array(s.indices)
+
+        func flush() {
+            let trimmed = current.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty { units.append(trimmed) }
+            current = ""
+        }
+
+        for i in chars.indices {
+            let ch = chars[i]
+
+            if ch == "\n" {
+                // A line break ends the current unit; the newline itself is not
+                // carried forward — the buffer's break markers come from "new line" /
+                // "new paragraph" commands, not from raw transcript newlines.
+                flush()
+                continue
+            }
+
+            let isTerminator = ch == "." || ch == "!" || ch == "?"
+            // A terminator that lands while the current unit is otherwise empty is a
+            // repeated mark ("..." / "!!!" / "?!") — glue it onto the previous unit
+            // instead of emitting a lone-mark unit that would get space-joined.
+            if isTerminator, current.trimmingCharacters(in: .whitespaces).isEmpty,
+               let last = units.last {
+                units[units.count - 1] = last + String(ch)
+                continue
+            }
+
+            current.append(ch)
+            guard isTerminator else { continue }
+
+            // `!` / `?` always end a unit. A `.` only does when it's a real sentence
+            // end (not decimal/abbreviation) AND is followed by whitespace or the end
+            // of the transcript — otherwise it's inside a token (3.50, example.com).
+            if ch == "." {
+                let dotIndex = indices[i]
+                let nextIsBreak: Bool = {
+                    let after = s.index(after: dotIndex)
+                    guard after < s.endIndex else { return true } // end of text
+                    return s[after].isWhitespace
+                }()
+                guard nextIsBreak, VoiceEditBuffer.isSentenceEndingPeriod(in: s, at: dotIndex) else {
+                    continue
+                }
+            }
+            flush()
+        }
+        flush()
+        return units
+    }
 }

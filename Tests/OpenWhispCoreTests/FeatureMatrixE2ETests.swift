@@ -1248,4 +1248,210 @@ final class FeatureMatrixE2ETests: XCTestCase {
     }
     }
 
+    // MARK: - Voice editing in live dictation (MAK-19)
+    //
+    // These drive a session's finalized utterances through the SAME seam the app
+    // wiring uses — `VoiceEditRouter` mutating a session-scoped `VoiceEditBuffer` —
+    // and assert the pending text is edited BEFORE it would be pasted. This is the
+    // integration point `handleAppleSpeechFinal` calls when `voiceEditingEnabled`
+    // is on in a preview session; the AppState/SwiftUI glue around it is build-
+    // verified, but the routing decision is pinned here.
+
+    /// Mirror of `AppState.handleAppleSpeechFinal`'s voice-edit decision, driven by
+    /// the SAME `VoiceEditRouter.isActive` gate + routing the app uses. This is the
+    /// integration the reviewer required: it composes the gate WITH routing, not the
+    /// router in isolation, so a dead gate (feature never armed) is caught here.
+    /// Returns the text that would be handed to postProcess/paste.
+    private func finalizeTranscript(
+        _ rawTranscript: String,
+        outputMode: String,
+        voiceEditingEnabled: Bool,
+        suppressOutput: Bool
+    ) -> String {
+        let active = VoiceEditRouter.isActive(
+            outputMode: outputMode,
+            enabled: voiceEditingEnabled,
+            suppressOutput: suppressOutput
+        )
+        guard active else { return rawTranscript }
+        var buffer = VoiceEditBuffer()
+        VoiceEditRouter.route(final: rawTranscript, into: &buffer)
+        return buffer.text
+    }
+
+    /// End-to-end through the gate: in a preview session with the feature on, a
+    /// standalone "Scratch that." edits the finalized text. This FAILS if the gate
+    /// is dead (`isActive` false) — the exact regression the review found, where the
+    /// wiring read `isPreviewSession` (always false on the streaming path) instead
+    /// of `outputMode`.
+    func testVoiceEditFinalizeAppliesCommandInPreview() {
+        let finalized = finalizeTranscript(
+            "Hello world. Scratch that. Fresh start.",
+            outputMode: "preview",
+            voiceEditingEnabled: true,
+            suppressOutput: false
+        )
+        XCTAssertEqual(finalized, "Fresh start.",
+                       "preview + enabled must apply the spoken command")
+        XCTAssertFalse(finalized.lowercased().contains("scratch"))
+    }
+
+    /// The gate is OFF for every non-qualifying session, and then the raw transcript
+    /// passes through byte-for-byte (no segmentation, no editing) — the no-regression
+    /// contract. Covers: setting off, non-preview modes, and agent (suppressOutput)
+    /// sessions. If any of these accidentally armed the feature, "Scratch that."
+    /// would edit the text and these would fail.
+    func testVoiceEditGateOffLeavesTranscriptUntouched() {
+        let raw = "Hello world. Scratch that. Fresh start."
+        let offCases: [(String, Bool, Bool)] = [
+            ("preview",    false, false),  // setting off
+            ("finalOnly",  true,  false),  // not preview
+            ("liveChunks", true,  false),  // not preview
+            ("preview",    true,  true),   // agent session
+        ]
+        for (mode, enabled, suppress) in offCases {
+            XCTAssertFalse(
+                VoiceEditRouter.isActive(outputMode: mode, enabled: enabled, suppressOutput: suppress),
+                "gate must be off for mode=\(mode) enabled=\(enabled) suppress=\(suppress)")
+            XCTAssertEqual(
+                finalizeTranscript(raw, outputMode: mode, voiceEditingEnabled: enabled, suppressOutput: suppress),
+                raw,
+                "gate off must leave the transcript byte-for-byte unchanged")
+        }
+        // And the positive: the gate is on precisely for preview + enabled + non-agent.
+        XCTAssertTrue(VoiceEditRouter.isActive(outputMode: "preview", enabled: true, suppressOutput: false))
+    }
+
+    /// The headline flow: dictate, then a standalone "scratch that" drops exactly
+    /// the last utterance — and its literal words never reach the pasted text.
+    func testVoiceEditScratchThatDropsLastUtterance() {
+        var buffer = VoiceEditBuffer()
+        // Utterances arrive finalized, one at a time, as the router segments them.
+        XCTAssertFalse(VoiceEditRouter.route("hello world", into: &buffer))
+        XCTAssertTrue(VoiceEditRouter.route("scratch that", into: &buffer),
+                      "\"scratch that\" must be recognized as a command")
+        XCTAssertEqual(buffer.text, "", "scratch that drops the only utterance")
+
+        // A second dictation, then scratch: only the last chunk is dropped.
+        _ = VoiceEditRouter.route("keep this", into: &buffer)
+        _ = VoiceEditRouter.route("drop this", into: &buffer)
+        XCTAssertTrue(VoiceEditRouter.route("scratch that", into: &buffer))
+        XCTAssertEqual(buffer.text, "keep this")
+        XCTAssertFalse(buffer.text.lowercased().contains("scratch"),
+                       "the command words must never appear in the final text")
+    }
+
+    /// "delete last word" removes just the trailing word across the flattened text.
+    func testVoiceEditDeleteLastWord() {
+        var buffer = VoiceEditBuffer()
+        _ = VoiceEditRouter.route("the quick brown fox", into: &buffer)
+        XCTAssertTrue(VoiceEditRouter.route("delete last word", into: &buffer))
+        XCTAssertEqual(buffer.text, "the quick brown")
+        XCTAssertFalse(buffer.text.contains("delete"))
+    }
+
+    /// "undo" restores whatever the previous destructive edit removed (one level).
+    func testVoiceEditUndoRestores() {
+        var buffer = VoiceEditBuffer()
+        _ = VoiceEditRouter.route("first thought", into: &buffer)
+        _ = VoiceEditRouter.route("second thought", into: &buffer)
+        XCTAssertTrue(VoiceEditRouter.route("scratch that", into: &buffer))
+        XCTAssertEqual(buffer.text, "first thought")
+        XCTAssertTrue(VoiceEditRouter.route("undo", into: &buffer))
+        XCTAssertEqual(buffer.text, "first thought second thought",
+                       "undo restores the scratched utterance verbatim")
+    }
+
+    /// A whole cumulative transcript (what the streaming recognizers actually
+    /// deliver — one blob per hold, not one utterance at a time) is segmented on
+    /// sentence boundaries so a standalone command punctuated as its own sentence
+    /// is still recognized. This is the exact call `handleAppleSpeechFinal` makes.
+    func testVoiceEditRoutesWholeFinalTranscript() {
+        var buffer = VoiceEditBuffer()
+        VoiceEditRouter.route(final: "Hello world. Scratch that. Fresh start.",
+                              into: &buffer)
+        XCTAssertEqual(buffer.text, "Fresh start.",
+                       "the standalone command sentence edits; its words are gone")
+        XCTAssertFalse(buffer.text.lowercased().contains("scratch"))
+    }
+
+    /// The safe-failure boundary: a command buried INSIDE a larger utterance is NOT
+    /// recognized (parse requires the whole unit to be the command), so it stays as
+    /// literal text rather than silently eating real speech. Documents the limit.
+    func testVoiceEditBundledCommandStaysLiteral() {
+        var buffer = VoiceEditBuffer()
+        // No sentence boundary isolates "scratch that" — the whole thing is one unit.
+        VoiceEditRouter.route(final: "finish the report scratch that let me redo it",
+                              into: &buffer)
+        XCTAssertEqual(buffer.text, "finish the report scratch that let me redo it",
+                       "a mid-utterance command is left as text — the safe failure")
+    }
+
+    /// Ordinary prose that merely CONTAINS a command's words is never hijacked, and
+    /// round-trips unchanged through segmentation + routing.
+    func testVoiceEditOrdinaryDictationUnchanged() {
+        var buffer = VoiceEditBuffer()
+        VoiceEditRouter.route(final: "Please scratch the surface of this idea.",
+                              into: &buffer)
+        XCTAssertEqual(buffer.text, "Please scratch the surface of this idea.")
+    }
+
+    /// "new paragraph" / "new line" insert breaks that survive later edits and the
+    /// flattening for the paste-ready string.
+    func testVoiceEditBreakCommands() {
+        var buffer = VoiceEditBuffer()
+        _ = VoiceEditRouter.route("first line", into: &buffer)
+        XCTAssertTrue(VoiceEditRouter.route("new paragraph", into: &buffer))
+        _ = VoiceEditRouter.route("second block", into: &buffer)
+        XCTAssertEqual(buffer.text, "first line\n\nsecond block")
+    }
+
+    /// Segmentation contract: real sentence terminators and newlines split units;
+    /// empties are dropped; a terminator-free transcript is a single unit. The `.`
+    /// split is context-aware (shares VoiceEditBuffer.isSentenceEndingPeriod) and
+    /// requires trailing whitespace, so it never splits inside a token.
+    func testVoiceEditSegmentation() {
+        XCTAssertEqual(VoiceEditRouter.segmentUtterances("one continuous phrase"),
+                       ["one continuous phrase"])
+        XCTAssertEqual(VoiceEditRouter.segmentUtterances("Alpha. Beta! Gamma?"),
+                       ["Alpha.", "Beta!", "Gamma?"])
+        XCTAssertEqual(VoiceEditRouter.segmentUtterances("line one\nline two"),
+                       ["line one", "line two"])
+        // A period NOT followed by whitespace never splits (mid-token dot).
+        XCTAssertEqual(VoiceEditRouter.segmentUtterances("visit example.com now"),
+                       ["visit example.com now"])
+        // A lone capital initial ("A.") is not a sentence end — mirrors the
+        // delete-last-sentence rule, so "A. B" stays joined.
+        XCTAssertEqual(VoiceEditRouter.segmentUtterances("A. B! C?"),
+                       ["A. B!", "C?"])
+        XCTAssertEqual(VoiceEditRouter.segmentUtterances("   "), [])
+        XCTAssertEqual(VoiceEditRouter.segmentUtterances(""), [])
+    }
+
+    /// The regression the adversarial review caught: because the feature defaults
+    /// ON, every command-free preview dictation is routed through the buffer, so
+    /// `route(final:)` MUST be a byte-for-byte no-op on ordinary prose — no spaced-
+    /// out decimals/currency/versions/domains, no split abbreviations, no lone
+    /// terminator marks from ellipses / repeated punctuation.
+    func testVoiceEditRoundTripsCommandFreeProse() {
+        let prose = [
+            "The price is 3.50 dollars.",
+            "It costs $9.99 total.",
+            "Section 3.2.1 is next.",
+            "Visit example.com now.",
+            "Wait... no.",
+            "Yes!!! Absolutely.",
+            "I met Mr. Smith today.",
+            "Hello world. How are you?",
+            "One sentence with no terminator",
+            "A number like 42 and a word.",
+        ]
+        for s in prose {
+            var buffer = VoiceEditBuffer()
+            VoiceEditRouter.route(final: s, into: &buffer)
+            XCTAssertEqual(buffer.text, s,
+                           "command-free prose must round-trip byte-for-byte: \(s)")
+        }
+    }
+
 }
