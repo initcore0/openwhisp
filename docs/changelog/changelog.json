@@ -1,7 +1,7 @@
 {
   "$schema": "./changelog.schema.md",
   "project": "OpenWhisp",
-  "generated": "2026-07-09",
+  "generated": "2026-07-10",
   "releases": [
     {
       "id": "2026-07",
@@ -9,9 +9,9 @@
       "date": "2026-07-09",
       "summary": "A batch of new features, fixes, and under-the-hood hardening — all landed on main, all covered by tests, all on your machine. All thirteen new features are live today: batch file transcription with watch folders, hands-free (tap-to-lock) dictation, adjustable AI cleanup, voice editing, a self-learning dictionary, rich local formatting, spoken-filename @-mentions for code editors, agent-CLI cleanup, output targets that route a dictation to a file/Shortcut/webhook, and an openwhisp:// URL scheme so Raycast, Alfred, or any launcher can drive dictation.",
       "stats": {
-        "changesShipped": 23,
+        "changesShipped": 24,
         "newFeatures": 13,
-        "testsPassing": 1078,
+        "testsPassing": 1085,
         "onDevicePercent": 100,
         "newFeaturesLive": 13,
         "newFeaturesCorePending": 0
@@ -438,6 +438,15 @@
             109,
             110
           ]
+        },
+        {
+          "category": "improvement",
+          "headline": "One subprocess lifecycle for both bundled servers",
+          "body": "OpenWhisp runs two local helper processes — whisper-server for transcription and llama-server for on-device refine. Their start/stop/cleanup code was copy-pasted between the two; now it lives in one shared, tested place, so a fix to how a server is launched or reaped applies to both. The port a server binds is also acquired more safely, closing a race where two starts could collide on one port.",
+          "tickets": [
+            "MAK-21"
+          ],
+          "prs": []
         }
       ]
     }
