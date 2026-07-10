@@ -246,10 +246,21 @@ class AppState: ObservableObject {
         }
     }
 
-    @Published var openAIEnhancementEnabled: Bool {
+    /// MAK-35: the AI-cleanup intensity dial (`None`/`Low`/`Medium`/`High`) — the
+    /// SINGLE source of truth for whether and how hard the whole-text LLM pass runs.
+    /// `.none` skips the LLM entirely; low/medium/high feed the tier's system prompt
+    /// (see `CleanupIntensity.systemPrompt`) into the refine. The legacy on/off
+    /// `openAIEnhancementEnabled` toggle is now a thin facade over this (below), so
+    /// there is exactly one authoritative value. Persisted by rawValue.
+    @Published var cleanupIntensity: CleanupIntensity {
         didSet {
-            persist(openAIEnhancementEnabled, "openAIEnhancementEnabled")
-            if openAIEnhancementEnabled {
+            guard cleanupIntensity != oldValue else { return }
+            persist(cleanupIntensity.rawValue, "cleanupIntensity")
+            // Remember the last non-none tier so the on/off facade (and the tray
+            // toggle) can restore the user's chosen strength when flipped back on,
+            // instead of snapping to a default.
+            if cleanupIntensity != .none { lastNonNoneCleanupIntensity = cleanupIntensity }
+            if cleanupIntensity.runsLLM {
                 // First enable with the built-in provider should work with zero
                 // setup: provision the model if it isn't on disk yet (no-ops and
                 // warms when it is).
@@ -259,6 +270,30 @@ class AppState: ObservableObject {
                 llamaEngine?.stopServer()
             }
         }
+    }
+
+    /// The last intensity the user picked that actually runs the LLM, so turning
+    /// AI cleanup off then on again via the legacy toggle restores THAT tier
+    /// (not a hard-coded default). Persisted so the restore survives a relaunch:
+    /// dial=.high → toggle off (dial persists .none) → quit → relaunch → toggle on
+    /// must restore .high, not the default. Seeded in init from the stored key,
+    /// falling back to the migrated/loaded value.
+    private var lastNonNoneCleanupIntensity: CleanupIntensity = .default {
+        didSet {
+            persist(lastNonNoneCleanupIntensity.rawValue, "lastNonNoneCleanupIntensity")
+        }
+    }
+
+    /// Legacy on/off AI-cleanup switch, now DERIVED from `cleanupIntensity` so the
+    /// dial is the one source of truth (MAK-35). Reads true iff a tier runs the LLM;
+    /// setting it true restores the last non-none tier, false sets `.none`. Existing
+    /// call sites (tray toggle, onboarding, per-app profiles, privacy status) keep
+    /// working unchanged, and their bindings still update because `cleanupIntensity`
+    /// is `@Published`. Not stored — nothing writes `openAIEnhancementEnabled` to
+    /// UserDefaults anymore; `cleanupIntensity` carries the state.
+    var openAIEnhancementEnabled: Bool {
+        get { cleanupIntensity != .none }
+        set { cleanupIntensity = newValue ? lastNonNoneCleanupIntensity : .none }
     }
 
     @Published var openAIEnhancementMode: String {
@@ -408,6 +443,17 @@ class AppState: ObservableObject {
     /// to the just-dictated text. Requires an LLM provider. On by default.
     @Published var instructionChainEnabled: Bool {
         didSet { UserDefaults.standard.set(instructionChainEnabled, forKey: "instructionChainEnabled") }
+    }
+
+    /// Enable spoken *edit commands* in preview-mode dictation: a standalone
+    /// "scratch that" / "delete last word" / "delete last sentence" / "new
+    /// paragraph" / "new line" / "undo" edits the pending transcript instead of
+    /// being typed as literal words. Only active in "preview" output mode (the text
+    /// is held until the end, so an edit can still change what gets pasted) — see
+    /// `VoiceEditRouter`. On by default: the parser only fires on a whole-utterance
+    /// match, so it's false-positive-safe, and the payoff is high.
+    @Published var voiceEditingEnabled: Bool {
+        didSet { UserDefaults.standard.set(voiceEditingEnabled, forKey: "voiceEditingEnabled") }
     }
 
 
@@ -834,6 +880,18 @@ class AppState: ObservableObject {
     private var isAppleSpeechSession = false
     private var appleLiveInsertedText = ""
     private var appleDidCompleteFinal = false
+    /// Whether spoken edit commands (`voiceEditingEnabled`) are honored for THIS
+    /// session — snapshotted in `startStreamingSession()` (the streaming path that
+    /// reaches `handleAppleSpeechFinal`, where `outputMode` is authoritative), so a
+    /// mid-session settings flip can't change how the pending text is finalized.
+    /// Only ever true for a preview-mode streaming session (the mode where text is
+    /// held until the end and can therefore still be edited before the single paste).
+    private var voiceEditingActiveForSession = false
+    /// The session's edit buffer: finalized dictation utterances accumulate here and
+    /// standalone edit commands ("scratch that" / "undo" / …) mutate it, so the
+    /// pasted text is `voiceEditBuffer.text` — the dictation AFTER the spoken edits.
+    /// Reset at beginSession; only read when `voiceEditingActiveForSession`.
+    private var voiceEditBuffer = VoiceEditBuffer()
     /// True when the current streaming session is WhisperKit (vs Apple Speech).
     /// Selects the engine and whether to run the Speech-framework authorization.
     private var streamingUsesWhisperKit = false
@@ -951,14 +1009,30 @@ class AppState: ObservableObject {
     /// Every other provider keeps the OpenAI-service refiner — the default path.
     func makeWholeTextRefiner() -> AsyncTextRefiner {
         if EnhancementProvider.usesAgentCLI(llmProvider) {
+            // The agent CLI carries its own prompting/agent config; the intensity
+            // dial only gates whether it runs (via the `.none` skip upstream), not
+            // its system prompt, so this path is unchanged.
             return AgentCLIRefiner(config: activeAgentCLIConfig)
         }
+        // MAK-35: the intensity dial drives the whole-text cleanup prompt for every
+        // HTTP provider (bundled / OpenAI / local). Feed the selected tier's system
+        // prompt as `customInstruction` so low/medium/high map to their preset
+        // prompts; it overrides the mode-derived one in OpenAITranslationService.
+        // EXCEPTION: the "Improve English translation" mode must still reach the
+        // translation-polish branch, so `wholeTextCustomInstruction` returns nil for
+        // it (see that resolver). `.none` never reaches here (the enhance guard in
+        // completeFinalText skips the whole pass).
         return OpenAIRefiner(
             service: translationService,
             mode: refinementMode(openAIEnhancementMode),
             targetLanguage: translationTargetLanguage,
             endpoint: llmEndpoint,
-            model: llmModel
+            model: llmModel,
+            customInstruction: CleanupIntensity.wholeTextCustomInstruction(
+                intensity: cleanupIntensity,
+                mode: openAIEnhancementMode,
+                translateToEnglish: translateToEnglish
+            )
         )
     }
 
@@ -1110,8 +1184,28 @@ class AppState: ObservableObject {
         } else {
             whisperBackend = "serverAPI"
         }
-        openAIEnhancementEnabled = UserDefaults.standard.object(forKey: "openAIEnhancementEnabled") as? Bool ?? false
         openAIEnhancementMode = UserDefaults.standard.string(forKey: "openAIEnhancementMode") ?? "rephrase"
+        // MAK-35: resolve the AI-cleanup intensity dial. Prefer a stored dial value;
+        // on FIRST load for an existing install (no dial persisted yet) derive it
+        // from the legacy on/off + mode so behavior is preserved exactly (enabled +
+        // rephrase → .medium; disabled → .none). Fresh installs (no legacy keys)
+        // fall through to migrated(enabled:false) == .none, matching the old default
+        // of AI cleanup off out of the box.
+        let resolvedIntensity = CleanupIntensity.resolveInitial(
+            storedDialRawValue: UserDefaults.standard.string(forKey: "cleanupIntensity"),
+            legacyEnabled: UserDefaults.standard.object(forKey: "openAIEnhancementEnabled") as? Bool ?? false,
+            legacyMode: UserDefaults.standard.string(forKey: "openAIEnhancementMode") ?? "rephrase"
+        )
+        cleanupIntensity = resolvedIntensity
+        // Seed the "last non-none" memory so the legacy toggle restores the user's
+        // chosen strength — from the persisted key first (survives a relaunch while
+        // cleanup was toggled off), else the resolved dial / default. (Read the
+        // local `resolvedIntensity`, not the stored property — Swift forbids reading
+        // a stored property mid-init before all are initialized.)
+        lastNonNoneCleanupIntensity = CleanupIntensity.resolveLastNonNone(
+            storedRawValue: UserDefaults.standard.string(forKey: "lastNonNoneCleanupIntensity"),
+            resolvedIntensity: resolvedIntensity
+        )
         translationTargetLanguage = UserDefaults.standard.string(forKey: "translationTargetLanguage") ?? "en"
         // One-time migration: move any legacy plaintext key out of UserDefaults into the
         // Keychain. didSet does not fire during init, so the keychain write must be explicit.
@@ -1141,6 +1235,7 @@ class AppState: ObservableObject {
         agentCLICustomArgsText = UserDefaults.standard.string(forKey: "agentCLICustomArgsText") ?? ""
         agentCLITimeout = UserDefaults.standard.object(forKey: "agentCLITimeout") as? Double ?? 30.0
         instructionChainEnabled = UserDefaults.standard.object(forKey: "instructionChainEnabled") as? Bool ?? true
+        voiceEditingEnabled = UserDefaults.standard.object(forKey: "voiceEditingEnabled") as? Bool ?? true
         scriptPostProcessorEnabled = UserDefaults.standard.object(forKey: "scriptPostProcessorEnabled") as? Bool ?? false
         scriptPostProcessorPath = UserDefaults.standard.string(forKey: "scriptPostProcessorPath") ?? ""
         outputTargetSettings = Self.loadOutputTargetSettings()
@@ -2303,6 +2398,21 @@ class AppState: ObservableObject {
         // there would paste the whole final text a second time.
         isLiveChunkSession = outputMode == "liveChunks"
         isAppleSpeechSession = true
+        // Spoken edit commands (MAK-19) are decided HERE, not in beginSession:
+        // this streaming path calls beginSession(streaming: false), so its
+        // isPreviewSession is always false — the gate has to read `outputMode`
+        // directly, which is authoritative on this path (both streaming engines
+        // finalize through handleAppleSpeechFinal, the interception site). Never
+        // in agent sessions (they return the raw transcript over the bridge);
+        // suppressOutput was snapshotted by the beginSession call just above. The
+        // predicate lives in VoiceEditRouter.isActive so it's unit-tested (a dead
+        // gate here is exactly the regression the reviewer caught).
+        voiceEditingActiveForSession = VoiceEditRouter.isActive(
+            outputMode: outputMode,
+            enabled: voiceEditingEnabled,
+            suppressOutput: suppressOutput
+        )
+        voiceEditBuffer = VoiceEditBuffer()
         streamingUsesWhisperKit = transcriptionEngine == "whisperKit"
         appleLiveInsertedText = ""
         appleDidCompleteFinal = false
@@ -2437,7 +2547,24 @@ class AppState: ObservableObject {
     private func handleAppleSpeechFinal(_ rawText: String) {
         guard isAppleSpeechSession, !appleDidCompleteFinal else { return }
         appleDidCompleteFinal = true
-        let finalText = postProcess(rawText.isEmpty ? streamingText : rawText, isFinalTranscript: true)
+        let rawTranscript = rawText.isEmpty ? streamingText : rawText
+
+        // Spoken edit commands (MAK-19): in a preview session with the feature on,
+        // route the recognizer's transcript through the session's edit buffer BEFORE
+        // cleanup. A standalone "scratch that" / "undo" / … then edits the pending
+        // dictation instead of being pasted as literal words; `voiceEditBuffer.text`
+        // is the dictation AFTER those edits, and the normal cleanup runs on THAT.
+        // Only the preview path reaches here with the flag set (guaranteed in
+        // beginSession), and the isLiveChunkSession delta-paste block below is
+        // skipped in preview, so nothing else changes for other modes.
+        let editedRaw: String
+        if voiceEditingActiveForSession {
+            VoiceEditRouter.route(final: rawTranscript, into: &voiceEditBuffer)
+            editedRaw = voiceEditBuffer.text
+        } else {
+            editedRaw = rawTranscript
+        }
+        let finalText = postProcess(editedRaw, isFinalTranscript: true)
 
         // liveChunks: completeFinalText only sets the clipboard for non-finalOnly, so words
         // in the final transcript that were not in the last pasted partial would be dropped.
@@ -2681,6 +2808,14 @@ class AppState: ObservableObject {
         // pasting. Snapshot from the initiator (set by the bridge before this call)
         // so a mid-session change can't alter the paste-vs-return disposition.
         suppressOutput = sessionInitiator.isAgent
+        // Spoken edit commands (MAK-19) are gated per-session, but the decision is
+        // made in startStreamingSession() — the streaming path that actually reaches
+        // the interception site (handleAppleSpeechFinal) and where `outputMode` is
+        // authoritative. Here we only DEFAULT it off + reset the buffer, so a session
+        // that never goes through that path (recording/chunk paths) can't inherit a
+        // stale flag from a prior streaming session.
+        voiceEditingActiveForSession = false
+        voiceEditBuffer = VoiceEditBuffer()
         audioLevel = 0
         recordingElapsed = 0
         recordingStartedAt = Date()
@@ -2852,7 +2987,19 @@ class AppState: ObservableObject {
                 mode: self.refinementMode("rephrase"),
                 targetLanguage: self.translationTargetLanguage,
                 endpoint: self.llmEndpoint,
-                model: self.llmModel
+                model: self.llmModel,
+                // MAK-35: apply the same intensity-tier prompt to live chunks that
+                // the whole-text final uses, so the dial is authoritative in the
+                // liveChunks output mode too (not just preview/finalOnly). `.none`
+                // never reaches here — shouldEnhanceLiveChunks gates it out. Uses the
+                // same translation-mode carve-out resolver for consistency, though in
+                // practice shouldEnhanceLiveChunks already restricts this path to the
+                // "rephrase" mode, so improveTranslation can't reach it anyway.
+                customInstruction: CleanupIntensity.wholeTextCustomInstruction(
+                    intensity: self.cleanupIntensity,
+                    mode: self.openAIEnhancementMode,
+                    translateToEnglish: self.translateToEnglish
+                )
             ) { [weak self] result in
                 Task { @MainActor in
                     // Close the engine's in-flight bracket on EVERY completion path
@@ -3283,7 +3430,9 @@ class AppState: ObservableObject {
         if suppressOutput {
             streamingText = text
             sessionOutcome = .completed(text: text)
-            recordHistory(text)
+            // Agent sessions never enhance (text == originalText), so rawText resolves
+            // to nil and no revert affordance appears — passed for consistency.
+            recordHistory(text, rawText: originalText)
             recordStats(text)
             statusMessage = "Done"
             finishSessionUI(delay: 0.8)
@@ -3376,7 +3525,11 @@ class AppState: ObservableObject {
         // / script-processed text), not step-1's raw transcript.
         lastTranscription = text
 
-        recordHistory(text)
+        // MAK-35: `originalText` is the pre-AI-cleanup transcript (the caller passes
+        // step-1's local text). Persist it as the revert baseline so the user can
+        // recover their exact words when the LLM changed them. recordHistory stores
+        // it only when it actually differs from the inserted `text`.
+        recordHistory(text, rawText: originalText)
         recordStats(text)
 
         let finalWasEnhanced = shouldEnhanceCurrentSession
@@ -3682,6 +3835,8 @@ class AppState: ObservableObject {
         isLiveChunkSession = false
         isPreviewSession = false
         isStreamingSession = false
+        voiceEditingActiveForSession = false
+        voiceEditBuffer = VoiceEditBuffer()
         // Deliver the outcome to an agent-initiated waiter exactly once. This is
         // the single terminal site for every session path (success, empty, secure
         // field, cancel, error) — abortSessionBeforeStart() also ends here — so one
@@ -3879,7 +4034,10 @@ class AppState: ObservableObject {
         // Order matters in two places: AI cleanup goes off before the provider
         // flips to "bundled" (so the didSet doesn't start a model download),
         // and modelName is set after the engine (didSet re-resolves modelPath).
-        openAIEnhancementEnabled = false
+        // Factory default: AI cleanup off (dial = .none), and reset the "restore on
+        // re-enable" memory so a later toggle-on lands on the standard default tier.
+        cleanupIntensity = .none
+        lastNonNoneCleanupIntensity = .default
         llmProvider = "bundled"
         openAIEnhancementMode = "rephrase"
         translationTargetLanguage = "en"
@@ -3892,6 +4050,7 @@ class AppState: ObservableObject {
         agentCLICustomArgsText = ""
         agentCLITimeout = 30.0
         instructionChainEnabled = true
+        voiceEditingEnabled = true
 
         triggerMode = "fn"
         refineKey = RefineKey.defaultKey.rawValue
@@ -4001,24 +4160,41 @@ class AppState: ObservableObject {
         UserDefaults.standard.set(language, forKey: "language")
         UserDefaults.standard.set(translateToEnglish, forKey: "translateToEnglish")
         UserDefaults.standard.set(outputMode, forKey: "outputMode")
-        UserDefaults.standard.set(openAIEnhancementEnabled, forKey: "openAIEnhancementEnabled")
+        // AI cleanup is now stored via the intensity dial (MAK-35), so persist THAT
+        // key — the legacy on/off boolean is a derived facade with no backing store.
+        UserDefaults.standard.set(cleanupIntensity.rawValue, forKey: "cleanupIntensity")
     }
 
     // MARK: - History
 
     /// Record a completed transcription (newest first), trimming to the cap.
-    private func recordHistory(_ text: String) {
+    ///
+    /// `rawText` (MAK-35) is the transcript BEFORE the whole-text AI cleanup pass —
+    /// the local-cleaned words the user actually said. Passing it lets the history
+    /// "revert to original" affordance recover those words when the LLM changed
+    /// them. It is stored only when it MEANINGFULLY differs from the inserted
+    /// `text`; when nothing was refined (raw == final) we store nil so
+    /// `revertTarget` correctly hides the affordance (a revert would be a no-op).
+    private func recordHistory(_ text: String, rawText: String? = nil) {
         guard historyEnabled else { return }
         // Defensive privacy guard: never persist a transcript if a secure field is
         // focused at record time. Fail-open on detection errors.
         guard !SecureFieldDetector.focusedFieldIsSecure() else { return }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
+        // Only keep a raw baseline that differs from the final text (trimmed on both
+        // sides, matching how the final is stored) — otherwise it's redundant.
+        let rawTrimmed = rawText?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let storedRaw: String? = {
+            guard let rawTrimmed, !rawTrimmed.isEmpty, rawTrimmed != trimmed else { return nil }
+            return rawTrimmed
+        }()
         let entry = TranscriptionEntry(
             text: trimmed,
             date: Date(),
             appBundleID: targetApplication?.bundleIdentifier,
-            appName: targetApplication?.localizedName
+            appName: targetApplication?.localizedName,
+            rawText: storedRaw
         )
         history.insert(entry, at: 0)
         if history.count > TranscriptionHistoryStore.maxEntries {
@@ -4068,6 +4244,38 @@ class AppState: ObservableObject {
 
     func copyHistoryEntry(_ entry: TranscriptionEntry) {
         textOutput.setClipboard(entry.text)
+    }
+
+    /// MAK-35: one-click "revert to original" for a history entry whose AI-cleanup
+    /// pass changed the words. Replaces the entry's stored `text` with its
+    /// `revertTarget` (the raw pre-cleanup transcript), copies those words to the
+    /// clipboard so the user can immediately re-paste them, and persists the change.
+    /// No-op when `revertTarget == nil` (nothing was refined, or already reverted).
+    /// Returns the reverted text so callers/tests can act on it.
+    @discardableResult
+    func revertHistoryEntry(_ entry: TranscriptionEntry) -> String? {
+        guard let raw = entry.revertTarget,
+              let idx = history.firstIndex(where: { $0.id == entry.id }) else { return nil }
+        // Rewrite in place: the reverted text becomes the entry's `text`, and its
+        // rawText is cleared so `revertTarget` now hides the affordance (you can't
+        // revert twice — the words are already the originals).
+        let old = history[idx]
+        history[idx] = TranscriptionEntry(
+            id: old.id,
+            text: raw,
+            date: old.date,
+            appBundleID: old.appBundleID,
+            appName: old.appName,
+            rawText: nil
+        )
+        TranscriptionHistoryStore.save(history)
+        // Put the original words on the clipboard so the user can paste them right
+        // away — matching how copyHistoryEntry works. Deliberately does NOT touch
+        // `lastTranscription`: that tracks the LIVE session's last output (used by
+        // the tray "copy last" / "refine last"), not an arbitrary historical entry —
+        // reverting a history row must not repoint those at the reverted words.
+        textOutput.setClipboard(raw)
+        return raw
     }
 
     // MARK: - Config import / export

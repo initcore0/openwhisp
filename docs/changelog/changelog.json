@@ -101,14 +101,14 @@
             121
           ],
           "howTo": {
-            "availability": "coming-soon",
+            "availability": "live",
             "summary": "Choose a cleanup level in Settings; revert to your exact words anytime.",
             "steps": [
-              "Open Settings › Cleanup and pick a level: None (verbatim), Low (fixes caps, punctuation, spelling), Medium (also removes fillers and lightly rephrases), or High (also resolves spoken self-corrections like “3, no wait, 4” → “4”).",
-              "Dictate as usual — the level you chose is applied automatically.",
-              "In History or the overlay, hit “revert to original” to swap the cleaned text back to your raw words."
+              "Open Settings › Cleanup › Automatic Cleanup and pick a level on the dial: None (verbatim, no AI pass), Low (fixes caps, punctuation, spelling), Medium (also removes fillers and lightly rephrases), or High (also resolves spoken self-corrections like “3, no wait, 4” → “4”).",
+              "Dictate as usual — the level you chose is applied automatically to each final transcript. None skips the AI entirely.",
+              "In Settings › Privacy › History, click the revert (↺) button next to any entry the AI reshaped to swap the cleaned text back to your raw words — the originals are copied to your clipboard."
             ],
-            "note": "The four levels and the raw-transcript revert are built and tested. The Settings dial and the revert button are landing next — today the older on/off “Improve every dictation” toggle is still what's live."
+            "note": "Live now. The dial is the single source of truth for AI cleanup — the old on/off “Improve every dictation” toggle (tray + onboarding) now just reflects it. Higher levels trade literal fidelity for polish; the revert button appears only when the AI actually changed your words. Revert currently covers the standard preview and insert-at-end dictation modes (not the live-streaming per-chunk mode, which pastes as it types) and lives in History; a one-tap revert in the post-dictation overlay is a small follow-up."
           }
         },
         {
@@ -119,23 +119,27 @@
             "MAK-19"
           ],
           "prs": [
-            117
+            117,
+            136
           ],
           "howTo": {
-            "availability": "coming-soon",
-            "summary": "Mid-dictation, just say the command as its own phrase.",
+            "availability": "live",
+            "summary": "In Preview mode, say the command on its own and it edits the pending text.",
             "steps": [
-              "Start dictation as usual (hold Fn/Globe, or Control+Space).",
-              "Pause and say a command on its own — it must be the whole phrase, so ordinary speech like “scratch the surface” is never mistaken for a command.",
-              "Release to insert the edited text."
+              "Set Settings › Output › Delivery to “Preview, then insert” (the mode that holds the text on-screen until you release the key).",
+              "Leave “Spoken edit commands” on in that same Delivery section (it’s on by default).",
+              "Dictate as usual, then pause and say a command on its own — “scratch that” drops the last thing you said, “undo” brings it back.",
+              "Release the key: the edited text is what gets inserted."
             ],
             "say": [
               "“scratch that” — drop the last thing you said",
-              "“delete last word” / “delete last sentence”",
-              "“new paragraph” / “new line”",
+              "“delete last word”",
+              "“delete last sentence”",
+              "“new paragraph”",
+              "“new line”",
               "“undo” — reverse the last edit"
             ],
-            "note": "The command parser (case- and punctuation-tolerant, including … and curly quotes) is shipped and tested. Connecting it to live dictation is the next step — until then, these phrases are typed literally rather than acted on."
+            "note": "Works in Preview mode (the text is held until release, so an edit can still change it). A command is recognized only when the WHOLE phrase is spoken on its own — say it as its own short utterance, with a pause, so the recognizer punctuates it as a separate sentence. A command buried inside a longer phrase (“finish the report scratch that let me redo”) is left as plain text on purpose, so ordinary speech like “scratch the surface” is never eaten. Parser is case- and punctuation-tolerant (including … and curly quotes)."
           }
         },
         {
