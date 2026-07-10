@@ -1,22 +1,44 @@
 {
   "$schema": "./changelog.schema.md",
   "project": "OpenWhisp",
-  "generated": "2026-07-09",
+  "generated": "2026-07-10",
   "releases": [
     {
       "id": "2026-07",
       "title": "July 2026",
-      "date": "2026-07-09",
-      "summary": "A batch of new features, fixes, and under-the-hood hardening — all landed on main, all covered by tests, all on your machine. All thirteen new features are live today: batch file transcription with watch folders, hands-free (tap-to-lock) dictation, adjustable AI cleanup, voice editing, a self-learning dictionary, rich local formatting, spoken-filename @-mentions for code editors, agent-CLI cleanup, output targets that route a dictation to a file/Shortcut/webhook, and an openwhisp:// URL scheme so Raycast, Alfred, or any launcher can drive dictation.",
+      "date": "2026-07-10",
+      "summary": "A batch of new features, fixes, and under-the-hood hardening — all landed on main, all covered by tests, all on your machine. All fourteen new features are live today: opt-in on-device audio retention with one-click re-transcription and an auto-cleanup policy, batch file transcription with watch folders, hands-free (tap-to-lock) dictation, adjustable AI cleanup, voice editing, a self-learning dictionary, rich local formatting, spoken-filename @-mentions for code editors, agent-CLI cleanup, output targets that route a dictation to a file/Shortcut/webhook, and an openwhisp:// URL scheme so Raycast, Alfred, or any launcher can drive dictation.",
       "stats": {
-        "changesShipped": 23,
-        "newFeatures": 13,
-        "testsPassing": 1078,
+        "changesShipped": 24,
+        "newFeatures": 14,
+        "testsPassing": 1099,
         "onDevicePercent": 100,
-        "newFeaturesLive": 13,
+        "newFeaturesLive": 14,
         "newFeaturesCorePending": 0
       },
       "entries": [
+        {
+          "category": "feature",
+          "headline": "Keep your dictation audio on-device — re-transcribe any past dictation, with an auto-cleanup policy",
+          "body": "Turn on opt-in audio retention and OpenWhisp saves each dictation's raw audio on this Mac — and only this Mac; it never leaves the device. A re-transcribe button on any saved history entry runs that audio back through your current engine (handy after you switch or upgrade a model) and keeps the old text as a one-click revert. A retention policy sweeps automatically: keep at most N clips and/or delete audio + history older than N days. Retention is OFF by default, and turning it off deletes every saved clip. The cleanup only ever removes files OpenWhisp itself created.",
+          "tickets": [
+            "MAK-40"
+          ],
+          "prs": [],
+          "howTo": {
+            "availability": "live",
+            "summary": "Settings › Privacy › turn on “Keep raw audio for re-transcription”, set the clip/day caps, then use the re-transcribe button on any saved history entry.",
+            "steps": [
+              "Open Settings › Privacy & Permissions › History.",
+              "Turn on “Keep transcription history” (needed to associate audio with an entry), then turn on “Keep raw audio for re-transcription”. It's off by default — the audio stays on this Mac and is never uploaded.",
+              "Set the policy: “Keep at most N clips” and/or “Delete audio + history after N days” (0 = no cap). The sweep runs after each dictation and on launch.",
+              "Dictate as usual (standard hold-to-talk sessions). Each dictation's audio is saved beside its history entry.",
+              "On a saved entry, click the re-transcribe (waveform) button to run its audio through your current engine again; the new text replaces the old, and the revert arrow restores the previous words.",
+              "Turn the toggle off (or use Clear History) to delete every saved clip immediately."
+            ],
+            "note": "On-device only — audio never leaves your Mac. Retention covers standard hold-to-talk dictations (which produce a single whole-session recording); live-chunk/streaming sessions aren't retained yet. Crash recovery of an interrupted in-progress recording is scaffolded and tested in core but not yet wired to a launch prompt — that's a follow-up; retention, re-transcribe, and the cleanup policy are live now."
+          }
+        },
         {
           "category": "feature",
           "headline": "Drop in an audio or video file — batch transcription with a live queue and subtitle export",

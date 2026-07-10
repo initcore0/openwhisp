@@ -34,6 +34,8 @@ let package = Package(
                 "PostProcessor.swift",
                 "AppProfile.swift",
                 "TranscriptionHistory.swift",
+                "AudioRetentionPolicy.swift",
+                "CrashRecoveryState.swift",
                 "SecureFieldPolicy.swift",
                 "DownloadProgressFormatter.swift",
                 "PrivacyStatus.swift",
