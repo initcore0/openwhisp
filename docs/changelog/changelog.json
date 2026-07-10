@@ -11,7 +11,7 @@
       "stats": {
         "changesShipped": 21,
         "newFeatures": 11,
-        "testsPassing": 1014,
+        "testsPassing": 1032,
         "onDevicePercent": 100,
         "newFeaturesLive": 11,
         "newFeaturesCorePending": 0
