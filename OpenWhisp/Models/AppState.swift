@@ -105,6 +105,16 @@ class AppState: ObservableObject {
         }
     }
 
+    /// Selected mouse-button dictation trigger (MouseTrigger id, e.g. "mouse2";
+    /// "off" disables it). Shares the hold/toggle activation with the key trigger
+    /// (MAK-42).
+    @Published var mouseTrigger: String {
+        didSet {
+            UserDefaults.standard.set(mouseTrigger, forKey: "mouseTrigger")
+            hotkeyMonitor?.mouseTrigger = mouseTrigger
+        }
+    }
+
     @Published var outputMode: String {
         didSet { persist(outputMode, "outputMode") }
     }
@@ -1011,6 +1021,13 @@ class AppState: ObservableObject {
     /// them for the current session, so they can be restored when it ends.
     private var profileOverrideBackup: (language: String, translateToEnglish: Bool, outputMode: String, aiCleanup: Bool)?
 
+    /// A per-app profile's text-insert method for the CURRENT session (MAK-42), or
+    /// nil when no profile overrides it. Kept separate from the persisted global
+    /// `insertionMode` (unlike the other overrides it isn't a published setting the
+    /// UI mirrors), so it's a plain session-scoped value: set on profile apply,
+    /// cleared on restore, and preferred by `currentInsertionMode`.
+    private var sessionInsertionModeOverride: InsertionMode?
+
     /// While a per-app profile override is in effect, don't persist the overridden
     /// settings to UserDefaults — otherwise a crash/force-quit mid-session would
     /// leave the profile's values as the user's globals on next launch.
@@ -1046,7 +1063,9 @@ class AppState: ObservableObject {
     }
 
     private var currentInsertionMode: InsertionMode {
-        InsertionMode(rawValue: insertionMode) ?? .auto
+        // A per-app profile can override the insert method for the session (MAK-42);
+        // otherwise use the global setting.
+        sessionInsertionModeOverride ?? InsertionMode(rawValue: insertionMode) ?? .auto
     }
 
     /// The active LLM endpoint for post-processing, derived from the provider setting.
@@ -1257,6 +1276,7 @@ class AppState: ObservableObject {
         // Left Control: the old rightControl default doesn't exist on MacBook
         // keyboards, which made refine silently impossible there.
         refineKey = UserDefaults.standard.string(forKey: "refineKey") ?? RefineKey.defaultKey.rawValue
+        mouseTrigger = UserDefaults.standard.string(forKey: "mouseTrigger") ?? MouseTrigger.defaultTrigger.id
         outputMode = UserDefaults.standard.string(forKey: "outputMode") ?? "preview"
         showOverlay = UserDefaults.standard.object(forKey: "showOverlay") as? Bool ?? true
         voiceIndicatorStyle = VoiceIndicatorStyle.from(UserDefaults.standard.string(forKey: "voiceIndicatorStyle"))
@@ -1523,6 +1543,7 @@ class AppState: ObservableObject {
         hotkeyMonitor.triggerMode = triggerMode
         hotkeyMonitor.hotkeyMode = hotkeyMode
         hotkeyMonitor.refineKey = refineKey
+        hotkeyMonitor.mouseTrigger = mouseTrigger
         hotkeyMonitor.onPermissionStateChanged = { [weak self] isGranted in
             Task { @MainActor in
                 self?.inputMonitoringPermissionLabel = isGranted ? "Granted" : "Needs permission"
@@ -4273,6 +4294,7 @@ class AppState: ObservableObject {
         hotkeyMode = "hold"
         handsFreeSilenceAutoStop = true
         refineKey = RefineKey.defaultKey.rawValue
+        mouseTrigger = MouseTrigger.defaultTrigger.id
         microphoneID = ""
         autoGainEnabled = true
         language = "auto"
@@ -4355,16 +4377,23 @@ class AppState: ObservableObject {
         suppressSettingsPersistence = true
         let resolved = ProfileResolver.resolve(profile: profile, over: .init(
             language: language, translateToEnglish: translateToEnglish,
-            outputMode: outputMode, aiCleanupEnabled: openAIEnhancementEnabled
+            outputMode: outputMode, aiCleanupEnabled: openAIEnhancementEnabled,
+            insertionMode: insertionMode
         ))
         language = resolved.language
         translateToEnglish = resolved.translateToEnglish
         outputMode = resolved.outputMode
         openAIEnhancementEnabled = resolved.aiCleanupEnabled
+        // The insert method is session-scoped, not a persisted published setting —
+        // stash it for currentInsertionMode; only when the profile actually changes
+        // it from the global (else stay nil so nothing to restore).
+        let resolvedInsert = InsertionMode.from(id: resolved.insertionMode)
+        sessionInsertionModeOverride = resolvedInsert.rawValue == insertionMode ? nil : resolvedInsert
     }
 
     /// Restore any settings a profile overrode for the just-finished session.
     private func restoreProfileOverridesIfNeeded() {
+        sessionInsertionModeOverride = nil
         guard let backup = profileOverrideBackup else { return }
         profileOverrideBackup = nil
         // Re-enable persistence so restoring the originals writes them back.

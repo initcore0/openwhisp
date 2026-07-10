@@ -1,22 +1,42 @@
 {
   "$schema": "./changelog.schema.md",
   "project": "OpenWhisp",
-  "generated": "2026-07-09",
+  "generated": "2026-07-10",
   "releases": [
     {
       "id": "2026-07",
       "title": "July 2026",
-      "date": "2026-07-09",
-      "summary": "A batch of new features, fixes, and under-the-hood hardening — all landed on main, all covered by tests, all on your machine. All thirteen new features are live today: batch file transcription with watch folders, hands-free (tap-to-lock) dictation, adjustable AI cleanup, voice editing, a self-learning dictionary, rich local formatting, spoken-filename @-mentions for code editors, agent-CLI cleanup, output targets that route a dictation to a file/Shortcut/webhook, and an openwhisp:// URL scheme so Raycast, Alfred, or any launcher can drive dictation.",
+      "date": "2026-07-10",
+      "summary": "A batch of new features, fixes, and under-the-hood hardening — all landed on main, all covered by tests, all on your machine. All fourteen new features are live today: batch file transcription with watch folders, hands-free (tap-to-lock) dictation, adjustable AI cleanup, voice editing, a self-learning dictionary, rich local formatting, spoken-filename @-mentions for code editors, agent-CLI cleanup, output targets that route a dictation to a file/Shortcut/webhook, an openwhisp:// URL scheme so Raycast, Alfred, or any launcher can drive dictation, plus an AppleScript keystroke insert method and mouse-button dictation triggers.",
       "stats": {
-        "changesShipped": 23,
-        "newFeatures": 13,
-        "testsPassing": 1078,
+        "changesShipped": 24,
+        "newFeatures": 14,
+        "testsPassing": 1097,
         "onDevicePercent": 100,
-        "newFeaturesLive": 13,
+        "newFeaturesLive": 14,
         "newFeaturesCorePending": 0
       },
       "entries": [
+        {
+          "category": "feature",
+          "headline": "Two new ways to get your words in: an AppleScript keystroke insert method and mouse-button triggers",
+          "body": "Some apps mangle the usual paste (⌘V) and direct-insert methods — Electron apps, remote-desktop (VNC) windows, and non-QWERTY keyboard layouts. A new AppleScript keystroke insert method types your transcript in as if from the keyboard, which those surfaces accept; pick it globally or per-app. And you can now bind a non-primary mouse button (middle, or a side button) as a dictation trigger, using the same hold or hands-free style as your trigger key.",
+          "tickets": [
+            "MAK-42"
+          ],
+          "prs": [],
+          "howTo": {
+            "availability": "live",
+            "summary": "Settings › Output › Insertion → “AppleScript keystroke”, and Settings › Dictation › Activation → “Mouse-button trigger”. Both can also be set per-app under Per-App Profiles.",
+            "steps": [
+              "Insert method: Settings › Output › Insertion → choose “AppleScript keystroke” if paste/direct insert misbehaves in an app (Electron, VNC, non-QWERTY).",
+              "Per-app override: Settings › Per-App Profiles → add the app and set its “Insert” column (Inherit / Auto / Direct / Paste / AppleScript).",
+              "Mouse trigger: Settings › Dictation › Activation → “Mouse-button trigger” → pick Middle button or a side button (Mouse 4-10). “Off” disables it.",
+              "The mouse trigger uses your existing activation style — hold to talk, or tap to lock hands-free."
+            ],
+            "note": "The AppleScript method never touches the clipboard, and your transcript is always safely escaped into the script (quotes, backslashes, and newlines can't break or inject it) — it falls back to paste if the script can't run (grant Accessibility/Automation permission if prompted). The left and right mouse buttons are deliberately not bindable, since they're needed for normal clicking."
+          }
+        },
         {
           "category": "feature",
           "headline": "Drop in an audio or video file — batch transcription with a live queue and subtitle export",

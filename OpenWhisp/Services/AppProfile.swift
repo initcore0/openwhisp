@@ -17,6 +17,11 @@ struct AppProfile: Codable, Identifiable, Equatable {
     var language: String?          // "auto","en",...
     var outputMode: String?        // "finalOnly","liveChunks","preview"
     var aiCleanupEnabled: Bool?    // overrides openAIEnhancementEnabled
+    /// Per-app text-insert method override (MAK-42): an `InsertionMode` raw value
+    /// ("auto","directAX","paste","appleScript"). nil = inherit the global. Lets a
+    /// user force AppleScript keystroke for an Electron/VNC app that mangles the
+    /// global paste/AX method, while everything else keeps the global default.
+    var insertionMode: String?
 
     init(
         id: UUID = UUID(),
@@ -24,7 +29,8 @@ struct AppProfile: Codable, Identifiable, Equatable {
         displayName: String,
         language: String? = nil,
         outputMode: String? = nil,
-        aiCleanupEnabled: Bool? = nil
+        aiCleanupEnabled: Bool? = nil,
+        insertionMode: String? = nil
     ) {
         self.id = id
         self.appBundleID = appBundleID
@@ -32,6 +38,7 @@ struct AppProfile: Codable, Identifiable, Equatable {
         self.language = language
         self.outputMode = outputMode
         self.aiCleanupEnabled = aiCleanupEnabled
+        self.insertionMode = insertionMode
     }
 }
 

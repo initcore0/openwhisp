@@ -45,6 +45,15 @@ final class TextInserter: TextOutput {
             switch mode {
             case .paste:
                 outcome = pasteWithSafetyNet(text, restoreClipboard: restoreClipboard)
+            case .appleScript:
+                // Type via System Events keystroke — for apps that mangle ⌘V and
+                // AX (Electron, VNC, non-QWERTY). Never touches the clipboard. Fall
+                // back to paste (its own safety net) if the script can't run.
+                if Self.insertViaAppleScript(text) {
+                    outcome = .inserted
+                } else {
+                    outcome = pasteWithSafetyNet(text, restoreClipboard: restoreClipboard)
+                }
             case .directAX, .auto:
                 // Try verified AX first; fall back to paste (with its own safety net)
                 // when AX is unsupported or its result can't be confirmed.
@@ -192,6 +201,23 @@ final class TextInserter: TextOutput {
         case .some(false): return false   // contradicted → fall back
         default:           return true    // verified, or unverifiable (trust setErr)
         }
+    }
+
+    // MARK: - AppleScript keystroke insertion
+
+    /// Type `text` into the frontmost app via AppleScript / System Events
+    /// `keystroke` (MAK-42). The transcript is embedded ONLY as the safely-escaped
+    /// AppleScript string literal built by `AppleScriptInsert` (never interpolated
+    /// into script source unescaped), so quotes / backslashes / newlines in the
+    /// transcript can't break or inject script. Returns false when the script
+    /// couldn't run (no Accessibility/Automation permission, compile/exec error) so
+    /// the caller falls back to paste rather than dropping text.
+    private static func insertViaAppleScript(_ text: String) -> Bool {
+        let source = AppleScriptInsert.keystrokeScript(for: text)
+        guard let script = NSAppleScript(source: source) else { return false }
+        var error: NSDictionary?
+        script.executeAndReturnError(&error)
+        return error == nil
     }
 
     // MARK: - AX read helper
