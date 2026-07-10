@@ -101,14 +101,14 @@ enum SubtitleFormatter {
     }
 
     private static func timestamp(_ seconds: Double, msSeparator: String) -> String {
-        let total = max(0, seconds)
-        let hours = Int(total) / 3600
-        let minutes = (Int(total) % 3600) / 60
-        let secs = Int(total) % 60
-        let millis = Int((total - Double(Int(total))) * 1000.0 + 0.5)
-        // Guard rounding to 1000ms.
-        let (s2, ms2) = millis >= 1000 ? (secs + 1, 0) : (secs, millis)
-        return String(format: "%02d:%02d:%02d%@%03d", hours, minutes, s2, msSeparator, ms2)
+        // Round to whole milliseconds FIRST, then derive the fields, so a value
+        // like 59.9996 rolls over to 00:01:00,000 (not the invalid 00:00:60,000).
+        let totalMs = Int((max(0, seconds) * 1000.0).rounded())
+        let hours = totalMs / 3_600_000
+        let minutes = (totalMs % 3_600_000) / 60_000
+        let secs = (totalMs % 60_000) / 1000
+        let millis = totalMs % 1000
+        return String(format: "%02d:%02d:%02d%@%03d", hours, minutes, secs, msSeparator, millis)
     }
 }
 

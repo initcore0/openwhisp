@@ -78,6 +78,11 @@ struct WatchFolderPolicy {
     /// True if the path has already been enqueued/seen.
     func hasSeen(_ path: String) -> Bool { seen.contains(path) }
 
+    /// All seen paths, for persistence across launches (a watched file already
+    /// transcribed must not be re-enqueued on restart even after its queue row
+    /// was cleared).
+    var seenPaths: Set<String> { seen }
+
     /// Record that a path has been enqueued so it's never picked up again.
     mutating func markSeen(_ path: String) { seen.insert(path) }
 

@@ -771,7 +771,24 @@ class AppState: ObservableObject {
             languageSetting: engineLanguageSetting,
             backend: whisperBackend == "serverAPI" ? .serverAPI : .cli,
             prompt: customVocabularyEnabled ? vocabulary.whisperPrompt : "",
-            enhance: nil
+            enhance: llmConfigured ? { [weak self] raw in
+                // Reuse the overlay-refine LLM primitive. Fail-open: any error
+                // (LLM busy, unavailable, mid-dictation) returns the raw text.
+                await withCheckedContinuation { cont in
+                    Task { @MainActor in
+                        guard let self else { cont.resume(returning: raw); return }
+                        self.refineText(
+                            text: raw,
+                            instruction: "Clean up this transcript: fix punctuation, casing, and obvious transcription mistakes. Keep the wording and meaning; do not summarize or omit content."
+                        ) { result in
+                            switch result {
+                            case .success(let enhanced): cont.resume(returning: enhanced)
+                            case .failure: cont.resume(returning: raw)
+                            }
+                        }
+                    }
+                }
+            } : nil
         )
     }
     var appleSpeechEngine: StreamingTranscriptionEngine!

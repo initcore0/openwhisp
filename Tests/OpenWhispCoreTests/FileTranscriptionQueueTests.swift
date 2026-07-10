@@ -152,4 +152,33 @@ final class FileTranscriptionQueueTests: XCTestCase {
         let back = try JSONDecoder().decode(FileTranscriptionJob.self, from: data)
         XCTAssertEqual(back, j)
     }
+
+    func testFinishEnhancingCollapsesToFullSpanChunk() {
+        var q = FileTranscriptionQueue(enhanceEnabled: true)
+        let j = FileTranscriptionJob(sourcePath: "/tmp/long.mp4")
+        q.add(j)
+        q.beginLoading(j.id, duration: 70, chunkSeconds: 30)
+        q.beginTranscribing(j.id)
+        for i in 0..<3 { q.completeChunk(j.id, chunkIndex: i, text: "part \(i)") }
+        XCTAssertTrue(q.finishTranscription(j.id))
+        q.finishEnhancing(j.id, enhancedText: "Whole polished transcript.")
+        let done = q.job(j.id)!
+        // Enhance rewrites the whole transcript, so per-chunk timing no longer
+        // applies: the plan collapses to one full-duration cue.
+        XCTAssertEqual(done.chunks, [FileChunkPlan(index: 0, start: 0, end: 70)])
+        let srt = SubtitleFormatter.render(.srt, chunks: done.chunks, chunkTexts: done.chunkTexts)
+        XCTAssertTrue(srt.contains("00:00:00,000 --> 00:01:10,000\nWhole polished transcript."))
+    }
+
+    func testRemoveActiveJobLeavesQueueSchedulable() {
+        var q = FileTranscriptionQueue()
+        let a = FileTranscriptionJob(sourcePath: "/tmp/a.mp3")
+        let b = FileTranscriptionJob(sourcePath: "/tmp/b.mp3")
+        q.add(a); q.add(b)
+        q.beginLoading(a.id, duration: 5)
+        XCTAssertNil(q.next())
+        q.remove(a.id)
+        // With the active job gone, the queue must schedule the next one.
+        XCTAssertEqual(q.next()?.id, b.id)
+    }
 }

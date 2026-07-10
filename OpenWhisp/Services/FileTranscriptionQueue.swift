@@ -289,16 +289,17 @@ struct FileTranscriptionQueue: Equatable {
         return false
     }
 
-    /// Replace the transcript with an enhanced version and mark done. The enhanced
-    /// text is stored as chunk 0's text (clearing the rest) so `fullText` reflects
-    /// it while keeping per-chunk timing available via `chunks` for subtitle export.
+    /// Replace the transcript with an enhanced version and mark done. Enhancement
+    /// rewrites the transcript as a whole, so per-chunk alignment no longer holds:
+    /// the chunk plan is collapsed to a single full-duration chunk carrying the
+    /// enhanced text, so `fullText` reflects it and a subsequent SRT/VTT export
+    /// emits one whole-file cue instead of misattributing the full text to the
+    /// first 30-second window.
     mutating func finishEnhancing(_ id: UUID, enhancedText: String) {
         guard let i = index(of: id) else { return }
-        if let first = jobs[i].chunks.first {
-            jobs[i].chunkTexts = [first.index: enhancedText]
-        } else {
-            jobs[i].chunkTexts = [0: enhancedText]
-        }
+        let end = max(jobs[i].durationSeconds, jobs[i].chunks.last?.end ?? 0)
+        jobs[i].chunks = [FileChunkPlan(index: 0, start: 0, end: end)]
+        jobs[i].chunkTexts = [0: enhancedText]
         jobs[i].stage = .done
     }
 

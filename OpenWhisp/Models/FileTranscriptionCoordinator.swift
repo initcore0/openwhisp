@@ -37,12 +37,21 @@ final class FileTranscriptionCoordinator: ObservableObject {
     private var engine: FileTranscriptionEngine?
     private let monitor = WatchFolderMonitor()
     private var watchPolicy = WatchFolderPolicy(debounceSeconds: 2.0)
+    /// User's "Enhance with the LLM" toggle. Effective enhance for a job is this
+    /// AND an enhance closure actually being configured.
+    private var enhanceRequested = false
+    /// Pending debounce retry so a file observed mid-copy is re-checked once it
+    /// settles (FSEvents won't necessarily fire again after the copy finishes).
+    private var debounceRetryScheduled = false
 
     // Per-active-job working state.
     private var activeJobID: UUID?
     private var chunkWAVs: [Int: URL] = [:]           // chunkIndex -> decoded WAV
     private var requestToChunk: [UUID: Int] = [:]     // engine requestID -> chunkIndex
     private var workDir: URL?
+    /// Last engine error seen for the active job (a chunk error yields empty
+    /// text; if the whole job produced nothing, this becomes the failure).
+    private var lastChunkError: String?
 
     private let store: URL
 
@@ -67,8 +76,18 @@ final class FileTranscriptionCoordinator: ObservableObject {
     }
 
     func removeJob(_ id: UUID) {
-        if id == activeJobID { /* let it finish; just drop from view after */ }
         queue.remove(id)
+        if id == activeJobID {
+            // Cancel the in-flight job: tear down its engine/work dir and clear
+            // the active slot, otherwise the scheduler is stalled forever (its
+            // chunk callbacks would no-op against the removed job and
+            // `activeJobID` would never clear).
+            engine?.stopServer()
+            engine = nil
+            cleanupWork()
+            activeJobID = nil
+            pump()
+        }
         persist()
     }
 
@@ -77,8 +96,10 @@ final class FileTranscriptionCoordinator: ObservableObject {
         persist()
     }
 
-    /// Toggle the LLM enhance pass for future jobs.
+    /// Toggle the LLM enhance pass for future jobs. Takes effect when each job
+    /// starts (combined with whether an enhance closure is actually configured).
     func setEnhanceEnabled(_ on: Bool) {
+        enhanceRequested = on
         queue.enhanceEnabled = on
     }
 
@@ -141,6 +162,27 @@ final class FileTranscriptionCoordinator: ObservableObject {
             persist()
             pump()
         }
+        scheduleDebounceRetryIfNeeded(events)
+    }
+
+    /// A file observed mid-copy fails the quiescence debounce, and FSEvents may
+    /// not fire again once the copy finishes (the last write IS the last event).
+    /// If any unseen supported file was skipped only because it wasn't quiet yet,
+    /// re-check the watched folders once after the debounce window has passed.
+    private func scheduleDebounceRetryIfNeeded(_ events: [WatchedFileEvent]) {
+        guard !debounceRetryScheduled else { return }
+        let pendingDebounce = events.contains { event in
+            SupportedMediaExtensions.isSupported(path: event.path)
+                && !watchPolicy.hasSeen(event.path)
+                && !watchPolicy.isEligible(event)
+        }
+        guard pendingDebounce else { return }
+        debounceRetryScheduled = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak self] in
+            guard let self else { return }
+            self.debounceRetryScheduled = false
+            self.monitor.rescanNow()
+        }
     }
 
     // MARK: - Scheduler
@@ -155,7 +197,8 @@ final class FileTranscriptionCoordinator: ObservableObject {
     private func startJob(_ job: FileTranscriptionJob) {
         let source = URL(fileURLWithPath: job.sourcePath)
         let cfg = engineConfig()
-        queue.enhanceEnabled = cfg.enhance != nil
+        // Enhance runs only when the user asked for it AND an LLM pass is wired.
+        queue.enhanceEnabled = enhanceRequested && cfg.enhance != nil
 
         Task { [weak self] in
             guard let self else { return }
@@ -172,6 +215,11 @@ final class FileTranscriptionCoordinator: ObservableObject {
                 await MainActor.run { self.workDir = dir; self.chunkWAVs = [:] }
 
                 for chunk in plan {
+                    // Stop decoding if the job was removed/cancelled meanwhile.
+                    guard await MainActor.run(body: { self.activeJobID == job.id }) else {
+                        try? FileManager.default.removeItem(at: dir)
+                        return
+                    }
                     let wav = dir.appendingPathComponent("chunk-\(chunk.index).wav")
                     try await MediaFileDecoder.decodeRange(
                         source: source, start: chunk.start,
@@ -182,12 +230,19 @@ final class FileTranscriptionCoordinator: ObservableObject {
                 }
                 await MainActor.run { self.beginEngineWork(job.id, config: cfg, plan: plan) }
             } catch {
-                await MainActor.run { self.failActive(error.localizedDescription) }
+                await MainActor.run {
+                    // Only fail if this job is still the active one (it may have
+                    // been removed/cancelled while decoding).
+                    guard self.activeJobID == job.id else { return }
+                    self.failActive(error.localizedDescription)
+                }
             }
         }
     }
 
     private func beginEngineWork(_ jobID: UUID, config: EngineConfig, plan: [FileChunkPlan]) {
+        // The job may have been removed (cancelled) while decode was running.
+        guard activeJobID == jobID, queue.job(jobID) != nil else { return }
         let engine = config.makeEngine()
         self.engine = engine
         requestToChunk = [:]
@@ -222,10 +277,17 @@ final class FileTranscriptionCoordinator: ObservableObject {
 
     private func handleChunkComplete(requestID: UUID, text: String, config: EngineConfig, error: String? = nil) {
         guard let jobID = activeJobID, let chunkIndex = requestToChunk.removeValue(forKey: requestID) else { return }
+        if let error { lastChunkError = error }
         queue.completeChunk(jobID, chunkIndex: chunkIndex, text: text)
 
         guard let job = queue.job(jobID), job.allChunksComplete else {
             persist(); return
+        }
+        // If nothing transcribed and at least one chunk errored, the "transcript"
+        // is really a failure — surface it instead of a silent empty Done.
+        if job.fullText.isEmpty, let chunkError = lastChunkError {
+            failActive(chunkError)
+            return
         }
         // All chunks done → transcription finished.
         let needsEnhance = queue.finishTranscription(jobID)
@@ -264,6 +326,7 @@ final class FileTranscriptionCoordinator: ObservableObject {
         workDir = nil
         chunkWAVs = [:]
         requestToChunk = [:]
+        lastChunkError = nil
     }
 
     // MARK: - Persistence
@@ -271,6 +334,10 @@ final class FileTranscriptionCoordinator: ObservableObject {
     private struct Persisted: Codable {
         var jobs: [FileTranscriptionJob]
         var watchFolders: [WatchFolder]
+        /// Watch-folder paths already enqueued once — survives restarts so a
+        /// transcribed file still sitting in the folder isn't re-enqueued after
+        /// its queue row was cleared.
+        var seenWatchPaths: Set<String>?
     }
 
     private func loadPersisted() {
@@ -283,10 +350,17 @@ final class FileTranscriptionCoordinator: ObservableObject {
         }
         queue = FileTranscriptionQueue(jobs: restored, enhanceEnabled: queue.enhanceEnabled)
         watchFolders = data.watchFolders
+        watchPolicy = WatchFolderPolicy(
+            debounceSeconds: watchPolicy.debounceSeconds,
+            seen: data.seenWatchPaths ?? []
+        )
     }
 
     private func persist() {
-        JSONStore.save(Persisted(jobs: queue.jobs, watchFolders: watchFolders), to: store, label: "file-queue")
+        JSONStore.save(
+            Persisted(jobs: queue.jobs, watchFolders: watchFolders, seenWatchPaths: watchPolicy.seenPaths),
+            to: store, label: "file-queue"
+        )
     }
 
     private static func defaultStoreURL() -> URL {

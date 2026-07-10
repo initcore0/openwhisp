@@ -81,4 +81,12 @@ final class SubtitleFormatterTests: XCTestCase {
             "/out/talk.vtt"
         )
     }
+
+    func testTimestampMillisecondRolloverCascades() {
+        // 59.9996 rounds to 60_000 ms and must cascade into the minute field,
+        // never render the invalid "00:00:60,000".
+        XCTAssertEqual(SubtitleFormatter.srtTimestamp(59.9996), "00:01:00,000")
+        XCTAssertEqual(SubtitleFormatter.vttTimestamp(3599.9996), "01:00:00.000")
+        XCTAssertEqual(SubtitleFormatter.srtTimestamp(61.5), "00:01:01,500")
+    }
 }

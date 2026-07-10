@@ -62,6 +62,12 @@ final class WatchFolderMonitor {
 
     deinit { stop() }
 
+    /// Re-examine the watched folders now (used for a debounce retry after a
+    /// file was observed mid-copy — FSEvents may not fire again once it settles).
+    func rescanNow() {
+        queue.async { [weak self] in self?.rescan() }
+    }
+
     private func rescan() {
         let fm = FileManager.default
         var observed: [WatchedFileEvent] = []
