@@ -9,9 +9,9 @@
       "date": "2026-07-09",
       "summary": "A batch of new features, fixes, and under-the-hood hardening — all landed on main, all covered by tests, all on your machine. All ten new features are live in Settings today: adjustable AI cleanup, voice editing, a self-learning dictionary, rich local formatting, spoken-filename @-mentions for code editors, agent-CLI cleanup, and output targets that route a dictation to a file, a macOS Shortcut, or a webhook.",
       "stats": {
-        "changesShipped": 19,
+        "changesShipped": 20,
         "newFeatures": 10,
-        "testsPassing": 983,
+        "testsPassing": 987,
         "onDevicePercent": 100,
         "newFeaturesLive": 10,
         "newFeaturesCorePending": 0
@@ -325,6 +325,15 @@
           "prs": [
             114
           ]
+        },
+        {
+          "category": "fix",
+          "headline": "Onboarding catches a dead hotkey before you test it",
+          "body": "The setup flow now does a live Input Monitoring check on the hotkey step. If OpenWhisp can't detect key presses, you get an inline “Open System Settings → Input Monitoring” fix that re-checks itself — so you never reach the “try it” step with a push-to-talk key that silently can't fire.",
+          "tickets": [
+            "MAK-24"
+          ],
+          "prs": []
         },
         {
           "category": "improvement",

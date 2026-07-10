@@ -251,9 +251,9 @@
   </header>
 
   <div class="stats">
-    <div class="stat"><div class="n">19</div><div class="k">changes shipped</div></div>
+    <div class="stat"><div class="n">20</div><div class="k">changes shipped</div></div>
     <div class="stat"><div class="n">10<small> live</small></div><div class="k">new features</div></div>
-    <div class="stat"><div class="n">983</div><div class="k">tests passing</div></div>
+    <div class="stat"><div class="n">987</div><div class="k">tests passing</div></div>
     <div class="stat"><div class="n">100<small>%</small></div><div class="k">on-device</div></div>
   </div>
 
@@ -548,7 +548,7 @@
     <div class="sec-head">
       <span class="dot fix"></span>
       <h2>Fixes</h2>
-      <span class="count">6 shipped</span>
+      <span class="count">7 shipped</span>
     </div>
     <ul class="entries">
       <li class="entry">
@@ -581,6 +581,11 @@
         <p>The CoreAudio listener that notices when you plug in a mic now removes itself symmetrically — no lingering, unremovable observer.</p>
         <div class="receipts"><span class="tag ticket">MAK-33</span><span class="tag pr">#114</span></div>
       </li>
+      <li class="entry">
+        <h3>Onboarding catches a dead hotkey before you test it</h3>
+        <p>The setup flow now does a live Input Monitoring check on the hotkey step. If OpenWhisp can't detect key presses, you get an inline “Open System Settings → Input Monitoring” fix that re-checks itself — so you never reach the “try it” step with a push-to-talk key that silently can't fire.</p>
+        <div class="receipts"><span class="tag ticket">MAK-24</span></div>
+      </li>
     </ul>
   </section>
 
@@ -604,7 +609,7 @@
       </li>
       <li class="entry">
         <h3>End-to-end audio testing, so features stay working</h3>
-        <p>A full regression suite now feeds pre-recorded audio through the whole pipeline — the reason "983 tests passing" is more than a number. Every feature above ships with coverage.</p>
+        <p>A full regression suite now feeds pre-recorded audio through the whole pipeline — the reason "987 tests passing" is more than a number. Every feature above ships with coverage.</p>
         <div class="receipts"><span class="tag ticket">E2E</span><span class="tag pr">#107–110</span></div>
       </li>
     </ul>

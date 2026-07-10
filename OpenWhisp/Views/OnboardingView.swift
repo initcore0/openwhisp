@@ -18,6 +18,9 @@ struct OnboardingView: View {
     // Live permission mirrors, refreshed by a poll timer while the window is open.
     @State private var micGranted = false
     @State private var accessibilityGranted = false
+    // Live Input-Monitoring status, refreshed by the same poll timer. Drives the
+    // hotkey step's readiness and the "try it" hotkey-is-dead guard (MAK-24).
+    @State private var inputMonitoringStatus: OnboardingHotkeyGate.InputMonitoringStatus = .unknown
 
     private let pollTimer = Timer.publish(every: 1.0, on: .main, in: .common).autoconnect()
 
@@ -192,7 +195,46 @@ struct OnboardingView: View {
                 Text(appState.hotkeyHelpText)
                     .font(.caption)
                     .foregroundColor(.secondary)
+
+                inputMonitoringStatusBlock
             }
+        }
+    }
+
+    /// Live Input-Monitoring status for the hotkey step. Without this grant the
+    /// global push-to-talk CGEventTap never fires, so the very first hotkey — and
+    /// the "try it" test — silently do nothing (MAK-24). We surface the state and
+    /// an inline fix; the 1 Hz poll re-checks so it clears the moment the user
+    /// enables OpenWhisp in System Settings and returns.
+    @ViewBuilder private var inputMonitoringStatusBlock: some View {
+        switch OnboardingHotkeyGate.readiness(inputMonitoring: inputMonitoringStatus) {
+        case .ready:
+            Label("Input Monitoring granted — your hotkey is ready", systemImage: "checkmark.circle.fill")
+                .font(.caption)
+                .foregroundColor(.green)
+        case .blocked:
+            VStack(alignment: .leading, spacing: 8) {
+                Label {
+                    Text("Input Monitoring is off — your dictation hotkey **won't work** until you enable OpenWhisp. Keystrokes are never logged, stored, or sent anywhere.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                } icon: {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundColor(.orange)
+                }
+                Button("Open System Settings → Input Monitoring") {
+                    appState.openInputMonitoringSettings()
+                }
+                .controlSize(.large)
+                Text("After enabling OpenWhisp in the list, return here — this updates automatically.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+            .padding(10)
+            .background(RoundedRectangle(cornerRadius: 8).fill(Color.orange.opacity(0.10)))
+        case .unconfirmed:
+            EmptyView()
         }
     }
 
@@ -280,6 +322,28 @@ struct OnboardingView: View {
             subtitle: "Hold \(triggerName) and say: “Hello, OpenWhisp is working.” Release when you're done."
         ) {
             VStack(spacing: 10) {
+                // Don't present a hotkey that's guaranteed dead: if Input Monitoring
+                // is confirmed denied, the push-to-talk key can't fire and the test
+                // would silently wait forever. Warn + offer the inline fix (MAK-24).
+                if OnboardingHotkeyGate.shouldWarnHotkeyDead(inputMonitoring: inputMonitoringStatus) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Label {
+                            Text("Your **\(triggerName)** hotkey can't fire yet — Input Monitoring is off, so nothing will happen when you hold it. Enable it, then try again.")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        } icon: {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .foregroundColor(.orange)
+                        }
+                        Button("Open System Settings → Input Monitoring") {
+                            appState.openInputMonitoringSettings()
+                        }
+                        .controlSize(.large)
+                    }
+                    .padding(10)
+                    .background(RoundedRectangle(cornerRadius: 8).fill(Color.orange.opacity(0.10)))
+                }
                 if !appState.streamingText.isEmpty || appState.lastTranscription?.isEmpty == false {
                     Text(appState.streamingText.isEmpty ? (appState.lastTranscription ?? "") : appState.streamingText)
                         .font(.body)
@@ -360,6 +424,7 @@ struct OnboardingView: View {
     private func refresh() {
         micGranted = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
         accessibilityGranted = AXIsProcessTrusted()
+        inputMonitoringStatus = appState.liveInputMonitoringStatus
         appState.refreshPermissionLabels()
     }
 
