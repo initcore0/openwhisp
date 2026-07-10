@@ -246,14 +246,14 @@
 <div class="wrap">
   <header>
     <p class="eyebrow">Shipped · July 2026</p>
-    <h1>Twenty-seven ways OpenWhisp got<br><span class="accent">sharper, safer, and more yours.</span></h1>
-    <p class="lede">A batch of new features, fixes, and under-the-hood hardening — all landed on main, all covered by tests, all on your machine. All seventeen new features are live today: a fully-remappable dictation trigger with a record-a-shortcut field, an AppleScript keystroke insert method and mouse-button dictation triggers, a local Usage Insights dashboard, batch file transcription with watch folders, hands-free (tap-to-lock) dictation, adjustable AI cleanup, voice editing, a self-learning dictionary, rich local formatting, spoken-filename @-mentions for code editors, agent-CLI cleanup, output targets that route a dictation to a file/Shortcut/webhook, first-class Modes you can invoke by name, and an openwhisp:// URL scheme so Raycast, Alfred, or any launcher can drive dictation.</p>
+    <h1>Twenty-eight ways OpenWhisp got<br><span class="accent">sharper, safer, and more yours.</span></h1>
+    <p class="lede">A batch of new features, fixes, and under-the-hood hardening — all landed on main, all covered by tests, all on your machine. All eighteen new features are live today: opt-in on-device audio retention with one-click re-transcription and an auto-cleanup policy, a fully-remappable dictation trigger with a record-a-shortcut field, an AppleScript keystroke insert method and mouse-button dictation triggers, a local Usage Insights dashboard, batch file transcription with watch folders, hands-free (tap-to-lock) dictation, adjustable AI cleanup, voice editing, a self-learning dictionary, rich local formatting, spoken-filename @-mentions for code editors, agent-CLI cleanup, output targets that route a dictation to a file/Shortcut/webhook, first-class Modes you can invoke by name, and an openwhisp:// URL scheme so Raycast, Alfred, or any launcher can drive dictation.</p>
   </header>
 
   <div class="stats">
-    <div class="stat"><div class="n">27</div><div class="k">changes shipped</div></div>
-    <div class="stat"><div class="n">17<small> live</small></div><div class="k">new features</div></div>
-    <div class="stat"><div class="n">1171</div><div class="k">tests passing</div></div>
+    <div class="stat"><div class="n">28</div><div class="k">changes shipped</div></div>
+    <div class="stat"><div class="n">18<small> live</small></div><div class="k">new features</div></div>
+    <div class="stat"><div class="n">1192</div><div class="k">tests passing</div></div>
     <div class="stat"><div class="n">100<small>%</small></div><div class="k">on-device</div></div>
   </div>
 
@@ -262,9 +262,36 @@
     <div class="sec-head">
       <span class="dot feature"></span>
       <h2>New features</h2>
-      <span class="count">17 live</span>
+      <span class="count">18 live</span>
     </div>
     <ul class="entries">
+      <li>
+        <details class="entry">
+          <summary>
+            <div class="sum-left">
+              <h3>Keep your dictation audio on-device — re-transcribe any past dictation, with an auto-cleanup policy</h3>
+              <p>Turn on opt-in audio retention and OpenWhisp saves each dictation's raw audio on this Mac — and only this Mac; it never leaves the device. A re-transcribe button on any saved history entry runs that audio back through your current engine (handy after you switch or upgrade a model) and keeps the old text as a one-click revert. A retention policy sweeps automatically: keep at most N clips and/or delete audio + history older than N days. Retention is OFF by default, and turning it off deletes every saved clip. The cleanup only ever removes files OpenWhisp itself created.</p>
+            </div>
+            <div class="sum-right">
+              <span class="try">How to use<svg class="howto-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span>
+              <div class="receipts"><span class="tag ticket">MAK-40</span></div>
+            </div>
+          </summary>
+          <div class="guide">
+            <span class="avail live">Available now</span>
+            <p class="g-sum">Settings › Privacy › turn on “Keep raw audio for re-transcription”, set the clip/day caps, then use the re-transcribe button on any saved history entry.</p>
+            <ol>
+              <li>Open Settings › Privacy &amp; Permissions › History.</li>
+              <li>Turn on “Keep transcription history” (needed to associate audio with an entry), then turn on “Keep raw audio for re-transcription”. It's off by default — the audio stays on this Mac and is never uploaded.</li>
+              <li>Set the policy: “Keep at most N clips” and/or “Delete audio + history after N days” (0 = no cap). The sweep runs after each dictation and on launch.</li>
+              <li>Dictate as usual (standard hold-to-talk sessions). Each dictation's audio is saved beside its history entry.</li>
+              <li>On a saved entry, click the re-transcribe (waveform) button to run its audio through your current engine again; the new text replaces the old, and the revert arrow restores the previous words.</li>
+              <li>Turn the toggle off (or use Clear History) to delete every saved clip immediately.</li>
+            </ol>
+            <p class="g-note">On-device only — audio never leaves your Mac. Retention covers standard hold-to-talk dictations (which produce a single whole-session recording); live-chunk/streaming sessions aren't retained yet. Crash recovery of an interrupted in-progress recording is scaffolded and tested in core but not yet wired to a launch prompt — that's a follow-up; retention, re-transcribe, and the cleanup policy are live now.</p>
+          </div>
+        </details>
+      </li>
       <li>
         <details class="entry">
           <summary>
@@ -788,7 +815,7 @@
       </li>
       <li class="entry">
         <h3>End-to-end audio testing, so features stay working</h3>
-        <p>A full regression suite now feeds pre-recorded audio through the whole pipeline — the reason "1171 tests passing" is more than a number. Every feature above ships with coverage.</p>
+        <p>A full regression suite now feeds pre-recorded audio through the whole pipeline — the reason "1192 tests passing" is more than a number. Every feature above ships with coverage.</p>
         <div class="receipts"><span class="tag ticket">E2E</span><span class="tag pr">#107–110</span></div>
       </li>
     </ul>

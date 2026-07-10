@@ -601,6 +601,41 @@ class AppState: ObservableObject {
         didSet { UserDefaults.standard.set(historyEnabled, forKey: "historyEnabled") }
     }
 
+    // MARK: Raw-audio retention (MAK-40) — OPT-IN, on-device only
+
+    /// Opt-in: keep each dictation's raw audio on THIS Mac (never uploaded) so it
+    /// can be re-transcribed later. OFF by default. Turning it off deletes every
+    /// retained clip immediately (the audio was the only reason to keep them).
+    @Published var retainRawAudioEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(retainRawAudioEnabled, forKey: "retainRawAudioEnabled")
+            if !retainRawAudioEnabled { purgeAllRetainedAudio() }
+        }
+    }
+
+    /// Retention policy — delete audio + history older than N days (0 = no age cap).
+    @Published var audioRetentionDays: Int {
+        didSet {
+            UserDefaults.standard.set(audioRetentionDays, forKey: "audioRetentionDays")
+            applyRetentionPolicy()
+        }
+    }
+
+    /// Retention policy — keep at most N retained clips (0 = no count cap).
+    @Published var audioRetentionMaxClips: Int {
+        didSet {
+            UserDefaults.standard.set(audioRetentionMaxClips, forKey: "audioRetentionMaxClips")
+            applyRetentionPolicy()
+        }
+    }
+
+    /// A COPY of the whole-session WAV staged for retention by the current `.final`
+    /// (non-streaming) dictation, made before the engine deletes the original.
+    /// `recordHistory` moves it to the entry's canonical name (or discards it on any
+    /// early return). Streaming/live-chunk sessions have no single whole-session WAV,
+    /// so retention covers the standard hold-to-talk path (see the changelog note).
+    private var pendingRetainWAVPath: URL?
+
     /// Per-app override profiles (persisted to profiles.json).
     @Published var profiles: [AppProfile] {
         didSet { AppProfileStore.save(profiles) }
@@ -939,6 +974,11 @@ class AppState: ObservableObject {
     /// activeSessionID drops those stale transitions.
     private var recorderSessionID: UUID?
     private var transcriptionRequests: [UUID: TranscriptionRequest] = [:]
+
+    /// Strong ref to the throwaway engine driving a history re-transcribe (MAK-40),
+    /// held only while its one-shot request is in flight so it isn't deallocated
+    /// mid-transcription. Cleared in the completion/error callback.
+    private var reTranscribeEngine: FileTranscriptionEngine?
     /// Pure ordering/sequencing state machine for live-chunk dictation (sequence
     /// assignment, concurrency cap, out-of-order reorder buffer, insertion queue,
     /// drain detection). AppState owns the side effects (transcribe/insert/file IO);
@@ -1451,6 +1491,11 @@ class AppState: ObservableObject {
         outputTargetSettings = Self.loadOutputTargetSettings()
         perAppModesEnabled = UserDefaults.standard.object(forKey: "perAppModesEnabled") as? Bool ?? false
         historyEnabled = UserDefaults.standard.object(forKey: "historyEnabled") as? Bool ?? true
+        // MAK-40 raw-audio retention: opt-in (default OFF); policy defaults keep the
+        // newest 50 clips and impose no age cap until the user sets one.
+        retainRawAudioEnabled = UserDefaults.standard.bool(forKey: "retainRawAudioEnabled")
+        audioRetentionDays = UserDefaults.standard.integer(forKey: "audioRetentionDays")
+        audioRetentionMaxClips = UserDefaults.standard.object(forKey: "audioRetentionMaxClips") as? Int ?? 50
         // Agent Bridge (M8) — default off; started at launch via startAgentBridgeIfEnabled().
         // (Property observers don't fire during init, so the lazy server isn't
         // touched here — it starts only from the explicit launch call.)
@@ -1494,6 +1539,9 @@ class AppState: ObservableObject {
         refreshPermissionBanners()
         ensureModelExists()
         warmWhisperServerIfPossible()
+        // MAK-40: enforce the retention policy on launch (age cap may have elapsed
+        // while the app was closed) — a no-op when retention is off.
+        applyRetentionPolicy()
     }
 
     private static func modelFileName(for modelName: String) -> String {
@@ -2938,6 +2986,11 @@ class AppState: ObservableObject {
                     return
                 }
 
+                // MAK-40: the engine transcribes with deleteWhenDone, so COPY the
+                // whole-session WAV to a staging file NOW (before it's deleted) if
+                // retention is on. recordHistory renames the staging file to the
+                // entry's canonical name; the secure-field guard there still applies.
+                self.stageRetainedAudio(from: path)
                 self.startTranscription(path: path, kind: .final)
             }
         }
@@ -4116,6 +4169,13 @@ class AppState: ObservableObject {
     private func finishSessionUI(delay: TimeInterval = 0) {
         sessionActive = false
         pendingStop = false
+        // MAK-40: this is the single terminal site for every session path, so any
+        // staged retention WAV that recordHistory did NOT consume (secure-field
+        // guard, error, cancel, empty result) is discarded here — a password-field
+        // dictation's audio must never linger in staging. Successful sessions
+        // consumed it in recordHistory before reaching this point, so it's a no-op
+        // for them.
+        discardStagedRetainedAudio()
         // Never let a spoken question run past the session — if it's still being
         // read when capture finalizes (short question, fast answer), cut it so the
         // app isn't talking over the user or into the next session.
@@ -4600,6 +4660,11 @@ class AppState: ObservableObject {
     /// `text`; when nothing was refined (raw == final) we store nil so
     /// `revertTarget` correctly hides the affordance (a revert would be a no-op).
     private func recordHistory(_ text: String, rawText: String? = nil) {
+        // MAK-40: on ANY early return the staged retained WAV must be discarded so it
+        // can't leak into the next entry. Take it here; the success path below moves
+        // it into place, and `defer` deletes any staging file left unused.
+        let staged = takeStagedRetainedAudio()
+        defer { if let staged, FileManager.default.fileExists(atPath: staged.path) { try? FileManager.default.removeItem(at: staged) } }
         guard historyEnabled else { return }
         // Defensive privacy guard: never persist a transcript if a secure field is
         // focused at record time. Fail-open on detection errors.
@@ -4613,23 +4678,200 @@ class AppState: ObservableObject {
             guard let rawTrimmed, !rawTrimmed.isEmpty, rawTrimmed != trimmed else { return nil }
             return rawTrimmed
         }()
+        let entryID = UUID()
+        // MAK-40: move the staged WAV into the retained-audio dir under the entry's
+        // canonical name. The `defer` above cleans up the staging file if this
+        // doesn't consume it (retention off, or move fails).
+        var audioFileName: String? = nil
+        if retainRawAudioEnabled, let staged, FileManager.default.fileExists(atPath: staged.path) {
+            audioFileName = AudioRetentionManager.adopt(stagedWAV: staged, entryID: entryID)
+        }
         let entry = TranscriptionEntry(
+            id: entryID,
             text: trimmed,
             date: Date(),
             appBundleID: targetApplication?.bundleIdentifier,
             appName: targetApplication?.localizedName,
-            rawText: storedRaw
+            rawText: storedRaw,
+            audioFileName: audioFileName
         )
         history.insert(entry, at: 0)
         if history.count > TranscriptionHistoryStore.maxEntries {
+            // Evict overflow entries — and delete any retained audio they carried,
+            // so the audio directory can't outgrow the history it's keyed to.
+            let overflow = history.suffix(from: TranscriptionHistoryStore.maxEntries)
+            for e in overflow {
+                if let name = e.audioFileName { AudioRetentionManager.deleteAudio(fileName: name) }
+            }
             history = Array(history.prefix(TranscriptionHistoryStore.maxEntries))
         }
         TranscriptionHistoryStore.save(history)
+        applyRetentionPolicy()
     }
 
     func clearHistory() {
         history = []
         TranscriptionHistoryStore.save(history)
+        // Manual "Clear" wipes the audio too — the clips are only useful attached to
+        // a history entry. Only files matching the retained-audio scheme are removed.
+        AudioRetentionManager.deleteAllAudio()
+    }
+
+    // MARK: - Raw-audio retention (MAK-40)
+
+    /// Absolute URL of a history entry's retained audio, if it currently exists on
+    /// disk. Used by the PrivacyPane "re-transcribe" affordance to gate itself.
+    func retainedAudioURL(for entry: TranscriptionEntry) -> URL? {
+        guard let name = entry.audioFileName, AudioRetentionManager.audioExists(fileName: name) else { return nil }
+        return RetainedAudioStore.url(for: name)
+    }
+
+    /// Re-run a history entry's stored audio through the CURRENT transcription engine
+    /// and replace the entry's text with the new result — keeping the old text as the
+    /// revert baseline (rawText) so the user can undo, reusing the MAK-35 plumbing.
+    ///
+    /// Reuses the `FileTranscriptionEngine.transcribe` seam exactly like a live
+    /// dictation: a fresh engine instance, wired to a one-shot completion that patches
+    /// the matching history entry. Best-effort — a failure surfaces via `error` and
+    /// leaves the entry unchanged.
+    func reTranscribeHistoryEntry(_ entry: TranscriptionEntry) {
+        guard let url = retainedAudioURL(for: entry) else {
+            error = "No stored audio for this entry to re-transcribe."
+            return
+        }
+        // One at a time: overwriting the strong ref would deallocate the in-flight
+        // engine mid-transcription (undefined subprocess/callback lifetime) and its
+        // result would be silently dropped.
+        guard reTranscribeEngine == nil else {
+            statusMessage = "Re-transcribe already running..."
+            return
+        }
+        statusMessage = "Re-transcribing..."
+        let engine = Self.makeFileEngine(for: transcriptionEngine, model: modelName, whisperKitModel: whisperKitModel)
+        // Hold a strong ref until the callback fires (the local would otherwise
+        // deallocate immediately). Cleared inside the callbacks.
+        reTranscribeEngine = engine
+        let requestID = UUID()
+        engine.onTranscriptionComplete = { [weak self] rid, text in
+            Task { @MainActor in
+                guard let self, rid == requestID else { return }
+                self.reTranscribeEngine = nil
+                self.applyReTranscription(text, to: entry.id)
+                self.statusMessage = "Ready"
+            }
+        }
+        engine.onTranscriptionError = { [weak self] rid, msg in
+            Task { @MainActor in
+                guard let self, rid == requestID else { return }
+                self.reTranscribeEngine = nil
+                self.error = "Re-transcribe failed: \(msg)"
+                self.statusMessage = "Ready"
+            }
+        }
+        engine.transcribe(
+            requestID: requestID,
+            binaryPath: whisperBinaryPath,
+            modelPath: modelPath,
+            language: engineLanguageSetting,
+            wavPath: url.path,
+            deleteWhenDone: false, // NEVER delete the retained clip — it's the user's kept audio
+            backend: whisperBackend == "serverAPI" ? .serverAPI : .cli,
+            prompt: customVocabularyEnabled ? vocabulary.whisperPrompt : ""
+        )
+    }
+
+    /// Patch a history entry with a re-transcription result. The previous text
+    /// becomes the entry's `rawText` (revert target) when it actually differs, so the
+    /// MAK-35 revert affordance restores the pre-re-transcribe words.
+    private func applyReTranscription(_ newText: String, to entryID: UUID) {
+        let trimmed = newText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let idx = history.firstIndex(where: { $0.id == entryID }) else { return }
+        history[idx] = history[idx].reTranscribed(withNewText: trimmed)
+        TranscriptionHistoryStore.save(history)
+        textOutput.setClipboard(trimmed)
+    }
+
+    /// Evaluate the retention policy over the current history and execute any sweep
+    /// it dictates: drop expired entries (age cap) and prune surplus audio (count
+    /// cap). Pure decision in `AudioRetentionPolicy`; this just applies it. No-op
+    /// when retention is off (the policy returns an empty sweep).
+    func applyRetentionPolicy(now: Date = Date()) {
+        let settings = AudioRetentionSettings(
+            enabled: retainRawAudioEnabled,
+            maxAgeDays: audioRetentionDays,
+            maxEntries: audioRetentionMaxClips
+        )
+        let candidates = history.map {
+            AudioRetentionPolicy.Candidate(id: $0.id, date: $0.date, hasAudio: $0.audioFileName != nil)
+        }
+        let sweep = AudioRetentionPolicy.evaluate(candidates: candidates, settings: settings, now: now)
+        guard !sweep.isEmpty else { return }
+
+        // Delete audio files first (both count-cap prunes and age-cap drops).
+        for e in history where sweep.audioToDelete.contains(e.id) {
+            if let name = e.audioFileName { AudioRetentionManager.deleteAudio(fileName: name) }
+        }
+        // Rebuild history: remove age-cap entries entirely; clear the audio filename
+        // on entries whose clip was pruned (count cap) so the row stays but shows no
+        // re-transcribe affordance.
+        history = history.compactMap { e in
+            if sweep.entriesToDelete.contains(e.id) { return nil }
+            if sweep.audioToDelete.contains(e.id) {
+                return TranscriptionEntry(
+                    id: e.id, text: e.text, date: e.date,
+                    appBundleID: e.appBundleID, appName: e.appName,
+                    rawText: e.rawText, audioFileName: nil
+                )
+            }
+            return e
+        }
+        TranscriptionHistoryStore.save(history)
+    }
+
+    /// Stage a COPY of a just-finished whole-session WAV for retention, made before
+    /// the engine deletes the original. No-op when retention is off. Replaces any
+    /// prior un-consumed staging file (a session that never recorded history).
+    private func stageRetainedAudio(from wav: URL) {
+        if let old = pendingRetainWAVPath, FileManager.default.fileExists(atPath: old.path) {
+            try? FileManager.default.removeItem(at: old)
+        }
+        pendingRetainWAVPath = nil
+        guard retainRawAudioEnabled else { return }
+        pendingRetainWAVPath = AudioRetentionManager.stageCopy(of: wav)
+    }
+
+    /// Consume and clear the staged retained-audio path (nil if none). The caller is
+    /// then responsible for moving it into place or deleting it.
+    private func takeStagedRetainedAudio() -> URL? {
+        defer { pendingRetainWAVPath = nil }
+        return pendingRetainWAVPath
+    }
+
+    /// Delete any un-consumed staged retention WAV and clear the pointer. Called
+    /// from finishSessionUI() so sessions that never record history (secure field,
+    /// error, cancel) can't leave their audio behind in the staging directory.
+    private func discardStagedRetainedAudio() {
+        guard let staged = takeStagedRetainedAudio() else { return }
+        if FileManager.default.fileExists(atPath: staged.path) {
+            try? FileManager.default.removeItem(at: staged)
+        }
+    }
+
+    /// Delete every retained clip and clear all entries' audio filenames (called when
+    /// the user turns retention OFF). History text rows are kept.
+    private func purgeAllRetainedAudio() {
+        AudioRetentionManager.deleteAllAudio()
+        var changed = false
+        history = history.map { e in
+            guard e.audioFileName != nil else { return e }
+            changed = true
+            return TranscriptionEntry(
+                id: e.id, text: e.text, date: e.date,
+                appBundleID: e.appBundleID, appName: e.appName,
+                rawText: e.rawText, audioFileName: nil
+            )
+        }
+        if changed { TranscriptionHistoryStore.save(history) }
     }
 
     /// Fold a completed dictation into the local-only stats aggregates. METADATA
