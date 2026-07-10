@@ -3836,8 +3836,8 @@ class AppState: ObservableObject {
     )
 
     /// Fire the rules engine for one lifecycle `hook` over `text`, as a fail-open
-    /// SIDE CHANNEL: plan the matching actions (pure, can't throw) and hand them to
-    /// the runner (off-thread, best-effort). This NEVER changes, delays, or breaks
+    /// SIDE CHANNEL: hand the rule set + context to the runner, which plans (pure,
+    /// can't throw) and executes off-thread, best-effort. This NEVER changes, delays, or breaks
     /// the normal transcript insert — the caller has already dispatched that. A
     /// no-op when no rules exist, so the common case costs a single array check.
     ///
@@ -3851,15 +3851,17 @@ class AppState: ObservableObject {
             appBundleID: targetApplication?.bundleIdentifier,
             isAgentSession: suppressOutput
         )
-        let plan = RulePlanner.plan(rules: ruleSet, context: context)
-        guard !plan.isEmpty else { return }
         let payload = OutputPayload(
             text: text,
             language: outputLanguageForCleaning,
             targetAppBundleID: targetApplication?.bundleIdentifier,
             isLiveChunk: false
         )
-        ruleEngineRunner.run(plan, payload: payload)
+        // Planning happens on the runner's queue, not here: matching can evaluate a
+        // user-supplied regex, and even the matcher's backtracking time budget must
+        // never be spent on the finalize path. `ruleSet` is a value type — the
+        // runner gets an immutable snapshot.
+        ruleEngineRunner.planAndRun(rules: ruleSet, context: context, payload: payload)
     }
 
     /// Local transcript cleanup. Delegates to TranscriptCleaner (in OpenWhispCore)

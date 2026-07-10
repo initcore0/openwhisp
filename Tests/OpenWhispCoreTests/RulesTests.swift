@@ -51,6 +51,20 @@ final class RulesTests: XCTestCase {
         XCTAssertFalse(RuleMatcher.matches("anything", RuleTextMatch(kind: .regex, pattern: "")))
     }
 
+    func testCatastrophicBacktrackingPatternIsAbandonedWithinBudget() {
+        // `(a+)+b` over a run of 'a's with no 'b' is the classic exponential
+        // backtracking bomb — unguarded, NSRegularExpression hangs for minutes on 60
+        // chars (well under the input cap). The time-budget guard must abandon it
+        // and report "no match" quickly instead of hanging.
+        let bomb = String(repeating: "a", count: 60)
+        let start = Date()
+        let matched = RuleMatcher.matches(bomb, RuleTextMatch(kind: .regex, pattern: "(a+)+b"))
+        let elapsed = Date().timeIntervalSince(start)
+        XCTAssertFalse(matched)
+        XCTAssertLessThan(elapsed, RuleMatcher.regexTimeBudget + 1.0,
+                          "pathological regex must be abandoned near the time budget, not hang")
+    }
+
     func testRegexDeclinesOverlongInput() {
         let long = String(repeating: "a", count: RuleMatcher.regexInputCap + 1)
         // Even a trivially-true pattern is declined past the cap (backtracking guard).

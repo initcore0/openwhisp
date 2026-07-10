@@ -275,6 +275,13 @@ enum RuleMatcher {
     /// literal modes have no such limit — they're linear and safe.
     static let regexInputCap = 20_000
 
+    /// Wall-clock budget for one regex evaluation. The input cap alone is NOT a
+    /// backtracking guard — `(a+)+b` blows up exponentially on a few dozen
+    /// characters — so the match is driven through `enumerateMatches` with
+    /// `.reportProgress`, and past this deadline it is abandoned (the rule simply
+    /// doesn't fire). Generous for any sane pattern; fatal only to pathological ones.
+    static let regexTimeBudget: TimeInterval = 0.25
+
     /// Does `pattern` (interpreted per `kind`) match `text`?
     static func matches(_ text: String, _ match: RuleTextMatch) -> Bool {
         let hay = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -298,7 +305,9 @@ enum RuleMatcher {
 
     /// Guarded regex match. An empty pattern never matches; an over-long input is
     /// declined (see `regexInputCap`); an invalid pattern never matches (the user's
-    /// typo can't crash or throw into the finalize path).
+    /// typo can't crash or throw into the finalize path); and a catastrophically
+    /// backtracking pattern is abandoned after `regexTimeBudget` via ICU's match
+    /// progress callback (`.reportProgress` + `stop`), degrading to "no match".
     static func regexMatches(_ text: String, pattern: String) -> Bool {
         guard !pattern.isEmpty else { return false }
         guard text.utf16.count <= regexInputCap else { return false }
@@ -306,7 +315,17 @@ enum RuleMatcher {
             return false
         }
         let range = NSRange(text.startIndex..<text.endIndex, in: text)
-        return re.firstMatch(in: text, options: [], range: range) != nil
+        let deadline = Date().addingTimeInterval(regexTimeBudget)
+        var found = false
+        re.enumerateMatches(in: text, options: [.reportProgress], range: range) { result, _, stop in
+            if result != nil {
+                found = true
+                stop.pointee = true
+            } else if Date() > deadline {
+                stop.pointee = true
+            }
+        }
+        return found
     }
 }
 

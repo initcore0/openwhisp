@@ -48,14 +48,15 @@ final class RuleEngineRunner {
         self.shellTimeout = shellTimeout
     }
 
-    /// Run every planned action for one finished dictation. `payload` carries the
-    /// transcript + metadata the sinks need; `plan` is what `RulePlanner.plan`
-    /// returned. Non-blocking: dispatches the work and returns immediately, so the
-    /// finalize path is never held up by a rule's I/O.
-    func run(_ plan: [PlannedAction], payload: OutputPayload) {
-        guard !plan.isEmpty else { return }
+    /// Plan AND run the rules for one finished dictation, entirely off the caller's
+    /// thread. Planning happens on the runner's queue too — matching includes
+    /// user-supplied regex evaluation, and even with `RuleMatcher`'s time budget a
+    /// pathological pattern must never cost the finalize path anything but this one
+    /// dispatch. Non-blocking: returns immediately. `rules`/`context`/`payload` are
+    /// value types, so the capture is a safe snapshot.
+    func planAndRun(rules: RuleSet, context: RuleContext, payload: OutputPayload) {
         queue.async { [self] in
-            for planned in plan {
+            for planned in RulePlanner.plan(rules: rules, context: context) {
                 perform(planned.action, payload: payload)
             }
         }
