@@ -3304,6 +3304,11 @@ class AppState: ObservableObject {
                 self.syncRefineUI()
                 self.statusMessage = "Ready"
                 self.refineDebug("idle refine arm expired")
+                // The delayed post-dictation hide skips while refineArmed (the arm
+                // owns the overlay) — so when an idle arm expires with the overlay
+                // still up (e.g. armed during the lingering revert hold, MAK-35),
+                // dismiss it here or it stays orphaned until the next session.
+                self.dismissOverlayIfSettled(after: 0)
             }
         }
     }
