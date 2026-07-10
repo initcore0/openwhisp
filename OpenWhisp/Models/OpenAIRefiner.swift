@@ -28,6 +28,11 @@ struct OpenAIRefiner: AsyncTextRefiner, @unchecked Sendable {
     let targetLanguage: String
     let endpoint: LLMEndpoint
     let model: String
+    /// When non-nil, this system prompt OVERRIDES the mode-derived one. MAK-35 uses
+    /// it to feed the selected `CleanupIntensity`'s tier prompt (low/medium/high) so
+    /// the whole-text cleanup pass matches the dial the user picked, instead of the
+    /// single fixed "rephrase"/"improve" prompt. Nil preserves the old behavior.
+    var customInstruction: String? = nil
 
     func refine(_ text: String, context: PostProcessContext) async throws -> String {
         try await withCheckedThrowingContinuation { continuation in
@@ -36,7 +41,8 @@ struct OpenAIRefiner: AsyncTextRefiner, @unchecked Sendable {
                 mode: mode,
                 targetLanguage: targetLanguage,
                 endpoint: endpoint,
-                model: model
+                model: model,
+                customInstruction: customInstruction
             ) { result in
                 continuation.resume(with: result)
             }

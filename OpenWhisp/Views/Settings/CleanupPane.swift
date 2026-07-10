@@ -252,32 +252,60 @@ struct CleanupPane: View {
 
     private var autoCleanupSection: some View {
         Section {
-            SubtitledToggle(
-                "Improve every dictation automatically",
-                subtitle: "Runs each final transcript through the AI model, with nothing to do while dictating. Only edits final text, never live chunks.",
-                isOn: $appState.openAIEnhancementEnabled
-            )
-
-            Picker("Mode", selection: $appState.openAIEnhancementMode) {
-                Text("Rephrase in the same language").tag("rephrase")
-                // Meaningless unless translation is on — shown contextually.
-                if appState.translateToEnglish || appState.openAIEnhancementMode == "improveTranslation" {
-                    Text("Improve English translation").tag("improveTranslation")
+            // MAK-35: the cleanup INTENSITY dial replaces the old on/off toggle +
+            // mode picker as the single control for the automatic AI pass. "None"
+            // skips the LLM entirely (highest fidelity); Low/Medium/High feed
+            // progressively stronger preset prompts. It is the one source of truth —
+            // the legacy on/off toggle (tray, onboarding) now derives from it.
+            Picker("Automatic AI cleanup", selection: $appState.cleanupIntensity) {
+                ForEach(CleanupIntensity.allCases, id: \.self) { tier in
+                    Text(tier.displayLabel).tag(tier)
                 }
             }
+            .pickerStyle(.segmented)
 
-            if !appState.translateToEnglish && appState.openAIEnhancementMode != "improveTranslation" {
-                SettingsFootnote("Turn on “Translate to English” in Dictation › Language to also get a translation-improvement mode.")
-            }
+            SettingsFootnote(cleanupIntensityDescription(appState.cleanupIntensity))
 
-            if appState.openAIEnhancementMode == "improveTranslation" {
-                Picker("Target language", selection: $appState.translationTargetLanguage) {
-                    Text("English").tag("en")
-                    Text("Russian").tag("ru")
+            // Translation-improvement mode + target language stay available while
+            // any cleanup tier runs, so users who translate keep that path. The
+            // intensity's prompt drives same-language cleanup; the translation mode
+            // is the distinct "polish my English translation" flow.
+            if appState.cleanupIntensity != .none {
+                if appState.translateToEnglish || appState.openAIEnhancementMode == "improveTranslation" {
+                    Picker("Mode", selection: $appState.openAIEnhancementMode) {
+                        Text("Rephrase in the same language").tag("rephrase")
+                        Text("Improve English translation").tag("improveTranslation")
+                    }
+
+                    if appState.openAIEnhancementMode == "improveTranslation" {
+                        Picker("Target language", selection: $appState.translationTargetLanguage) {
+                            Text("English").tag("en")
+                            Text("Russian").tag("ru")
+                        }
+                    }
+                } else {
+                    SettingsFootnote("Turn on “Translate to English” in Dictation › Language to also get a translation-improvement mode.")
                 }
             }
         } header: {
             Text("Automatic Cleanup")
+        } footer: {
+            SettingsFootnote("Runs each final transcript through the AI model above — nothing to do while dictating. Only edits final text, never live chunks. Higher intensity means more polish but less literal fidelity to your exact words; you can always revert an entry to the original in Privacy › History.")
+        }
+    }
+
+    /// One-line description of what a cleanup tier does, shown under the dial.
+    /// Mirrors the tier semantics in `CleanupIntensity.systemPrompt`.
+    private func cleanupIntensityDescription(_ intensity: CleanupIntensity) -> String {
+        switch intensity {
+        case .none:
+            return "Off — insert the raw transcript exactly as dictated. No AI pass; highest fidelity and fully offline."
+        case .low:
+            return "Fix only capitalization, punctuation, and obvious typos. Your wording and filler words are kept verbatim."
+        case .medium:
+            return "Everything in Low, plus remove filler words (“um”, “uh”) and lightly rephrase awkward wording for readability."
+        case .high:
+            return "Everything in Medium, plus resolve spoken self-corrections (“3, no wait, 4” → “4”) and tighten into concise prose."
         }
     }
 
