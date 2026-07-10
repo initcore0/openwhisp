@@ -220,6 +220,22 @@ struct OverlayView: View {
         appState.isTranscribing ? appState.statusMessage : nil
     }
 
+    /// MAK-35 (overlay): the raw pre-cleanup words the most-recent dictation can be
+    /// reverted to, or nil to hide the control. The *decision* is the pure
+    /// `OverlayRevert` (tested in OpenWhispCore); this just reads AppState's flags.
+    /// Shown only in a settled, post-dictation overlay when AI cleanup actually changed
+    /// the words this session — so the user can restore their exact words in one tap
+    /// without opening Settings › Privacy.
+    private var revertTarget: String? {
+        OverlayRevert.target(
+            mostRecentRevertTarget: appState.history.first?.revertTarget,
+            isRecording: appState.isRecording,
+            isTranscribing: appState.isTranscribing,
+            isArming: appState.isArming,
+            refineArmed: appState.refineArmed
+        )
+    }
+
     /// While the agent's question is being read aloud, the mic is intentionally
     /// held (so the app's own speech isn't captured) — tell the human to wait so
     /// they don't answer into a dead mic and lose their first words. Takes
@@ -235,6 +251,30 @@ struct OverlayView: View {
         // Suppressed while the question is being read — that state has its own cue.
         guard !appState.agentDictateReadingQuestion else { return nil }
         return phase == .arming ? "Starting — wait to speak" : nil
+    }
+
+    /// Hands-free lock accent — a warm green, distinct from the cyan "speaking"
+    /// and amber "agent waiting" so a locked-open session reads at a glance as a
+    /// deliberate, sustained state.
+    private static let lockAccent = Color(red: 0.40, green: 0.82, blue: 0.55)
+
+    /// True while a user's hands-free (toggle/double-tap) session is locked open
+    /// and genuinely capturing — the moment the affordance should tell the user
+    /// the mic is held for them. Suppressed while arming/finalizing (those have
+    /// their own cues), while refining, and for agent sessions (amber owns those).
+    private var lockAffordanceActive: Bool {
+        guard appState.dictationLocked, !appState.refineArmed,
+              appState.agentDictatePrompt == nil else { return false }
+        switch phase {
+        case .listening, .speaking: return true
+        case .arming, .finalizing, .error: return false
+        }
+    }
+
+    /// The lock caption: tells the user the session is held open and how to end
+    /// it. Rendered under the pill, in the green lock accent.
+    private var lockCaption: String? {
+        lockAffordanceActive ? "Hands-free — tap key or Esc to stop" : nil
     }
 
     /// During finalization (recording stopped, transcribing), show a status caption
@@ -279,6 +319,17 @@ struct OverlayView: View {
                     .transition(.opacity)
             }
 
+            if let lockCaption {
+                HStack(spacing: 5) {
+                    Image(systemName: "lock.fill")
+                        .font(.system(size: 10, weight: .bold))
+                    Text(lockCaption)
+                        .font(.system(size: 11, weight: .semibold, design: .rounded))
+                }
+                .foregroundColor(Self.lockAccent.opacity(0.95))
+                .transition(.opacity)
+            }
+
             if let finalizingCaption {
                 Text(finalizingCaption)
                     .font(.system(size: 11, weight: .semibold, design: .rounded))
@@ -302,6 +353,16 @@ struct OverlayView: View {
                     .transition(.opacity)
             }
 
+            // MAK-35: post-dictation "revert to original" — one tap restores the raw
+            // pre-AI-cleanup words. Shown only when cleanup changed them this session
+            // (revertTarget != nil) and never mid-session. Coexists with the clipboard-
+            // fallback cue: when the original insert fell back to ⌘V, revert is still a
+            // useful "give me my raw words on the clipboard instead" action.
+            if revertTarget != nil {
+                revertButton
+                    .transition(.opacity)
+            }
+
             if showTranscript {
                 transcriptPanel
                     .transition(.opacity.combined(with: .move(edge: .top)))
@@ -318,7 +379,9 @@ struct OverlayView: View {
         .animation(.easeInOut(duration: 0.18), value: showTranscript)
         .animation(.easeInOut(duration: 0.18), value: phase)
         .animation(.easeInOut(duration: 0.18), value: appState.refineArmed)
+        .animation(.easeInOut(duration: 0.18), value: appState.dictationLocked)
         .animation(.easeInOut(duration: 0.18), value: appState.clipboardFallbackActive)
+        .animation(.easeInOut(duration: 0.18), value: revertTarget != nil)
         .animation(.easeInOut(duration: 0.18), value: appState.isTranscribing)
         .animation(.easeInOut(duration: 0.18), value: appState.agentDictateReadingQuestion)
         #if OPENWHISP_INSTRUMENTATION
@@ -538,6 +601,47 @@ struct OverlayView: View {
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: 360)
         }
+    }
+
+    // MARK: Revert control
+
+    /// The overlay "revert to original" affordance (MAK-35): a compact glass pill with
+    /// the same undo glyph the History list uses, wired to `AppState.revertLastDictation`
+    /// (which swaps the just-inserted text back to the raw words in place when it can,
+    /// and always leaves them on the clipboard). Non-activating panel, so tapping it
+    /// doesn't steal focus from the app the text is going back into. Styled to match the
+    /// pill/transcript glass, not to shout — reverting is a quiet correction.
+    private var revertButton: some View {
+        Button {
+            appState.revertLastDictation()
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "arrow.uturn.backward")
+                    .font(.system(size: 11, weight: .semibold))
+                Text("Revert to original")
+                    .font(.system(size: 11, weight: .semibold, design: .rounded))
+            }
+            .foregroundColor(.white.opacity(0.92))
+            .padding(.horizontal, 14)
+            .padding(.vertical, 7)
+            .background {
+                ZStack {
+                    if reduceTransparency {
+                        Capsule(style: .continuous).fill(Color(red: 0.09, green: 0.09, blue: 0.10))
+                    } else {
+                        VisualEffectView().clipShape(Capsule(style: .continuous))
+                    }
+                }
+                .overlay {
+                    Capsule(style: .continuous)
+                        .stroke(Color.white.opacity(0.12), lineWidth: 0.8)
+                }
+                .shadow(color: Color.black.opacity(0.28), radius: 12, x: 0, y: 6)
+            }
+        }
+        .buttonStyle(.plain)
+        .help("Restore the exact words you dictated, before AI cleanup")
+        .accessibilityLabel("Revert to original — restore the words you dictated before AI cleanup")
     }
 
     // MARK: Transcript

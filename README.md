@@ -191,6 +191,23 @@ Whichever mode you pick, insertion is **verified** — if it can't be confirmed,
 
 ---
 
+## Automation — the `openwhisp://` URL scheme (Raycast / Alfred)
+
+OpenWhisp registers an `openwhisp://` URL scheme so any launcher (Raycast, Alfred, Shortcuts, or a plain `open openwhisp://…` in a script) can drive its control surface. It reuses the same in‑app actions the hotkey and menu bar use — no CLI needed.
+
+```sh
+open "openwhisp://record"                              # start / stop dictation (like the hotkey)
+open "openwhisp://paste-last-result"                   # paste the last result into the focused app
+open "openwhisp://refine?instruction=make%20it%20formal"  # rewrite the last result (→ clipboard)
+open "openwhisp://?switch-mode=email&record"           # chain verbs, run in order
+```
+
+Verbs are a fixed, validated **allow‑list** — the scheme never runs a shell string or an arbitrary file, and hostile/malformed URLs are rejected as a whole. `record`, `refine`, and `paste-last-result` are **live**; `switch-mode` / `activate-mode` are parsed and validated now but wired in a follow‑up (OpenWhisp's modes are per‑app profiles today, with no named‑mode registry to switch by key yet).
+
+Ready‑made **Raycast Script Commands** and an **Alfred recipe** live in [`integrations/`](integrations/), with the full URL grammar in [`integrations/README.md`](integrations/README.md).
+
+---
+
 ## Settings overview
 
 Settings has a **Basic** and an **Advanced** tab.
