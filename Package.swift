@@ -101,6 +101,8 @@ let package = Package(
                 "FileTranscriptionQueue.swift",
                 "SubtitleFormatter.swift",
                 "WatchFolderPolicy.swift",
+                "Rules.swift",
+                "RuleStore.swift",
                 "TipsCatalog.swift",
                 "HintRotation.swift"
             ]

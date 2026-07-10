@@ -17,6 +17,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
     case models
     case cleanup
     case output
+    case rules
     case modes
     case files
     case profiles
@@ -34,6 +35,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
         case .models:      return "Models"
         case .cleanup:     return "Cleanup"
         case .output:      return "Output"
+        case .rules:       return "Rules"
         case .modes:       return "Modes"
         case .files:       return "File Transcription"
         case .profiles:    return "Per-App Profiles"
@@ -51,6 +53,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
         case .models:      return "cpu"
         case .cleanup:     return "wand.and.stars"
         case .output:      return "text.cursor"
+        case .rules:       return "flowchart"
         case .modes:       return "square.stack.3d.up"
         case .files:       return "waveform.and.magnifyingglass"
         case .profiles:    return "square.grid.2x2"
@@ -110,6 +113,7 @@ struct SettingsView: View {
         case .models:    ModelsPane(appState: appState)
         case .cleanup:   CleanupPane(appState: appState)
         case .output:    OutputPane(appState: appState)
+        case .rules:     RulesPane(appState: appState)
         case .modes:     ModesPane(appState: appState)
         case .files:     FileTranscriptionPane(coordinator: appState.fileCoordinator)
         case .profiles:  ProfilesPane(appState: appState)
