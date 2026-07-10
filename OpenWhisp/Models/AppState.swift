@@ -776,6 +776,34 @@ class AppState: ObservableObject {
         didSet { UserDefaults.standard.set(didCompleteOnboarding, forKey: "didCompleteOnboarding") }
     }
 
+    // MARK: - Discoverability hints (MAK-25)
+
+    /// Count of counted user dictation sessions (never agent/refine) — the input to
+    /// the rotating-hint auto-off window. Incremented once per completed user
+    /// dictation in `recordStats`. Persisted so the first-run window survives quits.
+    @Published private(set) var hintSessionCount: Int {
+        didSet { UserDefaults.standard.set(hintSessionCount, forKey: "hintSessionCount") }
+    }
+
+    /// Ids of overlay hints the user has permanently dismissed. Persisted; a
+    /// dismissed hint never shows again (see `HintRotation`).
+    @Published private(set) var dismissedHintIDs: Set<String> {
+        didSet { UserDefaults.standard.set(Array(dismissedHintIDs), forKey: "dismissedHintIDs") }
+    }
+
+    /// The rotating overlay hint to show for the current first-run session, or nil
+    /// when hints are off (past the window / all dismissed). The overlay layers its
+    /// own LIVE-state suppression on top (never during arming/finalizing/agent/
+    /// refine/lock) — this is only the "which hint, is the feature still on" call.
+    var currentOverlayHint: TipsCatalog.Hint? {
+        HintRotation.hint(sessionCount: hintSessionCount, dismissed: dismissedHintIDs)
+    }
+
+    /// Permanently dismiss the given overlay hint so it never rotates in again.
+    func dismissOverlayHint(_ id: String) {
+        dismissedHintIDs.insert(id)
+    }
+
     // MARK: - Services
 
     /// Platform secret backend (Keychain on macOS). Injected so the secret
@@ -1365,6 +1393,8 @@ class AppState: ObservableObject {
         correctionLearningEnabled = UserDefaults.standard.object(forKey: "correctionLearningEnabled") as? Bool ?? true
         correctionProposals = CorrectionProposalStore.load()
         didCompleteOnboarding = UserDefaults.standard.bool(forKey: "didCompleteOnboarding")
+        hintSessionCount = UserDefaults.standard.integer(forKey: "hintSessionCount")
+        dismissedHintIDs = Set(UserDefaults.standard.stringArray(forKey: "dismissedHintIDs") ?? [])
 
         wireUpServices()
         overlayController = OverlayWindowController(appState: self)
@@ -4456,6 +4486,15 @@ class AppState: ObservableObject {
         )
         dictationStats.record(event)
         DictationStatsStore.save(dictationStats)
+
+        // MAK-25: count only genuine USER dictations toward the first-run hint
+        // window — never agent sessions or refine passes (those aren't the user
+        // discovering dictation, and hints are suppressed during them anyway).
+        // Stop bumping once past the window so the persisted counter can't overflow.
+        if !sessionInitiator.isAgent, !refineArmed,
+           hintSessionCount <= HintRotation.sessionsToShow {
+            hintSessionCount += 1
+        }
         #if OPENWHISP_INSTRUMENTATION
         lastDictationEvent = event
         #endif

@@ -1,7 +1,7 @@
 {
   "$schema": "./changelog.schema.md",
   "project": "OpenWhisp",
-  "generated": "2026-07-09",
+  "generated": "2026-07-10",
   "releases": [
     {
       "id": "2026-07",
@@ -9,14 +9,35 @@
       "date": "2026-07-09",
       "summary": "A batch of new features, fixes, and under-the-hood hardening — all landed on main, all covered by tests, all on your machine. All thirteen new features are live today: batch file transcription with watch folders, hands-free (tap-to-lock) dictation, adjustable AI cleanup, voice editing, a self-learning dictionary, rich local formatting, spoken-filename @-mentions for code editors, agent-CLI cleanup, output targets that route a dictation to a file/Shortcut/webhook, and an openwhisp:// URL scheme so Raycast, Alfred, or any launcher can drive dictation.",
       "stats": {
-        "changesShipped": 23,
+        "changesShipped": 24,
         "newFeatures": 13,
-        "testsPassing": 1078,
+        "testsPassing": 1102,
         "onDevicePercent": 100,
         "newFeaturesLive": 13,
         "newFeaturesCorePending": 0
       },
       "entries": [
+        {
+          "category": "improvement",
+          "headline": "Discover what OpenWhisp can do — a Tips & Commands cheat sheet + first-run overlay hints",
+          "body": "A new “Tips & Commands” menu item opens a cheat sheet of every gesture, spoken command, and feature that actually ships — with the real Settings path for each. Onboarding now ends with a short “What's next” card, and for your first few sessions the dictation overlay rotates a dismissible one-line tip (“say ‘scratch that’ to undo”) so the deeper features aren't buried. Hints auto-off after the first-run window and never interrupt an agent question or a refine.",
+          "tickets": [
+            "MAK-25"
+          ],
+          "prs": [
+            144
+          ],
+          "howTo": {
+            "availability": "live",
+            "summary": "Open “Tips & Commands…” from the menu bar for the full cheat sheet; new users also get a closing onboarding card and a few rotating overlay hints.",
+            "steps": [
+              "Click the OpenWhisp menu-bar icon and choose “Tips & Commands…” to open the cheat sheet — grouped by voice editing, hands-free, spoken formatting, file @-mentions, AI cleanup, output targets, launcher automation, and the self-learning dictionary, each row with its real Settings path.",
+              "First-run onboarding now closes with a “What's next” card pointing at 2–3 features to try (voice editing, hands-free mode, the AI cleanup dial).",
+              "For roughly your first ten dictations, the overlay shows a small rotating tip while you speak; click its × to dismiss one forever."
+            ],
+            "note": "Live now. The overlay hints are calm and ambient — they only appear in a quiet listening moment of an ordinary dictation, never during an agent question, a refine, a hands-free-locked session, or while a transcript or revert control is on screen, and they auto-off after the first-run window. Every tip and Settings path in the cheat sheet is checked against what the running app actually does."
+          }
+        },
         {
           "category": "feature",
           "headline": "Drop in an audio or video file — batch transcription with a live queue and subtitle export",

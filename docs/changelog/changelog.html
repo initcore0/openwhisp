@@ -251,9 +251,9 @@
   </header>
 
   <div class="stats">
-    <div class="stat"><div class="n">23</div><div class="k">changes shipped</div></div>
+    <div class="stat"><div class="n">24</div><div class="k">changes shipped</div></div>
     <div class="stat"><div class="n">13<small> live</small></div><div class="k">new features</div></div>
-    <div class="stat"><div class="n">1078</div><div class="k">tests passing</div></div>
+    <div class="stat"><div class="n">1102</div><div class="k">tests passing</div></div>
     <div class="stat"><div class="n">100<small>%</small></div><div class="k">on-device</div></div>
   </div>
 
@@ -671,9 +671,14 @@
     <div class="sec-head">
       <span class="dot improve"></span>
       <h2>Under the hood</h2>
-      <span class="count">3 shipped</span>
+      <span class="count">4 shipped</span>
     </div>
     <ul class="entries">
+      <li class="entry">
+        <h3>Discover what OpenWhisp can do — a Tips &amp; Commands cheat sheet + first-run overlay hints</h3>
+        <p>A new "Tips &amp; Commands" menu item opens a cheat sheet of every gesture, spoken command, and feature that actually ships — with the real Settings path for each. Onboarding now ends with a short "What's next" card, and for your first few sessions the dictation overlay rotates a dismissible one-line tip ("say 'scratch that' to undo") so the deeper features aren't buried. Hints auto-off after the first-run window and never interrupt an agent question or a refine.</p>
+        <div class="receipts"><span class="tag ticket">MAK-25</span><span class="tag pr">#144</span></div>
+      </li>
       <li class="entry">
         <h3>One place for text transforms</h3>
         <p>The dictation pipeline now runs through a single, ordered post-processing chain — the groundwork that lets new transforms and output targets drop in cleanly, with behavior verified byte-for-byte against the old path.</p>
@@ -686,7 +691,7 @@
       </li>
       <li class="entry">
         <h3>End-to-end audio testing, so features stay working</h3>
-        <p>A full regression suite now feeds pre-recorded audio through the whole pipeline — the reason "1078 tests passing" is more than a number. Every feature above ships with coverage.</p>
+        <p>A full regression suite now feeds pre-recorded audio through the whole pipeline — the reason "1102 tests passing" is more than a number. Every feature above ships with coverage.</p>
         <div class="receipts"><span class="tag ticket">E2E</span><span class="tag pr">#107–110</span></div>
       </li>
     </ul>
