@@ -7,14 +7,14 @@
       "id": "2026-07",
       "title": "July 2026",
       "date": "2026-07-09",
-      "summary": "A batch of new features, fixes, and under-the-hood hardening — all landed on main, all covered by tests, all on your machine. Seven new features are live in Settings today — rich local formatting, spoken-filename @-mentions for code editors, agent-CLI cleanup, plus output targets (route a dictation to a file, a macOS Shortcut, or a webhook); three more shipped their tested engine with the UI landing next — each is marked below.",
+      "summary": "A batch of new features, fixes, and under-the-hood hardening — all landed on main, all covered by tests, all on your machine. All ten new features are live in Settings today: adjustable AI cleanup, voice editing, a self-learning dictionary, rich local formatting, spoken-filename @-mentions for code editors, agent-CLI cleanup, and output targets that route a dictation to a file, a macOS Shortcut, or a webhook.",
       "stats": {
-        "changesShipped": 16,
-        "newFeatures": 7,
-        "testsPassing": 923,
+        "changesShipped": 19,
+        "newFeatures": 10,
+        "testsPassing": 983,
         "onDevicePercent": 100,
-        "newFeaturesLive": 7,
-        "newFeaturesCorePending": 3
+        "newFeaturesLive": 10,
+        "newFeaturesCorePending": 0
       },
       "entries": [
         {
@@ -351,7 +351,7 @@
         {
           "category": "improvement",
           "headline": "End-to-end audio testing, so features stay working",
-          "body": "A full regression suite now feeds pre-recorded audio through the whole pipeline — the reason \"762 tests passing\" is more than a number. Every feature above ships with coverage.",
+          "body": "A full regression suite now feeds pre-recorded audio through the whole pipeline — the reason \"983 tests passing\" is more than a number. Every feature above ships with coverage.",
           "tickets": [],
           "prs": [
             107,
