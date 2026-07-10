@@ -821,10 +821,11 @@ class AppState: ObservableObject {
     private var appleLiveInsertedText = ""
     private var appleDidCompleteFinal = false
     /// Whether spoken edit commands (`voiceEditingEnabled`) are honored for THIS
-    /// session — snapshotted at beginSession alongside `isPreviewSession`, so a
+    /// session — snapshotted in `startStreamingSession()` (the streaming path that
+    /// reaches `handleAppleSpeechFinal`, where `outputMode` is authoritative), so a
     /// mid-session settings flip can't change how the pending text is finalized.
-    /// Only ever true in a preview session (the mode where text is held until the
-    /// end and can therefore still be edited before the single paste).
+    /// Only ever true for a preview-mode streaming session (the mode where text is
+    /// held until the end and can therefore still be edited before the single paste).
     private var voiceEditingActiveForSession = false
     /// The session's edit buffer: finalized dictation utterances accumulate here and
     /// standalone edit commands ("scratch that" / "undo" / …) mutate it, so the
@@ -2296,6 +2297,21 @@ class AppState: ObservableObject {
         // there would paste the whole final text a second time.
         isLiveChunkSession = outputMode == "liveChunks"
         isAppleSpeechSession = true
+        // Spoken edit commands (MAK-19) are decided HERE, not in beginSession:
+        // this streaming path calls beginSession(streaming: false), so its
+        // isPreviewSession is always false — the gate has to read `outputMode`
+        // directly, which is authoritative on this path (both streaming engines
+        // finalize through handleAppleSpeechFinal, the interception site). Never
+        // in agent sessions (they return the raw transcript over the bridge);
+        // suppressOutput was snapshotted by the beginSession call just above. The
+        // predicate lives in VoiceEditRouter.isActive so it's unit-tested (a dead
+        // gate here is exactly the regression the reviewer caught).
+        voiceEditingActiveForSession = VoiceEditRouter.isActive(
+            outputMode: outputMode,
+            enabled: voiceEditingEnabled,
+            suppressOutput: suppressOutput
+        )
+        voiceEditBuffer = VoiceEditBuffer()
         streamingUsesWhisperKit = transcriptionEngine == "whisperKit"
         appleLiveInsertedText = ""
         appleDidCompleteFinal = false
@@ -2691,11 +2707,13 @@ class AppState: ObservableObject {
         // pasting. Snapshot from the initiator (set by the bridge before this call)
         // so a mid-session change can't alter the paste-vs-return disposition.
         suppressOutput = sessionInitiator.isAgent
-        // Spoken edit commands (MAK-19) only apply in preview mode — the text is
-        // held until finalize there, so an edit can still change what's pasted.
-        // Never in agent sessions (they return the raw transcript over the bridge).
-        // Snapshot the gate + start each hold with a fresh buffer.
-        voiceEditingActiveForSession = isPreviewSession && voiceEditingEnabled && !suppressOutput
+        // Spoken edit commands (MAK-19) are gated per-session, but the decision is
+        // made in startStreamingSession() — the streaming path that actually reaches
+        // the interception site (handleAppleSpeechFinal) and where `outputMode` is
+        // authoritative. Here we only DEFAULT it off + reset the buffer, so a session
+        // that never goes through that path (recording/chunk paths) can't inherit a
+        // stale flag from a prior streaming session.
+        voiceEditingActiveForSession = false
         voiceEditBuffer = VoiceEditBuffer()
         audioLevel = 0
         recordingElapsed = 0
