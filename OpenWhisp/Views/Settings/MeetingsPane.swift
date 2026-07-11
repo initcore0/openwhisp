@@ -10,12 +10,14 @@ import UniformTypeIdentifiers
 /// pane renders a live "recording in progress" row when the integrator drives
 /// `recordingInProgress`.
 struct MeetingsPane: View {
+    @ObservedObject var appState: AppState
     @ObservedObject var coordinator: MeetingPipelineCoordinator
     @State private var cloudConsentMeeting: Meeting?
 
     var body: some View {
         Form {
             infoSection
+            summarizationModelSection
             if coordinator.recordingInProgress != nil || !coordinator.meetings.isEmpty {
                 listSection
             } else {
@@ -37,7 +39,7 @@ struct MeetingsPane: View {
             }
             Button("Cancel", role: .cancel) { cloudConsentMeeting = nil }
         } message: { _ in
-            Text("Your configured LLM provider is not local, so the transcript will be sent to it to produce the summary.")
+            Text("The summarization provider (\(coordinator.summaryProviderDisplayName)) is not local, so the transcript will be sent to it to produce the summary.")
         }
     }
 
@@ -48,6 +50,40 @@ struct MeetingsPane: View {
         } header: {
             Text("Meetings")
         }
+    }
+
+    /// MAK-53: a SEPARATE summarization provider/model, decoupled from the
+    /// dictation-cleanup LLM. Defaults to "Same as cleanup". Agent-CLI is not
+    /// offered here — the summarize seam is OpenAI-shape only.
+    private var summarizationModelSection: some View {
+        Section {
+            Picker("Summarization model", selection: $appState.summaryLLMProvider) {
+                Text("Same as cleanup (default)").tag(SummaryModelResolver.sameAsCleanupID)
+                Text("On this Mac (built-in)").tag("bundled")
+                Text("Your server (self-hosted)").tag("local")
+                Text("OpenAI (cloud)").tag("openai")
+            }
+
+            if appState.summaryLLMProvider != SummaryModelResolver.sameAsCleanupID {
+                TextField("Model", text: $appState.summaryLLMModel, prompt: Text(summaryModelPlaceholder))
+                if appState.summaryLLMProvider == "local" {
+                    TextField("Server URL", text: $appState.summaryLLMEndpoint,
+                              prompt: Text(appState.localLLMBaseURL.isEmpty ? "http://localhost:8080/v1" : appState.localLLMBaseURL))
+                }
+            }
+        } header: {
+            Text("Summarization model")
+        } footer: {
+            SettingsFootnote("Dictation cleanup favors a small, fast model. Summaries can use a larger local model — e.g. a bigger model behind your own server — because they run only when you summarize, not on every dictation. Leave this on “Same as cleanup” to reuse your cleanup LLM.")
+        }
+    }
+
+    /// Placeholder for the summary model field: the effective default the resolver
+    /// would use (the cleanup model when the summary provider matches cleanup, else
+    /// the provider/server default).
+    private var summaryModelPlaceholder: String {
+        let resolved = appState.resolvedSummaryModel()
+        return resolved.model.isEmpty ? "Server / provider default" : resolved.model
     }
 
     private var listSection: some View {

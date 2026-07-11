@@ -246,14 +246,14 @@
 <div class="wrap">
   <header>
     <p class="eyebrow">Shipped · July 2026</p>
-    <h1>Thirty-six ways OpenWhisp got<br><span class="accent">sharper, safer, and more yours.</span></h1>
-    <p class="lede">A batch of new features, fixes, and under-the-hood hardening — all landed on main, all covered by tests, all on your machine. All twenty-three new features are live today: meeting mode that records a call and gives you an on-device transcript plus a local Markdown summary, a floating Scratchpad to dictate into with no target app, quiet-dictation mode for whispering into your mic, opt-in on-device audio retention with one-click re-transcription and an auto-cleanup policy, a fully-remappable dictation trigger with a record-a-shortcut field, an AppleScript keystroke insert method and mouse-button dictation triggers, a local Usage Insights dashboard, opt-in screen-context awareness that biases transcription toward the names already on screen, batch file transcription with watch folders, hands-free (tap-to-lock) dictation, adjustable AI cleanup, voice editing, a self-learning dictionary, rich local formatting, spoken-filename @-mentions for code editors, agent-CLI cleanup, output targets that route a dictation to a file/Shortcut/webhook, first-class Modes you can invoke by name, a Rules engine that runs your own actions when a dictation finishes, and an openwhisp:// URL scheme so Raycast, Alfred, or any launcher can drive dictation.</p>
+    <h1>Thirty-nine ways OpenWhisp got<br><span class="accent">sharper, safer, and more yours.</span></h1>
+    <p class="lede">A batch of new features, fixes, and under-the-hood hardening — all landed on main, all covered by tests, all on your machine. All twenty-five new features are live today: meeting mode that records a call and gives you an on-device transcript plus a local Markdown summary — now with Me/Them speaker attribution and a live talking indicator, and with a separate, optionally larger summarization model you can point at your own server — a floating Scratchpad to dictate into with no target app, quiet-dictation mode for whispering into your mic, opt-in on-device audio retention with one-click re-transcription and an auto-cleanup policy, a fully-remappable dictation trigger with a record-a-shortcut field, an AppleScript keystroke insert method and mouse-button dictation triggers, a local Usage Insights dashboard, opt-in screen-context awareness that biases transcription toward the names already on screen, batch file transcription with watch folders, hands-free (tap-to-lock) dictation, adjustable AI cleanup, voice editing, a self-learning dictionary, rich local formatting, spoken-filename @-mentions for code editors, agent-CLI cleanup, output targets that route a dictation to a file/Shortcut/webhook, first-class Modes you can invoke by name, a Rules engine that runs your own actions when a dictation finishes, and an openwhisp:// URL scheme so Raycast, Alfred, or any launcher can drive dictation.</p>
   </header>
 
   <div class="stats">
-    <div class="stat"><div class="n">38</div><div class="k">changes shipped</div></div>
-    <div class="stat"><div class="n">24<small> live</small></div><div class="k">new features</div></div>
-    <div class="stat"><div class="n">1434</div><div class="k">tests passing</div></div>
+    <div class="stat"><div class="n">39</div><div class="k">changes shipped</div></div>
+    <div class="stat"><div class="n">25<small> live</small></div><div class="k">new features</div></div>
+    <div class="stat"><div class="n">1446</div><div class="k">tests passing</div></div>
     <div class="stat"><div class="n">100<small>%</small></div><div class="k">on-device</div></div>
   </div>
 
@@ -262,7 +262,7 @@
     <div class="sec-head">
       <span class="dot feature"></span>
       <h2>New features</h2>
-      <span class="count">24 live</span>
+      <span class="count">25 live</span>
     </div>
     <ul class="entries">
       <li>
@@ -311,6 +311,30 @@
               <li>When transcription finishes, the pane shows the attributed transcript (Me:/Them: lines). Export .md includes it, and the local summary is built from the labeled transcript so action items can carry the speaker.</li>
             </ol>
             <p class="g-note">Live now. “Them” is everyone on the remote side of the call — system audio is a single mixed stream, so distinguishing individual remote participants (per-person diarization) is a separate follow-on. Attribution is degrade-safe: the mixed recording is unchanged and remains the fallback, and if a leg can’t be captured or transcribed the meeting keeps its plain, un-attributed transcript.</p>
+          </div>
+        </details>
+      </li>
+      <li>
+        <details class="entry">
+          <summary>
+            <div class="sum-left">
+              <h3>Meeting summaries can use their own, larger model — separate from dictation cleanup</h3>
+              <p>Dictation cleanup wants a tiny, fast model because it runs on every final transcript; a meeting summary is different — it runs only when you ask for it, so it can afford a bigger, smarter model. Meeting mode now has its own “Summarization model” setting, independent of the cleanup LLM. Leave it on “Same as cleanup” (the default) and nothing changes. Or point summaries at a larger local model behind your own server — e.g. a 70B running in llama-server / Ollama — while keeping a fast on-device model for live dictation. The privacy gate follows the summary model, not cleanup: if the summarization provider is local, summaries still run automatically; if it's a cloud provider, you still get the explicit per-meeting “transcript leaves this Mac” confirmation, now naming the actual summary provider. The transcript-language guard on the summary is unchanged.</p>
+            </div>
+            <div class="sum-right">
+              <span class="try">How to use<svg class="howto-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span>
+              <div class="receipts"><span class="tag ticket">MAK-53</span></div>
+            </div>
+          </summary>
+          <div class="guide">
+            <span class="avail live">Available now</span>
+            <p class="g-sum">Open Settings → Meetings → Summarization model to pick a separate provider/model for summaries, or leave it on “Same as cleanup”.</p>
+            <ol>
+              <li>Open Settings → Meetings. The new “Summarization model” picker defaults to “Same as cleanup” — existing behavior, no change needed.</li>
+              <li>To use a bigger model just for summaries, pick a provider (On this Mac, Your server, or OpenAI) and optionally a model name; for a self-hosted server you can also set its URL. Leave the model blank to use the server/provider default.</li>
+              <li>Summaries then run through that model: a local summary provider still summarizes automatically after transcription; a cloud one asks for your per-meeting confirmation first, naming the provider the transcript would be sent to.</li>
+            </ol>
+            <p class="g-note">Live now. Cleanup keeps favoring a small fast model; the summary model runs only when you summarize. Agent-CLI isn't offered for summaries (the summarize path is OpenAI-shape); use the cleanup Agent-CLI provider for dictation as before. The summary is still checked against the transcript's language and rejected if it's translated away.</p>
           </div>
         </details>
       </li>
@@ -977,7 +1001,7 @@
       </li>
       <li class="entry">
         <h3>End-to-end audio testing, so features stay working</h3>
-        <p>A full regression suite now feeds pre-recorded audio through the whole pipeline — the reason "1361 tests passing" is more than a number. Every feature above ships with coverage.</p>
+        <p>A full regression suite now feeds pre-recorded audio through the whole pipeline — the reason "1446 tests passing" is more than a number. Every feature above ships with coverage.</p>
         <div class="receipts"><span class="tag ticket">E2E</span><span class="tag pr">#107–110</span></div>
       </li>
       <li class="entry">

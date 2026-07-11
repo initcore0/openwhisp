@@ -51,18 +51,22 @@ final class MeetingPipelineCoordinator: ObservableObject {
         var prompt: String
     }
 
-    /// One LLM round-trip: (systemInstruction, userText) → output. Fail by throwing;
-    /// the caller decides the fallback. The app wires this to the refine service
-    /// (`OpenAITranslationService.processFinalText` via `customInstruction`).
-    typealias SummarizeCall = (_ instruction: String, _ input: String) async throws -> String
+    /// One LLM round-trip: (systemInstruction, userText, resolvedSummaryModel) →
+    /// output. Fail by throwing; the caller decides the fallback. The app wires
+    /// this to the refine service using the RESOLVED provider/model/endpoint
+    /// (MAK-53), not the global cleanup LLM.
+    typealias SummarizeCall = (_ instruction: String, _ input: String, _ resolved: SummaryModelResolver.Resolved) async throws -> String
 
     private let store: MeetingSessionStore
     private let transcriptionConfig: () -> TranscriptionConfig
     /// The LLM call, or nil when no LLM is configured (summarize disabled).
     private let summarizeCall: SummarizeCall?
-    /// Whether the current refine provider keeps text on-device — decides whether
-    /// summarize may auto-run vs. require explicit per-meeting consent.
-    private let providerIsLocal: () -> Bool
+    /// Resolve the summarization provider/model/endpoint (MAK-53): the separate
+    /// summary model, or the cleanup globals when the user left it on "same as
+    /// cleanup". Its `.isLocal` drives the privacy gate (auto vs. consent), and
+    /// its provider name drives the consent dialog. Built per call so a mid-app
+    /// settings change is reflected.
+    private let resolveSummaryModel: () -> SummaryModelResolver.Resolved
 
     // Per-active-transcription working state.
     private var activeTranscribeID: UUID?
@@ -77,21 +81,36 @@ final class MeetingPipelineCoordinator: ObservableObject {
         store: MeetingSessionStore = MeetingSessionStore(),
         transcriptionConfig: @escaping () -> TranscriptionConfig,
         summarizeCall: SummarizeCall? = nil,
-        providerIsLocal: @escaping () -> Bool = { false }
+        resolveSummaryModel: @escaping () -> SummaryModelResolver.Resolved = { .init(provider: "", model: "", endpoint: "") }
     ) {
         self.store = store
         self.transcriptionConfig = transcriptionConfig
         self.summarizeCall = summarizeCall
-        self.providerIsLocal = providerIsLocal
+        self.resolveSummaryModel = resolveSummaryModel
         self.meetings = store.load()
     }
 
-    /// Whether summarization can run automatically (local provider) vs. needs an
-    /// explicit "text leaves this Mac" confirmation. Exposed for the UI to decide
-    /// which affordance to show.
-    var canAutoSummarize: Bool { summarizeCall != nil && providerIsLocal() }
+    /// Whether summarization can run automatically (resolved provider is local)
+    /// vs. needs an explicit "text leaves this Mac" confirmation. Exposed for the
+    /// UI to decide which affordance to show.
+    var canAutoSummarize: Bool { summarizeCall != nil && resolveSummaryModel().isLocal }
     /// Whether summarization is available at all (an LLM is configured).
     var summarizeAvailable: Bool { summarizeCall != nil }
+    /// A human-readable name for the resolved summary provider, for the consent
+    /// dialog copy ("… will be sent to <provider>").
+    var summaryProviderDisplayName: String {
+        Self.providerDisplayName(resolveSummaryModel().provider)
+    }
+
+    static func providerDisplayName(_ id: String) -> String {
+        switch id {
+        case "bundled":  return "the on-device model"
+        case "local":    return "your self-hosted server"
+        case "openai":   return "OpenAI"
+        case "agentCLI": return "your agent CLI"
+        default:         return "your configured provider"
+        }
+    }
 
     // MARK: - Live-recording hooks (driven by the capture integrator)
 
@@ -443,7 +462,20 @@ final class MeetingPipelineCoordinator: ObservableObject {
         }
         guard let meeting = meetings.first(where: { $0.id == id }),
               let plainTranscript = meeting.transcript, !plainTranscript.isEmpty else { return }
-        if !providerIsLocal() && !confirmedCloud {
+        // Resolve the summary model ONCE for this run (MAK-53). Its locality drives
+        // the privacy gate; the whole run then uses this resolved provider/model.
+        // This gate runs on EVERY entry to summarize — including the calls
+        // attribution triggers (attributeAndThenSummarize) — so the resolved
+        // privacy rule applies uniformly.
+        let resolved = resolveSummaryModel()
+        // The agent-CLI provider has no OpenAI-shape endpoint, so the summarize
+        // seam can't call it (and must NEVER silently fall through to a cloud
+        // endpoint the user didn't pick). Fail closed with an actionable message.
+        if resolved.provider == "agentCLI" {
+            lastMessage = "The agent CLI provider can't summarize meetings — pick a summarization model in Settings → Meetings."
+            return
+        }
+        if !resolved.isLocal && !confirmedCloud {
             lastMessage = "Summarizing with a cloud provider needs your confirmation."
             return
         }
@@ -461,7 +493,7 @@ final class MeetingPipelineCoordinator: ObservableObject {
             guard let self else { return }
             do {
                 let summary = try await MeetingSummarizer.run(transcript: summarizerInput) { instruction, input in
-                    try await summarize(instruction, input)
+                    try await summarize(instruction, input, resolved)
                 }
                 await MainActor.run { self.finishSummary(id, transcript: plainTranscript, summary: summary) }
             } catch {
