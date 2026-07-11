@@ -37,7 +37,7 @@ public enum SessionInitiator: Equatable {
 /// Decisions about the dictation-session lifecycle that must stay consistent
 /// across the (ordering-sensitive) start/cancel/finish sites. Pure so the
 /// invariant is unit-tested rather than re-derived at each call site.
-enum DictationSessionLifecycle {
+public enum DictationSessionLifecycle {
     /// Whether `finishSessionUI` should reset the hotkey activation machine when a
     /// session ends.
     ///
@@ -51,7 +51,7 @@ enum DictationSessionLifecycle {
     /// `pendingPreemptStart` BEFORE calling `cancelDictation` (which runs
     /// `finishSessionUI`): the flag has to be visible here, or the reset fires and
     /// the release is lost.
-    static func shouldResetActivation(pendingPreemptStart: Bool) -> Bool {
+    public static func shouldResetActivation(pendingPreemptStart: Bool) -> Bool {
         !pendingPreemptStart
     }
 }
