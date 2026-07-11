@@ -396,22 +396,23 @@ struct CleanupPane: View {
 
             SettingsFootnote(cleanupIntensityDescription(appState.cleanupIntensity))
 
-            // Translation-improvement mode + target language stay available while
-            // any cleanup tier runs, so users who translate keep that path. The
-            // intensity's prompt drives same-language cleanup; the translation mode
-            // is the distinct "polish my English translation" flow.
+            // Translation-improvement mode stays available while any cleanup tier
+            // runs, so users who translate keep that path. The intensity's prompt
+            // drives same-language cleanup; the translation mode is the distinct
+            // "polish my English translation" flow.
+            //
+            // There is deliberately NO target-language picker: the transcription
+            // engine's translate task ONLY ever produces English (see
+            // LanguageResolver.outputLanguageForCleaning), so the only coherent polish
+            // target is English. A user-settable target (the old en/ru picker) could
+            // be left stale on "Russian" and then silently turn an English dictation
+            // Russian — the reported regression. The polish target is now pinned to
+            // English at the source.
             if appState.cleanupIntensity != .none {
                 if appState.translateToEnglish || appState.openAIEnhancementMode == "improveTranslation" {
                     Picker("Mode", selection: $appState.openAIEnhancementMode) {
                         Text("Rephrase in the same language").tag("rephrase")
                         Text("Improve English translation").tag("improveTranslation")
-                    }
-
-                    if appState.openAIEnhancementMode == "improveTranslation" {
-                        Picker("Target language", selection: $appState.translationTargetLanguage) {
-                            Text("English").tag("en")
-                            Text("Russian").tag("ru")
-                        }
                     }
                 } else {
                     SettingsFootnote("Turn on “Translate to English” in Dictation › Language to also get a translation-improvement mode.")

@@ -3653,12 +3653,17 @@ class AppState: ObservableObject {
                         // fail-open behavior as an LLM error. Live chunks only ever run
                         // "rephrase" and never agent sessions, so the exemptions reduce
                         // to translateToEnglish.
-                        let guardChunk = RefineOutputGuard.shouldLanguageGuard(
+                        let chunkExpectedScript = RefineOutputGuard.expectedCleanupScript(
                             translateToEnglish: self.translateToEnglish,
                             mode: self.openAIEnhancementMode,
+                            translationTargetLanguage: self.translationTargetLanguage
+                        )
+                        let guardChunk = RefineOutputGuard.shouldLanguageGuard(
                             isSpokenInstructionRefine: false,
                             isAgentBridgeRefine: false
-                        ) && RefineOutputGuard.outputTranslatedAway(input: item, output: cleaned)
+                        ) && RefineOutputGuard.outputTranslatedAway(
+                            input: item, output: cleaned, expectedOutputScript: chunkExpectedScript
+                        )
                         if guardChunk {
                             self.refineDebug("language guard REJECTED chunk cleanup (looked translated); keeping raw chunk")
                             textToInsert = item
@@ -3850,20 +3855,31 @@ class AppState: ObservableObject {
                         return
                     }
                     // Language guard (fix): small cleanup models sometimes TRANSLATE
-                    // a non-Latin dictation (e.g. Russian → English) even though the
-                    // prompt says to keep the language. Reject that and keep the raw
-                    // transcript — the same fail-open path used when the LLM errors.
-                    // Skip the guard when a translation is legitimately intended (this
-                    // path is never the spoken-instruction refine — that returned early
-                    // above — and agent sessions never enhance, so both are false here).
-                    if RefineOutputGuard.shouldLanguageGuard(
+                    // the dictation into a DIFFERENT script even though the prompt
+                    // says to keep the language — Russian → English, or (the fix here)
+                    // English → Russian when the "Improve translation" target-language
+                    // picker is stale. Reject that and keep the raw transcript — the
+                    // same fail-open path used when the LLM errors. The guard runs even
+                    // for the intended-translation modes (translateToEnglish /
+                    // improveTranslation): `expectedCleanupScript` names the script
+                    // those legitimately produce, so genuine translate-to-X passes
+                    // while a drift into any OTHER script is still caught. Only the
+                    // free-form instruction paths (spoken/agent/Mode) are exempt — this
+                    // path is never the spoken-instruction refine (that returned early
+                    // above) and agent sessions never enhance, so both are false here.
+                    let expectedScript = RefineOutputGuard.expectedCleanupScript(
                         translateToEnglish: self.translateToEnglish,
                         mode: self.openAIEnhancementMode,
+                        translationTargetLanguage: self.translationTargetLanguage
+                    )
+                    if RefineOutputGuard.shouldLanguageGuard(
                         isSpokenInstructionRefine: false,
                         isAgentBridgeRefine: false,
                         // A Mode's own instruction may legitimately translate (MAK-39).
                         hasCustomModeInstruction: self.modeRefineInstructionOverride != nil
-                    ), RefineOutputGuard.outputTranslatedAway(input: finalText, output: cleaned) {
+                    ), RefineOutputGuard.outputTranslatedAway(
+                        input: finalText, output: cleaned, expectedOutputScript: expectedScript
+                    ) {
                         self.refineDebug("language guard REJECTED cleanup (looked translated); keeping raw transcript")
                         self.translationStatus = "Kept your language (cleanup translated)"
                         self.rememberLastDictation(finalText)

@@ -68,12 +68,29 @@ enum RefineOutputGuard {
     // MARK: - Decision
 
     /// `true` when the cleanup output must be REJECTED (kept-original) because it
-    /// looks like a translation of a non-Latin dictation. `false` = accept.
+    /// looks like a translation of the dictation into a DIFFERENT writing system.
     ///
-    /// Passes (returns false) for: same-script cleanups, Latin→Latin, short inputs,
-    /// empty/whitespace, and mixed content whose output keeps a comparable share of
-    /// the input's non-Latin script.
-    static func outputTranslatedAway(input: String, output: String) -> Bool {
+    /// Symmetric (fix for the English → Russian regression): it flags translation in
+    /// BOTH directions. The original bug was non-Latin → Latin (Russian dictation
+    /// "cleaned" into English); the inverse is Latin → non-Latin (English dictation
+    /// "cleaned" into Russian, when a stale target-language picker told the polish
+    /// prompt to produce Russian). Either way the input has a clear dominant script
+    /// and the output is predominantly a DIFFERENT tracked script → REJECT.
+    ///
+    /// Passes (returns false) for: same-script cleanups (Latin→Latin, Cyrillic→
+    /// Cyrillic, …), short inputs, empty/whitespace, output whose dominant script
+    /// matches the input's, and — when `expectedOutputScript` is supplied by an
+    /// intended translate-to-X flow — output that lands in that expected script.
+    ///
+    /// - `expectedOutputScript`: the script an INTENDED translation targets (e.g. a
+    ///   translate-to-Russian flow passes `.cyrillic`). When the output's dominant
+    ///   script equals this, the "different script" is expected → ACCEPT. Nil for
+    ///   plain same-language cleanups (any script change is then a rejection).
+    static func outputTranslatedAway(
+        input: String,
+        output: String,
+        expectedOutputScript: Script? = nil
+    ) -> Bool {
         let inputLetters = letters(of: input)
         // Too little signal, or no letters at all → nothing to judge, always pass.
         guard inputLetters.count >= minLettersForCheck else { return false }
@@ -81,61 +98,132 @@ enum RefineOutputGuard {
         let inputCounts = scriptCounts(inputLetters)
         let inputTotal = Double(inputLetters.count)
 
-        // Identify the dominant non-Latin script of the input.
-        guard let (dominant, dominantCount) = dominantNonLatinScript(inputCounts) else {
-            // No tracked non-Latin script dominates (Latin input, or an untracked
-            // "other" script we don't judge) → pass.
+        // Identify the dominant script of the input — including Latin, so English
+        // dictations are judged too. "other"/untracked scripts never anchor a
+        // rejection (conservative).
+        guard let (inputScript, inputScriptCount) = dominantTrackedScript(inputCounts) else {
             return false
         }
-        let inputNonLatinShare = Double(dominantCount) / inputTotal
-        guard inputNonLatinShare >= minNonLatinInputShare else { return false }
+        let inputShare = Double(inputScriptCount) / inputTotal
+        // The input must be clearly dominated by one tracked script to be worth
+        // judging. Reuses the same tolerant threshold as before (heavy mixing —
+        // e.g. English identifiers in Russian, or code in English — still counts).
+        guard inputShare >= minNonLatinInputShare else { return false }
 
-        // How much of that same script survives in the output?
         let outputLetters = letters(of: output)
         guard !outputLetters.isEmpty else {
-            // Empty/letterless output can't be trusted as a same-language cleanup of
-            // a substantial non-Latin input — but empty output is already handled by
-            // the caller's existing "LLM returned empty" fallback, so treat a
-            // letterless output as "not translated" here and let that path win.
+            // Empty/letterless output is handled by the caller's existing "LLM
+            // returned empty" fallback; treat it as "not translated" here.
             return false
         }
         let outputCounts = scriptCounts(outputLetters)
-        let outputScriptShare = Double(outputCounts[dominant, default: 0]) / Double(outputLetters.count)
+        let outputTotal = Double(outputLetters.count)
 
-        // Reject only when the input was clearly non-Latin AND the script all but
-        // vanished from the output.
-        return outputScriptShare < minOutputScriptShareToPass
+        // If enough of the INPUT's script survives in the output, this is a
+        // same-language cleanup → ACCEPT. (Covers Russian→Russian, Latin→Latin.)
+        let keptShare = Double(outputCounts[inputScript, default: 0]) / outputTotal
+        guard keptShare < minOutputScriptShareToPass else { return false }
+
+        // The input's script all but vanished. Identify what the output became.
+        guard let (outputScript, outputScriptCount) = dominantTrackedScript(outputCounts) else {
+            // Output has no dominant tracked script (all "other") → don't judge.
+            return false
+        }
+        // Only reject when the output is CLEARLY a different tracked script, not a
+        // faint smear of one — same overwhelming-evidence bar as the input side.
+        let outputShare = Double(outputScriptCount) / outputTotal
+        guard outputShare >= minNonLatinInputShare, outputScript != inputScript else {
+            return false
+        }
+
+        // An intended translation that landed in its expected script is fine.
+        if let expectedOutputScript, outputScript == expectedOutputScript {
+            return false
+        }
+
+        // Input was clearly one script, output is clearly a different (unexpected)
+        // one → the "cleanup" translated. REJECT.
+        return true
+    }
+
+    /// Map a language code (as used by the app's target-language / cleaning-language
+    /// settings) to the writing system an intended translation into it would produce.
+    /// Only codes whose script we track return a value; anything else is nil (the
+    /// guard then has no expected script and treats any script change as suspect,
+    /// which is the safe default — a false accept, not a false reject).
+    static func script(forLanguageCode code: String) -> Script? {
+        switch code.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "ru", "uk", "be", "bg", "sr", "mk": return .cyrillic
+        case "en", "es", "fr", "de", "it", "pt", "nl", "pl", "tr", "id", "vi",
+             "sv", "da", "no", "fi", "cs", "ro", "hu":
+            return .latin
+        case "el": return .greek
+        case "he": return .hebrew
+        case "ar", "fa", "ur": return .arabic
+        case "zh": return .han
+        case "ja": return .kana
+        case "ko": return .hangul
+        default: return nil
+        }
     }
 
     /// Whether THIS session's automatic cleanup should be language-guarded at all.
     ///
-    /// Do NOT guard when a translation is legitimately intended — flagging those
-    /// would defeat the feature. Exemptions:
-    /// - `translateToEnglish`: the user asked the engine/cleanup to produce English.
-    /// - `improveTranslation` mode: the translation-polish carve-out (input was
-    ///   already locally translated; output English is expected).
-    /// - the explicit refine-with-spoken-instruction flow: the user may have asked
-    ///   the model to translate as part of their instruction.
-    /// - the agent-bridge refine: agents pass their own instructions and own the
-    ///   language contract.
+    /// Only paths whose language contract is OWNED by a free-form instruction are
+    /// exempted outright — the guard can't know what script those legitimately
+    /// produce:
+    /// - the explicit refine-with-spoken-instruction flow (the user may have asked
+    ///   the model to translate as part of their instruction),
+    /// - the agent-bridge refine (agents pass their own instructions),
+    /// - a user-authored Mode instruction (MAK-39; may say "translate to French").
+    ///
+    /// NOTE (fix): `translateToEnglish` and `improveTranslation` are NO LONGER blanket
+    /// exemptions. They ARE intended translations, but with a KNOWN target script, so
+    /// the call site keeps the guard on and passes `expectedOutputScript` to
+    /// `outputTranslatedAway` — the guard then accepts output in the expected script
+    /// but still rejects a drift into some OTHER script (the English → Russian bug:
+    /// improveTranslation with a stale target-language picker produced Russian for an
+    /// English dictation, and the old blanket exemption let it through).
     ///
     /// Pure so the decision is unit-tested without AppState/AppKit.
     static func shouldLanguageGuard(
-        translateToEnglish: Bool,
-        mode: String,
         isSpokenInstructionRefine: Bool,
         isAgentBridgeRefine: Bool,
         hasCustomModeInstruction: Bool = false
     ) -> Bool {
-        if translateToEnglish { return false }
-        if mode.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "improvetranslation" { return false }
         if isSpokenInstructionRefine { return false }
         if isAgentBridgeRefine { return false }
-        // A user-authored Mode instruction (MAK-39) owns the language contract the
-        // same way a spoken instruction does — it may legitimately say "translate
-        // to French". Never second-guess it.
         if hasCustomModeInstruction { return false }
         return true
+    }
+
+    /// The writing system the automatic cleanup is LEGITIMATELY allowed to produce
+    /// (its intended translation target), or nil when no translation is intended and
+    /// the output must stay in the input's own script.
+    ///
+    /// - `translateToEnglish`: whisper translated the audio INTO English, so the
+    ///   polish output is expected in Latin.
+    /// - `improveTranslation` mode: the "Improve English translation" flow polishes
+    ///   the engine's (always-English) translation, so it too expects Latin. There is
+    ///   no user-settable target — the old en/ru picker was removed because a stale
+    ///   "ru" turned English dictations Russian (the reported regression).
+    ///
+    /// Passed to `outputTranslatedAway` as `expectedOutputScript`. When nil, any
+    /// script change is a rejection (the plain same-language cleanup contract).
+    static func expectedCleanupScript(
+        translateToEnglish: Bool,
+        mode: String,
+        translationTargetLanguage: String
+    ) -> Script? {
+        let normalizedMode = mode.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        // Both intended-translation flows produce English (the engine's only
+        // translate target). `translationTargetLanguage` is intentionally ignored —
+        // see the doc above — but kept in the signature for call-site symmetry.
+        if normalizedMode == "improvetranslation" || translateToEnglish {
+            _ = translationTargetLanguage
+            return .latin
+        }
+        return nil
     }
 
     // MARK: - Script analysis
@@ -155,12 +243,13 @@ enum RefineOutputGuard {
         return counts
     }
 
-    /// The dominant tracked non-Latin script and its letter count, or nil when no
-    /// tracked non-Latin script has any letters (input is Latin-only or entirely
-    /// "other").
-    private static func dominantNonLatinScript(_ counts: [Script: Int]) -> (Script, Int)? {
-        let nonLatin = counts.filter { $0.key != .latin && $0.key != .other && $0.value > 0 }
-        guard let best = nonLatin.max(by: { $0.value < $1.value }) else { return nil }
+    /// The dominant TRACKED script and its letter count, or nil when only the
+    /// untracked `.other` bucket has letters. Latin is a tracked script here (unlike
+    /// the old non-Latin-only helper) so English inputs/outputs are judged too — the
+    /// symmetric guard needs to name Latin as both a source and a target script.
+    private static func dominantTrackedScript(_ counts: [Script: Int]) -> (Script, Int)? {
+        let tracked = counts.filter { $0.key != .other && $0.value > 0 }
+        guard let best = tracked.max(by: { $0.value < $1.value }) else { return nil }
         return (best.key, best.value)
     }
 
