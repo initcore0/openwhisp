@@ -20,6 +20,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
     case rules
     case modes
     case files
+    case meetings
     case profiles
     case agentBridge
     case privacy
@@ -38,6 +39,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
         case .rules:       return "Rules"
         case .modes:       return "Modes"
         case .files:       return "File Transcription"
+        case .meetings:    return "Meetings"
         case .profiles:    return "Per-App Profiles"
         case .agentBridge: return "Agent Bridge"
         case .privacy:     return "Privacy & Permissions"
@@ -56,6 +58,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
         case .rules:       return "flowchart"
         case .modes:       return "square.stack.3d.up"
         case .files:       return "waveform.and.magnifyingglass"
+        case .meetings:    return "person.2.wave.2"
         case .profiles:    return "square.grid.2x2"
         case .agentBridge: return "point.3.connected.trianglepath.dotted"
         case .privacy:     return "lock.shield"
@@ -116,6 +119,7 @@ struct SettingsView: View {
         case .rules:     RulesPane(appState: appState)
         case .modes:     ModesPane(appState: appState)
         case .files:     FileTranscriptionPane(coordinator: appState.fileCoordinator)
+        case .meetings:  MeetingsPane(coordinator: appState.meetingCoordinator)
         case .profiles:  ProfilesPane(appState: appState)
         case .agentBridge: AgentBridgePane(appState: appState)
         case .privacy:   PrivacyPane(appState: appState)

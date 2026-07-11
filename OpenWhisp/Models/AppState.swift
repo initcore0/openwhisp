@@ -1020,6 +1020,58 @@ class AppState: ObservableObject {
             } : nil
         )
     }
+    /// Meeting mode (MAK-50): transcribe + locally summarize recorded meetings.
+    /// Lazily built so it only loads its store when the Meetings pane opens. Uses a
+    /// DEDICATED transcription engine per job (like `fileCoordinator`) and routes
+    /// summaries through the existing refine primitive. The capture half feeds it a
+    /// `MeetingRecording` via `ingest(_:)` (the integration seam).
+    lazy var meetingCoordinator: MeetingPipelineCoordinator = {
+        MeetingPipelineCoordinator(
+            transcriptionConfig: { [weak self] in
+                self?.meetingTranscriptionConfig() ?? .init(
+                    makeEngine: { WhisperEngine() }, binaryPath: "", modelPath: "",
+                    languageSetting: "auto", backend: .cli, prompt: ""
+                )
+            },
+            summarizeCall: { [weak self] instruction, input in
+                // Route each summarize prompt through the existing refine primitive
+                // (instruction = the summary/map/combine prompt, input = the text).
+                try await withCheckedThrowingContinuation { cont in
+                    Task { @MainActor in
+                        guard let self else {
+                            cont.resume(throwing: MeetingSummarizeError.unavailable); return
+                        }
+                        self.refineText(text: input, instruction: instruction) { result in
+                            switch result {
+                            case .success(let out): cont.resume(returning: out)
+                            case .failure(let err): cont.resume(throwing: err)
+                            }
+                        }
+                    }
+                }
+            },
+            providerIsLocal: { [weak self] in
+                guard let self else { return false }
+                return ScreenContextGate.localRefineProviders.contains(self.llmProvider)
+            }
+        )
+    }()
+
+    /// Transcription engine config for a meeting job, mirroring `fileEngineConfig`.
+    func meetingTranscriptionConfig() -> MeetingPipelineCoordinator.TranscriptionConfig {
+        let engineName = transcriptionEngine
+        let model = modelName
+        let wkModel = whisperKitModel
+        return .init(
+            makeEngine: { Self.makeFileEngine(for: engineName, model: model, whisperKitModel: wkModel) },
+            binaryPath: whisperBinaryPath,
+            modelPath: modelPath,
+            languageSetting: engineLanguageSetting,
+            backend: whisperBackend == "serverAPI" ? .serverAPI : .cli,
+            prompt: customVocabularyEnabled ? vocabulary.whisperPrompt : ""
+        )
+    }
+
     var appleSpeechEngine: StreamingTranscriptionEngine!
     /// Experimental real-time WhisperKit engine. Shares the streaming session
     /// machinery with Apple Speech (same handlers) but uses WhisperKit's

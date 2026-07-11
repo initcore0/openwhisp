@@ -247,13 +247,13 @@
   <header>
     <p class="eyebrow">Shipped · July 2026</p>
     <h1>Thirty-six ways OpenWhisp got<br><span class="accent">sharper, safer, and more yours.</span></h1>
-    <p class="lede">A batch of new features, fixes, and under-the-hood hardening — all landed on main, all covered by tests, all on your machine. All twenty-two new features are live today: a floating Scratchpad to dictate into with no target app, quiet-dictation mode for whispering into your mic, opt-in on-device audio retention with one-click re-transcription and an auto-cleanup policy, a fully-remappable dictation trigger with a record-a-shortcut field, an AppleScript keystroke insert method and mouse-button dictation triggers, a local Usage Insights dashboard, opt-in screen-context awareness that biases transcription toward the names already on screen, batch file transcription with watch folders, hands-free (tap-to-lock) dictation, adjustable AI cleanup, voice editing, a self-learning dictionary, rich local formatting, spoken-filename @-mentions for code editors, agent-CLI cleanup, output targets that route a dictation to a file/Shortcut/webhook, first-class Modes you can invoke by name, a Rules engine that runs your own actions when a dictation finishes, and an openwhisp:// URL scheme so Raycast, Alfred, or any launcher can drive dictation.</p>
+    <p class="lede">A batch of new features, fixes, and under-the-hood hardening — all landed on main, all covered by tests, all on your machine. All twenty-three new features are live today: meeting mode that records a call and gives you an on-device transcript plus a local Markdown summary, a floating Scratchpad to dictate into with no target app, quiet-dictation mode for whispering into your mic, opt-in on-device audio retention with one-click re-transcription and an auto-cleanup policy, a fully-remappable dictation trigger with a record-a-shortcut field, an AppleScript keystroke insert method and mouse-button dictation triggers, a local Usage Insights dashboard, opt-in screen-context awareness that biases transcription toward the names already on screen, batch file transcription with watch folders, hands-free (tap-to-lock) dictation, adjustable AI cleanup, voice editing, a self-learning dictionary, rich local formatting, spoken-filename @-mentions for code editors, agent-CLI cleanup, output targets that route a dictation to a file/Shortcut/webhook, first-class Modes you can invoke by name, a Rules engine that runs your own actions when a dictation finishes, and an openwhisp:// URL scheme so Raycast, Alfred, or any launcher can drive dictation.</p>
   </header>
 
   <div class="stats">
-    <div class="stat"><div class="n">36</div><div class="k">changes shipped</div></div>
-    <div class="stat"><div class="n">22<small> live</small></div><div class="k">new features</div></div>
-    <div class="stat"><div class="n">1375</div><div class="k">tests passing</div></div>
+    <div class="stat"><div class="n">37</div><div class="k">changes shipped</div></div>
+    <div class="stat"><div class="n">23<small> live</small></div><div class="k">new features</div></div>
+    <div class="stat"><div class="n">1401</div><div class="k">tests passing</div></div>
     <div class="stat"><div class="n">100<small>%</small></div><div class="k">on-device</div></div>
   </div>
 
@@ -262,9 +262,34 @@
     <div class="sec-head">
       <span class="dot feature"></span>
       <h2>New features</h2>
-      <span class="count">22 live</span>
+      <span class="count">23 live</span>
     </div>
     <ul class="entries">
+      <li>
+        <details class="entry">
+          <summary>
+            <div class="sum-left">
+              <h3>Meeting mode — record a call, get an on-device transcript and a local summary</h3>
+              <p>Record a meeting (system audio + your mic) straight to your Mac, then let OpenWhisp transcribe it with your on-device engine and summarize it locally into Markdown — a short overview, the decisions made, and the action items. A new Meetings pane in Settings lists every recording with its transcript and summary, and lets you re-transcribe, summarize, export a .md, or delete (which also removes the audio). Nothing leaves your machine unless you choose a cloud LLM for the summary — and then only after an explicit per-meeting confirmation. The summary is checked against the transcript's language, so a small model can't quietly hand you an English summary of a Russian meeting; if it tries, OpenWhisp keeps the transcript and tells you.</p>
+            </div>
+            <div class="sum-right">
+              <span class="try">How to use<svg class="howto-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span>
+              <div class="receipts"><span class="tag ticket">MAK-50</span></div>
+            </div>
+          </summary>
+          <div class="guide">
+            <span class="avail live">Available now</span>
+            <p class="g-sum">Start/Stop a recording from the menu bar, then open Settings → Meetings to read the transcript, run the summary, and export.</p>
+            <ol>
+              <li>Start a recording from the OpenWhisp menu bar (Start meeting), and Stop it there when the call ends — the audio is captured on-device as a 16 kHz WAV.</li>
+              <li>Open Settings → Meetings: the new recording appears in the list and is transcribed automatically by your on-device engine (long recordings are chunked, like file transcription).</li>
+              <li>For a summary: with a LOCAL LLM configured it runs automatically once transcription finishes; with a cloud or agent-CLI provider you get a per-meeting “Summarize (transcript leaves this Mac)” confirmation first, so cloud text-sharing is never silent.</li>
+              <li>Use the row’s Actions menu to Re-transcribe, Summarize, Export .md (summary + transcript), or Delete (which also deletes the recording’s audio).</li>
+            </ol>
+            <p class="g-note">Live now. The summary is map-reduced for long meetings and always demanded in the transcript’s own language — if a small model translates it away, OpenWhisp rejects the summary and keeps the transcript. Speaker diarization (“who said what”) is a planned follow-on; today’s transcript and summary are un-attributed. Cloud summaries only ever run after your explicit confirmation.</p>
+          </div>
+        </details>
+      </li>
       <li>
         <details class="entry">
           <summary>
