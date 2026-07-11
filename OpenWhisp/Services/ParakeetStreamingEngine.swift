@@ -27,6 +27,12 @@ final class ParakeetStreamingEngine: StreamingTranscriptionEngine {
     var onError: ((String) -> Void)?
     var onLevelChanged: ((_ display: Float, _ vad: Float) -> Void)?
 
+    /// Fires when the underlying manager reports a NEW end-of-utterance event
+    /// (only the EOU variant exposes these). Used by the agent-dictate EOU
+    /// auto-stop (MAK-46 Phase 5); nil for every other caller. Fires on the main
+    /// actor. Non-EOU variants never call it.
+    var onEouDetected: (() -> Void)?
+
     /// ParakeetCatalog variant id (see ParakeetCatalog).
     private let variantID: String
 
@@ -59,6 +65,9 @@ final class ParakeetStreamingEngine: StreamingTranscriptionEngine {
     @MainActor private var feedTask: Task<Void, Never>?
 
     @MainActor private var lastPartial = ""
+    /// Count of EOU timestamps seen so far this session — a growth means a NEW
+    /// end-of-utterance event (see the feed loop).
+    @MainActor private var lastEouCount = 0
     @MainActor private var didStop = false
     /// Session generation, bumped on every start and stop — late partial
     /// callbacks from a torn-down session fail the gate instead of leaking into
@@ -73,6 +82,7 @@ final class ParakeetStreamingEngine: StreamingTranscriptionEngine {
         // call order (a stop() immediately followed by start() must serialize).
         MainActor.assumeIsolated {
             self.lastPartial = ""
+            self.lastEouCount = 0
             self.didStop = false
             // Strong capture on purpose: the chain must keep the engine alive
             // until its lifecycle work completes (see WhisperKitStreamingEngine).
@@ -163,6 +173,19 @@ final class ParakeetStreamingEngine: StreamingTranscriptionEngine {
                         // chunks and fires the partial callback.
                         try await session.appendAudio(buffer)
                         try await session.processBuffered()
+                        // EOU polling (EOU variant only): a grown timestamp count
+                        // is a new end-of-utterance event. Non-EOU sessions return
+                        // [] so this is cheap and never fires.
+                        if self?.onEouDetected != nil {
+                            let count = await session.eouTimestampsMs().count
+                            await MainActor.run { [weak self] in
+                                guard let self, self.generation == myGeneration, !self.didStop else { return }
+                                if count > self.lastEouCount {
+                                    self.lastEouCount = count
+                                    self.onEouDetected?()
+                                }
+                            }
+                        }
                     }
                 } catch {
                     NSLog("[Parakeet] stream feed error: %@", error.localizedDescription)

@@ -1,5 +1,11 @@
 # Parakeet Realtime Engine — MAK-46 spike
 
+> **This is the original feasibility report.** The spike has since been promoted to
+> a full integration (streaming + batch file engine, multilingual, model management,
+> EOU auto-stop). For the maintainer doc — build flag, models, wiring, language
+> matrix, limitations, measured results — see **[PARAKEET.md](PARAKEET.md)**.
+
+
 **Verdict: feasible, and it delivers the promise.** A true streaming
 (transcribe-as-you-speak) local engine built on NVIDIA Parakeet CoreML models
 via [FluidAudio](https://github.com/FluidInference/FluidAudio) (Apache 2.0)

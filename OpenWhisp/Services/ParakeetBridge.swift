@@ -99,6 +99,10 @@ protocol ParakeetStreamSession: Sendable {
     func reset() async throws
     /// The first detected language this session, if the manager reports one.
     func detectedLanguage() async -> String?
+    /// End-of-utterance timestamps (ms) so far, for managers that expose them
+    /// (the EOU variant). Empty for managers without the capability — the engine
+    /// treats "grew since last poll" as a new EOU event (MAK-46 Phase 5).
+    func eouTimestampsMs() async -> [Int]
 }
 
 /// Adapter over the English streaming families (`any StreamingAsrManager`:
@@ -117,6 +121,11 @@ final class StreamingAsrManagerSession: ParakeetStreamSession, @unchecked Sendab
     func finish() async throws -> String { try await manager.finish() }
     func reset() async throws { try await manager.reset() }
     func detectedLanguage() async -> String? { nil }
+    func eouTimestampsMs() async -> [Int] {
+        // Only the EOU streaming manager exposes end-of-utterance timestamps.
+        guard let eou = manager as? any StreamingAsrEouProvider else { return [] }
+        return await eou.getEouTimestampsMs()
+    }
 }
 
 /// Adapter over the Nemotron multilingual streaming actor. Its `appendAudio` is
@@ -139,5 +148,6 @@ final class NemotronMultilingualStreamSession: ParakeetStreamSession, @unchecked
     func finish() async throws -> String { try await manager.finish() }
     func reset() async throws { await manager.reset() }
     func detectedLanguage() async -> String? { await manager.detectedLanguage() }
+    func eouTimestampsMs() async -> [Int] { [] }  // no EOU capability
 }
 #endif

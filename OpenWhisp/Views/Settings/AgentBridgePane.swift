@@ -86,6 +86,13 @@ struct AgentBridgePane: View {
                 subtitle: "End an agent-requested dictation automatically once you stop talking, instead of waiting for the time limit. Only applies to agent requests — your own dictation hotkey is unaffected.",
                 isOn: $appState.agentBridgeSilenceAutoStop
             )
+            #if PARAKEET
+            SubtitledToggle(
+                "Stop on end-of-utterance (Parakeet EOU)",
+                subtitle: "Experimental: end an agent dictation on the Parakeet EOU variant's end-of-utterance signal — a crisper “done” than silence. Only takes effect with the Parakeet “EOU — ultra light” variant selected; otherwise it does nothing.",
+                isOn: $appState.agentBridgeEouAutoStop
+            )
+            #endif
             SubtitledToggle(
                 "Chime when an agent asks",
                 subtitle: "Play a short sound when an agent opens a dictation, so you notice it even when you're not looking at the overlay.",

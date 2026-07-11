@@ -763,6 +763,14 @@ class AppState: ObservableObject {
     @Published var agentBridgeSilenceAutoStop: Bool {
         didSet { UserDefaults.standard.set(agentBridgeSilenceAutoStop, forKey: "agentBridgeSilenceAutoStop") }
     }
+    /// Finish an AGENT dictation on the Parakeet EOU variant's end-of-utterance
+    /// signal (MAK-46 Phase 5), a crisper "the human finished" than energy silence.
+    /// Default-OFF and experimental: only the `parakeet-eou-320ms` variant emits
+    /// EOU events, so it's a no-op on any other engine/variant. Agent sessions
+    /// only, alongside (not replacing) the silence detector.
+    @Published var agentBridgeEouAutoStop: Bool {
+        didSet { UserDefaults.standard.set(agentBridgeEouAutoStop, forKey: "agentBridgeEouAutoStop") }
+    }
     /// Auto-stop a hands-free (locked) dictation after a long stretch of silence,
     /// so a forgotten toggle session doesn't record forever (MAK-16). Default-ON;
     /// a safety net, not a quick-finish gesture — the hangover is deliberately
@@ -825,6 +833,10 @@ class AppState: ObservableObject {
     /// waveform reads; when it fires, the session finishes as if the user tapped
     /// done (`endedBy: .user`). Reset in `finishSessionUI`.
     private var agentSilenceDetector: SilenceAutoStop?
+    /// Per-session EOU auto-stop timing (MAK-46 Phase 5), armed for an agent
+    /// session only when `agentBridgeEouAutoStop` is on and the active engine emits
+    /// EOU events (the Parakeet EOU variant). nil for every other session.
+    private var agentEouDetector: AgentEouAutoStop?
     /// The control-plane socket server. Lazily constructed (no cost until the
     /// bridge is enabled); owns the socket, per-connection auth, and dispatch.
     private lazy var agentBridgeServer = AgentBridgeServer(host: self)
@@ -1292,6 +1304,14 @@ class AppState: ObservableObject {
     private var voiceEditBuffer = VoiceEditBuffer()
     /// The streaming engine for the current/next session. All conform to the
     /// same protocol and route through the same session handlers.
+    /// True when the active engine/variant emits end-of-utterance events — only
+    /// the Parakeet EOU streaming variant does (MAK-46 Phase 5). Gates arming the
+    /// agent EOU auto-stop so it stays inert on every other engine.
+    var activeEngineEmitsEou: Bool {
+        transcriptionEngine == "parakeet"
+            && ParakeetCatalog.normalize(parakeetVariant) == "parakeet-eou-320ms"
+    }
+
     private var activeStreamingEngine: StreamingTranscriptionEngine {
         switch transcriptionEngine {
         case "whisperKit": return whisperKitStreamEngine
@@ -1766,6 +1786,7 @@ class AppState: ObservableObject {
         agentBridgeAllowCloudAI = UserDefaults.standard.bool(forKey: "agentBridgeAllowCloudAI")
         // Default-ON (silence auto-stop is the expected agent-dictate UX).
         agentBridgeSilenceAutoStop = UserDefaults.standard.object(forKey: "agentBridgeSilenceAutoStop") as? Bool ?? true
+        agentBridgeEouAutoStop = UserDefaults.standard.object(forKey: "agentBridgeEouAutoStop") as? Bool ?? false
         handsFreeSilenceAutoStop = UserDefaults.standard.object(forKey: "handsFreeSilenceAutoStop") as? Bool ?? true
         // Default-ON: the chime and spoken question are the whole point of an
         // agent handing you the mic — you should notice and be able to answer
@@ -1903,6 +1924,7 @@ class AppState: ObservableObject {
         wireFileEngineCallbacks()
         wireStreamingEngineCallbacks(whisperKitStreamEngine)
         wireStreamingEngineCallbacks(parakeetStreamEngine)
+        wireParakeetEouCallback()
 
         audioRecorder = injectedAudioCapture ?? AudioRecorder()
         audioRecorder.autoGainEnabled = autoGainEnabled
@@ -2066,6 +2088,32 @@ class AppState: ObservableObject {
         }
     }
 
+    /// Wire the Parakeet streaming engine's EOU signal to the agent EOU auto-stop
+    /// (MAK-46 Phase 5). Only the EOU variant ever fires this; the detector is only
+    /// armed for an agent session with the setting on (see `armAgentEouDetector`),
+    /// so this is inert otherwise.
+    private func wireParakeetEouCallback() {
+        parakeetStreamEngine.onEouDetected = { [weak self] in
+            Task { @MainActor in self?.handleAgentEouEvent() }
+        }
+    }
+
+    /// An end-of-utterance event fired. If an agent EOU detector is armed, arm the
+    /// settle window; if it's already elapsed (a later poll), finish the session.
+    @MainActor
+    private func handleAgentEouEvent() {
+        guard agentEouDetector != nil,
+              agentBridgeEouAutoStop,
+              sessionActive, isRecording,
+              sessionInitiator.isAgent else { return }
+        let now = ProcessInfo.processInfo.systemUptime
+        agentEouDetector?.noteEou(now: now)
+        if agentEouDetector?.shouldStop(now: now) == true {
+            agentEouDetector = nil
+            finishAgentDictationOnSilence()
+        }
+    }
+
     /// Publish a new audio level for the overlay AND drive the agent-session
     /// silence detector. The single place every level source (AVAudioRecorder
     /// metering + the streaming engine taps) funnels through, so the VAD sees
@@ -2076,6 +2124,16 @@ class AppState: ObservableObject {
     private func updateAudioLevel(_ level: Float, vadLevel: Float) {
         audioLevel = level
         feedLockSafetyAutoStop(vadLevel: vadLevel)
+        // EOU settle check (MAK-46 Phase 5): the level tick is a free continuous
+        // clock. If an EOU is pending and its settle window has elapsed with no new
+        // partial, finish the agent session. Cheap: detector is nil except for an
+        // armed agent EOU session.
+        if agentEouDetector != nil, sessionActive, isRecording, sessionInitiator.isAgent,
+           agentEouDetector?.shouldStop(now: ProcessInfo.processInfo.systemUptime) == true {
+            agentEouDetector = nil
+            finishAgentDictationOnSilence()
+            return
+        }
         // Only agent sessions auto-stop on silence; a user's hotkey dictation ends
         // on their own gesture and must be untouched. The detector-nil test comes
         // first so the dominant case (user sessions, where it is always nil) pays
@@ -2176,6 +2234,7 @@ class AppState: ObservableObject {
         parakeetStreamEngine?.stop(cancel: true)
         parakeetStreamEngine = ParakeetStreamingEngine(variantID: parakeetVariant)
         wireStreamingEngineCallbacks(parakeetStreamEngine)
+        wireParakeetEouCallback()
         whisperWorkerStatus = "Not started"
         // `warmWhisperServerIfPossible()` is engine-aware: it warms WhisperKit's
         // CoreML model up front, warms whisper.cpp's server only for the serverAPI
@@ -3233,6 +3292,9 @@ class AppState: ObservableObject {
 
     private func handleAppleSpeechPartial(_ rawText: String) {
         guard isAppleSpeechSession else { return }
+        // A new partial means the speaker kept going — cancel any pending EOU stop
+        // (MAK-46 Phase 5). Inert unless an agent EOU session is armed.
+        agentEouDetector?.notePartial()
         let text = postProcess(rawText)
         streamingText = text
         statusMessage = text.isEmpty ? "Listening..." : "Listening..."
@@ -4834,6 +4896,7 @@ class AppState: ObservableObject {
         agentDictateQuestion = nil
         agentDictateReadingQuestion = false
         agentSilenceDetector = nil
+        agentEouDetector = nil
         // Clear the hands-free lock state and its safety detector, and return the
         // interaction machine to idle — a session ending off-trigger (silence
         // safety, agent preempt, error) would otherwise leave the machine thinking
@@ -6375,6 +6438,14 @@ extension AppState: AgentBridgeHost {
             // timeout below remains the hard ceiling / no-speech fallback.
             self.agentSilenceDetector = self.agentBridgeSilenceAutoStop
                 ? SilenceAutoStop(config: QuietDictationMode.silenceAutoStopConfig(quietEnabled: self.quietDictationEnabled))
+                : nil
+
+            // Arm the EOU auto-stop (MAK-46 Phase 5) alongside the silence detector,
+            // but only when the setting is on AND the active engine emits EOU events
+            // (the Parakeet EOU variant). Otherwise no EOU callback ever fires and
+            // the detector stays inert. Default-off + experimental.
+            self.agentEouDetector = (self.agentBridgeEouAutoStop && self.activeEngineEmitsEou)
+                ? AgentEouAutoStop()
                 : nil
 
             let sid = self.activeSessionID
