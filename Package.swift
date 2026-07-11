@@ -108,7 +108,9 @@ let package = Package(
                 "Rules.swift",
                 "RuleStore.swift",
                 "TipsCatalog.swift",
-                "HintRotation.swift"
+                "HintRotation.swift",
+                "MeetingRecording.swift",
+                "MeetingMixer.swift"
             ]
         ),
         // The Agent Bridge client + MCP stdio adapter. A library (not folded into
