@@ -42,6 +42,13 @@ echo ""
 echo "Step 1: Compiling Swift app..."
 SWIFT_FILES=$(find "$PROJECT_DIR/OpenWhisp" -name "*.swift" | tr '\n' ' ')
 
+# Stamp the build with its git commit (shown in Settings › Advanced). Shared
+# with build.sh. (This script's SWIFT_FILES is word-split; build paths have no
+# spaces by construction.)
+# shellcheck source=scripts/generate-build-info.sh
+source "$PROJECT_DIR/scripts/generate-build-info.sh"
+SWIFT_FILES="$SWIFT_FILES $(generate_build_info "$BUILD_DIR")"
+
 # WhisperKit backend (ON BY DEFAULT; WHISPERKIT=0 for a lean build). Shared with
 # build.sh via the same helper so the released DMG includes WhisperKit exactly the
 # way a local build does.

@@ -70,6 +70,11 @@ final class MeetingPipelineCoordinator: ObservableObject {
 
     // Per-active-transcription working state.
     private var activeTranscribeID: UUID?
+    /// Meetings that asked to transcribe while another transcription was active
+    /// (FIFO). Drained by `kickPendingTranscription()` whenever the active job
+    /// finishes or fails, so an ingest during a long transcription is queued —
+    /// never dropped.
+    private var pendingTranscribeIDs: [UUID] = []
     private var engine: FileTranscriptionEngine?
     private var workDir: URL?
     private var chunkWAVs: [Int: URL] = [:]
@@ -87,7 +92,20 @@ final class MeetingPipelineCoordinator: ObservableObject {
         self.transcriptionConfig = transcriptionConfig
         self.summarizeCall = summarizeCall
         self.resolveSummaryModel = resolveSummaryModel
-        self.meetings = store.load()
+        // Launch recovery: a persisted `transcribing`/`summarizing` means the app
+        // died mid-work — nobody is doing that work now, so showing it verbatim is
+        // a permanent spinner. Roll each back to its resting predecessor
+        // (`MeetingStatus.normalizedForLaunch`, unit-tested in core) and persist.
+        var loaded = store.load()
+        for i in loaded.indices {
+            let normalized = loaded[i].status.normalizedForLaunch
+            guard normalized != loaded[i].status else { continue }
+            NSLog("[Meeting] launch recovery: meeting %@ was persisted mid-work as \"%@\" — resetting to \"%@\"",
+                  loaded[i].id.uuidString, loaded[i].status.label, normalized.label)
+            loaded[i].status = normalized
+            store.upsert(loaded[i])
+        }
+        self.meetings = loaded
     }
 
     /// Whether summarization can run automatically (resolved provider is local)
@@ -213,14 +231,24 @@ final class MeetingPipelineCoordinator: ObservableObject {
     // MARK: - Transcription
 
     /// Transcribe (or re-transcribe) a meeting's stored WAV through the file-
-    /// transcription engine. No-op if already transcribing or the WAV is missing.
+    /// transcription engine. One transcription runs at a time; a request that
+    /// arrives while another is active is QUEUED (FIFO) and started automatically
+    /// when the active one finishes — an ingest mid-transcription is never dropped.
+    ///
+    /// MAK-52 perf: when both leg WAVs exist, the two legs are the ONLY
+    /// transcription work — the attributed transcript comes from interleaving them
+    /// and the plain `transcript` is derived from the same chunks
+    /// (`TranscriptInterleaver.mergePlain`), so the mixed WAV is not decoded a
+    /// third time. The mixed WAV remains the fallback when a leg is missing or leg
+    /// transcription fails.
     func transcribe(_ id: UUID) {
         guard activeTranscribeID == nil else {
-            // One at a time; leave it for the caller to retry after the active one
-            // finishes. (Meeting recordings are infrequent; a simple guard suffices.)
-            lastMessage = "Another meeting is transcribing; try again in a moment."
+            guard id != activeTranscribeID, !pendingTranscribeIDs.contains(id) else { return }
+            pendingTranscribeIDs.append(id)
+            lastMessage = "Another meeting is transcribing; this one is queued and will start automatically."
             return
         }
+        pendingTranscribeIDs.removeAll { $0 == id }
         guard var meeting = meetings.first(where: { $0.id == id }) else { return }
         guard let wav = store.wavURL(for: meeting), FileManager.default.fileExists(atPath: wav.path) else {
             meeting.status = .failed(reason: "The recording file is missing.")
@@ -232,6 +260,32 @@ final class MeetingPipelineCoordinator: ObservableObject {
         persist(meeting)
 
         let cfg = transcriptionConfig()
+        if let mic = store.micWavURL(for: meeting), let sys = store.systemWavURL(for: meeting),
+           FileManager.default.fileExists(atPath: mic.path),
+           FileManager.default.fileExists(atPath: sys.path) {
+            startLegTranscription(id, micWAV: mic, systemWAV: sys, mixedFallback: wav, config: cfg)
+        } else {
+            startMixedTranscription(id, wav: wav, config: cfg)
+        }
+    }
+
+    /// Start the next queued transcription, if any (skipping ids that were deleted
+    /// or are no longer in the `recorded` resting state). Called whenever the
+    /// active transcription slot frees up.
+    private func kickPendingTranscription() {
+        guard activeTranscribeID == nil else { return }
+        while !pendingTranscribeIDs.isEmpty {
+            let next = pendingTranscribeIDs.removeFirst()
+            guard let m = meetings.first(where: { $0.id == next }), m.status == .recorded else { continue }
+            transcribe(next)
+            return
+        }
+    }
+
+    /// The pre-MAK-52 mixed-WAV path: decode → chunk → callback engine. Used when a
+    /// leg WAV is missing, or as the fallback when leg transcription fails.
+    /// `activeTranscribeID` must already be set to `id`.
+    private func startMixedTranscription(_ id: UUID, wav: URL, config cfg: TranscriptionConfig) {
         Task { [weak self] in
             guard let self else { return }
             do {
@@ -258,6 +312,64 @@ final class MeetingPipelineCoordinator: ObservableObject {
             } catch {
                 await MainActor.run { self.failTranscription(id, error.localizedDescription) }
             }
+        }
+    }
+
+    /// MAK-52 leg-first path: transcribe the mic ("Me") and system ("Them") legs
+    /// sequentially, interleave them into the attributed transcript, and derive the
+    /// plain transcript from the same chunks — skipping the mixed-WAV decode
+    /// entirely (it would be superseded anyway). If leg transcription throws or
+    /// produces no meaningful text, fall back to the mixed WAV so behavior degrades
+    /// to the pre-MAK-52 pipeline instead of failing the meeting.
+    private func startLegTranscription(_ id: UUID, micWAV: URL, systemWAV: URL, mixedFallback: URL, config cfg: TranscriptionConfig) {
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                var chunks: [TranscriptInterleaver.Chunk] = []
+                chunks += try await self.transcribeLeg(speaker: "Me", wav: micWAV, config: cfg)
+                chunks += try await self.transcribeLeg(speaker: "Them", wav: systemWAV, config: cfg)
+                await MainActor.run {
+                    guard self.activeTranscribeID == id else { return }
+                    guard TranscriptInterleaver.hasMeaningfulText(chunks) else {
+                        // Nothing usable came out of the legs — try the mixed WAV.
+                        NSLog("[Meeting] leg transcription produced no text — falling back to the mixed WAV")
+                        self.startMixedTranscription(id, wav: mixedFallback, config: cfg)
+                        return
+                    }
+                    self.finishLegTranscription(id, chunks: chunks)
+                }
+            } catch {
+                await MainActor.run {
+                    guard self.activeTranscribeID == id else { return }
+                    NSLog("[Meeting] leg transcription failed (%@) — falling back to the mixed WAV",
+                          error.localizedDescription)
+                    self.startMixedTranscription(id, wav: mixedFallback, config: cfg)
+                }
+            }
+        }
+    }
+
+    /// Persist both transcripts from the leg chunks (attributed for display /
+    /// summarizer input, plain derived from the same chunks for everything that
+    /// reads `Meeting.transcript`), release the transcription slot, kick the queue,
+    /// and continue to the summarize gate.
+    private func finishLegTranscription(_ id: UUID, chunks: [TranscriptInterleaver.Chunk]) {
+        guard var meeting = meetings.first(where: { $0.id == id }) else {
+            activeTranscribeID = nil
+            kickPendingTranscription()
+            return
+        }
+        meeting.transcript = TranscriptInterleaver.mergePlain(chunks)
+        meeting.attributedTranscript = TranscriptInterleaver.merge(chunks)
+        meeting.status = .transcribed
+        persist(meeting)
+        activeTranscribeID = nil
+        if chunks.contains(where: { $0.text == TranscriptInterleaver.failedSegmentPlaceholder }) {
+            lastMessage = "Some audio segments couldn't be transcribed — the transcript has marked gaps."
+        }
+        kickPendingTranscription()
+        if canAutoSummarize {
+            summarize(id, confirmedCloud: false)
         }
     }
 
@@ -296,14 +408,29 @@ final class MeetingPipelineCoordinator: ObservableObject {
     }
 
     private var chunkTexts: [Int: String] = [:]
+    /// Chunk indexes whose transcription errored (mixed path). Used to fail the
+    /// meeting when EVERY chunk failed, and to surface a warning otherwise.
+    private var failedChunks: Set<Int> = []
 
     private func handleChunk(_ req: UUID, text: String, error: String? = nil) {
         guard let id = activeTranscribeID, let chunkIndex = requestToChunk.removeValue(forKey: req) else { return }
-        if let error { lastChunkError = error }
-        chunkTexts[chunkIndex] = text
+        if let error {
+            lastChunkError = error
+            failedChunks.insert(chunkIndex)
+            // Honest hole: a failed chunk is marked in place, not silently dropped —
+            // otherwise the meeting lands as .transcribed with an invisible gap.
+            chunkTexts[chunkIndex] = TranscriptInterleaver.failedSegmentPlaceholder
+        } else {
+            chunkTexts[chunkIndex] = text
+        }
         // All chunks in?
         guard chunkPlan.allSatisfy({ chunkTexts[$0.index] != nil }) else { return }
 
+        if failedChunks.count == chunkPlan.count, let err = lastChunkError {
+            failTranscription(id, err)
+            return
+        }
+        let hadFailures = !failedChunks.isEmpty
         let full = chunkPlan
             .compactMap { chunkTexts[$0.index]?.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
@@ -313,70 +440,37 @@ final class MeetingPipelineCoordinator: ObservableObject {
             failTranscription(id, err)
             return
         }
-        finishTranscription(id, transcript: full)
+        finishTranscription(id, transcript: full, partialFailure: hadFailures)
     }
 
-    private func finishTranscription(_ id: UUID, transcript: String) {
+    private func finishTranscription(_ id: UUID, transcript: String, partialFailure: Bool = false) {
         teardownEngine()
-        guard var meeting = meetings.first(where: { $0.id == id }) else { activeTranscribeID = nil; return }
+        guard var meeting = meetings.first(where: { $0.id == id }) else {
+            activeTranscribeID = nil
+            kickPendingTranscription()
+            return
+        }
         meeting.transcript = transcript
         meeting.status = .transcribed
         persist(meeting)
         activeTranscribeID = nil
-
-        // MAK-52: when both leg WAVs exist, transcribe each leg (mic = "Me", system
-        // = "Them") through the same seam and interleave them into an attributed
-        // transcript. Runs AFTER the mixed transcript is already persisted, so a
-        // failure here only means the meeting keeps its plain transcript. On success
-        // we then summarize; otherwise we summarize immediately below.
-        if let micName = meeting.micWavFileName, let sysName = meeting.systemWavFileName,
-           let mic = store.wavURL(for: Meeting(id: id, wavFileName: micName)),
-           let sys = store.wavURL(for: Meeting(id: id, wavFileName: sysName)),
-           FileManager.default.fileExists(atPath: mic.path),
-           FileManager.default.fileExists(atPath: sys.path) {
-            attributeAndThenSummarize(id, micWAV: mic, systemWAV: sys)
-            return
+        if partialFailure {
+            lastMessage = "Some audio segments couldn't be transcribed — the transcript has marked gaps."
         }
+        kickPendingTranscription()
 
         // Auto-summarize only when the provider is local (privacy rule). Cloud/agent
         // providers require an explicit per-meeting confirmation from the UI.
+        // (MAK-52 attribution no longer runs from here: when both legs exist,
+        // `transcribe` takes the leg-first path and this mixed path is only the
+        // missing-leg / leg-failure fallback — re-attempting attribution here would
+        // just repeat the failed work.)
         if canAutoSummarize {
             summarize(id, confirmedCloud: false)
         }
     }
 
-    // MARK: - MAK-52 speaker attribution
-
-    /// Transcribe both leg WAVs sequentially, interleave into an attributed
-    /// transcript, persist it, then continue to auto-summarize (local provider). Any
-    /// failure degrades to the already-persisted plain transcript and still triggers
-    /// the normal summarize gate. Uses a dedicated engine (never contends with live
-    /// dictation), one leg at a time.
-    private func attributeAndThenSummarize(_ id: UUID, micWAV: URL, systemWAV: URL) {
-        let cfg = transcriptionConfig()
-        Task { [weak self] in
-            guard let self else { return }
-            var chunks: [TranscriptInterleaver.Chunk] = []
-            do {
-                chunks += try await self.transcribeLeg(speaker: "Me", wav: micWAV, config: cfg)
-                chunks += try await self.transcribeLeg(speaker: "Them", wav: systemWAV, config: cfg)
-            } catch {
-                // Leg transcription failed — keep the plain transcript, then summarize.
-                await MainActor.run {
-                    if self.canAutoSummarize { self.summarize(id, confirmedCloud: false) }
-                }
-                return
-            }
-            let attributed = TranscriptInterleaver.merge(chunks)
-            await MainActor.run {
-                if !attributed.isEmpty, var meeting = self.meetings.first(where: { $0.id == id }) {
-                    meeting.attributedTranscript = attributed
-                    self.persist(meeting)
-                }
-                if self.canAutoSummarize { self.summarize(id, confirmedCloud: false) }
-            }
-        }
-    }
+    // MARK: - MAK-52 leg transcription
 
     /// Transcribe ONE leg WAV: decode → chunk (with time offsets) → transcribe each
     /// chunk sequentially → return `[Chunk]` labeled with `speaker` and each chunk's
@@ -408,13 +502,17 @@ final class MeetingPipelineCoordinator: ObservableObject {
     }
 
     /// One chunk through the callback engine, bridged to async. Resolves with the
-    /// text on completion, or an empty string on a per-chunk error (so one bad chunk
-    /// doesn't abort the whole leg — the interleaver drops empties).
+    /// text on completion; a per-chunk error resolves with the visible
+    /// failed-segment placeholder so one bad chunk doesn't abort the whole leg but
+    /// also doesn't leave a silent hole in the (now primary) leg transcript.
     private static func transcribeOne(engine: FileTranscriptionEngine, wav: URL, config: TranscriptionConfig) async throws -> String {
         try await withCheckedThrowingContinuation { cont in
             let req = UUID()
             engine.onTranscriptionComplete = { r, text in guard r == req else { return }; cont.resume(returning: text) }
-            engine.onTranscriptionError = { r, _ in guard r == req else { return }; cont.resume(returning: "") }
+            engine.onTranscriptionError = { r, _ in
+                guard r == req else { return }
+                cont.resume(returning: TranscriptInterleaver.failedSegmentPlaceholder)
+            }
             engine.transcribe(
                 requestID: req,
                 binaryPath: config.binaryPath,
@@ -431,6 +529,7 @@ final class MeetingPipelineCoordinator: ObservableObject {
     private func failTranscription(_ id: UUID, _ message: String) {
         teardownEngine()
         activeTranscribeID = nil
+        defer { kickPendingTranscription() }
         guard var meeting = meetings.first(where: { $0.id == id }) else { return }
         meeting.status = .failed(reason: message)
         persist(meeting)
@@ -445,6 +544,7 @@ final class MeetingPipelineCoordinator: ObservableObject {
         requestToChunk = [:]
         chunkPlan = []
         chunkTexts = [:]
+        failedChunks = []
         lastChunkError = nil
     }
 
@@ -527,8 +627,10 @@ final class MeetingPipelineCoordinator: ObservableObject {
     // MARK: - Delete / export helpers
 
     func delete(_ id: UUID) {
+        pendingTranscribeIDs.removeAll { $0 == id }
         if id == activeTranscribeID { teardownEngine(); activeTranscribeID = nil }
         meetings = store.delete(id: id)
+        kickPendingTranscription()
     }
 
     /// Assemble the Markdown export body (summary + transcript) for a meeting.

@@ -38,7 +38,7 @@ enum ParakeetDownloadStatePolicy {
     /// returns nil (treated as not-mappable → notDownloaded).
     static func repoFolder(forVariant id: String) -> String? {
         switch ParakeetCatalog.normalize(id) {
-        case "parakeet-unified-320ms", "parakeet-unified-1120ms":
+        case "parakeet-unified-320ms", "parakeet-unified-640ms", "parakeet-unified-1120ms":
             return "parakeet-unified-en-0.6b"
         case "parakeet-eou-320ms":
             return "parakeet-eou-streaming"

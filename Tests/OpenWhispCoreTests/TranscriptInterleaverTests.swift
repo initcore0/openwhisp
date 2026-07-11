@@ -71,4 +71,51 @@ final class TranscriptInterleaverTests: XCTestCase {
         ])
         XCTAssertEqual(merged, "Me: padded")
     }
+
+    // MARK: - mergePlain (plain transcript derived from the legs, MAK-52 perf)
+
+    func testMergePlainOrdersTrimsAndDropsEmptiesWithoutLabels() {
+        let plain = TranscriptInterleaver.mergePlain([
+            chunk("Them", 2, "Sounds good."),
+            chunk("Me", 0, "  Hi there.  "),
+            chunk("Them", 1, "   "),
+            chunk("Me", 4, "Bye."),
+        ])
+        XCTAssertEqual(plain, "Hi there. Sounds good. Bye.")
+        XCTAssertFalse(plain.contains("Me:"), "plain merge must carry no speaker labels")
+    }
+
+    func testMergePlainEmptyInputYieldsEmptyString() {
+        XCTAssertEqual(TranscriptInterleaver.mergePlain([]), "")
+        XCTAssertEqual(TranscriptInterleaver.mergePlain([chunk("Me", 0, " \n ")]), "")
+    }
+
+    func testMergePlainMatchesMergeOrderingOnTies() {
+        let chunks = [chunk("Them", 5, "B"), chunk("Me", 5, "A")]
+        XCTAssertEqual(TranscriptInterleaver.mergePlain(chunks), "B A")
+    }
+
+    // MARK: - failed-segment placeholder + hasMeaningfulText
+
+    func testFailedSegmentPlaceholderSurvivesMerge() {
+        let merged = TranscriptInterleaver.merge([
+            chunk("Me", 0, "Before."),
+            chunk("Me", 1, TranscriptInterleaver.failedSegmentPlaceholder),
+            chunk("Me", 2, "After."),
+        ])
+        XCTAssertTrue(merged.contains(TranscriptInterleaver.failedSegmentPlaceholder),
+                      "a failed chunk must be a visible hole, not a silent gap")
+    }
+
+    func testHasMeaningfulTextIgnoresBlanksAndPlaceholders() {
+        XCTAssertFalse(TranscriptInterleaver.hasMeaningfulText([]))
+        XCTAssertFalse(TranscriptInterleaver.hasMeaningfulText([
+            chunk("Me", 0, "   "),
+            chunk("Them", 1, TranscriptInterleaver.failedSegmentPlaceholder),
+        ]))
+        XCTAssertTrue(TranscriptInterleaver.hasMeaningfulText([
+            chunk("Me", 0, TranscriptInterleaver.failedSegmentPlaceholder),
+            chunk("Them", 1, "Real words."),
+        ]))
+    }
 }

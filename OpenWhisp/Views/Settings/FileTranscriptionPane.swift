@@ -6,7 +6,6 @@ import UniformTypeIdentifiers
 /// and manage auto-transcribe watch folders.
 struct FileTranscriptionPane: View {
     @ObservedObject var coordinator: FileTranscriptionCoordinator
-    @State private var enhanceEnabled = false
 
     var body: some View {
         Form {
@@ -30,7 +29,13 @@ struct FileTranscriptionPane: View {
             SubtitledToggle(
                 "Enhance transcripts with the LLM",
                 subtitle: "Run the local refine pass over each finished transcript. Requires an LLM configured in Cleanup.",
-                isOn: Binding(get: { enhanceEnabled }, set: { enhanceEnabled = $0; coordinator.setEnhanceEnabled($0) })
+                // Read the coordinator's live state (mirrored on the published
+                // queue) instead of a view-local @State copy, so the toggle can't
+                // desync when the pane is recreated.
+                isOn: Binding(
+                    get: { coordinator.queue.enhanceEnabled },
+                    set: { coordinator.setEnhanceEnabled($0) }
+                )
             )
         } header: {
             Text("Transcribe files")

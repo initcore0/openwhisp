@@ -26,6 +26,48 @@ enum StreamingRoutePolicy {
     static func needsSpeechAuthorization(engine: String) -> Bool {
         engine == "appleSpeech"
     }
+
+    /// A streaming partial/final callback carries the session generation it was
+    /// bound to. It should be honored only while that generation is still the
+    /// active one. Returns true when the callback is STALE (a newer session has
+    /// begun) and must be dropped.
+    ///
+    /// This closes the late-final hole: Apple Speech synthesizes a final ~0.8s
+    /// after stop, so on a quick cancel+restart a leftover final from the previous
+    /// engine session can land during the successor. Without a per-generation
+    /// fence, `isAppleSpeechSession` (a plain bool the successor also sets true)
+    /// lets it through — pasting the old transcript and completing the new session
+    /// early. Both handlers gate on this.
+    static func isStaleStreamingCallback(callbackSessionID: UUID, activeSessionID: UUID) -> Bool {
+        callbackSessionID != activeSessionID
+    }
+
+    /// What a deferred mic-grant callback should do when it finally runs.
+    ///
+    /// The grant callback is async: by the time it fires, the session it belongs to
+    /// may have been cancelled/restarted. Three cases:
+    /// - **drop**: a NEWER session already began (`callbackSessionID` no longer the
+    ///   active one). This callback is stale — it must simply return and touch
+    ///   nothing, because aborting here would tear down the CURRENT successor
+    ///   session (the bug: a stale callback calling `abortSessionBeforeStart`).
+    /// - **abort**: still this session's own callback, but the user released/stopped
+    ///   before the grant landed (`pendingStop`). Tear the half-started session down.
+    /// - **proceed**: still active and no stop pending — start the engine.
+    enum GrantCallbackAction: Equatable {
+        case proceed
+        case abort
+        case drop
+    }
+
+    static func grantCallbackAction(
+        callbackSessionID: UUID,
+        activeSessionID: UUID,
+        pendingStop: Bool
+    ) -> GrantCallbackAction {
+        if callbackSessionID != activeSessionID { return .drop }
+        if pendingStop { return .abort }
+        return .proceed
+    }
 }
 
 /// Which concrete `FileTranscriptionEngine` backs a transcriptionEngine setting.

@@ -58,16 +58,16 @@ final class ParakeetStreamingEngine: StreamingTranscriptionEngine {
     /// stay resident; `reset()` clears per-session decode state).
     @MainActor private var session: (any ParakeetStreamSession)?
     @MainActor private var inFlightLoad: Task<any ParakeetStreamSession, Error>?
-    /// Ordered buffer feed: the tap yields into this continuation and a single
-    /// consumer task appends to the (actor) manager. Unstructured Tasks from the
-    /// tap thread would race each other and interleave audio out of order.
+    /// Ordered buffer feed: the tap yields into the continuation (captured
+    /// directly in the tap closure — yield is Sendable/thread-safe, so no
+    /// per-buffer main-actor hop) and a single detached consumer task appends
+    /// to the (actor) manager. Unstructured Tasks from the tap thread would
+    /// race each other and interleave audio out of order. This stored copy
+    /// exists ONLY so teardown (runStop / feed-loop error) can finish() it.
     @MainActor private var feedContinuation: AsyncStream<AVAudioPCMBuffer>.Continuation?
     @MainActor private var feedTask: Task<Void, Never>?
 
     @MainActor private var lastPartial = ""
-    /// Count of EOU timestamps seen so far this session — a growth means a NEW
-    /// end-of-utterance event (see the feed loop).
-    @MainActor private var lastEouCount = 0
     @MainActor private var didStop = false
     /// Session generation, bumped on every start and stop — late partial
     /// callbacks from a torn-down session fail the gate instead of leaking into
@@ -81,9 +81,6 @@ final class ParakeetStreamingEngine: StreamingTranscriptionEngine {
         // All callers are @MainActor (AppState); synchronous enqueue preserves
         // call order (a stop() immediately followed by start() must serialize).
         MainActor.assumeIsolated {
-            self.lastPartial = ""
-            self.lastEouCount = 0
-            self.didStop = false
             // Strong capture on purpose: the chain must keep the engine alive
             // until its lifecycle work completes (see WhisperKitStreamingEngine).
             self.lifecycle.enqueue {
@@ -94,6 +91,12 @@ final class ParakeetStreamingEngine: StreamingTranscriptionEngine {
 
     @MainActor
     private func runStart(language: String) async {
+        // Reset per-session flags ON the serialized chain, not at enqueue time:
+        // a fast stop→start enqueues runStop BEFORE this runStart, and its
+        // didStop=true must not poison the new session (an enqueue-time reset
+        // would run first and then be clobbered by the queued runStop).
+        lastPartial = ""
+        didStop = false
         do {
             // Variant-aware language gate: English-only variants refuse a FIXED
             // non-English language up front (never silently mangle it); the
@@ -170,7 +173,14 @@ final class ParakeetStreamingEngine: StreamingTranscriptionEngine {
             // unconditionally by AppState, so gating on the callback alone would
             // put two extra actor hops on EVERY buffer of every session.
             let pollsEou = ParakeetCatalog.emitsEou(variantID)
-            feedTask = Task { [weak self] in
+            // Detached ON PURPOSE: the loop must NOT inherit the main actor —
+            // otherwise every buffer (~50/s) pays main-thread hops just to run
+            // the append/process awaits, which starves the UI. All session
+            // state it touches goes through explicit MainActor.run hops.
+            feedTask = Task.detached { [weak self] in
+                // EOU bookkeeping lives off-main in the loop: hop to the main
+                // actor only when a NEW event actually arrived, not per buffer.
+                var lastEouCount = 0
                 do {
                     for await buffer in stream {
                         // appendAudio accepts any format (resamples to 16 kHz
@@ -181,10 +191,10 @@ final class ParakeetStreamingEngine: StreamingTranscriptionEngine {
                         // A grown timestamp count is a new end-of-utterance event.
                         if pollsEou {
                             let count = await session.eouTimestampsMs().count
-                            await MainActor.run { [weak self] in
-                                guard let self, self.generation == myGeneration, !self.didStop else { return }
-                                if count > self.lastEouCount {
-                                    self.lastEouCount = count
+                            if count > lastEouCount {
+                                lastEouCount = count
+                                await MainActor.run { [weak self] in
+                                    guard let self, self.generation == myGeneration, !self.didStop else { return }
                                     self.onEouDetected?()
                                 }
                             }
@@ -192,18 +202,32 @@ final class ParakeetStreamingEngine: StreamingTranscriptionEngine {
                     }
                 } catch {
                     NSLog("[Parakeet] stream feed error: %@", error.localizedDescription)
-                    Task { @MainActor [weak self] in
+                    await MainActor.run { [weak self] in
+                        // Generation gate doubles as the runStop race guard: if
+                        // a stop already superseded this session, its teardown
+                        // owns the engine/continuation and we must not touch them.
                         guard let self, self.generation == myGeneration, !self.didStop else { return }
+                        // The consumer is dead — tear the mic down too, or the
+                        // tap keeps the mic hot and the continuation buffers
+                        // yielded audio unbounded until the next session.
+                        if let audioEngine = self.audioEngine {
+                            audioEngine.inputNode.removeTap(onBus: 0)
+                            audioEngine.stop()
+                        }
+                        self.audioEngine = nil
+                        self.feedContinuation?.finish()
+                        self.feedContinuation = nil
                         self.onError?("Parakeet streaming failed: \(error.localizedDescription)")
                     }
                 }
             }
 
             // The tap closure runs on an audio thread but touches no session
-            // state — it only yields the buffer (ordered, single tap thread)
-            // and publishes a level.
+            // state — AsyncStream.Continuation.yield is Sendable + thread-safe,
+            // so it yields straight from the audio thread (no main-actor hop
+            // per buffer) and publishes a level.
             input.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
-                self?.feedBuffer(buffer)
+                continuation.yield(buffer)
                 self?.publishLevel(from: buffer)
             }
 
@@ -223,6 +247,17 @@ final class ParakeetStreamingEngine: StreamingTranscriptionEngine {
                 await self.runStop(cancel: cancel)
             }
         }
+    }
+
+    /// Cancel any in-flight model load/download and forget it. Called when this
+    /// engine instance is being DISCARDED (e.g. `rebuildFileEngine` replaces it
+    /// after a variant switch) so a ~600 MB download for the old variant isn't
+    /// orphaned — `stop(cancel:)` only tears down the mic/session, never the load
+    /// Task. Idempotent and safe to call with no load in flight.
+    @MainActor
+    func cancelLoading() {
+        inFlightLoad?.cancel()
+        inFlightLoad = nil
     }
 
     @MainActor
@@ -269,15 +304,10 @@ final class ParakeetStreamingEngine: StreamingTranscriptionEngine {
     /// Idempotent: joins the in-flight load / returns immediately when cached.
     @MainActor
     func prefetchAwaiting() async {
-        _ = try? await loadTaskOnMain().value
-    }
-
-    private nonisolated func feedBuffer(_ buffer: AVAudioPCMBuffer) {
-        DispatchQueue.main.async {
-            MainActor.assumeIsolated {
-                self.feedContinuation?.yield(buffer)
-            }
-        }
+        // Route through ensureLoaded so a FAILED load clears `inFlightLoad`
+        // (clearFailedLoad) before the error is swallowed — otherwise a failed
+        // download poisons the cache and later prefetches no-op forever.
+        _ = try? await ensureLoaded()
     }
 
     @discardableResult
@@ -344,6 +374,9 @@ final class ParakeetStreamingEngine: StreamingTranscriptionEngine {
     func stop(cancel: Bool) {}
 
     func prefetchAwaiting() async {}
+
+    @MainActor
+    func cancelLoading() {}
 
 #endif
 }

@@ -40,4 +40,19 @@ final class DictationSessionTests: XCTestCase {
             XCTFail("expected .completed")
         }
     }
+
+    // MARK: - Activation-reset invariant (agent-preempt ordering)
+
+    func testResetActivationWhenNoPreemptQueued() {
+        // Ordinary session end: the activation machine should be reset to idle.
+        XCTAssertTrue(DictationSessionLifecycle.shouldResetActivation(pendingPreemptStart: false))
+    }
+
+    func testDoNotResetActivationWhilePreemptStartQueued() {
+        // The agent-preempt path sets pendingPreemptStart BEFORE cancelling; the
+        // finish-session reset must SEE it and skip resetActivation, or the hotkey
+        // release for the user's queued replacement session is swallowed and the
+        // preempt-started mic never stops.
+        XCTAssertFalse(DictationSessionLifecycle.shouldResetActivation(pendingPreemptStart: true))
+    }
 }

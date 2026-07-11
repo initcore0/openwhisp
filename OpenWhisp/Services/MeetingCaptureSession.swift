@@ -168,16 +168,21 @@ final class MeetingCaptureSession {
             return
         }
 
-        // System audio (async SCK start).
+        // System audio (async SCK start). The continuation runs on a background
+        // executor, but `onStateChanged` handlers mutate @Published UI state and
+        // manage main-runloop timers — hop to the main thread before delivering
+        // the state change (same contract as every other `setState` call site).
         Task { [weak self] in
             guard let self else { return }
             do {
                 try await system.start()
-                self.setState(.recording)
+                DispatchQueue.main.async { self.setState(.recording) }
             } catch {
                 self.teardownLegs()
                 self.discardWriter()
-                self.fail("System-audio capture failed: \(error.localizedDescription)")
+                DispatchQueue.main.async {
+                    self.fail("System-audio capture failed: \(error.localizedDescription)")
+                }
             }
         }
     }
@@ -287,7 +292,10 @@ final class MeetingCaptureSession {
 
             guard !mixed.isEmpty else { return }
             try? self.writer?.append(mixed)
-            self.writer?.sync()   // crash-safety: at most the un-flushed tail is lost
+            // Crash-safety with a throttle: every append writes the data, but the
+            // fsync runs at most every ~2 s (fsync per callback × two files for a
+            // whole meeting is real sustained IO). Stop/finalize sync in full.
+            self.writer?.syncThrottled()
         }
     }
 
@@ -300,7 +308,7 @@ final class MeetingCaptureSession {
         guard let writer else { return }
         do {
             try writer.append(samples)
-            writer.sync()
+            writer.syncThrottled()   // data written every time; fsync ~every 2 s
         } catch {
             NSLog("[Meeting] leg WAV write failed — degrading to mixed-only for this leg: \(error.localizedDescription)")
             if leg == .mic { micWriter = nil; micLegURL = nil }

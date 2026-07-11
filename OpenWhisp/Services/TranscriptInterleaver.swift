@@ -39,26 +39,54 @@ public enum TranscriptInterleaver {
         }
     }
 
-    /// Merge `chunks` into a single attributed transcript. Chunks are ordered by
-    /// start time (stable on ties), blank chunks dropped, and consecutive
-    /// same-speaker chunks joined under one `Speaker:` label. Returns an empty
-    /// string when nothing survives.
-    public static func merge(_ chunks: [Chunk]) -> String {
-        // Trim + drop empties first so they never break a same-speaker run.
-        let cleaned = chunks
+    /// The visible marker a caller records for a chunk whose transcription errored,
+    /// so a failed segment shows up as an honest hole rather than silently vanishing
+    /// from the transcript. Kept here (core) so both the coordinator and the tests
+    /// share one spelling.
+    public static let failedSegmentPlaceholder = "[transcription failed for this segment]"
+
+    /// True when at least one chunk carries real transcribed text — i.e. non-blank
+    /// and not the `failedSegmentPlaceholder`. Callers use this to decide whether a
+    /// leg-based transcript is usable or a fallback (e.g. the mixed WAV) is needed.
+    public static func hasMeaningfulText(_ chunks: [Chunk]) -> Bool {
+        chunks.contains { chunk in
+            let trimmed = chunk.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            return !trimmed.isEmpty && trimmed != failedSegmentPlaceholder
+        }
+    }
+
+    /// Trim + drop blank chunks, then order by start time (stable on ties — Swift's
+    /// `sorted(by:)` isn't guaranteed stable, so ties break on input order). Shared
+    /// by `merge` and `mergePlain` so both emit the same chunk sequence.
+    private static func cleanedAndOrdered(_ chunks: [Chunk]) -> [Chunk] {
+        chunks
             .enumerated()
             .compactMap { (seq, chunk) -> (seq: Int, chunk: Chunk)? in
                 let trimmed = chunk.text.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !trimmed.isEmpty else { return nil }
                 return (seq, Chunk(speaker: chunk.speaker, start: chunk.start, text: trimmed))
             }
-        // Stable sort by start time: `sorted(by:)` isn't guaranteed stable, so break
-        // ties on the original sequence index to keep input order on equal starts.
-        let ordered = cleaned
             .sorted { a, b in
                 a.chunk.start != b.chunk.start ? a.chunk.start < b.chunk.start : a.seq < b.seq
             }
             .map { $0.chunk }
+    }
+
+    /// Merge `chunks` into a single PLAIN transcript — same ordering / trimming /
+    /// empty-dropping as `merge`, but without speaker labels, joined with spaces.
+    /// This is what a mixed-WAV decode of the same audio would approximate, so the
+    /// coordinator can derive the plain `Meeting.transcript` from the two legs
+    /// instead of transcribing the mixed WAV a third time (MAK-52 perf).
+    public static func mergePlain(_ chunks: [Chunk]) -> String {
+        cleanedAndOrdered(chunks).map { $0.text }.joined(separator: " ")
+    }
+
+    /// Merge `chunks` into a single attributed transcript. Chunks are ordered by
+    /// start time (stable on ties), blank chunks dropped, and consecutive
+    /// same-speaker chunks joined under one `Speaker:` label. Returns an empty
+    /// string when nothing survives.
+    public static func merge(_ chunks: [Chunk]) -> String {
+        let ordered = cleanedAndOrdered(chunks)
 
         guard !ordered.isEmpty else { return "" }
 

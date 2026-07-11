@@ -57,6 +57,12 @@ enum ParakeetCatalog {
             size: "~600 MB"
         ),
         Variant(
+            id: "parakeet-unified-640ms",
+            name: "Parakeet Unified — efficient",
+            detail: "0.64 s latency with punctuation — same accuracy as realtime at a fraction of the CPU. English only.",
+            size: "~600 MB"
+        ),
+        Variant(
             id: "parakeet-unified-1120ms",
             name: "Parakeet Unified — accurate",
             detail: "1.1 s latency, best streaming accuracy. English only.",

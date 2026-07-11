@@ -2063,13 +2063,15 @@ class AppState: ObservableObject {
     /// Wire a streaming engine (Apple Speech or WhisperKit) to the shared session
     /// handlers. Both backends drive the same live-preview/delta-paste path, so the
     /// callbacks are identical — only the underlying recognizer differs.
+    ///
+    /// The partial/final closures are (re)bound per streaming session in
+    /// `bindStreamingSessionCallbacks(_:sessionID:)` so they capture the session
+    /// generation and can drop late callbacks from a previous engine session (e.g.
+    /// Apple Speech's 0.8s synthesized-final fallback firing after a quick
+    /// cancel+restart). The error/level closures below aren't session-critical, so
+    /// they're wired once here.
     private func wireStreamingEngineCallbacks(_ engine: StreamingTranscriptionEngine) {
-        engine.onPartial = { [weak self] text in
-            Task { @MainActor in self?.handleAppleSpeechPartial(text) }
-        }
-        engine.onFinal = { [weak self] text in
-            Task { @MainActor in self?.handleAppleSpeechFinal(text) }
-        }
+        bindStreamingSessionCallbacks(engine, sessionID: activeSessionID)
         engine.onError = { [weak self] message in
             Task { @MainActor in
                 guard let self, self.isAppleSpeechSession else { return }
@@ -2084,6 +2086,24 @@ class AppState: ObservableObject {
         }
         engine.onLevelChanged = { [weak self] display, vad in
             Task { @MainActor in self?.updateAudioLevel(display, vadLevel: vad) }
+        }
+    }
+
+    /// (Re)bind the partial/final closures of a streaming engine to a specific
+    /// session generation. The closures capture `sessionID` and pass it to the
+    /// handlers, which drop the callback if the session has since moved on. This
+    /// closes the late-final hole: on a quick cancel+restart, a leftover
+    /// synthesized final from the PREVIOUS engine session would otherwise be
+    /// treated as the CURRENT session's final (pasting the old transcript and
+    /// completing the new session early), because `isAppleSpeechSession` is a plain
+    /// boolean that the successor session also sets true. Called per streaming
+    /// session start (`startStreamingSession`) with the fresh `activeSessionID`.
+    private func bindStreamingSessionCallbacks(_ engine: StreamingTranscriptionEngine, sessionID: UUID) {
+        engine.onPartial = { [weak self] text in
+            Task { @MainActor in self?.handleAppleSpeechPartial(text, sessionID: sessionID) }
+        }
+        engine.onFinal = { [weak self] text in
+            Task { @MainActor in self?.handleAppleSpeechFinal(text, sessionID: sessionID) }
         }
     }
 
@@ -2227,6 +2247,10 @@ class AppState: ObservableObject {
         whisperKitStreamEngine = WhisperKitStreamingEngine(modelName: whisperKitModel)
         wireStreamingEngineCallbacks(whisperKitStreamEngine)
         // Same for the Parakeet streaming engine (it caches its variant's model).
+        // Cancel any in-flight variant download before discarding the old instance —
+        // stop(cancel:) only tears down the mic/session, so switching variant
+        // mid-download would otherwise orphan a ~600 MB fetch for the old variant.
+        parakeetStreamEngine?.cancelLoading()
         parakeetStreamEngine?.stop(cancel: true)
         parakeetStreamEngine = ParakeetStreamingEngine(variantID: parakeetVariant)
         wireStreamingEngineCallbacks(parakeetStreamEngine)
@@ -2274,14 +2298,20 @@ class AppState: ObservableObject {
         // for a genuine user press — beginAgentDictation() sets the initiator but
         // has no active session yet, so it never trips this.
         if sessionActive, sessionInitiator.isAgent {
-            cancelDictation()
+            // ORDERING INVARIANT: set the preempt flag BEFORE cancelling. The cancel
+            // runs finishSessionUI, whose `if !pendingPreemptStart { resetActivation() }`
+            // guard must SEE the flag set — otherwise it wipes the activation machine
+            // and the hotkey release after preempting never stops the mic. So the flag
+            // is set here, and cancelDictation is told to preserve it (its default is
+            // to clear the flag, for the Esc-in-gap back-out case).
+            pendingPreemptStart = true
+            cancelDictation(preservePreemptStart: true)
             // Start the user's dictation on the NEXT main-actor turn, not this
             // one: the cancel above already enqueued the dead session's deferred
             // recorder/engine hops (.stopped clears isArming/isRecording with no
             // session fence, and a streaming engine can have a partial in
             // flight). One deferred turn lets those drain against dead state
             // instead of clobbering the successor session mid-arming.
-            pendingPreemptStart = true
             Task { @MainActor in
                 guard self.pendingPreemptStart else { return } // stop/cancel in the gap consumed it
                 self.pendingPreemptStart = false
@@ -2363,10 +2393,18 @@ class AppState: ObservableObject {
         }
     }
 
-    func cancelDictation() {
+    /// - Parameter preservePreemptStart: when true, do NOT clear
+    ///   `pendingPreemptStart`. The agent-preempt path in `startDictation` sets the
+    ///   flag and then cancels the agent session; the flag must survive this cancel
+    ///   so `finishSessionUI` leaves the activation machine intact for the user's
+    ///   queued replacement session. Every OTHER caller (Esc, shutdown) wants the
+    ///   default: a cancel in the preempt gap is a back-out and clears the flag.
+    func cancelDictation(preservePreemptStart: Bool = false) {
         // An Esc (or shutdown) in the preempt gap also cancels the queued
         // replacement start — the user is backing out entirely.
-        pendingPreemptStart = false
+        if !preservePreemptStart {
+            pendingPreemptStart = false
+        }
         // Esc while a refine is engaged (waiting for step-1 or the instruction):
         // abort the flow without inserting anything.
         if refineFlow.isActive && !isRecording && !isTranscribing && !sessionActive {
@@ -2979,8 +3017,13 @@ class AppState: ObservableObject {
         ) != .installed {
             parakeetInFlightVariants.insert(variant)
         }
+        // Capture THIS engine instance: if the user switches variant mid-prefetch,
+        // rebuildFileEngine replaces `parakeetStreamEngine` (and cancels its load).
+        // Awaiting the captured instance means this task tracks the load it actually
+        // started — not whichever engine happens to exist when the await resumes.
+        let engine = parakeetStreamEngine
         Task { @MainActor in
-            await parakeetStreamEngine?.prefetchAwaiting()
+            await engine?.prefetchAwaiting()
             parakeetInFlightVariants.remove(variant)
         }
     }
@@ -3159,6 +3202,12 @@ class AppState: ObservableObject {
         // there would paste the whole final text a second time.
         isLiveChunkSession = outputMode == "liveChunks"
         isAppleSpeechSession = true
+        // Re-bind the active engine's partial/final closures to THIS session's
+        // generation so its callbacks carry `activeSessionID`. A late final from a
+        // previous engine session (bound to an older generation) is then dropped by
+        // the handlers' fence rather than pasting the old transcript / completing
+        // this session early (finding: late-onFinal cross-session leak).
+        bindStreamingSessionCallbacks(activeStreamingEngine, sessionID: activeSessionID)
         // Spoken edit commands (MAK-19) are decided HERE, not in beginSession:
         // this streaming path calls beginSession(streaming: false), so its
         // isPreviewSession is always false — the gate has to read `outputMode`
@@ -3194,11 +3243,23 @@ class AppState: ObservableObject {
 
         // The actual engine start, after permissions are granted.
         let launch: @MainActor () -> Void = {
-            // Abort if the hotkey was released or the session cancelled before grant.
-            guard sessionID == self.activeSessionID, !self.pendingStop else {
+            // The grant is async: a newer session may have begun (drop — aborting
+            // would tear down that successor), or this session's own stop may have
+            // landed first (abort). Only proceed when still active with no pending
+            // stop. See StreamingRoutePolicy.grantCallbackAction.
+            switch StreamingRoutePolicy.grantCallbackAction(
+                callbackSessionID: sessionID,
+                activeSessionID: self.activeSessionID,
+                pendingStop: self.pendingStop
+            ) {
+            case .drop:
+                return
+            case .abort:
                 self.isAppleSpeechSession = false
                 self.abortSessionBeforeStart()
                 return
+            case .proceed:
+                break
             }
             do {
                 engine.selectDevice(micID)
@@ -3267,12 +3328,17 @@ class AppState: ObservableObject {
         Task { @MainActor in
             try? await Task.sleep(nanoseconds: 2_000_000_000)
             if sessionID == self.activeSessionID && self.isAppleSpeechSession && self.isTranscribing && !self.appleDidCompleteFinal {
-                self.handleAppleSpeechFinal(self.streamingText)
+                self.handleAppleSpeechFinal(self.streamingText, sessionID: sessionID)
             }
         }
     }
 
-    private func handleAppleSpeechPartial(_ rawText: String) {
+    private func handleAppleSpeechPartial(_ rawText: String, sessionID: UUID) {
+        // Drop a partial from a previous engine session (bound to an older
+        // generation) that landed after a newer session began — see
+        // StreamingRoutePolicy.isStaleStreamingCallback.
+        guard !StreamingRoutePolicy.isStaleStreamingCallback(
+            callbackSessionID: sessionID, activeSessionID: activeSessionID) else { return }
         guard isAppleSpeechSession else { return }
         // A new partial means the speaker kept going — cancel any pending EOU stop
         // (MAK-46 Phase 5). Inert unless an agent EOU session is armed.
@@ -3309,7 +3375,13 @@ class AppState: ObservableObject {
         )
     }
 
-    private func handleAppleSpeechFinal(_ rawText: String) {
+    private func handleAppleSpeechFinal(_ rawText: String, sessionID: UUID) {
+        // Drop a LATE final from a previous engine session (e.g. Apple Speech's
+        // ~0.8s synthesized-final fallback firing after a quick cancel+restart):
+        // without this fence it would paste the old transcript and complete the
+        // NEW session early. See StreamingRoutePolicy.isStaleStreamingCallback.
+        guard !StreamingRoutePolicy.isStaleStreamingCallback(
+            callbackSessionID: sessionID, activeSessionID: activeSessionID) else { return }
         guard isAppleSpeechSession, !appleDidCompleteFinal else { return }
         appleDidCompleteFinal = true
         let rawTranscript = rawText.isEmpty ? streamingText : rawText
@@ -3386,11 +3458,22 @@ class AppState: ObservableObject {
                     self.finishSessionUI()
                     return
                 }
-                // The hotkey may have been released (or the session cancelled) before this
-                // callback ran. Abort cleanly so recording never starts unattended.
-                guard sessionID == self.activeSessionID, !self.pendingStop else {
+                // The hotkey may have been released (or the session cancelled/restarted)
+                // before this callback ran. Drop if a newer session began (aborting
+                // would tear it down); abort only this session's own stalled start.
+                // See StreamingRoutePolicy.grantCallbackAction.
+                switch StreamingRoutePolicy.grantCallbackAction(
+                    callbackSessionID: sessionID,
+                    activeSessionID: self.activeSessionID,
+                    pendingStop: self.pendingStop
+                ) {
+                case .drop:
+                    return
+                case .abort:
                     self.abortSessionBeforeStart()
                     return
+                case .proceed:
+                    break
                 }
                 // Read the recorder here (inside the @MainActor Task) rather than
                 // capturing it into the @Sendable access-grant closure — the
@@ -3470,10 +3553,22 @@ class AppState: ObservableObject {
                     self.finishSessionUI()
                     return
                 }
-                // Abort if the hotkey was released or the session cancelled before grant.
-                guard sessionID == self.activeSessionID, !self.pendingStop else {
+                // The hotkey may have been released (or the session cancelled/restarted)
+                // before grant. Drop if a newer session began (aborting would tear it
+                // down); abort only this session's own stalled start. See
+                // StreamingRoutePolicy.grantCallbackAction.
+                switch StreamingRoutePolicy.grantCallbackAction(
+                    callbackSessionID: sessionID,
+                    activeSessionID: self.activeSessionID,
+                    pendingStop: self.pendingStop
+                ) {
+                case .drop:
+                    return
+                case .abort:
                     self.abortSessionBeforeStart()
                     return
+                case .proceed:
+                    break
                 }
                 // Read the recorder here (inside the @MainActor Task) rather than
                 // capturing it into the @Sendable access-grant closure — the
@@ -4393,6 +4488,15 @@ class AppState: ObservableObject {
                 router.route(payload) { _ in }
             }
             } // end: not routed to the Scratchpad
+        } else if scratchpadController.appendDictationIfKey(text) {
+            // Scratchpad (MAK-49) in liveChunks mode: the per-chunk live pastes all
+            // fell back to the clipboard because OUR pad is frontmost (the focused-app
+            // insert declines when OpenWhisp is key), so NOTHING landed in the note.
+            // Route the WHOLE session text into the active note once here — the honest
+            // completion-time fix for the data loss (per-chunk live typing into the pad
+            // is out of scope). Skip the clipboard-only finish below entirely; the pad
+            // owns the text and never touches the clipboard.
+            lastInsertedIntoFocusedApp = nil
         } else {
             // liveChunks: the text was already pasted incrementally (no trailing space).
             // Type the single conditional trailing space now, honoring addTrailingSpace.
@@ -4904,8 +5008,10 @@ class AppState: ObservableObject {
         // …but NOT while a preempt-replacement start is queued: there the machine's
         // current state (mid-press or locked open) describes the user's NEW session,
         // and wiping it would swallow the upcoming release — in hold mode the
-        // preempt-started mic would then never stop on release.
-        if !pendingPreemptStart {
+        // preempt-started mic would then never stop on release. See
+        // DictationSessionLifecycle.shouldResetActivation for the invariant (and the
+        // ordering requirement that the preempt path sets the flag BEFORE cancelling).
+        if DictationSessionLifecycle.shouldResetActivation(pendingPreemptStart: pendingPreemptStart) {
             hotkeyMonitor?.resetActivation()
         }
         agentDictateTimeoutTask?.cancel()
@@ -5139,10 +5245,16 @@ class AppState: ObservableObject {
         transcriptionEngine = Self.defaultTranscriptionEngine
         whisperKitModel = "openai_whisper-small"
         modelName = "base"
+        parakeetVariant = ParakeetCatalog.defaultVariantID
         whisperBinaryPath = Self.preferredWhisperCLIPath(savedPath: "")
         whisperBackend = "serverAPI"
         liveChunkDuration = 2.0
         pauseBasedLiveChunksEnabled = false
+
+        // MAK-53 summarization override — back to "same as cleanup" defaults.
+        summaryLLMProvider = SettingsResetDefaults.summaryLLMProvider
+        summaryLLMModel = SettingsResetDefaults.summaryLLMModel
+        summaryLLMEndpoint = SettingsResetDefaults.summaryLLMEndpoint
 
         outputMode = "preview"
         insertionMode = "auto"
@@ -5157,11 +5269,40 @@ class AppState: ObservableObject {
         smartFormattingEnabled = true
         spokenPunctuationEnabled = true
         fillerRemovalEnabled = true
+        // Advanced formatting toggles (init defaults, see SettingsResetDefaults):
+        // these were previously missed, so "reset to defaults" left them on whatever
+        // the user had set.
+        normalizeNumbers = SettingsResetDefaults.normalizeNumbers
+        normalizeCurrency = SettingsResetDefaults.normalizeCurrency
+        spokenListsEnabled = SettingsResetDefaults.spokenListsEnabled
+        basicMarkdownEnabled = SettingsResetDefaults.basicMarkdownEnabled
         fileTaggingEnabled = false
         customVocabularyEnabled = true
         correctionLearningEnabled = true
         perAppModesEnabled = false
         historyEnabled = true
+
+        // Agent Bridge (M8) — back to init defaults. The agentBridgeEnabled didSet
+        // stops the server when it flips to false.
+        agentBridgeEnabled = SettingsResetDefaults.agentBridgeEnabled
+        agentBridgeAllowUnsignedClients = SettingsResetDefaults.agentBridgeAllowUnsignedClients
+        agentBridgeAllowCloudAI = SettingsResetDefaults.agentBridgeAllowCloudAI
+        agentBridgeSilenceAutoStop = SettingsResetDefaults.agentBridgeSilenceAutoStop
+        agentBridgeEouAutoStop = SettingsResetDefaults.agentBridgeEouAutoStop
+        agentBridgeChimeEnabled = SettingsResetDefaults.agentBridgeChimeEnabled
+        agentBridgeSpeakQuestionEnabled = SettingsResetDefaults.agentBridgeSpeakQuestionEnabled
+
+        // Screen context (MAK-34) — strictly-opt-in default.
+        screenContext = ScreenContextSettings.default
+
+        // Raw-audio retention (MAK-40) — opt-in off, newest-50 policy default.
+        retainRawAudioEnabled = SettingsResetDefaults.retainRawAudioEnabled
+        audioRetentionDays = SettingsResetDefaults.audioRetentionDays
+        audioRetentionMaxClips = SettingsResetDefaults.audioRetentionMaxClips
+
+        // Rules (MAK-43) and Modes (MAK-39) — clear back to empty.
+        ruleSet = .empty
+        modes = []
 
         vocabulary = .empty
         flushVocabularySave()   // reset must persist the cleared vocab promptly
@@ -6291,7 +6432,16 @@ extension AppState: AgentBridgeHost {
                     }
                     switch result {
                     case .success(let processedText):
-                        deliver(.success(self.postProcess(processedText)))
+                        // Meeting SUMMARY text (MAK-53): deliver the LLM's output
+                        // verbatim — do NOT run it through the dictation cleaner
+                        // (`postProcess`). That cleaner is for dictated SPEECH: it
+                        // normalizes every newline to a space (which flattens the
+                        // summary's Markdown structure) and applies spoken-punctuation /
+                        // vocab / filler transforms that don't belong on written prose —
+                        // and it would also pollute the self-learning vocabulary usage
+                        // counts (`sessionFiredSubstitutionIDs`) with matches from the
+                        // summary. The summarizer prompt already produces clean Markdown.
+                        deliver(.success(processedText))
                     case .failure(let error):
                         deliver(.failure(.domain(.llmUnavailable, message: error.localizedDescription, originalText: text)))
                     }
