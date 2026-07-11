@@ -7,6 +7,7 @@ final class AppleSpeechEngine: StreamingTranscriptionEngine {
     var onFinal: ((String) -> Void)?
     var onError: ((String) -> Void)?
     var onLevelChanged: ((_ display: Float, _ vad: Float) -> Void)?
+    var onStarted: (() -> Void)?
 
     // AVAudioEngine / recognizer handles. Touched only on the main actor (start and
     // stop are @MainActor-only callers — see the note below), so they stay confined
@@ -179,6 +180,10 @@ final class AppleSpeechEngine: StreamingTranscriptionEngine {
 
         engine.prepare()
         try engine.start()
+        // The tap is installed and the AVAudioEngine is running — capture is
+        // live NOW. This engine's start is fully synchronous, so the signal
+        // fires before runStart returns (unlike the chained engines).
+        onStarted?()
     }
 
     func stop(cancel: Bool = false) {

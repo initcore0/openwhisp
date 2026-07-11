@@ -26,6 +26,7 @@ final class ParakeetStreamingEngine: StreamingTranscriptionEngine {
     var onFinal: ((String) -> Void)?
     var onError: ((String) -> Void)?
     var onLevelChanged: ((_ display: Float, _ vad: Float) -> Void)?
+    var onStarted: (() -> Void)?
 
     /// Fires when the underlying manager reports a NEW end-of-utterance event
     /// (only the EOU variant exposes these). Used by the agent-dictate EOU
@@ -234,6 +235,10 @@ final class ParakeetStreamingEngine: StreamingTranscriptionEngine {
             audioEngine = engine
             engine.prepare()
             try engine.start()
+            // Tap installed + AVAudioEngine running: audio is flowing into the
+            // feed stream. Everything above (model load/first-run download,
+            // reset, callback wiring) was the arming gap this signal closes.
+            onStarted?()
         } catch {
             NSLog("[Parakeet] start error: %@", error.localizedDescription)
             guard !didStop else { return }

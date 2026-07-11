@@ -68,6 +68,49 @@ enum StreamingRoutePolicy {
         if pendingStop { return .abort }
         return .proceed
     }
+
+    /// What the engine's "capture actually began" signal (`onStarted`) — or its
+    /// timeout fallback — should do when it lands.
+    ///
+    /// `engine.start()` returning is NOT capture: WhisperKit/Parakeet only
+    /// enqueue their start on a serial lifecycle chain, and the model load (or
+    /// first-run download) runs before any mic tap exists. The session therefore
+    /// stays in the arming state ("Starting…", isArming) until `onStarted`
+    /// fires, and this decides what that (possibly late) callback does:
+    /// - **drop**: a newer session began, or this session already left arming
+    ///   (the timeout fallback fired first, or the session ended — finishSessionUI
+    ///   clears isArming at every terminal). Touch nothing.
+    /// - **beginListening**: flip the UI live (isArming=false, isRecording=true,
+    ///   "Listening...").
+    /// - **beginListeningThenStop**: same, but the user released the hotkey while
+    ///   the engine was still arming (`pendingStop`) — go live and immediately
+    ///   run the stop so the mic never keeps capturing unattended. Mirrors the
+    ///   recorder path's `.recording` + pendingStop handling.
+    enum CaptureStartedAction: Equatable {
+        case beginListening
+        case beginListeningThenStop
+        case drop
+    }
+
+    static func captureStartedAction(
+        callbackSessionID: UUID,
+        activeSessionID: UUID,
+        isArming: Bool,
+        pendingStop: Bool
+    ) -> CaptureStartedAction {
+        if callbackSessionID != activeSessionID { return .drop }
+        if !isArming { return .drop }
+        return pendingStop ? .beginListeningThenStop : .beginListening
+    }
+
+    /// Arming-timeout fallback (seconds): if `onStarted` hasn't fired this long
+    /// after `start()` was issued, flip to Listening anyway so a signal-wiring
+    /// bug can't wedge the session at "Starting…" forever. Deliberately generous
+    /// — a cold model load can be slow, and flipping early re-opens the
+    /// speak-into-the-gap hole this signal exists to close. A first-run model
+    /// DOWNLOAD can outlast even this; the flip is then optimistic, which is
+    /// still strictly better than the old flip-at-enqueue behavior.
+    static let captureStartTimeout: TimeInterval = 15
 }
 
 /// Which concrete `FileTranscriptionEngine` backs a transcriptionEngine setting.
