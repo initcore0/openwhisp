@@ -441,6 +441,32 @@ class AppState: ObservableObject {
         didSet { UserDefaults.standard.set(localLLMModel, forKey: "localLLMModel") }
     }
 
+    // MARK: - Summarization model (MAK-53)
+    // A SEPARATE provider/model for Meeting-mode summaries, decoupled from the
+    // dictation-cleanup LLM. Dictation cleanup favors a tiny fast model (runs on
+    // every transcript); summaries run only on demand and can afford a larger
+    // (local) model. Defaults to the `sameAsCleanup` sentinel so existing installs
+    // are unchanged. Resolution + privacy classification live in the pure
+    // `SummaryModelResolver`.
+
+    /// Summary provider override: the `sameAsCleanup` sentinel (default) or a real
+    /// provider id (`bundled` / `local` / `openai`). Agent-CLI is intentionally not
+    /// offered for summaries — the summarize seam is OpenAI-shape only.
+    @Published var summaryLLMProvider: String {
+        didSet { UserDefaults.standard.set(summaryLLMProvider, forKey: "summaryLLMProvider") }
+    }
+
+    /// Model to request for summaries (empty ⇒ the resolved provider's default).
+    @Published var summaryLLMModel: String {
+        didSet { UserDefaults.standard.set(summaryLLMModel, forKey: "summaryLLMModel") }
+    }
+
+    /// Custom server URL for summaries — used only when `summaryLLMProvider ==
+    /// "local"`. Blank falls back to the cleanup local server URL.
+    @Published var summaryLLMEndpoint: String {
+        didSet { UserDefaults.standard.set(summaryLLMEndpoint, forKey: "summaryLLMEndpoint") }
+    }
+
     /// Selected built-in (bundled llama.cpp) refinement model id, from
     /// llm-manifest.json. Used when `llmProvider == "bundled"`.
     @Published var bundledLLMModel: String {
@@ -1037,15 +1063,16 @@ class AppState: ObservableObject {
                     languageSetting: "auto", backend: .cli, prompt: ""
                 )
             },
-            summarizeCall: { [weak self] instruction, input in
-                // Route each summarize prompt through the existing refine primitive
+            summarizeCall: { [weak self] instruction, input, resolved in
+                // Route each summarize prompt through the RESOLVED summary model
+                // (MAK-53) — a separate provider/model from dictation cleanup.
                 // (instruction = the summary/map/combine prompt, input = the text).
                 try await withCheckedThrowingContinuation { cont in
                     Task { @MainActor in
                         guard let self else {
                             cont.resume(throwing: MeetingSummarizeError.unavailable); return
                         }
-                        self.refineText(text: input, instruction: instruction) { result in
+                        self.summarizeResolved(text: input, instruction: instruction, resolved: resolved) { result in
                             switch result {
                             case .success(let out): cont.resume(returning: out)
                             case .failure(let err): cont.resume(throwing: err)
@@ -1054,9 +1081,8 @@ class AppState: ObservableObject {
                     }
                 }
             },
-            providerIsLocal: { [weak self] in
-                guard let self else { return false }
-                return ScreenContextGate.localRefineProviders.contains(self.llmProvider)
+            resolveSummaryModel: { [weak self] in
+                self?.resolvedSummaryModel() ?? .init(provider: "", model: "", endpoint: "")
             }
         )
     }()
@@ -1344,6 +1370,44 @@ class AppState: ObservableObject {
         case "bundled": return bundledLLMModel
         case "local":   return localLLMModel
         default:        return openAIModel
+        }
+    }
+
+    /// Resolve the summarization model (MAK-53) from the summary override +
+    /// cleanup globals. The `sameAsCleanup` default resolves to today's cleanup
+    /// provider/model, so existing installs are unchanged.
+    func resolvedSummaryModel() -> SummaryModelResolver.Resolved {
+        SummaryModelResolver.resolve(
+            override: .init(provider: summaryLLMProvider, model: summaryLLMModel, endpoint: summaryLLMEndpoint),
+            globalProvider: llmProvider,
+            globalModel: llmModel,
+            globalEndpoint: llmProvider == "local"
+                ? localLLMBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+                : ""
+        )
+    }
+
+    /// The `LLMEndpoint` for a RESOLVED summary provider (MAK-53). Mirrors
+    /// `llmEndpoint` but keyed on the resolved provider/endpoint rather than the
+    /// global cleanup provider: bundled → the loopback llama-server; local → the
+    /// resolved server URL (falling back to the cleanup URL); openai → the cloud
+    /// endpoint with the configured key.
+    func summaryEndpoint(for resolved: SummaryModelResolver.Resolved) -> LLMEndpoint {
+        switch resolved.provider {
+        case "bundled":
+            return LLMEndpoint(baseURL: ensureLlamaEngine().baseURL, apiKey: "", requiresKey: false)
+        case "local":
+            let url = resolved.endpoint.isEmpty
+                ? localLLMBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+                : resolved.endpoint
+            return LLMEndpoint(
+                baseURL: url.replacingOccurrences(of: "/$", with: "", options: .regularExpression),
+                apiKey: "", requiresKey: false
+            )
+        default:
+            var ep = LLMEndpoint.openAI
+            ep.apiKey = openAIAPIKey
+            return ep
         }
     }
 
@@ -1642,6 +1706,10 @@ class AppState: ObservableObject {
         llmProvider = UserDefaults.standard.string(forKey: "llmProvider") ?? "bundled"
         localLLMBaseURL = UserDefaults.standard.string(forKey: "localLLMBaseURL") ?? "http://localhost:8080/v1"
         localLLMModel = UserDefaults.standard.string(forKey: "localLLMModel") ?? ""
+        // MAK-53: summarization model override (default = same as cleanup).
+        summaryLLMProvider = UserDefaults.standard.string(forKey: "summaryLLMProvider") ?? SummaryModelResolver.sameAsCleanupID
+        summaryLLMModel = UserDefaults.standard.string(forKey: "summaryLLMModel") ?? ""
+        summaryLLMEndpoint = UserDefaults.standard.string(forKey: "summaryLLMEndpoint") ?? ""
         bundledLLMModel = UserDefaults.standard.string(forKey: "bundledLLMModel") ?? "qwen2.5-0.5b-instruct"
         // Agent-CLI provider (MAK-44) — used only when llmProvider == "agentCLI".
         // Default to the Claude preset so opting in works with zero extra typing.
@@ -2496,11 +2564,17 @@ class AppState: ObservableObject {
         statusWhileLoading: String = "Loading local model…",
         quiesceWhisper: Bool = false,
         boundToSession: Bool = true,
+        provider: String? = nil,
         work: @escaping (_ done: @escaping () -> Void) -> Void,
         fallback: @escaping () -> Void
     ) {
-        refineDebug("ensureBundledLLMReady ENTER provider=\(llmProvider) sessionID=\(activeSessionID.uuidString.prefix(8))")
-        guard llmProvider == "bundled" else {
+        // The provider whose readiness we're bracketing. Defaults to the global
+        // cleanup provider; the summarize path (MAK-53) passes the RESOLVED
+        // summary provider so a bundled summary warms the engine even when
+        // cleanup uses a different provider.
+        let provider = provider ?? llmProvider
+        refineDebug("ensureBundledLLMReady ENTER provider=\(provider) sessionID=\(activeSessionID.uuidString.prefix(8))")
+        guard provider == "bundled" else {
             refineDebug("ensureBundledLLMReady: non-bundled -> work() immediately")
             work({})
             return
@@ -5950,6 +6024,67 @@ extension AppState: AgentBridgeHost {
             ) { [weak self] result in
                 Task { @MainActor in
                     done() // close the engine bracket on every path
+                    guard let self else {
+                        deliver(.failure(.domain(.internalError, message: "app deallocated", originalText: text)))
+                        return
+                    }
+                    switch result {
+                    case .success(let processedText):
+                        deliver(.success(self.postProcess(processedText)))
+                    case .failure(let error):
+                        deliver(.failure(.domain(.llmUnavailable, message: error.localizedDescription, originalText: text)))
+                    }
+                }
+            }
+        }, fallback: {
+            deliver(.failure(.domain(.llmUnavailable, message: "built-in model unavailable", originalText: text)))
+        })
+    }
+
+    /// Run ONE summarize prompt (map/reduce step) through the RESOLVED summary
+    /// provider/model/endpoint (MAK-53), rather than the global cleanup LLM. The
+    /// per-meeting privacy consent is enforced upstream in the coordinator using
+    /// `resolved.isLocal`; this method just performs the round-trip. Brackets the
+    /// bundled engine when the resolved provider is bundled.
+    func summarizeResolved(
+        text: String, instruction: String, resolved: SummaryModelResolver.Resolved,
+        completion: @escaping (Result<String, BridgeWire.ErrorObject>) -> Void
+    ) {
+        // Busy-reject while dictating (same guarantee refineText gives): warming
+        // the bundled LLM would stop a live whisper-server.
+        guard !sessionActive, !isRecording, !isTranscribing else {
+            completion(.failure(.domain(.busy,
+                message: "OpenWhisp is busy dictating; try again shortly", originalText: text)))
+            return
+        }
+
+        let systemDirective = InstructionChain.systemDirective
+        let userPayload = InstructionChain.userPayload(instruction: instruction, text: text)
+        let endpoint = summaryEndpoint(for: resolved)
+        let model = resolved.model
+        var delivered = false
+        let deliver: (Result<String, BridgeWire.ErrorObject>) -> Void = { result in
+            guard !delivered else { return }
+            delivered = true
+            completion(result)
+        }
+
+        ensureBundledLLMReady(statusWhileLoading: "Summarizing…", quiesceWhisper: true, boundToSession: false, provider: resolved.provider, work: { [weak self] done in
+            guard let self else {
+                done()
+                deliver(.failure(.domain(.internalError, message: "app deallocated", originalText: text)))
+                return
+            }
+            self.translationService.processFinalText(
+                text: userPayload,
+                mode: "rephrase",
+                targetLanguage: self.translationTargetLanguage,
+                endpoint: endpoint,
+                model: model,
+                customInstruction: systemDirective
+            ) { [weak self] result in
+                Task { @MainActor in
+                    done()
                     guard let self else {
                         deliver(.failure(.domain(.internalError, message: "app deallocated", originalText: text)))
                         return

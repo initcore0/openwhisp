@@ -106,6 +106,7 @@ let package = Package(
                 "Meeting.swift",
                 "MeetingSessionStore.swift",
                 "MeetingSummarizer.swift",
+                "SummaryModelResolver.swift",
                 "SubtitleFormatter.swift",
                 "WatchFolderPolicy.swift",
                 "Rules.swift",

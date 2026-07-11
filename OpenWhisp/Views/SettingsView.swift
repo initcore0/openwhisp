@@ -119,7 +119,7 @@ struct SettingsView: View {
         case .rules:     RulesPane(appState: appState)
         case .modes:     ModesPane(appState: appState)
         case .files:     FileTranscriptionPane(coordinator: appState.fileCoordinator)
-        case .meetings:  MeetingsPane(coordinator: appState.meetingCoordinator)
+        case .meetings:  MeetingsPane(appState: appState, coordinator: appState.meetingCoordinator)
         case .profiles:  ProfilesPane(appState: appState)
         case .agentBridge: AgentBridgePane(appState: appState)
         case .privacy:   PrivacyPane(appState: appState)

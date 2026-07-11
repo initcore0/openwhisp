@@ -7,13 +7,13 @@
       "id": "2026-07",
       "title": "July 2026",
       "date": "2026-07-10",
-      "summary": "A batch of new features, fixes, and under-the-hood hardening — all landed on main, all covered by tests, all on your machine. All twenty-three new features are live today: meeting mode that records a call and gives you an on-device transcript plus a local Markdown summary, a floating Scratchpad to dictate into with no target app, quiet-dictation mode for whispering into your mic, opt-in on-device audio retention with one-click re-transcription and an auto-cleanup policy, a fully-remappable dictation trigger with a record-a-shortcut field, an AppleScript keystroke insert method and mouse-button dictation triggers, a local Usage Insights dashboard, opt-in screen-context awareness that biases transcription toward the names already on screen, batch file transcription with watch folders, hands-free (tap-to-lock) dictation, adjustable AI cleanup, voice editing, a self-learning dictionary, rich local formatting, spoken-filename @-mentions for code editors, agent-CLI cleanup, output targets that route a dictation to a file/Shortcut/webhook, first-class Modes you can invoke by name, a Rules engine that runs your own actions when a dictation finishes, and an openwhisp:// URL scheme so Raycast, Alfred, or any launcher can drive dictation.",
+      "summary": "A batch of new features, fixes, and under-the-hood hardening — all landed on main, all covered by tests, all on your machine. All twenty-four new features are live today: meeting mode that records a call and gives you an on-device transcript plus a local Markdown summary (with a separate, optionally larger summarization model you can point at your own server), a floating Scratchpad to dictate into with no target app, quiet-dictation mode for whispering into your mic, opt-in on-device audio retention with one-click re-transcription and an auto-cleanup policy, a fully-remappable dictation trigger with a record-a-shortcut field, an AppleScript keystroke insert method and mouse-button dictation triggers, a local Usage Insights dashboard, opt-in screen-context awareness that biases transcription toward the names already on screen, batch file transcription with watch folders, hands-free (tap-to-lock) dictation, adjustable AI cleanup, voice editing, a self-learning dictionary, rich local formatting, spoken-filename @-mentions for code editors, agent-CLI cleanup, output targets that route a dictation to a file/Shortcut/webhook, first-class Modes you can invoke by name, a Rules engine that runs your own actions when a dictation finishes, and an openwhisp:// URL scheme so Raycast, Alfred, or any launcher can drive dictation.",
       "stats": {
-        "changesShipped": 37,
-        "newFeatures": 23,
-        "testsPassing": 1409,
+        "changesShipped": 38,
+        "newFeatures": 24,
+        "testsPassing": 1421,
         "onDevicePercent": 100,
-        "newFeaturesLive": 23,
+        "newFeaturesLive": 24,
         "newFeaturesCorePending": 0
       },
       "entries": [
@@ -35,6 +35,26 @@
               "Use the row’s Actions menu to Re-transcribe, Summarize, Export .md (summary + transcript), or Delete (which also deletes the recording’s audio)."
             ],
             "note": "Live now. The summary is map-reduced for long meetings and always demanded in the transcript’s own language — if a small model translates it away, OpenWhisp rejects the summary and keeps the transcript. Speaker diarization (“who said what”) is a planned follow-on; today’s transcript and summary are un-attributed. Cloud summaries only ever run after your explicit confirmation.",
+            "say": []
+          }
+        },
+        {
+          "category": "feature",
+          "headline": "Meeting summaries can use their own, larger model — separate from dictation cleanup",
+          "body": "Dictation cleanup wants a tiny, fast model because it runs on every final transcript; a meeting summary is different — it runs only when you ask for it, so it can afford a bigger, smarter model. Meeting mode now has its own “Summarization model” setting, independent of the cleanup LLM. Leave it on “Same as cleanup” (the default) and nothing changes. Or point summaries at a larger local model behind your own server — e.g. a 70B running in llama-server / Ollama — while keeping a fast on-device model for live dictation. The privacy gate follows the summary model, not cleanup: if the summarization provider is local, summaries still run automatically; if it's a cloud provider, you still get the explicit per-meeting “transcript leaves this Mac” confirmation, now naming the actual summary provider. The transcript-language guard on the summary is unchanged.",
+          "tickets": [
+            "MAK-53"
+          ],
+          "prs": [],
+          "howTo": {
+            "availability": "live",
+            "summary": "Open Settings → Meetings → Summarization model to pick a separate provider/model for summaries, or leave it on “Same as cleanup”.",
+            "steps": [
+              "Open Settings → Meetings. The new “Summarization model” picker defaults to “Same as cleanup” — existing behavior, no change needed.",
+              "To use a bigger model just for summaries, pick a provider (On this Mac, Your server, or OpenAI) and optionally a model name; for a self-hosted server you can also set its URL. Leave the model blank to use the server/provider default.",
+              "Summaries then run through that model: a local summary provider still summarizes automatically after transcription; a cloud one asks for your per-meeting confirmation first, naming the provider the transcript would be sent to."
+            ],
+            "note": "Live now. Cleanup keeps favoring a small fast model; the summary model runs only when you summarize. Agent-CLI isn't offered for summaries (the summarize path is OpenAI-shape); use the cleanup Agent-CLI provider for dictation as before. The summary is still checked against the transcript's language and rejected if it's translated away.",
             "say": []
           }
         },
