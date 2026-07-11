@@ -25,8 +25,19 @@ public struct Meeting: Codable, Equatable, Identifiable {
     /// Leaf filename of the 16 kHz mono WAV in the meetings audio directory. Never a
     /// path — see `MeetingWAVName`.
     public var wavFileName: String?
-    /// Full transcript once transcription completes.
+    /// MAK-52: leaf filenames of the two per-speaker leg WAVs (mic = "Me", system =
+    /// "Them") in the same audio directory, when captured. Never paths — same
+    /// leaf-guard as `wavFileName`. `nil` when the meeting is mixed-only.
+    public var micWavFileName: String?
+    public var systemWavFileName: String?
+    /// Full transcript once transcription completes. This is always the MIXED
+    /// decode (unchanged pre-MAK-52 behavior).
     public var transcript: String?
+    /// MAK-52: speaker-attributed transcript (`Me:` / `Them:` lines) built by
+    /// interleaving the two leg decodes, when both legs were captured and both
+    /// transcribed. `nil` when attribution wasn't available or failed — callers
+    /// fall back to `transcript`. `decodeIfPresent` keeps old JSON decodable.
+    public var attributedTranscript: String?
     /// Markdown summary (## Summary / ## Decisions / ## Action items) once
     /// summarization completes.
     public var summary: String?
@@ -37,7 +48,10 @@ public struct Meeting: Codable, Equatable, Identifiable {
         startedAt: Date = Date(),
         duration: TimeInterval = 0,
         wavFileName: String? = nil,
+        micWavFileName: String? = nil,
+        systemWavFileName: String? = nil,
         transcript: String? = nil,
+        attributedTranscript: String? = nil,
         summary: String? = nil,
         status: MeetingStatus = .recorded
     ) {
@@ -45,7 +59,10 @@ public struct Meeting: Codable, Equatable, Identifiable {
         self.startedAt = startedAt
         self.duration = duration
         self.wavFileName = wavFileName
+        self.micWavFileName = micWavFileName
+        self.systemWavFileName = systemWavFileName
         self.transcript = transcript
+        self.attributedTranscript = attributedTranscript
         self.summary = summary
         self.status = status
     }
@@ -56,7 +73,7 @@ public struct Meeting: Codable, Equatable, Identifiable {
     // unrecognized status decodes to `.failed(reason:)` so nothing silently loses
     // its place in the list.
     private enum CodingKeys: String, CodingKey {
-        case id, startedAt, duration, wavFileName, transcript, summary, status
+        case id, startedAt, duration, wavFileName, micWavFileName, systemWavFileName, transcript, attributedTranscript, summary, status
     }
 
     public init(from decoder: Decoder) throws {
@@ -65,7 +82,10 @@ public struct Meeting: Codable, Equatable, Identifiable {
         startedAt = try c.decodeIfPresent(Date.self, forKey: .startedAt) ?? Date()
         duration = try c.decodeIfPresent(TimeInterval.self, forKey: .duration) ?? 0
         wavFileName = try c.decodeIfPresent(String.self, forKey: .wavFileName)
+        micWavFileName = try c.decodeIfPresent(String.self, forKey: .micWavFileName)
+        systemWavFileName = try c.decodeIfPresent(String.self, forKey: .systemWavFileName)
         transcript = try c.decodeIfPresent(String.self, forKey: .transcript)
+        attributedTranscript = try c.decodeIfPresent(String.self, forKey: .attributedTranscript)
         summary = try c.decodeIfPresent(String.self, forKey: .summary)
         status = try c.decodeIfPresent(MeetingStatus.self, forKey: .status) ?? .recorded
     }
@@ -150,9 +170,19 @@ public enum MeetingStatus: Codable, Equatable {
 public enum MeetingWAVName {
     public static let ext = "wav"
 
-    /// The canonical leaf filename for a meeting's WAV.
+    /// The canonical leaf filename for a meeting's (mixed) WAV.
     public static func fileName(for id: UUID) -> String {
         "meeting-\(id.uuidString).\(ext)"
+    }
+
+    /// The canonical leaf filename for a meeting's mic ("Me") leg WAV (MAK-52).
+    public static func micFileName(for id: UUID) -> String {
+        "meeting-\(id.uuidString)-mic.\(ext)"
+    }
+
+    /// The canonical leaf filename for a meeting's system ("Them") leg WAV (MAK-52).
+    public static func systemFileName(for id: UUID) -> String {
+        "meeting-\(id.uuidString)-sys.\(ext)"
     }
 
     /// True when `name` is a safe bare `.wav` leaf (no traversal, no NUL).

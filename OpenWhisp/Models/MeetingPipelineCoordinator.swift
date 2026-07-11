@@ -33,6 +33,9 @@ final class MeetingPipelineCoordinator: ObservableObject {
     /// Non-nil when a recording is currently in progress (driven by the capture
     /// integrator via `beginRecording`/`endRecording`). Rendered as a live row.
     @Published private(set) var recordingInProgress: Meeting?
+    /// MAK-52 live "who's talking" indicator, driven by the capture integrator while
+    /// a meeting records (`updateTalkState`). Reset to `.silence` at begin/end.
+    @Published private(set) var talkState: MeetingTalkState.Speaker = .silence
     @Published var lastMessage: String?
 
     // MARK: - Injected effects (all replaceable in tests)
@@ -115,11 +118,26 @@ final class MeetingPipelineCoordinator: ObservableObject {
     /// row. The id should match the eventual `MeetingRecording.id`.
     func beginRecording(id: UUID, startedAt: Date = Date()) {
         recordingInProgress = Meeting(id: id, startedAt: startedAt, status: .recorded)
+        talkState = .silence
+        liveTalk = MeetingTalkState()
     }
 
     /// Clear the live-recording row (the finished recording arrives via `ingest`).
     func endRecording() {
         recordingInProgress = nil
+        talkState = .silence
+    }
+
+    /// Retained Schmitt-trigger state for the live talking indicator.
+    private var liveTalk = MeetingTalkState()
+
+    /// MAK-52: fold the latest per-leg live levels (mic = "You", system = "Them")
+    /// into the talking indicator. Called by the capture integrator on a light UI
+    /// cadence while recording. No-op once the live row is gone.
+    func updateTalkState(micLevel: Float, systemLevel: Float) {
+        guard recordingInProgress != nil else { return }
+        let speaker = liveTalk.update(micLevel: micLevel, systemLevel: systemLevel)
+        if speaker != talkState { talkState = speaker }
     }
 
     // MARK: - Ingest
@@ -158,9 +176,38 @@ final class MeetingPipelineCoordinator: ObservableObject {
             persist(meeting)
             return meeting.id
         }
+        // MAK-52: move the two leg WAVs alongside the mixed one under canonical leaf
+        // names, when they exist. Best-effort — a leg-move failure degrades to
+        // mixed-only attribution; it never fails the meeting.
+        if let micURL = recording.micWavURL {
+            let leaf = MeetingWAVName.micFileName(for: recording.id)
+            if Self.moveLeg(micURL, toLeaf: leaf, in: store.audioDirectory) { meeting.micWavFileName = leaf }
+        }
+        if let sysURL = recording.systemWavURL {
+            let leaf = MeetingWAVName.systemFileName(for: recording.id)
+            if Self.moveLeg(sysURL, toLeaf: leaf, in: store.audioDirectory) { meeting.systemWavFileName = leaf }
+        }
         persist(meeting)
         transcribe(meeting.id)
         return meeting.id
+    }
+
+    /// Move a leg WAV into `audioDir` under `leaf` (copy + delete-source fallback
+    /// across volumes). Returns true on success; on failure the leg is skipped and
+    /// attribution degrades to mixed-only.
+    private static func moveLeg(_ src: URL, toLeaf leaf: String, in audioDir: URL) -> Bool {
+        let dest = audioDir.appendingPathComponent(leaf)
+        try? FileManager.default.removeItem(at: dest)
+        do {
+            try FileManager.default.moveItem(at: src, to: dest)
+            return true
+        } catch {
+            do {
+                try FileManager.default.copyItem(at: src, to: dest)
+                try? FileManager.default.removeItem(at: src)
+                return true
+            } catch { return false }
+        }
     }
 
     // MARK: - Transcription
@@ -276,10 +323,108 @@ final class MeetingPipelineCoordinator: ObservableObject {
         meeting.status = .transcribed
         persist(meeting)
         activeTranscribeID = nil
+
+        // MAK-52: when both leg WAVs exist, transcribe each leg (mic = "Me", system
+        // = "Them") through the same seam and interleave them into an attributed
+        // transcript. Runs AFTER the mixed transcript is already persisted, so a
+        // failure here only means the meeting keeps its plain transcript. On success
+        // we then summarize; otherwise we summarize immediately below.
+        if let micName = meeting.micWavFileName, let sysName = meeting.systemWavFileName,
+           let mic = store.wavURL(for: Meeting(id: id, wavFileName: micName)),
+           let sys = store.wavURL(for: Meeting(id: id, wavFileName: sysName)),
+           FileManager.default.fileExists(atPath: mic.path),
+           FileManager.default.fileExists(atPath: sys.path) {
+            attributeAndThenSummarize(id, micWAV: mic, systemWAV: sys)
+            return
+        }
+
         // Auto-summarize only when the provider is local (privacy rule). Cloud/agent
         // providers require an explicit per-meeting confirmation from the UI.
         if canAutoSummarize {
             summarize(id, confirmedCloud: false)
+        }
+    }
+
+    // MARK: - MAK-52 speaker attribution
+
+    /// Transcribe both leg WAVs sequentially, interleave into an attributed
+    /// transcript, persist it, then continue to auto-summarize (local provider). Any
+    /// failure degrades to the already-persisted plain transcript and still triggers
+    /// the normal summarize gate. Uses a dedicated engine (never contends with live
+    /// dictation), one leg at a time.
+    private func attributeAndThenSummarize(_ id: UUID, micWAV: URL, systemWAV: URL) {
+        let cfg = transcriptionConfig()
+        Task { [weak self] in
+            guard let self else { return }
+            var chunks: [TranscriptInterleaver.Chunk] = []
+            do {
+                chunks += try await self.transcribeLeg(speaker: "Me", wav: micWAV, config: cfg)
+                chunks += try await self.transcribeLeg(speaker: "Them", wav: systemWAV, config: cfg)
+            } catch {
+                // Leg transcription failed — keep the plain transcript, then summarize.
+                await MainActor.run {
+                    if self.canAutoSummarize { self.summarize(id, confirmedCloud: false) }
+                }
+                return
+            }
+            let attributed = TranscriptInterleaver.merge(chunks)
+            await MainActor.run {
+                if !attributed.isEmpty, var meeting = self.meetings.first(where: { $0.id == id }) {
+                    meeting.attributedTranscript = attributed
+                    self.persist(meeting)
+                }
+                if self.canAutoSummarize { self.summarize(id, confirmedCloud: false) }
+            }
+        }
+    }
+
+    /// Transcribe ONE leg WAV: decode → chunk (with time offsets) → transcribe each
+    /// chunk sequentially → return `[Chunk]` labeled with `speaker` and each chunk's
+    /// start offset. A dedicated engine is spun up and torn down per leg. Throws on
+    /// decode failure; empty chunks are dropped by the interleaver.
+    private func transcribeLeg(speaker: String, wav: URL, config: TranscriptionConfig) async throws -> [TranscriptInterleaver.Chunk] {
+        let duration = try await MediaFileDecoder.duration(of: wav)
+        let plan = FileChunkPlanner.plan(duration: duration)
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("openwhisp-meeting-leg-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let engine = config.makeEngine()
+        defer { engine.stopServer() }
+
+        var out: [TranscriptInterleaver.Chunk] = []
+        for chunk in plan {
+            let chunkWAV = dir.appendingPathComponent("leg-chunk-\(chunk.index).wav")
+            try await MediaFileDecoder.decodeRange(
+                source: wav, start: chunk.start,
+                end: chunk.index == plan.count - 1 ? nil : chunk.end,
+                outputURL: chunkWAV
+            )
+            let text = try await Self.transcribeOne(engine: engine, wav: chunkWAV, config: config)
+            out.append(TranscriptInterleaver.Chunk(speaker: speaker, start: chunk.start, text: text))
+        }
+        return out
+    }
+
+    /// One chunk through the callback engine, bridged to async. Resolves with the
+    /// text on completion, or an empty string on a per-chunk error (so one bad chunk
+    /// doesn't abort the whole leg — the interleaver drops empties).
+    private static func transcribeOne(engine: FileTranscriptionEngine, wav: URL, config: TranscriptionConfig) async throws -> String {
+        try await withCheckedThrowingContinuation { cont in
+            let req = UUID()
+            engine.onTranscriptionComplete = { r, text in guard r == req else { return }; cont.resume(returning: text) }
+            engine.onTranscriptionError = { r, _ in guard r == req else { return }; cont.resume(returning: "") }
+            engine.transcribe(
+                requestID: req,
+                binaryPath: config.binaryPath,
+                modelPath: config.modelPath,
+                language: config.languageSetting,
+                wavPath: wav.path,
+                deleteWhenDone: true,
+                backend: config.backend,
+                prompt: config.prompt
+            )
         }
     }
 
@@ -316,9 +461,12 @@ final class MeetingPipelineCoordinator: ObservableObject {
             return
         }
         guard let meeting = meetings.first(where: { $0.id == id }),
-              let transcript = meeting.transcript, !transcript.isEmpty else { return }
+              let plainTranscript = meeting.transcript, !plainTranscript.isEmpty else { return }
         // Resolve the summary model ONCE for this run (MAK-53). Its locality drives
         // the privacy gate; the whole run then uses this resolved provider/model.
+        // This gate runs on EVERY entry to summarize — including the calls
+        // attribution triggers (attributeAndThenSummarize) — so the resolved
+        // privacy rule applies uniformly.
         let resolved = resolveSummaryModel()
         // The agent-CLI provider has no OpenAI-shape endpoint, so the summarize
         // seam can't call it (and must NEVER silently fall through to a cloud
@@ -331,6 +479,11 @@ final class MeetingPipelineCoordinator: ObservableObject {
             lastMessage = "Summarizing with a cloud provider needs your confirmation."
             return
         }
+        // MAK-52: prefer the attributed transcript (Me/Them labels) as the summarizer
+        // input — the labels help the model attribute action items to a speaker. The
+        // language guard still runs against the plain transcript below.
+        let summarizerInput = (meeting.attributedTranscript?.isEmpty == false)
+            ? meeting.attributedTranscript! : plainTranscript
 
         var working = meeting
         working.status = .summarizing
@@ -339,10 +492,10 @@ final class MeetingPipelineCoordinator: ObservableObject {
         Task { [weak self] in
             guard let self else { return }
             do {
-                let summary = try await MeetingSummarizer.run(transcript: transcript) { instruction, input in
+                let summary = try await MeetingSummarizer.run(transcript: summarizerInput) { instruction, input in
                     try await summarize(instruction, input, resolved)
                 }
-                await MainActor.run { self.finishSummary(id, transcript: transcript, summary: summary) }
+                await MainActor.run { self.finishSummary(id, transcript: plainTranscript, summary: summary) }
             } catch {
                 await MainActor.run {
                     // Summary failure is non-destructive: fall back to the transcribed
@@ -391,7 +544,10 @@ final class MeetingPipelineCoordinator: ObservableObject {
             out += summary.trimmingCharacters(in: .whitespacesAndNewlines) + "\n\n"
         }
         out += "## Transcript\n\n"
-        out += (meeting.transcript ?? "(no transcript)").trimmingCharacters(in: .whitespacesAndNewlines) + "\n"
+        // MAK-52: prefer the attributed (Me/Them) transcript when present.
+        let body = (meeting.attributedTranscript?.isEmpty == false)
+            ? meeting.attributedTranscript! : (meeting.transcript ?? "(no transcript)")
+        out += body.trimmingCharacters(in: .whitespacesAndNewlines) + "\n"
         return out
     }
 
