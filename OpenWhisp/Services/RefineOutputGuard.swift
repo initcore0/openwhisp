@@ -202,10 +202,14 @@ enum RefineOutputGuard {
     /// the output must stay in the input's own script.
     ///
     /// - `translateToEnglish`: whisper translated the audio INTO English, so the
-    ///   polish output is expected in Latin.
-    /// - `improveTranslation` mode: the "Improve English translation" flow polishes
-    ///   the engine's (always-English) translation, so it too expects Latin. There is
-    ///   no user-settable target — the old en/ru picker was removed because a stale
+    ///   polish output is expected in Latin. This is the ONLY condition that
+    ///   expects a script change: the `improveTranslation` prompt itself only runs
+    ///   when `translateToEnglish` is on (see
+    ///   `CleanupIntensity.wholeTextCustomInstruction` — a stale improveTranslation
+    ///   mode with translate-to-English OFF gets the plain same-language intensity
+    ///   prompt), so mode alone must NOT relax the guard: a Russian dictation
+    ///   cleaned under that stale mode still has to stay Russian. There is no
+    ///   user-settable target — the old en/ru picker was removed because a stale
     ///   "ru" turned English dictations Russian (the reported regression).
     ///
     /// Passed to `outputTranslatedAway` as `expectedOutputScript`. When nil, any
@@ -215,14 +219,13 @@ enum RefineOutputGuard {
         mode: String,
         translationTargetLanguage: String
     ) -> Script? {
-        let normalizedMode = mode.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        // Both intended-translation flows produce English (the engine's only
-        // translate target). `translationTargetLanguage` is intentionally ignored —
-        // see the doc above — but kept in the signature for call-site symmetry.
-        if normalizedMode == "improvetranslation" || translateToEnglish {
-            _ = translationTargetLanguage
-            return .latin
-        }
+        // The engine's translate task only ever produces English, so Latin is the
+        // only expected script. `mode` and `translationTargetLanguage` are
+        // intentionally not consulted — see the doc above — but kept in the
+        // signature so call sites state the full session context they resolve from.
+        _ = mode
+        _ = translationTargetLanguage
+        if translateToEnglish { return .latin }
         return nil
     }
 

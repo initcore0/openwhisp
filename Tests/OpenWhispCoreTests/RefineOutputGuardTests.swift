@@ -104,6 +104,36 @@ final class RefineOutputGuardTests: XCTestCase {
             input: input, output: output, expectedOutputScript: .latin))
     }
 
+    /// Japanese mixes Kana and Han within one language; a Japanese → Japanese
+    /// cleanup must never self-reject even if the dominant bucket flaps between
+    /// Han and Kana across input and output. The keep-share check anchors on the
+    /// INPUT's dominant script surviving in the output (it always does for real
+    /// Japanese), so no rejection.
+    func testJapaneseCleanupNotRejectedAcrossKanaHanMix() {
+        // Kana-dominant input.
+        let input = "きょうは ざいたくで しごとを します。すこし おくれて とうちゃくします。"
+        // Han-heavier cleaned output of the same sentence.
+        let output = "今日は在宅で仕事をします。少し遅れて到着します。"
+        XCTAssertFalse(RefineOutputGuard.outputTranslatedAway(input: input, output: output))
+        // And the reverse direction.
+        XCTAssertFalse(RefineOutputGuard.outputTranslatedAway(input: output, output: input))
+    }
+
+    /// English prose whose cleanup adds foreign loanwords/names stays Latin → pass.
+    func testEnglishWithLoanwordsNotRejected() {
+        let input = "we met at the cafe with francois and talked about the zeitgeist of the project"
+        let output = "We met at the café with François and talked about the Zeitgeist of the project."
+        XCTAssertFalse(RefineOutputGuard.outputTranslatedAway(input: input, output: output))
+    }
+
+    /// Code-mixed input (English code + Cyrillic comments) cleaned to a slightly
+    /// different mix ratio must pass — the input's dominant script survives.
+    func testCodeMixedCleanupNotRejected() {
+        let input = "let userCount = fetchUsers().count // считаем всех активных пользователей в базе данных"
+        let output = "let userCount = fetchUsers().count // Считаем всех активных пользователей в базе."
+        XCTAssertFalse(RefineOutputGuard.outputTranslatedAway(input: input, output: output))
+    }
+
     // MARK: - Language-code → script mapping
 
     func testScriptForLanguageCode() {
@@ -133,6 +163,31 @@ final class RefineOutputGuardTests: XCTestCase {
                 translateToEnglish: true, mode: "rephrase",
                 translationTargetLanguage: "en"),
             .latin)
+    }
+
+    /// Stale-mode corner: `improveTranslation` left in settings while Translate to
+    /// English is OFF. The improve-translation prompt only runs when
+    /// translateToEnglish is on (CleanupIntensity.wholeTextCustomInstruction), so
+    /// this session is a plain same-language cleanup — a Russian → English drift
+    /// must still be caught, i.e. NO expected script. Mode alone must never relax
+    /// the guard, or the original PR #157 bug comes back through stale settings.
+    func testStaleImproveTranslationModeWithoutTranslateExpectsNoScript() {
+        XCTAssertNil(
+            RefineOutputGuard.expectedCleanupScript(
+                translateToEnglish: false, mode: "improveTranslation",
+                translationTargetLanguage: "ru"))
+    }
+
+    /// And the full end-to-end shape of that corner: Russian input, English output,
+    /// no expected script (stale improveTranslation, translate off) → REJECT.
+    func testStaleImproveTranslationModeStillCatchesRussianToEnglish() {
+        let input = "Привет команда, я сегодня работаю из дома и приду немного позже обычного."
+        let output = "Hi team, I am working from home today and will arrive a little later than usual."
+        let expected = RefineOutputGuard.expectedCleanupScript(
+            translateToEnglish: false, mode: "improveTranslation",
+            translationTargetLanguage: "ru")
+        XCTAssertTrue(RefineOutputGuard.outputTranslatedAway(
+            input: input, output: output, expectedOutputScript: expected))
     }
 
     func testPlainCleanupExpectsNoScript() {
