@@ -23,13 +23,13 @@ import Foundation
 ///
 /// Pure and Foundation-only so it lives in `OpenWhispCore` and is unit-tested
 /// without AppState/AppKit.
-enum RefineOutputGuard {
+public enum RefineOutputGuard {
     /// Writing systems we track by Unicode scalar range. Latin is the "translate
     /// target" most small models drift toward, so a non-Latin input becoming
     /// almost-all-Latin output is the signal we reject on. We only need enough
     /// scripts to identify the dominant non-Latin one; anything unlisted counts as
     /// "other letter" and never triggers a rejection (conservative by default).
-    enum Script: Equatable {
+    public enum Script: Equatable {
         case latin
         case cyrillic
         case han
@@ -47,14 +47,14 @@ enum RefineOutputGuard {
     /// too little signal — a legitimate short Russian phrase whose cleanup happens
     /// to drop a couple of Cyrillic chars could look like a translation. Twelve
     /// letters is ~2-3 short words: enough to establish a dominant script.
-    static let minLettersForCheck = 12
+    public static let minLettersForCheck = 12
 
     /// The input must be at least this fraction non-Latin letters to be considered
     /// a "non-Latin dictation" worth guarding. 0.40 tolerates heavy mixing —
     /// Russian prose sprinkled with English identifiers, URLs, or code still counts
     /// as a Russian dictation and gets guarded — while a mostly-Latin input (a few
     /// stray Cyrillic chars) is left alone.
-    static let minNonLatinInputShare = 0.40
+    public static let minNonLatinInputShare = 0.40
 
     /// If the output retains LESS than this fraction of the input's dominant
     /// non-Latin script, we treat the script as having "disappeared" → translated.
@@ -63,7 +63,7 @@ enum RefineOutputGuard {
     /// the script (Russian in → Russian out), so it clears this bar by a mile; a
     /// true translation drops it to ~0. The wide gap between "kept" (~1.0) and
     /// "translated" (~0.0) is what makes the guard safe.
-    static let minOutputScriptShareToPass = 0.10
+    public static let minOutputScriptShareToPass = 0.10
 
     // MARK: - Decision
 
@@ -86,7 +86,7 @@ enum RefineOutputGuard {
     ///   translate-to-Russian flow passes `.cyrillic`). When the output's dominant
     ///   script equals this, the "different script" is expected → ACCEPT. Nil for
     ///   plain same-language cleanups (any script change is then a rejection).
-    static func outputTranslatedAway(
+    public static func outputTranslatedAway(
         input: String,
         output: String,
         expectedOutputScript: Script? = nil
@@ -151,7 +151,7 @@ enum RefineOutputGuard {
     /// Only codes whose script we track return a value; anything else is nil (the
     /// guard then has no expected script and treats any script change as suspect,
     /// which is the safe default — a false accept, not a false reject).
-    static func script(forLanguageCode code: String) -> Script? {
+    public static func script(forLanguageCode code: String) -> Script? {
         switch code.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
         case "ru", "uk", "be", "bg", "sr", "mk": return .cyrillic
         case "en", "es", "fr", "de", "it", "pt", "nl", "pl", "tr", "id", "vi",
@@ -186,7 +186,7 @@ enum RefineOutputGuard {
     /// English dictation, and the old blanket exemption let it through).
     ///
     /// Pure so the decision is unit-tested without AppState/AppKit.
-    static func shouldLanguageGuard(
+    public static func shouldLanguageGuard(
         isSpokenInstructionRefine: Bool,
         isAgentBridgeRefine: Bool,
         hasCustomModeInstruction: Bool = false
@@ -214,7 +214,7 @@ enum RefineOutputGuard {
     ///
     /// Passed to `outputTranslatedAway` as `expectedOutputScript`. When nil, any
     /// script change is a rejection (the plain same-language cleanup contract).
-    static func expectedCleanupScript(
+    public static func expectedCleanupScript(
         translateToEnglish: Bool,
         mode: String,
         translationTargetLanguage: String

@@ -6,15 +6,20 @@ import CoreAudio   // AudioDeviceID (the input-device id threaded to AudioStream
 /// translate-to-English sentinel means translate with the source auto-detected;
 /// every plain language ("en" included) transcribes in that language. Pure, so
 /// it's testable without importing WhisperKit.
-enum WhisperKitTaskMapper {
-    struct Resolved: Equatable {
+public enum WhisperKitTaskMapper {
+    public struct Resolved: Equatable {
         /// nil = let WhisperKit auto-detect the source language.
-        var language: String?
+        public var language: String?
         /// true = translate to English; false = transcribe.
-        var translate: Bool
+        public var translate: Bool
+
+        public init(language: String?, translate: Bool) {
+            self.language = language
+            self.translate = translate
+        }
     }
 
-    static func map(languageSetting: String) -> Resolved {
+    public static func map(languageSetting: String) -> Resolved {
         if languageSetting == WhisperTask.translateToEnglishSetting {
             return Resolved(language: nil, translate: true)
         }

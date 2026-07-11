@@ -7,14 +7,14 @@ import Foundation
 /// machine is AI post-processing with the cloud (OpenAI) provider; the local
 /// provider stays on machine/LAN. One-time model downloads are not dictated text
 /// and are not considered here.
-enum PrivacyStatus {
+public enum PrivacyStatus {
     /// True only when AI cleanup is on AND the provider is the cloud one.
-    static func sendsTextToCloud(enhancementEnabled: Bool, provider: String) -> Bool {
+    public static func sendsTextToCloud(enhancementEnabled: Bool, provider: String) -> Bool {
         enhancementEnabled && provider == "openai"
     }
 
     /// Short, user-facing statement for the current configuration.
-    static func statusText(enhancementEnabled: Bool, provider: String) -> String {
+    public static func statusText(enhancementEnabled: Bool, provider: String) -> String {
         if sendsTextToCloud(enhancementEnabled: enhancementEnabled, provider: provider) {
             return "Sends final text to OpenAI for cleanup"
         }

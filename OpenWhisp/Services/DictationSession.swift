@@ -11,24 +11,24 @@ import Foundation
 /// Foundation-only so it lives in `OpenWhispCore` and can be unit-tested; the app
 /// carries it through the existing session funnel, and the future
 /// `DictationCoordinator` (M8 step 9) will own it.
-enum SessionInitiator: Equatable {
+public enum SessionInitiator: Equatable {
     case user
     case agent(client: String, prompt: String?)
 
-    var isAgent: Bool {
+    public var isAgent: Bool {
         if case .agent = self { return true }
         return false
     }
 
     /// The claimed client name for an agent session (display-only; never trusted
     /// for authorization — the socket peer's code signature is what authorizes).
-    var clientName: String? {
+    public var clientName: String? {
         if case let .agent(client, _) = self { return client }
         return nil
     }
 
     /// The agent's prompt to show in the overlay, if any.
-    var prompt: String? {
+    public var prompt: String? {
         if case let .agent(_, prompt) = self { return prompt }
         return nil
     }
@@ -41,7 +41,7 @@ enum SessionInitiator: Equatable {
 /// specific outcome (an abort before capture, or an error terminal that didn't
 /// set one) — so a waiter is never left hanging, and per the cancel invariant a
 /// cancelled session yields no transcript text.
-enum SessionOutcome: Equatable {
+public enum SessionOutcome: Equatable {
     /// Produced final text (which may itself be any non-nil string).
     case completed(text: String)
     /// The session finalized with nothing transcribed.

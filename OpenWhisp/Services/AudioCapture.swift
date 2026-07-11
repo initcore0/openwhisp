@@ -20,7 +20,7 @@ public typealias AudioDeviceHandle = String
 ///
 /// Foundation-only so it lives in OpenWhispCore and can be named by the
 /// `AudioCapture` protocol and by AppState without pulling in AVFoundation.
-enum RecorderState: Equatable {
+public enum RecorderState: Equatable {
     case idle
     case recording
     case stopped
@@ -40,7 +40,7 @@ enum RecorderState: Equatable {
 /// listing returns platform device handles (CoreAudio `AudioDeviceID`), so the
 /// concrete `AudioDevice` type stays on the platform side. The protocol exposes
 /// only `selectDevice(_:)` by opaque string ID, which is all AppState drives.
-protocol AudioCapture: AnyObject {
+public protocol AudioCapture: AnyObject {
     /// Peak-normalize quiet input toward a healthy level. Settable live.
     var autoGainEnabled: Bool { get set }
     /// Quiet-dictation mode (MAK-45): swaps auto-gain to the stronger high-gain
@@ -81,7 +81,7 @@ protocol AudioCapture: AnyObject {
 extension AudioCapture {
     /// Convenience matching the concrete recorder's defaults, so AppState can
     /// call `startStreamingOnSilence(onChunk:)` through the protocol unchanged.
-    func startStreamingOnSilence(onChunk: @escaping (URL?) -> Void) {
+    public func startStreamingOnSilence(onChunk: @escaping (URL?) -> Void) {
         startStreamingOnSilence(
             silenceDuration: 0.75,
             minimumSpeechDuration: 0.35,
@@ -92,5 +92,5 @@ extension AudioCapture {
     }
 
     /// Convenience so `stop()` (no completion) works through the protocol.
-    func stop() { stop(completion: nil) }
+    public func stop() { stop(completion: nil) }
 }

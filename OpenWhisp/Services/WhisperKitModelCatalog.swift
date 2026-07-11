@@ -7,9 +7,9 @@ import Foundation
 /// actually installed and gives each a friendly label, so the Settings UI can
 /// offer a picker of *loadable* models without importing WhisperKit (it's pure
 /// Foundation, so it compiles in the default build and is unit-testable).
-enum WhisperKitModelCatalog {
+public enum WhisperKitModelCatalog {
     /// Base dir where staged WhisperKit model folders live.
-    static var baseDir: URL {
+    public static var baseDir: URL {
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support")
         return appSupport
@@ -23,21 +23,21 @@ enum WhisperKitModelCatalog {
     /// access on first run. Pinning every WhisperKit construction to this sibling
     /// of `baseDir` keeps all of its caches (tokenizer/config fetches, any
     /// auto-downloaded model) under our Application Support directory instead.
-    static var hubBaseDir: URL {
+    public static var hubBaseDir: URL {
         baseDir.deletingLastPathComponent()
             .appendingPathComponent("whisperkit-hub", isDirectory: true)
     }
 
     /// The three compiled sub-models a staged WhisperKit model must contain to load.
-    static let requiredSubmodels = ["MelSpectrogram.mlmodelc", "AudioEncoder.mlmodelc", "TextDecoder.mlmodelc"]
+    public static let requiredSubmodels = ["MelSpectrogram.mlmodelc", "AudioEncoder.mlmodelc", "TextDecoder.mlmodelc"]
 
     /// True iff `model` is staged with all required compiled sub-models present.
-    static func isStaged(_ model: String) -> Bool {
+    public static func isStaged(_ model: String) -> Bool {
         isStaged(model, fileExists: { FileManager.default.fileExists(atPath: $0) })
     }
 
     /// Testable core: `fileExists` is injected so tests don't touch the real disk.
-    static func isStaged(_ model: String, fileExists: (String) -> Bool) -> Bool {
+    public static func isStaged(_ model: String, fileExists: (String) -> Bool) -> Bool {
         let folder = baseDir.appendingPathComponent(model, isDirectory: true)
         return requiredSubmodels.allSatisfy {
             fileExists(folder.appendingPathComponent($0).path)
@@ -45,7 +45,7 @@ enum WhisperKitModelCatalog {
     }
 
     /// Models staged on disk (folder names), sorted by our preferred display order.
-    static func stagedModels() -> [String] {
+    public static func stagedModels() -> [String] {
         let fm = FileManager.default
         let names = (try? fm.contentsOfDirectory(atPath: baseDir.path)) ?? []
         return names.filter { isStaged($0) }.sorted(by: orderedBefore)
@@ -54,7 +54,7 @@ enum WhisperKitModelCatalog {
     /// Curated WhisperKit model ids OpenWhisp offers for in-app download, in display
     /// order. These map to folders in the `argmaxinc/whisperkit-coreml` HF repo. The
     /// download UI shows this list and marks which are already staged.
-    static let downloadableModels = [
+    public static let downloadableModels = [
         "openai_whisper-small",
         "openai_whisper-tiny.en",
         "openai_whisper-large-v3-turbo",
@@ -63,7 +63,7 @@ enum WhisperKitModelCatalog {
     /// All models to surface in the picker/download UI: the curated downloadable set
     /// unioned with anything already staged on disk (so a manually-staged or
     /// previously-downloaded model isn't hidden), in preferred display order.
-    static func selectableModels() -> [String] {
+    public static func selectableModels() -> [String] {
         var seen = Set<String>()
         let merged = downloadableModels + stagedModels()
         return merged.filter { seen.insert($0).inserted }.sorted(by: orderedBefore)
@@ -73,7 +73,7 @@ enum WhisperKitModelCatalog {
 
     /// A human label + one-line hint for a WhisperKit model id. Pure string logic so
     /// it's the same in every build and easy to test.
-    static func displayInfo(for model: String) -> (label: String, hint: String?) {
+    public static func displayInfo(for model: String) -> (label: String, hint: String?) {
         switch model {
         case "openai_whisper-small":
             return ("Small (multilingual, recommended)", "Best balance for EN + RU streaming.")
