@@ -17,6 +17,7 @@ struct ModelsPane: View {
     private var isWhisperCpp: Bool { appState.transcriptionEngine == "whisper" }
     private var isWhisperKit: Bool { appState.transcriptionEngine == "whisperKit" }
     private var isAppleSpeech: Bool { appState.transcriptionEngine == "appleSpeech" }
+    private var isParakeet: Bool { appState.transcriptionEngine == "parakeet" }
 
     // The three recommended whisper.cpp tiers (redesign §4.3): one tier
     // vocabulary — Fast / Balanced / Accurate — with the model id and size as
@@ -89,6 +90,18 @@ struct ModelsPane: View {
                 isSelected: isAppleSpeech
             ) { appState.transcriptionEngine = "appleSpeech" }
 
+            // MAK-46 spike: only offered when the build includes FluidAudio
+            // (PARAKEET=1) — unlike WhisperKit it is not on by default, so a
+            // visible-but-erroring row would be the common case.
+            #if PARAKEET
+            SelectableRow(
+                title: "Parakeet Realtime (CoreML)",
+                subtitle: "True streaming — words appear ~0.3 s behind your voice. English only.",
+                badge: "Experimental",
+                isSelected: isParakeet
+            ) { appState.transcriptionEngine = "parakeet" }
+            #endif
+
             // Never change state silently: switching to WhisperKit while "Type
             // live" was on snaps the output mode, and this says so.
             if let notice = appState.engineSwitchNotice {
@@ -111,6 +124,8 @@ struct ModelsPane: View {
             whisperCppModelSection
         } else if isWhisperKit {
             whisperKitModelSection
+        } else if isParakeet {
+            parakeetModelSection
         } else {
             Section {
                 HStack(spacing: 10) {
@@ -124,6 +139,26 @@ struct ModelsPane: View {
             } header: {
                 Text("Model")
             }
+        }
+    }
+
+    /// Parakeet variant picker (MAK-46 spike). FluidAudio stages the model
+    /// itself on first use (HuggingFace → ~/Library/Application Support/
+    /// FluidAudio); selecting a variant prefetches it in the background, so
+    /// there is no download button/progress row yet — a spike follow-up.
+    private var parakeetModelSection: some View {
+        Section {
+            ForEach(ParakeetCatalog.variants, id: \.id) { variant in
+                SelectableRow(
+                    title: variant.name,
+                    subtitle: "\(variant.detail) (\(variant.size))",
+                    isSelected: appState.parakeetVariant == variant.id
+                ) { appState.parakeetVariant = variant.id }
+            }
+        } header: {
+            Text("Model")
+        } footer: {
+            SettingsFootnote("The model downloads automatically the first time it's needed and is cached under Application Support/FluidAudio. All transcription stays on your Mac.")
         }
     }
 

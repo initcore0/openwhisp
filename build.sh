@@ -39,6 +39,12 @@ done < <(find "$PROJECT_DIR/OpenWhisp" -name "*.swift")
 source "$PROJECT_DIR/scripts/whisperkit-link-args.sh"
 resolve_whisperkit_args
 
+# Parakeet/FluidAudio streaming backend (MAK-46 spike). OFF by default; opt in
+# with PARAKEET=1 ./build.sh. See docs/PARAKEET_SPIKE.md.
+# shellcheck source=scripts/fluidaudio-link-args.sh
+source "$PROJECT_DIR/scripts/fluidaudio-link-args.sh"
+resolve_fluidaudio_args
+
 # Developer instrumentation (timing signposts + console logs). OFF by default;
 # INSTRUMENTATION=1 ./build.sh defines OPENWHISP_INSTRUMENTATION. Shared with build-dmg.sh.
 # shellcheck source=scripts/instrumentation-args.sh
@@ -62,6 +68,7 @@ if xcrun swiftc \
     -framework CoreAudio \
     -framework CoreGraphics \
     "${WHISPERKIT_ARGS[@]}" \
+    "${FLUIDAUDIO_ARGS[@]+"${FLUIDAUDIO_ARGS[@]}"}" \
     "${INSTRUMENTATION_ARGS[@]+"${INSTRUMENTATION_ARGS[@]}"}" \
     "${SWIFT_FILES[@]}" \
     -o "$BUILD_DIR/OpenWhisp" \

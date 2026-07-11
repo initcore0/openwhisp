@@ -8,13 +8,22 @@ import Foundation
 /// the translate/auto/appleSpeech matrix `swift test`-able without AppKit and keeps
 /// AppState and tests from drifting on the rules.
 ///
-/// The one subtlety it encodes: **Apple Speech has no translate concept** — it
-/// always transcribes in the given locale — so translation is suppressed for that
-/// engine on both derivations.
+/// The one subtlety it encodes: **Apple Speech and Parakeet have no translate
+/// concept** — Apple Speech always transcribes in the given locale, and Parakeet
+/// is ASR-only (MAK-46) — so translation is suppressed for those engines on both
+/// derivations.
 enum LanguageResolver {
     /// The transcription engine's `appleSpeech` identifier (Apple's on-device
-    /// recognizer). Kept here as the single source of truth for the suppression rule.
+    /// recognizer). Kept for call sites that name it directly.
     static let appleSpeechEngine = "appleSpeech"
+
+    /// Engines with no speech→English translation path; the single source of
+    /// truth for the suppression rule (and the settings UI's translate gate).
+    static let noTranslateEngines: Set<String> = [appleSpeechEngine, "parakeet"]
+
+    static func supportsTranslation(transcriptionEngine: String) -> Bool {
+        !noTranslateEngines.contains(transcriptionEngine)
+    }
 
     /// Language string to pass to `engine.start(language:)` / the file engine.
     /// Returns the `translate-to-English` sentinel when translating (and the engine
@@ -24,7 +33,7 @@ enum LanguageResolver {
         translateToEnglish: Bool,
         transcriptionEngine: String
     ) -> String {
-        if translateToEnglish && transcriptionEngine != appleSpeechEngine {
+        if translateToEnglish && supportsTranslation(transcriptionEngine: transcriptionEngine) {
             return WhisperTask.translateToEnglishSetting
         }
         return language
@@ -38,6 +47,6 @@ enum LanguageResolver {
         translateToEnglish: Bool,
         transcriptionEngine: String
     ) -> String {
-        (translateToEnglish && transcriptionEngine != appleSpeechEngine) ? "en" : language
+        (translateToEnglish && supportsTranslation(transcriptionEngine: transcriptionEngine)) ? "en" : language
     }
 }

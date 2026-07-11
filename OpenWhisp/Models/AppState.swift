@@ -332,6 +332,18 @@ class AppState: ObservableObject {
         }
     }
 
+    /// Parakeet streaming-model variant (ParakeetCatalog id, MAK-46 spike).
+    /// Changing it rebuilds the streaming engine so the next session uses the
+    /// new variant, and prefetches its model when Parakeet is the active engine.
+    @Published var parakeetVariant: String {
+        didSet {
+            guard parakeetVariant != oldValue else { return }
+            UserDefaults.standard.set(parakeetVariant, forKey: "parakeetVariant")
+            rebuildFileEngine()
+            ensureSelectedEngineModel()
+        }
+    }
+
     @Published var whisperBackend: String {
         didSet {
             UserDefaults.standard.set(whisperBackend, forKey: "whisperBackend")
@@ -1107,6 +1119,10 @@ class AppState: ObservableObject {
     /// machinery with Apple Speech (same handlers) but uses WhisperKit's
     /// `AudioStreamTranscriber` (owns the mic, built-in VAD, multilingual).
     var whisperKitStreamEngine: StreamingTranscriptionEngine!
+    /// True-streaming Parakeet/CoreML engine (MAK-46 spike, PARAKEET builds).
+    /// Concrete type (not the protocol) so `prefetch()` — the model download
+    /// kick — is callable; sessions still go through `activeStreamingEngine`.
+    var parakeetStreamEngine: ParakeetStreamingEngine!
     var translationService: OpenAITranslationService!
     var hotkeyMonitor: HotkeyControlling!
 
@@ -1265,15 +1281,14 @@ class AppState: ObservableObject {
     /// pasted text is `voiceEditBuffer.text` — the dictation AFTER the spoken edits.
     /// Reset at beginSession; only read when `voiceEditingActiveForSession`.
     private var voiceEditBuffer = VoiceEditBuffer()
-    /// True when the current streaming session is WhisperKit (vs Apple Speech).
-    /// Selects the engine and whether to run the Speech-framework authorization.
-    private var streamingUsesWhisperKit = false
-
-    /// The streaming engine for the current/next session. WhisperKit when its
-    /// backend is selected, otherwise Apple Speech. Both conform to the same
-    /// protocol and route through the same session handlers.
+    /// The streaming engine for the current/next session. All conform to the
+    /// same protocol and route through the same session handlers.
     private var activeStreamingEngine: StreamingTranscriptionEngine {
-        transcriptionEngine == "whisperKit" ? whisperKitStreamEngine : appleSpeechEngine
+        switch transcriptionEngine {
+        case "whisperKit": return whisperKitStreamEngine
+        case "parakeet":   return parakeetStreamEngine
+        default:           return appleSpeechEngine
+        }
     }
     /// Model paths with a download currently in flight. Per-path (not a single
     /// value): switching models mid-download starts a second download, and each
@@ -1658,6 +1673,9 @@ class AppState: ObservableObject {
         pauseBasedLiveChunksEnabled = UserDefaults.standard.object(forKey: "pauseBasedLiveChunksEnabled") as? Bool ?? false
         transcriptionEngine = UserDefaults.standard.string(forKey: "transcriptionEngine") ?? Self.defaultTranscriptionEngine
         whisperKitModel = UserDefaults.standard.string(forKey: "whisperKitModel") ?? "openai_whisper-small"
+        parakeetVariant = ParakeetCatalog.normalize(
+            UserDefaults.standard.string(forKey: "parakeetVariant") ?? ParakeetCatalog.defaultVariantID
+        )
         if let savedBackend = UserDefaults.standard.string(forKey: "whisperBackend") {
             whisperBackend = savedBackend
         } else {
@@ -1870,10 +1888,12 @@ class AppState: ObservableObject {
             ?? Self.makeFileEngine(for: transcriptionEngine, model: modelName, whisperKitModel: whisperKitModel)
         appleSpeechEngine = AppleSpeechEngine()
         whisperKitStreamEngine = WhisperKitStreamingEngine(modelName: whisperKitModel)
+        parakeetStreamEngine = ParakeetStreamingEngine(variantID: parakeetVariant)
         translationService = OpenAITranslationService()
 
         wireFileEngineCallbacks()
         wireStreamingEngineCallbacks(whisperKitStreamEngine)
+        wireStreamingEngineCallbacks(parakeetStreamEngine)
 
         audioRecorder = injectedAudioCapture ?? AudioRecorder()
         audioRecorder.autoGainEnabled = autoGainEnabled
@@ -2143,6 +2163,10 @@ class AppState: ObservableObject {
         whisperKitStreamEngine?.stop(cancel: true)
         whisperKitStreamEngine = WhisperKitStreamingEngine(modelName: whisperKitModel)
         wireStreamingEngineCallbacks(whisperKitStreamEngine)
+        // Same for the Parakeet streaming engine (it caches its variant's model).
+        parakeetStreamEngine?.stop(cancel: true)
+        parakeetStreamEngine = ParakeetStreamingEngine(variantID: parakeetVariant)
+        wireStreamingEngineCallbacks(parakeetStreamEngine)
         whisperWorkerStatus = "Not started"
         // `warmWhisperServerIfPossible()` is engine-aware: it warms WhisperKit's
         // CoreML model up front, warms whisper.cpp's server only for the serverAPI
@@ -2235,10 +2259,11 @@ class AppState: ObservableObject {
         // routing. The gate re-checks the secure-field and per-app rules.
         captureScreenContext()
         let liveMode = outputMode == "liveChunks" || outputMode == "preview"
-        // Streaming backends (Apple Speech always; WhisperKit when a live preview is
-        // wanted) run the real-time path. Both go through the shared streaming
-        // session starter; `activeStreamingEngine` picks the recognizer.
-        if transcriptionEngine == "appleSpeech" || (transcriptionEngine == "whisperKit" && liveMode) {
+        // Streaming backends (Apple Speech and Parakeet always; WhisperKit when a
+        // live preview is wanted) run the real-time path. All go through the shared
+        // streaming session starter; `activeStreamingEngine` picks the recognizer.
+        // The gate is a tested core policy — see StreamingRoutePolicyTests.
+        if StreamingRoutePolicy.usesStreamingSession(engine: transcriptionEngine, liveMode: liveMode) {
             startStreamingSession()
             return
         }
@@ -2866,6 +2891,11 @@ class AppState: ObservableObject {
         case "appleSpeech":
             // Apple Speech is a streaming engine; nothing to warm here.
             return
+        case "parakeet":
+            // Streaming engine with its own model cache: warm = kick the async
+            // model load/download so the first dictation doesn't pay it.
+            parakeetStreamEngine?.prefetch()
+            return
         default:
             // whisper.cpp: only the serverAPI backend keeps a warm server process.
             guard whisperBackend == "serverAPI" else { return }
@@ -3016,14 +3046,15 @@ class AppState: ObservableObject {
             suppressOutput: suppressOutput
         )
         voiceEditBuffer = VoiceEditBuffer()
-        streamingUsesWhisperKit = transcriptionEngine == "whisperKit"
         appleLiveInsertedText = ""
         appleDidCompleteFinal = false
         // Keep the "Starting..." arming cue from beginSession until the recognizer
         // is actually live. Both backends have a startup gap: async mic grant (plus
         // Speech-auth for Apple), then engine start.
         let sessionID = activeSessionID
-        let usesWhisperKit = streamingUsesWhisperKit
+        // Apple Speech needs Speech-framework authorization on top of the mic;
+        // the on-device engines (WhisperKit, Parakeet) need only the mic.
+        let needsSpeechAuth = StreamingRoutePolicy.needsSpeechAuthorization(engine: transcriptionEngine)
         let engine = activeStreamingEngine
         // Snapshot the selected input device for this session. Both streaming engines
         // apply it in start(): Apple Speech retargets its own AVAudioEngine input
@@ -3065,8 +3096,8 @@ class AppState: ObservableObject {
                     self.finishSessionUI()
                     return
                 }
-                // WhisperKit needs only the mic; Apple Speech also needs Speech auth.
-                if usesWhisperKit {
+                // WhisperKit/Parakeet need only the mic; Apple Speech also needs Speech auth.
+                if !needsSpeechAuth {
                     launch()
                 } else {
                     AppleSpeechEngine.requestAuthorization { status in
@@ -5382,8 +5413,12 @@ class AppState: ObservableObject {
         guard let startedAt = recordingStartedAt else { return }
 
         let now = Date()
-        let model: String? = transcriptionEngine == "whisperKit" ? whisperKitModel
-            : (transcriptionEngine == "appleSpeech" ? nil : modelName)
+        let model: String? = switch transcriptionEngine {
+        case "whisperKit":  whisperKitModel
+        case "parakeet":    parakeetVariant
+        case "appleSpeech": nil
+        default:            modelName
+        }
         let latency = transcriptionStartedAt.map { now.timeIntervalSince($0) }
 
         let event = DictationEvent(
@@ -5658,6 +5693,12 @@ class AppState: ObservableObject {
             downloadWhisperKitModel(whisperKitModel)
         case "appleSpeech":
             // Uses the built-in macOS dictation model — nothing to download.
+            return
+        case "parakeet":
+            // FluidAudio stages models itself (HuggingFace → Application
+            // Support/FluidAudio). Kick the download now so it happens at
+            // engine-select time, not mid-first-dictation.
+            parakeetStreamEngine?.prefetch()
             return
         default:
             // whisper.cpp: download its GGML model (the original behavior, now scoped
