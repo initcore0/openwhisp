@@ -61,23 +61,79 @@ final class ParakeetSpikeTests: XCTestCase {
         XCTAssertFalse(StreamingRoutePolicy.needsSpeechAuthorization(engine: "whisperKit"))
     }
 
-    // MARK: - English-only language gate
+    // MARK: - Variant-aware language gate
 
-    func testLanguageGateAllowsAutoAndEnglish() {
-        XCTAssertNil(ParakeetLanguageGate.refusalMessage(languageSetting: "auto"))
-        XCTAssertNil(ParakeetLanguageGate.refusalMessage(languageSetting: ""))
-        XCTAssertNil(ParakeetLanguageGate.refusalMessage(languageSetting: "en"))
-        XCTAssertNil(ParakeetLanguageGate.refusalMessage(languageSetting: "en-US"))
-        XCTAssertNil(ParakeetLanguageGate.refusalMessage(languageSetting: "EN_GB"))
+    func testLanguageGateAllowsAutoAndEnglishOnEnglishVariant() {
+        XCTAssertNil(ParakeetLanguageGate.refusalMessage(languageSetting: "auto", multilingual: false))
+        XCTAssertNil(ParakeetLanguageGate.refusalMessage(languageSetting: "", multilingual: false))
+        XCTAssertNil(ParakeetLanguageGate.refusalMessage(languageSetting: "en", multilingual: false))
+        XCTAssertNil(ParakeetLanguageGate.refusalMessage(languageSetting: "en-US", multilingual: false))
+        XCTAssertNil(ParakeetLanguageGate.refusalMessage(languageSetting: "EN_GB", multilingual: false))
     }
 
-    func testLanguageGateRefusesFixedNonEnglish() {
-        // A fixed non-English language must refuse up front — never silently
-        // transcribe Russian speech into English-ish garbage (the same
-        // principle as the RefineOutputGuard language guard).
-        XCTAssertNotNil(ParakeetLanguageGate.refusalMessage(languageSetting: "ru"))
-        XCTAssertNotNil(ParakeetLanguageGate.refusalMessage(languageSetting: "de-DE"))
-        XCTAssertNotNil(ParakeetLanguageGate.refusalMessage(languageSetting: "es"))
+    func testLanguageGateRefusesFixedNonEnglishOnEnglishVariant() {
+        // A fixed non-English language must refuse up front on an English-only
+        // variant — never silently transcribe Russian into English-ish garbage.
+        XCTAssertNotNil(ParakeetLanguageGate.refusalMessage(languageSetting: "ru", multilingual: false))
+        XCTAssertNotNil(ParakeetLanguageGate.refusalMessage(languageSetting: "de-DE", multilingual: false))
+        XCTAssertNotNil(ParakeetLanguageGate.refusalMessage(languageSetting: "es", multilingual: false))
+        // The message should point the user at the multilingual variant.
+        let msg = ParakeetLanguageGate.refusalMessage(languageSetting: "ru", multilingual: false)
+        XCTAssertTrue(msg?.contains("Multilingual") ?? false)
+    }
+
+    func testLanguageGateAcceptsEverythingOnMultilingualVariant() {
+        // The multilingual variant maps known codes to prompt ids and falls back
+        // to auto-detect for unknowns, so it is never refused.
+        XCTAssertNil(ParakeetLanguageGate.refusalMessage(languageSetting: "auto", multilingual: true))
+        XCTAssertNil(ParakeetLanguageGate.refusalMessage(languageSetting: "ru", multilingual: true))
+        XCTAssertNil(ParakeetLanguageGate.refusalMessage(languageSetting: "de-DE", multilingual: true))
+        XCTAssertNil(ParakeetLanguageGate.refusalMessage(languageSetting: "xx-YY", multilingual: true))
+    }
+
+    // MARK: - Multilingual catalog
+
+    func testCatalogHasAMultilingualVariant() {
+        XCTAssertTrue(ParakeetCatalog.variants.contains { $0.multilingual })
+        let ml = ParakeetCatalog.variants.first { $0.multilingual }
+        XCTAssertNotNil(ml?.multilingualChunkMs, "multilingual variant must carry a chunk tier")
+    }
+
+    func testEnglishVariantsAreNotMultilingual() {
+        XCTAssertFalse(ParakeetCatalog.isMultilingual("parakeet-unified-320ms"))
+        XCTAssertFalse(ParakeetCatalog.isMultilingual("parakeet-eou-320ms"))
+        XCTAssertTrue(ParakeetCatalog.isMultilingual("nemotron-multilingual-1120ms"))
+        // Unknown id normalizes to the default (English) variant → not multilingual.
+        XCTAssertFalse(ParakeetCatalog.isMultilingual("bogus"))
+    }
+
+    // MARK: - Language-hint mapping (batch + multilingual codes)
+
+    func testBatchLanguageCodeStripsRegionAndAutos() {
+        XCTAssertNil(ParakeetLanguageHint.batchLanguageCode(from: "auto"))
+        XCTAssertNil(ParakeetLanguageHint.batchLanguageCode(from: ""))
+        XCTAssertEqual(ParakeetLanguageHint.batchLanguageCode(from: "en"), "en")
+        XCTAssertEqual(ParakeetLanguageHint.batchLanguageCode(from: "de-DE"), "de")
+        XCTAssertEqual(ParakeetLanguageHint.batchLanguageCode(from: "en_US"), "en")
+        XCTAssertEqual(ParakeetLanguageHint.batchLanguageCode(from: "RU"), "ru")
+    }
+
+    func testBatchLanguageCodeSuppressesTranslateSentinel() {
+        // Parakeet is ASR-only; a stray translate sentinel must degrade to auto,
+        // never a bogus 2-letter code.
+        XCTAssertNil(ParakeetLanguageHint.batchLanguageCode(from: WhisperTask.translateToEnglishSetting))
+    }
+
+    func testMultilingualLanguageCodeKeepsRegionAndAutos() {
+        XCTAssertEqual(ParakeetLanguageHint.multilingualLanguageCode(from: "auto"), "auto")
+        XCTAssertEqual(ParakeetLanguageHint.multilingualLanguageCode(from: ""), "auto")
+        XCTAssertEqual(ParakeetLanguageHint.multilingualLanguageCode(from: "de-DE"), "de-de")
+        XCTAssertEqual(ParakeetLanguageHint.multilingualLanguageCode(from: "en_US"), "en-us")
+        XCTAssertEqual(ParakeetLanguageHint.multilingualLanguageCode(from: "ru"), "ru")
+        XCTAssertEqual(
+            ParakeetLanguageHint.multilingualLanguageCode(from: WhisperTask.translateToEnglishSetting),
+            "auto"
+        )
     }
 
     // MARK: - Translate suppression (LanguageResolver)

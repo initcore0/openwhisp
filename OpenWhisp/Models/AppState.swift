@@ -328,6 +328,10 @@ class AppState: ObservableObject {
         // WhisperKit uses its OWN model namespace (openai_whisper-*), not the
         // whisper.cpp GGML model id.
         case "whisperKit": return WhisperKitEngine(modelName: whisperKitModel)
+        // Parakeet: live dictation streams (ParakeetStreamingEngine), but every
+        // FILE path (meetings, queue, watch folders, history re-transcribe) uses
+        // the batch TDT v3 engine here — multilingual, on-device CoreML.
+        case "parakeet":   return ParakeetFileEngine()
         default:           return WhisperEngine()
         }
     }
@@ -2892,8 +2896,11 @@ class AppState: ObservableObject {
             // Apple Speech is a streaming engine; nothing to warm here.
             return
         case "parakeet":
-            // Streaming engine with its own model cache: warm = kick the async
-            // model load/download so the first dictation doesn't pay it.
+            // Parakeet has two model families: the streaming variant (live
+            // dictation) and the batch TDT v3 (meetings / file jobs). Warm the
+            // streaming variant now (the common dictation path); the file engine's
+            // TDT v3 is warmed lazily on the first file/meeting job to avoid
+            // paying two ~600 MB downloads up front when only one is used.
             parakeetStreamEngine?.prefetch()
             return
         default:

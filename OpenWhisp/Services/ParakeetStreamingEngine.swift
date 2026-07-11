@@ -1,27 +1,33 @@
 import Foundation
 import AVFoundation
 
-/// True-streaming Parakeet engine (MAK-46 spike): NVIDIA Parakeet on CoreML via
+/// True-streaming Parakeet engine (MAK-46): NVIDIA Parakeet on CoreML via
 /// FluidAudio's cache-aware streaming managers. Unlike WhisperKit's streaming
 /// pilot (whole-window re-transcription), these models are architecturally
 /// streaming — partials trail the voice by the variant's chunk latency (0.32 s
-/// for the default tier), which is what makes dictation feel realtime.
+/// for the default Unified tier), which is what makes dictation feel realtime.
 ///
 /// Conforms to `StreamingTranscriptionEngine` (the Apple Speech seam): it owns
 /// the microphone via its own AVAudioEngine tap, feeds buffers to FluidAudio,
 /// and emits the growing transcript through `onPartial`. AppState's existing
 /// delta-paste/live-preview path handles the rest unchanged.
 ///
+/// The engine talks only to `ParakeetStreamSession` (in ParakeetBridge), which
+/// hides FluidAudio's two manager shapes — the English families
+/// (`any StreamingAsrManager`) and the Nemotron multilingual actor. The variant's
+/// `multilingual` flag (ParakeetCatalog) picks the manager; multilingual variants
+/// honor the language hint, English variants ignore it.
+///
 /// **Build:** real implementation only under `#if PARAKEET` (build.sh
 /// PARAKEET=1); otherwise a stub that reports unavailability, so the default
-/// build is unaffected. See docs/PARAKEET_SPIKE.md.
+/// build is unaffected. See docs/PARAKEET.md.
 final class ParakeetStreamingEngine: StreamingTranscriptionEngine {
     var onPartial: ((String) -> Void)?
     var onFinal: ((String) -> Void)?
     var onError: ((String) -> Void)?
     var onLevelChanged: ((_ display: Float, _ vad: Float) -> Void)?
 
-    /// FluidAudio `StreamingModelVariant` raw value (see ParakeetCatalog).
+    /// ParakeetCatalog variant id (see ParakeetCatalog).
     private let variantID: String
 
     /// Pinned input-device UID for the next session ("" = system default).
@@ -39,13 +45,13 @@ final class ParakeetStreamingEngine: StreamingTranscriptionEngine {
 
 #if PARAKEET
 
-    // AVAudioEngine + FluidAudio manager handles. Main-actor confined alongside
+    // AVAudioEngine + FluidAudio session handles. Main-actor confined alongside
     // the session state (same pattern as AppleSpeechEngine / WhisperKitStreamingEngine).
     @MainActor private var audioEngine: AVAudioEngine?
-    /// The loaded FluidAudio streaming manager, cached across sessions (models
+    /// The loaded FluidAudio streaming session, cached across sessions (models
     /// stay resident; `reset()` clears per-session decode state).
-    @MainActor private var manager: ParakeetBridge.Manager?
-    @MainActor private var inFlightLoad: Task<ParakeetBridge.Manager, Error>?
+    @MainActor private var session: (any ParakeetStreamSession)?
+    @MainActor private var inFlightLoad: Task<any ParakeetStreamSession, Error>?
     /// Ordered buffer feed: the tap yields into this continuation and a single
     /// consumer task appends to the (actor) manager. Unstructured Tasks from the
     /// tap thread would race each other and interleave audio out of order.
@@ -79,11 +85,13 @@ final class ParakeetStreamingEngine: StreamingTranscriptionEngine {
     @MainActor
     private func runStart(language: String) async {
         do {
-            // The streaming variants are English-only (see ParakeetCatalog); a
-            // non-English fixed language is a configuration the engine can't
-            // honor. "auto" and en* proceed; anything else errors up front
-            // rather than silently transcribing to English.
-            if let message = ParakeetLanguageGate.refusalMessage(languageSetting: language) {
+            // Variant-aware language gate: English-only variants refuse a FIXED
+            // non-English language up front (never silently mangle it); the
+            // multilingual variant accepts any language ("auto" for unknowns).
+            if let message = ParakeetLanguageGate.refusalMessage(
+                languageSetting: language,
+                multilingual: ParakeetCatalog.isMultilingual(variantID)
+            ) {
                 onError?(message)
                 return
             }
@@ -119,15 +127,17 @@ final class ParakeetStreamingEngine: StreamingTranscriptionEngine {
                 return
             }
 
-            let manager = try await ensureLoaded()
-            try await manager.reset()
+            let session = try await ensureLoaded()
+            try await session.reset()
+            // Multilingual variants take the language hint; English adapters no-op.
+            await session.setLanguage(ParakeetLanguageHint.multilingualLanguageCode(from: language))
 
             generation += 1
             let myGeneration = generation
 
             // Partials arrive on the manager's actor; hop to main and gate on
             // generation before touching session state.
-            await manager.setPartialTranscriptCallback { [weak self] text in
+            await session.setPartialCallback { [weak self] text in
                 DispatchQueue.main.async {
                     MainActor.assumeIsolated {
                         guard let self, self.generation == myGeneration else { return }
@@ -149,10 +159,10 @@ final class ParakeetStreamingEngine: StreamingTranscriptionEngine {
                 do {
                     for await buffer in stream {
                         // appendAudio accepts any format (resamples to 16 kHz
-                        // mono internally); processBufferedAudio decodes any
-                        // complete chunks and fires the partial callback.
-                        try await manager.appendAudio(buffer)
-                        try await manager.processBufferedAudio()
+                        // mono internally); processBuffered decodes any complete
+                        // chunks and fires the partial callback.
+                        try await session.appendAudio(buffer)
+                        try await session.processBuffered()
                     }
                 } catch {
                     NSLog("[Parakeet] stream feed error: %@", error.localizedDescription)
@@ -208,15 +218,15 @@ final class ParakeetStreamingEngine: StreamingTranscriptionEngine {
         await feedTask?.value
         feedTask = nil
 
-        guard let manager else { return }
+        guard let session else { return }
         if cancel {
-            try? await manager.reset()
+            try? await session.reset()
             return
         }
         do {
             // finish() flushes remaining audio through the model and returns
             // the final transcript.
-            let final = try await manager.finish()
+            let final = try await session.finish()
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             onFinal?(final.isEmpty ? lastPartial : final)
         } catch {
@@ -244,36 +254,36 @@ final class ParakeetStreamingEngine: StreamingTranscriptionEngine {
     }
 
     @discardableResult
-    private func ensureLoaded() async throws -> ParakeetBridge.Manager {
-        if let manager = await currentManager() { return manager }
+    private func ensureLoaded() async throws -> any ParakeetStreamSession {
+        if let session = await currentSession() { return session }
         let task = await loadTaskOnMain()
         do {
-            let manager = try await task.value
-            await storeManager(manager)
-            return manager
+            let session = try await task.value
+            await storeSession(session)
+            return session
         } catch {
             await clearFailedLoad(task)
             throw error
         }
     }
 
-    @MainActor private func currentManager() -> ParakeetBridge.Manager? { manager }
-    @MainActor private func storeManager(_ m: ParakeetBridge.Manager) { manager = m }
+    @MainActor private func currentSession() -> (any ParakeetStreamSession)? { session }
+    @MainActor private func storeSession(_ s: any ParakeetStreamSession) { session = s }
 
     @MainActor
-    private func clearFailedLoad(_ failed: Task<ParakeetBridge.Manager, Error>) {
+    private func clearFailedLoad(_ failed: Task<any ParakeetStreamSession, Error>) {
         if inFlightLoad == failed { inFlightLoad = nil }
     }
 
     @MainActor
-    private func loadTaskOnMain() -> Task<ParakeetBridge.Manager, Error> {
+    private func loadTaskOnMain() -> Task<any ParakeetStreamSession, Error> {
         if let existing = inFlightLoad { return existing }
         let variant = variantID
-        let task = Task<ParakeetBridge.Manager, Error> {
+        let task = Task<any ParakeetStreamSession, Error> {
             NSLog("[Parakeet] loading variant '%@'…", variant)
-            let manager = try await ParakeetBridge.load(variantID: variant)
+            let session = try await ParakeetBridge.loadStreamSession(variantID: variant)
             NSLog("[Parakeet] variant loaded.")
-            return manager
+            return session
         }
         inFlightLoad = task
         return task
@@ -301,7 +311,7 @@ final class ParakeetStreamingEngine: StreamingTranscriptionEngine {
 #else
 
     func start(language: String) throws {
-        onError?("The Parakeet engine isn't available in this build. Rebuild with PARAKEET=1 (see docs/PARAKEET_SPIKE.md).")
+        onError?("The Parakeet engine isn't available in this build. Rebuild with PARAKEET=1 (see docs/PARAKEET.md).")
     }
 
     func stop(cancel: Bool) {}
