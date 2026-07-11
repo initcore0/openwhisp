@@ -91,6 +91,46 @@ final class ParakeetSpikeTests: XCTestCase {
         XCTAssertNil(ParakeetLanguageGate.refusalMessage(languageSetting: "xx-YY", multilingual: true))
     }
 
+    // MARK: - File-engine routing (meetings / queue / watch folders / re-transcribe)
+
+    func testFileEngineChoiceRoutesParakeetToBatchEngine() {
+        // The wiring that decides what transcribes meetings and file jobs.
+        XCTAssertEqual(FileEngineChoice.choice(for: "parakeet"), .parakeet)
+        XCTAssertEqual(FileEngineChoice.choice(for: "whisperKit"), .whisperKit)
+        XCTAssertEqual(FileEngineChoice.choice(for: "whisper"), .whisperCpp)
+        // Apple Speech never reaches the file path (always streams); its
+        // fallback value is inert but must not crash or pick a CoreML engine.
+        XCTAssertEqual(FileEngineChoice.choice(for: "appleSpeech"), .whisperCpp)
+        XCTAssertEqual(FileEngineChoice.choice(for: ""), .whisperCpp)
+    }
+
+    // MARK: - EOU capability flag (agent auto-stop arming + engine poll gate)
+
+    func testOnlyTheEouVariantEmitsEou() {
+        XCTAssertTrue(ParakeetCatalog.emitsEou("parakeet-eou-320ms"))
+        XCTAssertFalse(ParakeetCatalog.emitsEou("parakeet-unified-320ms"))
+        XCTAssertFalse(ParakeetCatalog.emitsEou("nemotron-multilingual-1120ms"))
+        // Unknown ids normalize to the (non-EOU) default — never spuriously EOU.
+        XCTAssertFalse(ParakeetCatalog.emitsEou("bogus"))
+    }
+
+    // MARK: - Gate ↔ hint normalization coherence
+
+    func testGateAndHintAgreeOnWhatCountsAsEnglish() {
+        // The gate refuses exactly the settings whose base code is a fixed
+        // non-"en" language; both sides go through ParakeetLanguageHint.baseCode.
+        for setting in ["auto", "", "en", "en-US", "EN_GB"] {
+            XCTAssertNil(ParakeetLanguageGate.refusalMessage(languageSetting: setting, multilingual: false))
+            if let base = ParakeetLanguageHint.baseCode(from: setting) {
+                XCTAssertEqual(base, "en")
+            }
+        }
+        for setting in ["ru", "de-DE", "es_MX"] {
+            XCTAssertNotNil(ParakeetLanguageGate.refusalMessage(languageSetting: setting, multilingual: false))
+            XCTAssertNotEqual(ParakeetLanguageHint.baseCode(from: setting), "en")
+        }
+    }
+
     // MARK: - Multilingual catalog
 
     func testCatalogHasAMultilingualVariant() {

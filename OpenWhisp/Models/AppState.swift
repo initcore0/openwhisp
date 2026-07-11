@@ -320,19 +320,19 @@ class AppState: ObservableObject {
         }
     }
 
-    /// Build the file-transcription engine for the given setting. "whisperKit" is
-    /// the experimental CoreML backend (only functional in a WHISPERKIT build —
-    /// otherwise its stub reports unavailability); everything else uses whisper.cpp.
+    /// Build the file-transcription engine for the given setting. The routing
+    /// decision is the tested `FileEngineChoice.choice(for:)`; this is a thin
+    /// switch that constructs the (app-only) concrete engines.
     private static func makeFileEngine(for engine: String, model: String, whisperKitModel: String) -> FileTranscriptionEngine {
-        switch engine {
+        switch FileEngineChoice.choice(for: engine) {
         // WhisperKit uses its OWN model namespace (openai_whisper-*), not the
         // whisper.cpp GGML model id.
-        case "whisperKit": return WhisperKitEngine(modelName: whisperKitModel)
+        case .whisperKit: return WhisperKitEngine(modelName: whisperKitModel)
         // Parakeet: live dictation streams (ParakeetStreamingEngine), but every
         // FILE path (meetings, queue, watch folders, history re-transcribe) uses
         // the batch TDT v3 engine here — multilingual, on-device CoreML.
-        case "parakeet":   return ParakeetFileEngine()
-        default:           return WhisperEngine()
+        case .parakeet:   return ParakeetFileEngine()
+        case .whisperCpp: return WhisperEngine()
         }
     }
 
@@ -1302,16 +1302,15 @@ class AppState: ObservableObject {
     /// pasted text is `voiceEditBuffer.text` — the dictation AFTER the spoken edits.
     /// Reset at beginSession; only read when `voiceEditingActiveForSession`.
     private var voiceEditBuffer = VoiceEditBuffer()
-    /// The streaming engine for the current/next session. All conform to the
-    /// same protocol and route through the same session handlers.
     /// True when the active engine/variant emits end-of-utterance events — only
     /// the Parakeet EOU streaming variant does (MAK-46 Phase 5). Gates arming the
     /// agent EOU auto-stop so it stays inert on every other engine.
     var activeEngineEmitsEou: Bool {
-        transcriptionEngine == "parakeet"
-            && ParakeetCatalog.normalize(parakeetVariant) == "parakeet-eou-320ms"
+        transcriptionEngine == "parakeet" && ParakeetCatalog.emitsEou(parakeetVariant)
     }
 
+    /// The streaming engine for the current/next session. All conform to the
+    /// same protocol and route through the same session handlers.
     private var activeStreamingEngine: StreamingTranscriptionEngine {
         switch transcriptionEngine {
         case "whisperKit": return whisperKitStreamEngine
@@ -2098,20 +2097,17 @@ class AppState: ObservableObject {
         }
     }
 
-    /// An end-of-utterance event fired. If an agent EOU detector is armed, arm the
-    /// settle window; if it's already elapsed (a later poll), finish the session.
+    /// An end-of-utterance event fired: arm the settle window. The actual stop
+    /// decision runs on the continuous audio-level tick (`updateAudioLevel`),
+    /// which re-checks `shouldStop` once the window has elapsed with no newer
+    /// partial — a fresh EOU can never satisfy the window at arming time.
     @MainActor
     private func handleAgentEouEvent() {
         guard agentEouDetector != nil,
               agentBridgeEouAutoStop,
               sessionActive, isRecording,
               sessionInitiator.isAgent else { return }
-        let now = ProcessInfo.processInfo.systemUptime
-        agentEouDetector?.noteEou(now: now)
-        if agentEouDetector?.shouldStop(now: now) == true {
-            agentEouDetector = nil
-            finishAgentDictationOnSilence()
-        }
+        agentEouDetector?.noteEou(now: ProcessInfo.processInfo.systemUptime)
     }
 
     /// Publish a new audio level for the overlay AND drive the agent-session
@@ -2969,38 +2965,24 @@ class AppState: ObservableObject {
 
     /// Kick the streaming-variant model prefetch and mark it in-flight so the
     /// Models pane shows a coarse "Downloading…" badge (FluidAudio gives no
-    /// progress). The badge clears once the variant's repo folder appears on disk
-    /// (`parakeetDownloadState(for:)` reads presence, so the flag is only the
-    /// "no folder yet but a fetch is running" case). Idempotent.
+    /// progress). Event-driven: the badge clears when the engine's load task
+    /// completes — success or failure (on failure the row honestly reverts to
+    /// "Not downloaded"). No disk polling, and no state mutation during view
+    /// rendering. Idempotent (the engine coalesces concurrent loads).
     func prefetchParakeetVariant() {
         let variant = ParakeetCatalog.normalize(parakeetVariant)
         // If the repo is already on disk there's nothing to download — don't
-        // flash a badge; still call prefetch (it warms the loaded model cheaply).
+        // flash a badge; still prefetch (it warms the loaded model cheaply).
         let installed = Self.installedFluidAudioFolders()
         if ParakeetDownloadStatePolicy.state(
             forVariant: variant, installedFolders: installed, inFlightVariants: []
         ) != .installed {
             parakeetInFlightVariants.insert(variant)
         }
-        parakeetStreamEngine?.prefetch()
-    }
-
-    /// The coarse download state for a Parakeet variant (Models pane badge).
-    func parakeetDownloadState(for variantID: String) -> ParakeetDownloadState {
-        let state = ParakeetDownloadStatePolicy.state(
-            forVariant: variantID,
-            installedFolders: Self.installedFluidAudioFolders(),
-            inFlightVariants: parakeetInFlightVariants
-        )
-        // Self-heal the in-flight flag: once the folder is present, the fetch is
-        // done — drop the stale flag so we don't show "Downloading…" forever.
-        if state == .installed {
-            let normalized = ParakeetCatalog.normalize(variantID)
-            if parakeetInFlightVariants.contains(normalized) {
-                parakeetInFlightVariants.remove(normalized)
-            }
+        Task { @MainActor in
+            await parakeetStreamEngine?.prefetchAwaiting()
+            parakeetInFlightVariants.remove(variant)
         }
-        return state
     }
 
     /// The set of FluidAudio Models repo folders present on disk right now.

@@ -27,10 +27,15 @@ enum ParakeetCatalog {
         /// Chunk-size tier (ms) for the multilingual manager; nil for English
         /// variants. FluidAudio ships 560 / 1120 / 2240 ms tiers.
         let multilingualChunkMs: Int?
+        /// True when the variant's manager emits end-of-utterance timestamps
+        /// (only the EOU family). Gates the engine's per-buffer EOU poll AND the
+        /// agent EOU auto-stop arming — the single source of truth.
+        let emitsEou: Bool
 
         init(
             id: String, name: String, detail: String, size: String,
-            multilingual: Bool = false, multilingualChunkMs: Int? = nil
+            multilingual: Bool = false, multilingualChunkMs: Int? = nil,
+            emitsEou: Bool = false
         ) {
             self.id = id
             self.name = name
@@ -38,6 +43,7 @@ enum ParakeetCatalog {
             self.size = size
             self.multilingual = multilingual
             self.multilingualChunkMs = multilingualChunkMs
+            self.emitsEou = emitsEou
         }
     }
 
@@ -60,7 +66,8 @@ enum ParakeetCatalog {
             id: "parakeet-eou-320ms",
             name: "Parakeet EOU — ultra light",
             detail: "120M model, lowest footprint. No punctuation — relies on AI cleanup. English only.",
-            size: "~150 MB"
+            size: "~150 MB",
+            emitsEou: true
         ),
         Variant(
             id: "nemotron-multilingual-1120ms",
@@ -89,5 +96,10 @@ enum ParakeetCatalog {
     /// Whether the given variant id is a multilingual (Nemotron) variant.
     static func isMultilingual(_ id: String) -> Bool {
         variant(for: id).multilingual
+    }
+
+    /// Whether the given variant id's manager emits end-of-utterance events.
+    static func emitsEou(_ id: String) -> Bool {
+        variant(for: id).emitsEou
     }
 }

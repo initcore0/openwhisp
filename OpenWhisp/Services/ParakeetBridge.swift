@@ -60,11 +60,6 @@ enum ParakeetBridge {
         return BatchHandle(manager: manager, decoderLayers: layers)
     }
 
-    /// Preload TDT v3 (used by warm/prefetch) without keeping a handle.
-    static func prefetchBatch() async throws {
-        _ = try await AsrModels.downloadAndLoad(version: .v3)
-    }
-
     /// Transcribe a WAV file with the batch model. `languageCode` is the bare
     /// 2-letter hint from ParakeetLanguageHint (nil = auto); an unknown code
     /// degrades to auto inside FluidAudio (v3-only script filtering).
@@ -97,8 +92,6 @@ protocol ParakeetStreamSession: Sendable {
     func finish() async throws -> String
     /// Clear per-session decode state (models stay resident).
     func reset() async throws
-    /// The first detected language this session, if the manager reports one.
-    func detectedLanguage() async -> String?
     /// End-of-utterance timestamps (ms) so far, for managers that expose them
     /// (the EOU variant). Empty for managers without the capability — the engine
     /// treats "grew since last poll" as a new EOU event (MAK-46 Phase 5).
@@ -106,8 +99,7 @@ protocol ParakeetStreamSession: Sendable {
 }
 
 /// Adapter over the English streaming families (`any StreamingAsrManager`:
-/// Unified / EOU). These are English-only, so `setLanguage` is a no-op and
-/// `detectedLanguage` returns nil.
+/// Unified / EOU). These are English-only, so `setLanguage` is a no-op.
 final class StreamingAsrManagerSession: ParakeetStreamSession, @unchecked Sendable {
     private let manager: any StreamingAsrManager
     init(manager: any StreamingAsrManager) { self.manager = manager }
@@ -120,7 +112,6 @@ final class StreamingAsrManagerSession: ParakeetStreamSession, @unchecked Sendab
     func processBuffered() async throws { try await manager.processBufferedAudio() }
     func finish() async throws -> String { try await manager.finish() }
     func reset() async throws { try await manager.reset() }
-    func detectedLanguage() async -> String? { nil }
     func eouTimestampsMs() async -> [Int] {
         // Only the EOU streaming manager exposes end-of-utterance timestamps.
         guard let eou = manager as? any StreamingAsrEouProvider else { return [] }
@@ -147,7 +138,6 @@ final class NemotronMultilingualStreamSession: ParakeetStreamSession, @unchecked
     func processBuffered() async throws { /* draining happens in appendAudio */ }
     func finish() async throws -> String { try await manager.finish() }
     func reset() async throws { await manager.reset() }
-    func detectedLanguage() async -> String? { await manager.detectedLanguage() }
     func eouTimestampsMs() async -> [Int] { [] }  // no EOU capability
 }
 #endif

@@ -164,6 +164,12 @@ the level-tick clock finishes the session once the window elapses. Pure timing i
    harness (the lang tag isn't always emitted); transcription is unaffected.
 6. **Default-on decision** deferred: adding FluidAudio to the default build costs
    static-lib size + clean-build time. Defer until the engines have real mileage.
+7. **Multilingual always downloads the full-vocab model.** The bridge passes
+   `languageCode: "auto"` to `downloadVariant`, which selects the full 13k-token
+   `multilingual` sub-model. FluidAudio also ships a smaller, faster Latin-script
+   sub-model (`latin`: en/es/fr/it/pt/de); keying the download on a FIXED app
+   language could use it. Deliberate for now — "auto" must work regardless of the
+   language setting, and shipping two sub-models per tier doubles the disk story.
 
 ## Measured results (harness, M-series, macOS 26, FluidAudio 0.15.5)
 

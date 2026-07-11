@@ -23,10 +23,13 @@ enum ParakeetLanguageGate {
     static func refusalMessage(languageSetting: String, multilingual: Bool) -> String? {
         // Multilingual variants accept everything (unknowns → auto-detect).
         if multilingual { return nil }
-
-        let setting = languageSetting.trimmingCharacters(in: .whitespaces).lowercased()
-        if setting.isEmpty || setting == "auto" { return nil }
-        if setting == "en" || setting.hasPrefix("en-") || setting.hasPrefix("en_") { return nil }
-        return "This Parakeet variant is English-only. Switch the dictation language to English or Auto, pick the Parakeet Multilingual variant, or choose another engine."
+        // Shared normalization with the hint mapper (ParakeetLanguageHint), so
+        // "what language did the user fix" is decided in exactly one place:
+        // nil = auto/empty/translate → allowed; "en" in any regional form → allowed.
+        switch ParakeetLanguageHint.baseCode(from: languageSetting) {
+        case nil, "en": return nil
+        default:
+            return "This Parakeet variant is English-only. Switch the dictation language to English or Auto, pick the Parakeet Multilingual variant, or choose another engine."
+        }
     }
 }

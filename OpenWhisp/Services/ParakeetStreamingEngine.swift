@@ -165,6 +165,11 @@ final class ParakeetStreamingEngine: StreamingTranscriptionEngine {
                 bufferingPolicy: .unbounded
             )
             feedContinuation = continuation
+            // Poll for end-of-utterance events only on variants whose manager
+            // actually emits them (the EOU family) — `onEouDetected` is wired
+            // unconditionally by AppState, so gating on the callback alone would
+            // put two extra actor hops on EVERY buffer of every session.
+            let pollsEou = ParakeetCatalog.emitsEou(variantID)
             feedTask = Task { [weak self] in
                 do {
                     for await buffer in stream {
@@ -173,10 +178,8 @@ final class ParakeetStreamingEngine: StreamingTranscriptionEngine {
                         // chunks and fires the partial callback.
                         try await session.appendAudio(buffer)
                         try await session.processBuffered()
-                        // EOU polling (EOU variant only): a grown timestamp count
-                        // is a new end-of-utterance event. Non-EOU sessions return
-                        // [] so this is cheap and never fires.
-                        if self?.onEouDetected != nil {
+                        // A grown timestamp count is a new end-of-utterance event.
+                        if pollsEou {
                             let count = await session.eouTimestampsMs().count
                             await MainActor.run { [weak self] in
                                 guard let self, self.generation == myGeneration, !self.didStop else { return }
@@ -260,12 +263,13 @@ final class ParakeetStreamingEngine: StreamingTranscriptionEngine {
         }
     }
 
-    /// Kick a background model load/download so selecting the engine (not the
-    /// first dictation) pays the one-time HuggingFace download. Idempotent.
-    func prefetch() {
-        MainActor.assumeIsolated {
-            _ = loadTaskOnMain()
-        }
+    /// Load/download the variant's model and return when it's staged (or the
+    /// load failed). Awaitable so AppState can clear the "Downloading…" badge
+    /// the moment the fetch actually completes — event-driven, no disk polling.
+    /// Idempotent: joins the in-flight load / returns immediately when cached.
+    @MainActor
+    func prefetchAwaiting() async {
+        _ = try? await loadTaskOnMain().value
     }
 
     private nonisolated func feedBuffer(_ buffer: AVAudioPCMBuffer) {
@@ -339,7 +343,7 @@ final class ParakeetStreamingEngine: StreamingTranscriptionEngine {
 
     func stop(cancel: Bool) {}
 
-    func prefetch() {}
+    func prefetchAwaiting() async {}
 
 #endif
 }

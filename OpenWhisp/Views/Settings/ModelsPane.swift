@@ -13,6 +13,10 @@ struct ModelsPane: View {
     @State private var storageDeleteTarget: ModelStorage.Item?
     @State private var storageMessage: String = ""
     @State private var showAllWhisperModels = false
+    /// Cached FluidAudio repo folders present on disk, so the Parakeet variant
+    /// rows never walk the directory during rendering (refreshed on appear and
+    /// whenever a prefetch finishes, i.e. `parakeetInFlightVariants` changes).
+    @State private var parakeetInstalledFolders: Set<String> = []
 
     private var isWhisperCpp: Bool { appState.transcriptionEngine == "whisper" }
     private var isWhisperKit: Bool { appState.transcriptionEngine == "whisperKit" }
@@ -39,11 +43,18 @@ struct ModelsPane: View {
         .onAppear {
             appState.refreshWhisperKitStagedModels()
             refreshStorage()
+            parakeetInstalledFolders = AppState.installedFluidAudioFolders()
         }
         // Sizes refresh automatically after downloads finish — no manual button.
         .onChange(of: appState.isModelDownloading) { refreshStorage() }
         .onChange(of: appState.whisperKitDownloadingModel) { refreshStorage() }
         .onChange(of: appState.isLLMModelDownloading) { refreshStorage() }
+        // A Parakeet prefetch finishing flips the in-flight set — rescan the
+        // installed folders (and sizes) once, in event context, not per render.
+        .onChange(of: appState.parakeetInFlightVariants) {
+            parakeetInstalledFolders = AppState.installedFluidAudioFolders()
+            refreshStorage()
+        }
         .confirmationDialog(
             "Remove this model?",
             isPresented: Binding(
@@ -150,7 +161,11 @@ struct ModelsPane: View {
     private var parakeetModelSection: some View {
         Section {
             ForEach(ParakeetCatalog.variants, id: \.id) { variant in
-                let state = appState.parakeetDownloadState(for: variant.id)
+                let state = ParakeetDownloadStatePolicy.state(
+                    forVariant: variant.id,
+                    installedFolders: parakeetInstalledFolders,
+                    inFlightVariants: appState.parakeetInFlightVariants
+                )
                 SelectableRow(
                     title: variant.name,
                     subtitle: parakeetSubtitle(for: variant, state: state),

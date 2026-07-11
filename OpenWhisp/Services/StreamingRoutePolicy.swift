@@ -27,3 +27,27 @@ enum StreamingRoutePolicy {
         engine == "appleSpeech"
     }
 }
+
+/// Which concrete `FileTranscriptionEngine` backs a transcriptionEngine setting.
+/// Pure so the `AppState.makeFileEngine` routing — the seam that decides what
+/// transcribes meetings, queued files, watch folders, and history re-transcribes
+/// — is unit-tested; the factory is a thin switch over this.
+enum FileEngineChoice: Equatable {
+    /// whisper.cpp (whisper-cli / whisper-server). Also the fallback for
+    /// engines with no file path of their own (Apple Speech never reaches the
+    /// file path — startDictation routes it to streaming — so its value here
+    /// is inert by construction).
+    case whisperCpp
+    /// WhisperKit CoreML (its own openai_whisper-* model namespace).
+    case whisperKit
+    /// Parakeet TDT v3 batch CoreML (MAK-46) — multilingual file/meeting path.
+    case parakeet
+
+    static func choice(for engine: String) -> FileEngineChoice {
+        switch engine {
+        case "whisperKit": return .whisperKit
+        case "parakeet":   return .parakeet
+        default:           return .whisperCpp
+        }
+    }
+}

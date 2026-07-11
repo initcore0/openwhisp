@@ -27,15 +27,23 @@ enum ParakeetLanguageHint {
         return s
     }
 
-    /// Bare 2-letter code for the batch engine's `Language(rawValue:)`, or nil for
-    /// auto. "de-DE" → "de", "en_US" → "en"; a bare non-matching code stays as-is
-    /// (the engine maps it to a `Language` and silently ignores an unknown one).
-    static func batchLanguageCode(from setting: String) -> String? {
+    /// Lowercased base language code from a setting, or nil when the setting
+    /// means "let the model decide" (auto/empty/translate sentinel).
+    /// "de-DE" → "de", "en_US" → "en". THE single normalization for parakeet
+    /// language decisions — ParakeetLanguageGate keys its English-only refusal
+    /// on this too, so the gate and the hints can't drift.
+    static func baseCode(from setting: String) -> String? {
         guard let s = normalizedSetting(setting) else { return nil }
         // Split "de-de"/"de_de" → "de".
         let dashed = s.replacingOccurrences(of: "_", with: "-")
         let base = dashed.split(separator: "-", maxSplits: 1).first.map(String.init) ?? dashed
         return base.isEmpty ? nil : base
+    }
+
+    /// Bare 2-letter code for the batch engine's `Language(rawValue:)`, or nil for
+    /// auto (the engine silently ignores an unknown code — degrades to auto).
+    static func batchLanguageCode(from setting: String) -> String? {
+        baseCode(from: setting)
     }
 
     /// "en-US"/"auto"-style code for the multilingual streaming manager. Keeps the
