@@ -24,3 +24,20 @@ jobs:
         run: swift --version
       - name: Run unit tests
         run: swift test
+
+  ios-libraries:
+    # Guards the iOS consumability of the library products (MAK-51): a
+    # visibility or platform regression in core must not break the iPhone
+    # companion, which depends on these two products.
+    name: build OpenWhispCore + BridgeKit (iOS)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+      - name: Build OpenWhispCore for iOS
+        run: xcodebuild -scheme OpenWhispCore -destination 'generic/platform=iOS' build
+      - name: Build OpenWhispBridgeKit for iOS
+        run: xcodebuild -scheme OpenWhispBridgeKit -destination 'generic/platform=iOS' build

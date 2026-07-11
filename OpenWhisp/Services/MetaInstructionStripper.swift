@@ -51,7 +51,7 @@ public enum MetaInstructionStripper {
 
     /// Strip a trailing translate/transcribe instruction if present. Returns the
     /// input unchanged when none is found or when stripping would empty the text.
-    static func strip(_ text: String) -> String {
+    public static func strip(_ text: String) -> String {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return text }
 
