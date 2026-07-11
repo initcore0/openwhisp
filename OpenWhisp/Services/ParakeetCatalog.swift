@@ -12,27 +12,27 @@ import Foundation
 ///   - Nemotron multilingual streaming — a SEPARATE FluidAudio manager type
 ///     (`StreamingNemotronMultilingualAsrManager`), `multilingual == true` with a
 ///     `multilingualChunkMs` tier. ~40 languages (auto-detect), higher latency.
-enum ParakeetCatalog {
-    struct Variant: Equatable {
+public enum ParakeetCatalog {
+    public struct Variant: Equatable {
         /// FluidAudio `StreamingModelVariant` raw value (English families), or an
         /// OpenWhisp-local id for the multilingual variant (not a FluidAudio enum).
-        let id: String
-        let name: String
-        let detail: String
+        public let id: String
+        public let name: String
+        public let detail: String
         /// Approximate on-disk size of the CoreML model repo.
-        let size: String
+        public let size: String
         /// True for the Nemotron multilingual manager (auto-detect ~40 langs).
         /// Drives the variant-aware language gate + the bridge's manager choice.
-        let multilingual: Bool
+        public let multilingual: Bool
         /// Chunk-size tier (ms) for the multilingual manager; nil for English
         /// variants. FluidAudio ships 560 / 1120 / 2240 ms tiers.
-        let multilingualChunkMs: Int?
+        public let multilingualChunkMs: Int?
         /// True when the variant's manager emits end-of-utterance timestamps
         /// (only the EOU family). Gates the engine's per-buffer EOU poll AND the
         /// agent EOU auto-stop arming — the single source of truth.
-        let emitsEou: Bool
+        public let emitsEou: Bool
 
-        init(
+        public init(
             id: String, name: String, detail: String, size: String,
             multilingual: Bool = false, multilingualChunkMs: Int? = nil,
             emitsEou: Bool = false
@@ -49,7 +49,7 @@ enum ParakeetCatalog {
 
     /// Variants offered in Settings, best-default first. All stream partials as
     /// you speak; latency = how far the recognizer trails your voice.
-    static let variants: [Variant] = [
+    public static let variants: [Variant] = [
         Variant(
             id: "parakeet-unified-320ms",
             name: "Parakeet Unified — realtime",
@@ -79,27 +79,27 @@ enum ParakeetCatalog {
         ),
     ]
 
-    static let defaultVariantID = "parakeet-unified-320ms"
+    public static let defaultVariantID = "parakeet-unified-320ms"
 
     /// Resolve a stored variant setting to a known catalog id. Unknown/stale ids
     /// (e.g. a variant removed after a FluidAudio bump) snap to the default
     /// rather than erroring a session.
-    static func normalize(_ storedID: String) -> String {
+    public static func normalize(_ storedID: String) -> String {
         variants.contains { $0.id == storedID } ? storedID : defaultVariantID
     }
 
-    static func variant(for id: String) -> Variant {
+    public static func variant(for id: String) -> Variant {
         let normalized = normalize(id)
         return variants.first { $0.id == normalized } ?? variants[0]
     }
 
     /// Whether the given variant id is a multilingual (Nemotron) variant.
-    static func isMultilingual(_ id: String) -> Bool {
+    public static func isMultilingual(_ id: String) -> Bool {
         variant(for: id).multilingual
     }
 
     /// Whether the given variant id's manager emits end-of-utterance events.
-    static func emitsEou(_ id: String) -> Bool {
+    public static func emitsEou(_ id: String) -> Bool {
         variant(for: id).emitsEou
     }
 }

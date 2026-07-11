@@ -222,7 +222,7 @@ enum WhisperKitBridge {
         kit: WhisperKit,
         task: WhisperKitTaskMapper.Resolved,
         languageOverride: String?,
-        inputDeviceID: AudioDeviceID? = nil,
+        inputDeviceID: AudioDeviceHandle? = nil,
         onState: @escaping (WhisperKitStreamState) -> Void
     ) throws -> WhisperKitStreamHandle {
         guard let tokenizer = kit.tokenizer else {

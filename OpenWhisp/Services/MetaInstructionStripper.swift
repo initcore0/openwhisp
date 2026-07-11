@@ -9,7 +9,7 @@ import Foundation
 /// Deliberately narrow: only translate/transcribe phrasing, only at the very
 /// end, and only when real content precedes it (so a message that is *only*
 /// "translate this to English" is left untouched rather than emptied).
-enum MetaInstructionStripper {
+public enum MetaInstructionStripper {
 
     /// Language slot of a translate command: ONE free word, optionally preceded
     /// by a whitelisted modifier for real multi-word language names ("Brazilian

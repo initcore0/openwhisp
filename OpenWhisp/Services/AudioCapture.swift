@@ -1,5 +1,21 @@
 import Foundation
 
+/// Platform-neutral handle for an input device, threaded through the engine
+/// seams. On macOS the concrete recorder/engine speaks CoreAudio, so the handle
+/// IS a CoreAudio `AudioDeviceID` (an integer device id). On iOS there is no
+/// CoreAudio device enumeration — routing is by `AVAudioSession` route UID — so
+/// the handle is a `String`. The public protocol seams (`AudioCapture`,
+/// `StreamingTranscriptionEngine`) already select devices by opaque `String`;
+/// this typealias exists for the WhisperKit-linked (`#if WHISPERKIT`, macOS)
+/// stream handle that pins the CoreAudio device directly, so that code names a
+/// platform-neutral type instead of `AudioDeviceID` verbatim.
+#if os(macOS)
+import CoreAudio
+public typealias AudioDeviceHandle = AudioDeviceID
+#else
+public typealias AudioDeviceHandle = String
+#endif
+
 /// Lifecycle state of an audio capture session, surfaced via `onStateChanged`.
 ///
 /// Foundation-only so it lives in OpenWhispCore and can be named by the

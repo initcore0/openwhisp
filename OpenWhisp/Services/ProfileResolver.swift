@@ -10,29 +10,45 @@ import Foundation
 /// AppKit, and keeps AppState's apply/restore lifecycle honest against a tested
 /// spec. AppState still owns the *effectful* parts (reading the frontmost app,
 /// backing up globals, suppressing persistence, restoring on session end).
-enum ProfileResolver {
+public enum ProfileResolver {
     /// The four session-scoped settings a profile can override. `nil` fields in an
     /// `AppProfile` mean "inherit the global"; this type is the fully-resolved
     /// result with every field decided.
-    struct Resolved: Equatable {
-        var language: String
-        var translateToEnglish: Bool
-        var outputMode: String
-        var aiCleanupEnabled: Bool
+    public struct Resolved: Equatable {
+        public var language: String
+        public var translateToEnglish: Bool
+        public var outputMode: String
+        public var aiCleanupEnabled: Bool
         /// The effective text-insert method (`InsertionMode` raw value) for the
         /// session — the profile's override, or the global when the profile
         /// inherits (MAK-42).
-        var insertionMode: String
+        public var insertionMode: String
+
+        public init(language: String, translateToEnglish: Bool, outputMode: String, aiCleanupEnabled: Bool, insertionMode: String) {
+            self.language = language
+            self.translateToEnglish = translateToEnglish
+            self.outputMode = outputMode
+            self.aiCleanupEnabled = aiCleanupEnabled
+            self.insertionMode = insertionMode
+        }
     }
 
     /// The current global values a profile overrides on top of.
-    struct Globals: Equatable {
-        var language: String
-        var translateToEnglish: Bool
-        var outputMode: String
-        var aiCleanupEnabled: Bool
+    public struct Globals: Equatable {
+        public var language: String
+        public var translateToEnglish: Bool
+        public var outputMode: String
+        public var aiCleanupEnabled: Bool
         /// The global text-insert method (`InsertionMode` raw value).
-        var insertionMode: String
+        public var insertionMode: String
+
+        public init(language: String, translateToEnglish: Bool, outputMode: String, aiCleanupEnabled: Bool, insertionMode: String) {
+            self.language = language
+            self.translateToEnglish = translateToEnglish
+            self.outputMode = outputMode
+            self.aiCleanupEnabled = aiCleanupEnabled
+            self.insertionMode = insertionMode
+        }
     }
 
     /// Resolve the effective settings for `profile` layered over `globals`.
@@ -45,7 +61,7 @@ enum ProfileResolver {
     ///   that language with `translateToEnglish = false`.
     /// - A nil `profile.language` leaves BOTH language and translateToEnglish at
     ///   their globals (the remap only fires when the profile pins a language).
-    static func resolve(profile: AppProfile, over globals: Globals) -> Resolved {
+    public static func resolve(profile: AppProfile, over globals: Globals) -> Resolved {
         var out = Resolved(
             language: globals.language,
             translateToEnglish: globals.translateToEnglish,
