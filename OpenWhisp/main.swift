@@ -15,6 +15,12 @@ class OpenWhispApp: NSObject, NSApplicationDelegate {
     var tipsWindow: NSWindow?
     var appState: AppState!
 
+    /// Meeting-mode capture session (MAK-50), lazily created on Start Meeting.
+    /// Held as `Any?` so this file compiles on the macOS 12 SDK path too; cast
+    /// to `MeetingCaptureSession` at the `@available(macOS 13.0, *)` use sites.
+    private var meetingSession: Any?
+    private var meetingActive = false
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         print("[OpenWhisp] Application launching...")
 
@@ -210,6 +216,24 @@ class OpenWhispApp: NSObject, NSApplicationDelegate {
             menu.addItem(start)
         }
 
+        // Meeting mode (MAK-50): record system audio + mic locally. A meeting and
+        // a dictation share the mic, so the two are mutually exclusive — the item
+        // is disabled while dictating, and starting a meeting refuses if dictation
+        // becomes active. macOS 13+ only (ScreenCaptureKit audio capture).
+        if #available(macOS 13.0, *) {
+            if meetingActive {
+                let stopMeeting = NSMenuItem(title: "🔴 Stop Meeting", action: #selector(stopMeeting), keyEquivalent: "")
+                menu.addItem(stopMeeting)
+            } else {
+                let startMeeting = NSMenuItem(title: "Start Meeting", action: #selector(startMeeting), keyEquivalent: "")
+                if appState.isRecording {
+                    startMeeting.action = nil   // disabled while dictating
+                    startMeeting.toolTip = "Stop dictation before starting a meeting."
+                }
+                menu.addItem(startMeeting)
+            }
+        }
+
         // Floating Scratchpad (MAK-49): a target-free surface to dictate into.
         let scratchpad = NSMenuItem(title: "📝 Scratchpad", action: #selector(openScratchpad), keyEquivalent: "s")
         menu.addItem(scratchpad)
@@ -291,6 +315,48 @@ class OpenWhispApp: NSObject, NSApplicationDelegate {
         guard let raw = sender.representedObject as? String,
               let permission = PermissionBannerPolicy.Permission(rawValue: raw) else { return }
         appState.openSettings(for: permission)
+    }
+
+    // MARK: Meeting mode (MAK-50)
+
+    @available(macOS 13.0, *)
+    @objc private func startMeeting() {
+        // Mic exclusivity: refuse to start a meeting while dictating.
+        guard !appState.isRecording else {
+            appState.statusMessage = "Stop dictation before starting a meeting"
+            return
+        }
+        guard !meetingActive else { return }
+        let session = (meetingSession as? MeetingCaptureSession) ?? MeetingCaptureSession()
+        meetingSession = session
+        session.onStateChanged = { [weak self] state in
+            guard let self else { return }
+            switch state {
+            case .recording:
+                self.meetingActive = true
+                self.appState.statusMessage = "Meeting recording…"
+            case .finished:
+                self.meetingActive = false
+            case .failed(let msg):
+                self.meetingActive = false
+                self.appState.statusMessage = msg
+            case .idle:
+                break
+            }
+        }
+        session.start()
+    }
+
+    @available(macOS 13.0, *)
+    @objc private func stopMeeting() {
+        guard let session = meetingSession as? MeetingCaptureSession else { return }
+        session.stop { [weak self] recording in
+            // The integration pass routes the recording to the pipeline; capture
+            // side just confirms and clears state. The seam notification has also
+            // fired (see MeetingCaptureSession.postFinished).
+            self?.appState.statusMessage = "Meeting saved (\(Int(recording.duration))s)"
+        }
+        meetingActive = false
     }
 
     @objc private func openScratchpad() { appState.openScratchpad() }
