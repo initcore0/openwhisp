@@ -101,6 +101,33 @@ struct MeetingMixer {
     /// chunk-cadence jitter.
     var pendingImbalance: Int { abs(systemTail.count - micTail.count) }
 
+    /// Stall guard: when one leg has stopped delivering (e.g. SCK stalls but the
+    /// mic keeps going), the other leg's tail would grow without bound — a 2-hour
+    /// meeting is ~440 MB of Float32 — and NOTHING would reach the WAV until stop.
+    /// When the imbalance exceeds `maxLead` frames, emit the longer tail's excess
+    /// mixed with implicit silence (the stalled leg genuinely produced nothing for
+    /// that span), keeping at most `maxLead` frames buffered. Bounds memory AND
+    /// keeps the recording flowing to disk with one silent/stalled leg.
+    mutating func flushImbalance(over maxLead: Int) -> [Float] {
+        let lead = systemTail.count - micTail.count
+        guard abs(lead) > maxLead, maxLead >= 0 else { return [] }
+        let excess = abs(lead) - maxLead
+        let leftover: [Float]
+        if lead > 0 {
+            leftover = Array(systemTail.prefix(excess))
+            systemTail.removeFirst(excess)
+        } else {
+            leftover = Array(micTail.prefix(excess))
+            micTail.removeFirst(excess)
+        }
+        var out = [Float](repeating: 0, count: leftover.count)
+        for i in 0..<leftover.count {
+            out[i] = Self.mixSample(leftover[i], 0)
+        }
+        framesEmitted += leftover.count
+        return out
+    }
+
     // MARK: Mixing law
 
     /// 0.5/0.5 average + hard clip guard. Static + pure so it is trivially

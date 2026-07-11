@@ -3128,6 +3128,12 @@ class AppState: ObservableObject {
 
     func startRecording() {
         guard !isRecording, !isTranscribing else { return }
+        // Mic exclusivity (MAK-50): defense-in-depth for callers that bypass
+        // startDictation (which carries the primary guard).
+        if meetingInProgress {
+            statusMessage = "Stop the meeting before dictating"
+            return
+        }
         guard !SecureFieldDetector.focusedFieldIsSecure() else {
             refuseDictationIntoSecureField()
             return
@@ -3206,6 +3212,12 @@ class AppState: ObservableObject {
     /// Optional live mode: record chunks, transcribe each, paste stable-ish chunks.
     func startStreaming() {
         guard !isRecording, !isTranscribing else { return }
+        // Mic exclusivity (MAK-50): defense-in-depth for callers that bypass
+        // startDictation (which carries the primary guard).
+        if meetingInProgress {
+            statusMessage = "Stop the meeting before dictating"
+            return
+        }
         guard !SecureFieldDetector.focusedFieldIsSecure() else {
             refuseDictationIntoSecureField()
             return

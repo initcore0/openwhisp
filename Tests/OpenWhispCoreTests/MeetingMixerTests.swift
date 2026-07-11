@@ -99,6 +99,28 @@ final class MeetingMixerTests: XCTestCase {
         XCTAssertEqual(drained, [0.5, 0.5, 0.5])   // 0.5 * signal + silence, clamped
     }
 
+    // MARK: stall guard
+
+    func testFlushImbalanceEmitsExcessBeyondCapMixedWithSilence() {
+        var mixer = MeetingMixer()
+        // Mic delivers 100 frames, system leg stalled entirely.
+        _ = mixer.appendMic([Float](repeating: 1.0, count: 100))
+        // Under the cap: nothing flushed.
+        XCTAssertTrue(mixer.flushImbalance(over: 100).isEmpty)
+        XCTAssertEqual(mixer.pendingImbalance, 100)
+        // Over the cap: the excess (100 - 40 = 60 oldest frames) is emitted at
+        // half gain (mixed with implicit silence); 40 stay buffered.
+        let flushed = mixer.flushImbalance(over: 40)
+        XCTAssertEqual(flushed, [Float](repeating: 0.5, count: 60))
+        XCTAssertEqual(mixer.pendingImbalance, 40)
+        XCTAssertEqual(mixer.framesEmitted, 60)
+        // Works symmetrically for a leading system leg.
+        var m2 = MeetingMixer()
+        _ = m2.appendSystem([Float](repeating: 0.8, count: 10))
+        XCTAssertEqual(m2.flushImbalance(over: 0), [Float](repeating: 0.4, count: 10))
+        XCTAssertEqual(m2.pendingImbalance, 0)
+    }
+
     // MARK: seam contract
 
     func testMeetingRecordingCodableRoundTrip() {

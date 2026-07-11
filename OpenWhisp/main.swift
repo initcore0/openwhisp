@@ -63,6 +63,19 @@ class OpenWhispApp: NSObject, NSApplicationDelegate {
         // Agent Bridge (M8): start the local control-plane socket if enabled.
         appState.startAgentBridgeIfEnabled()
 
+        // Meeting mode (MAK-50): salvage any recording orphaned by a crash/quit
+        // mid-meeting — patch its placeholder WAV header and ingest it so the
+        // meeting shows up in the pane instead of silently rotting on disk.
+        if #available(macOS 13.0, *) {
+            let orphans = MeetingCaptureSession.recoverOrphanedRecordings()
+            for recording in orphans {
+                appState.meetingCoordinator.ingest(recording)
+            }
+            if !orphans.isEmpty {
+                appState.statusMessage = "Recovered \(orphans.count) interrupted meeting recording\(orphans.count == 1 ? "" : "s")"
+            }
+        }
+
         // First-run onboarding
         showOnboardingIfNeeded()
         print("[OpenWhisp] Ready")
@@ -327,10 +340,18 @@ class OpenWhispApp: NSObject, NSApplicationDelegate {
             return
         }
         guard !meetingActive else { return }
-        let session = (meetingSession as? MeetingCaptureSession) ?? MeetingCaptureSession()
+        // Always a FRESH session: MeetingCaptureSession's state machine is one-shot
+        // (idle → recording → finished/failed, `delivered` never resets), so reusing
+        // a finished session would make `start()` a silent no-op — the second
+        // meeting would never record.
+        let session = MeetingCaptureSession()
         meetingSession = session
-        session.onStateChanged = { [weak self] state in
+        session.onStateChanged = { [weak self, weak session] state in
             guard let self else { return }
+            // Ignore late callbacks from a superseded session (e.g. a salvage
+            // `.failed` arriving after the user already started a new meeting) so
+            // they can't clear the NEW meeting's exclusivity flag.
+            guard let session, (self.meetingSession as? MeetingCaptureSession) === session else { return }
             switch state {
             case .recording:
                 self.meetingActive = true

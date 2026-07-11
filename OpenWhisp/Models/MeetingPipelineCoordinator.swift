@@ -119,12 +119,21 @@ final class MeetingPipelineCoordinator: ObservableObject {
             wavFileName: fileName,
             status: .recorded
         )
-        // Move/copy the WAV into our audio dir under the canonical leaf name.
+        // MOVE the WAV into our audio dir under the canonical leaf name (copy +
+        // delete-source fallback across volumes). Moving — not copying — matters:
+        // the capture side writes into the same directory, so a leftover source
+        // would double every meeting's disk footprint and look like a crash
+        // orphan to the launch recovery sweep.
         do {
             try FileManager.default.createDirectory(at: store.audioDirectory, withIntermediateDirectories: true)
             let dest = store.audioDirectory.appendingPathComponent(fileName)
             try? FileManager.default.removeItem(at: dest)
-            try FileManager.default.copyItem(at: recording.wavURL, to: dest)
+            do {
+                try FileManager.default.moveItem(at: recording.wavURL, to: dest)
+            } catch {
+                try FileManager.default.copyItem(at: recording.wavURL, to: dest)
+                try? FileManager.default.removeItem(at: recording.wavURL)
+            }
         } catch {
             meeting.status = .failed(reason: "Couldn't store recording: \(error.localizedDescription)")
             persist(meeting)

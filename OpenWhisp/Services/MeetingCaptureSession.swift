@@ -226,11 +226,17 @@ final class MeetingCaptureSession {
 
     private enum Leg { case system, mic }
 
+    /// Stall bound: if one leg stops delivering, flush the other's tail (mixed
+    /// with silence) beyond ~10 s so memory stays bounded and audio keeps
+    /// reaching the WAV. 10 s of 16 kHz Float32 is ~640 KB — the ceiling.
+    private static let maxPendingLeadFrames = Int(SystemAudioCapture.targetSampleRate) * 10
+
     private func ingest(_ samples: [Float], from leg: Leg) {
         queue.async { [weak self] in
             guard let self, self.writer != nil else { return }
-            let mixed = leg == .system ? self.mixer.appendSystem(samples)
+            var mixed = leg == .system ? self.mixer.appendSystem(samples)
                                        : self.mixer.appendMic(samples)
+            mixed += self.mixer.flushImbalance(over: Self.maxPendingLeadFrames)
             self.updateLevel(samples)
             guard !mixed.isEmpty else { return }
             try? self.writer?.append(mixed)
@@ -286,5 +292,44 @@ final class MeetingCaptureSession {
     private static func newRecordingURL(id: UUID) throws -> URL {
         let stamp = Int(Date().timeIntervalSince1970)
         return try meetingsDirectory().appendingPathComponent("meeting_\(stamp)_\(id.uuidString).wav")
+    }
+
+    // MARK: Crash recovery (launch-time sweep)
+
+    /// Salvage recordings orphaned by a crash/quit mid-meeting. In-flight capture
+    /// files are named `meeting_<stamp>_<uuid>.wav` and carry a placeholder WAV
+    /// header until `finalize()`; a successful ingest MOVES the file to its
+    /// canonical `meeting-<uuid>.wav` name, so anything still matching the
+    /// in-flight pattern at launch is an orphan. This patches each orphan's header
+    /// from its on-disk length (`MeetingWAVWriter.recoverInPlace`) and returns
+    /// `MeetingRecording`s ready for `MeetingPipelineCoordinator.ingest(_:)`.
+    /// Unparseable or empty stubs are deleted. Call BEFORE any new capture starts.
+    static func recoverOrphanedRecordings() -> [MeetingRecording] {
+        guard let dir = try? meetingsDirectory(),
+              let names = try? FileManager.default.contentsOfDirectory(atPath: dir.path) else { return [] }
+        var recovered: [MeetingRecording] = []
+        for name in names where name.hasPrefix("meeting_") && name.hasSuffix(".wav") {
+            let url = dir.appendingPathComponent(name)
+            // meeting_<stamp>_<uuid>.wav
+            let stem = String(name.dropFirst("meeting_".count).dropLast(".wav".count))
+            let parts = stem.split(separator: "_", maxSplits: 1)
+            guard parts.count == 2, let stamp = TimeInterval(parts[0]), let id = UUID(uuidString: String(parts[1])) else {
+                continue   // not ours; leave it alone
+            }
+            guard MeetingWAVWriter.recoverInPlace(url: url) else {
+                // Header-only stub (crashed before any audio): nothing to salvage.
+                try? FileManager.default.removeItem(at: url)
+                continue
+            }
+            let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int).flatMap { $0 } ?? 0
+            let frames = max(0, size - 44) / 2
+            recovered.append(MeetingRecording(
+                id: id,
+                wavURL: url,
+                startedAt: Date(timeIntervalSince1970: stamp),
+                duration: Double(frames) / SystemAudioCapture.targetSampleRate
+            ))
+        }
+        return recovered
     }
 }
