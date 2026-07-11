@@ -6058,6 +6058,17 @@ extension AppState: AgentBridgeHost {
             return
         }
 
+        // Defense in depth (the coordinator already refuses agent-CLI resolutions):
+        // `summaryEndpoint`'s default branch is the OpenAI cloud endpoint, so an
+        // agentCLI-resolved provider must fail closed here rather than silently
+        // POST the transcript to a cloud endpoint the user never consented to.
+        guard resolved.provider != EnhancementProvider.agentCLIID else {
+            completion(.failure(.domain(.llmUnavailable,
+                message: "the agent CLI provider can't summarize meetings — pick a summarization model in Settings → Meetings",
+                originalText: text)))
+            return
+        }
+
         let systemDirective = InstructionChain.systemDirective
         let userPayload = InstructionChain.userPayload(instruction: instruction, text: text)
         let endpoint = summaryEndpoint(for: resolved)

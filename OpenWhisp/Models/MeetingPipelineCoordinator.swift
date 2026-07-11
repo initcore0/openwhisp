@@ -320,6 +320,13 @@ final class MeetingPipelineCoordinator: ObservableObject {
         // Resolve the summary model ONCE for this run (MAK-53). Its locality drives
         // the privacy gate; the whole run then uses this resolved provider/model.
         let resolved = resolveSummaryModel()
+        // The agent-CLI provider has no OpenAI-shape endpoint, so the summarize
+        // seam can't call it (and must NEVER silently fall through to a cloud
+        // endpoint the user didn't pick). Fail closed with an actionable message.
+        if resolved.provider == "agentCLI" {
+            lastMessage = "The agent CLI provider can't summarize meetings — pick a summarization model in Settings → Meetings."
+            return
+        }
         if !resolved.isLocal && !confirmedCloud {
             lastMessage = "Summarizing with a cloud provider needs your confirmation."
             return
