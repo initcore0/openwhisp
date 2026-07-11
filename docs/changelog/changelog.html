@@ -246,14 +246,14 @@
 <div class="wrap">
   <header>
     <p class="eyebrow">Shipped · July 2026</p>
-    <h1>Thirty-nine ways OpenWhisp got<br><span class="accent">sharper, safer, and more yours.</span></h1>
-    <p class="lede">A batch of new features, fixes, and under-the-hood hardening — all landed on main, all covered by tests, all on your machine. All twenty-five new features are live today: meeting mode that records a call and gives you an on-device transcript plus a local Markdown summary — now with Me/Them speaker attribution and a live talking indicator, and with a separate, optionally larger summarization model you can point at your own server — a floating Scratchpad to dictate into with no target app, quiet-dictation mode for whispering into your mic, opt-in on-device audio retention with one-click re-transcription and an auto-cleanup policy, a fully-remappable dictation trigger with a record-a-shortcut field, an AppleScript keystroke insert method and mouse-button dictation triggers, a local Usage Insights dashboard, opt-in screen-context awareness that biases transcription toward the names already on screen, batch file transcription with watch folders, hands-free (tap-to-lock) dictation, adjustable AI cleanup, voice editing, a self-learning dictionary, rich local formatting, spoken-filename @-mentions for code editors, agent-CLI cleanup, output targets that route a dictation to a file/Shortcut/webhook, first-class Modes you can invoke by name, a Rules engine that runs your own actions when a dictation finishes, and an openwhisp:// URL scheme so Raycast, Alfred, or any launcher can drive dictation.</p>
+    <h1>Forty-three ways OpenWhisp got<br><span class="accent">sharper, faster, and more yours.</span></h1>
+    <p class="lede">A batch of new features, fixes, and under-the-hood hardening — all landed on main, all covered by tests, all on your machine. All twenty-seven new features are live today: Parakeet Realtime — a true streaming engine whose words appear about a third of a second behind your voice, with punctuation, in English or ~40 auto-detected languages — meeting mode that records a call and gives you an on-device transcript plus a local Markdown summary — now with Me/Them speaker attribution and a live talking indicator, and with a separate, optionally larger summarization model you can point at your own server — a floating Scratchpad to dictate into with no target app, quiet-dictation mode for whispering into your mic, opt-in on-device audio retention with one-click re-transcription and an auto-cleanup policy, a fully-remappable dictation trigger with a record-a-shortcut field, an AppleScript keystroke insert method and mouse-button dictation triggers, a local Usage Insights dashboard, opt-in screen-context awareness that biases transcription toward the names already on screen, batch file transcription with watch folders, hands-free (tap-to-lock) dictation, adjustable AI cleanup, voice editing, a self-learning dictionary, rich local formatting, spoken-filename @-mentions for code editors, agent-CLI cleanup, output targets that route a dictation to a file/Shortcut/webhook, first-class Modes you can invoke by name, a Rules engine that runs your own actions when a dictation finishes, and an openwhisp:// URL scheme so Raycast, Alfred, or any launcher can drive dictation.</p>
   </header>
 
   <div class="stats">
-    <div class="stat"><div class="n">40</div><div class="k">changes shipped</div></div>
-    <div class="stat"><div class="n">25<small> live</small></div><div class="k">new features</div></div>
-    <div class="stat"><div class="n">1458</div><div class="k">tests passing</div></div>
+    <div class="stat"><div class="n">43</div><div class="k">changes shipped</div></div>
+    <div class="stat"><div class="n">27<small> live</small></div><div class="k">new features</div></div>
+    <div class="stat"><div class="n">1479</div><div class="k">tests passing</div></div>
     <div class="stat"><div class="n">100<small>%</small></div><div class="k">on-device</div></div>
   </div>
 
@@ -262,9 +262,58 @@
     <div class="sec-head">
       <span class="dot feature"></span>
       <h2>New features</h2>
-      <span class="count">25 live</span>
+      <span class="count">27 live</span>
     </div>
     <ul class="entries">
+      <li>
+        <details class="entry">
+          <summary>
+            <div class="sum-left">
+              <h3>Parakeet Realtime — a true streaming engine: words appear ~0.3 s behind your voice</h3>
+              <p>A new on-device transcription engine built on NVIDIA Parakeet (CoreML, via the Apache-2.0 FluidAudio SDK). Unlike the batch engines, Parakeet is architecturally streaming: partials trail your voice by about a third of a second WITH punctuation and capitalization, and the final text lands ~50 ms after you release the hotkey — no end-of-dictation decode wait. Four model variants cover realtime English, best-accuracy English, an ultra-light 120M model, and a multilingual model (~40 languages, auto-detected). Meetings, batch file jobs, watch folders, and history re-transcription run on Parakeet too (a 25-language batch model), and the models show up in Settings › Storage with sizes and one-click delete. Compiled into default builds alongside WhisperKit.</p>
+            </div>
+            <div class="sum-right">
+              <span class="try">How to use<svg class="howto-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span>
+              <div class="receipts"><span class="tag ticket">MAK-46</span><span class="tag pr">#163</span></div>
+            </div>
+          </summary>
+          <div class="guide">
+            <span class="avail live">Available now</span>
+            <p class="g-sum">Settings › Models › pick “Parakeet Realtime (CoreML)”, choose a variant, and dictate — the model downloads itself on first use.</p>
+            <ol>
+              <li>Open Settings › Models and select “Parakeet Realtime (CoreML)” (badged Experimental).</li>
+              <li>Pick a variant: Unified realtime (default, 0.32 s latency, punctuation), Unified accurate, EOU ultra light (smallest), or Parakeet Multilingual (~40 languages, auto-detect).</li>
+              <li>The model (~150–600 MB) downloads automatically to Application Support/FluidAudio and is cached; the row shows Not downloaded / Downloading… / installed.</li>
+              <li>Dictate as usual — words stream in as you speak in preview and live-typing modes, and meetings/file jobs automatically use Parakeet's multilingual batch model.</li>
+            </ol>
+            <p class="g-note">The English variants refuse a fixed non-English dictation language up front (switch to the Multilingual variant or Auto instead of silently mangling it). Parakeet is ASR-only: the translate-to-English toggle doesn't apply, and vocabulary biasing is text-side only.</p>
+          </div>
+        </details>
+      </li>
+      <li>
+        <details class="entry">
+          <summary>
+            <div class="sum-left">
+              <h3>Agent dictations can end the moment you finish speaking — end-of-utterance auto-stop</h3>
+              <p>When a coding agent hands you the mic, the session previously ended on a timeout or an energy-silence heuristic. The Parakeet EOU model emits a genuine “the speaker finished” signal, and OpenWhisp can now use it: an experimental, default-off toggle ends agent-requested dictations right after your utterance settles — a crisper finish than waiting out the silence window. Your own hotkey dictations are never auto-stopped.</p>
+            </div>
+            <div class="sum-right">
+              <span class="try">How to use<svg class="howto-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span>
+              <div class="receipts"><span class="tag ticket">MAK-46</span><span class="tag pr">#163</span></div>
+            </div>
+          </summary>
+          <div class="guide">
+            <span class="avail live">Available now</span>
+            <p class="g-sum">Settings › Agent Bridge › turn on “Stop on end-of-utterance (Parakeet EOU)” with the Parakeet EOU variant selected.</p>
+            <ol>
+              <li>Select the Parakeet engine with the “EOU — ultra light” variant (Settings › Models).</li>
+              <li>Open Settings › Agent Bridge and enable “Stop on end-of-utterance (Parakeet EOU)”.</li>
+              <li>When an agent requests a dictation, speak your answer — the session finishes ~0.6 s after your utterance ends (a new word cancels the pending stop).</li>
+            </ol>
+            <p class="g-note">Experimental and default-off. Only the EOU variant emits the signal — on any other engine or variant the toggle is inert and the silence auto-stop still applies. Agent sessions only.</p>
+          </div>
+        </details>
+      </li>
       <li>
         <details class="entry">
           <summary>
@@ -274,7 +323,7 @@
             </div>
             <div class="sum-right">
               <span class="try">How to use<svg class="howto-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span>
-              <div class="receipts"><span class="tag ticket">MAK-50</span></div>
+              <div class="receipts"><span class="tag ticket">MAK-50</span><span class="tag pr">#158</span></div>
             </div>
           </summary>
           <div class="guide">
@@ -299,7 +348,7 @@
             </div>
             <div class="sum-right">
               <span class="try">How to use<svg class="howto-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span>
-              <div class="receipts"><span class="tag ticket">MAK-52</span></div>
+              <div class="receipts"><span class="tag ticket">MAK-52</span><span class="tag pr">#160</span></div>
             </div>
           </summary>
           <div class="guide">
@@ -323,7 +372,7 @@
             </div>
             <div class="sum-right">
               <span class="try">How to use<svg class="howto-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span>
-              <div class="receipts"><span class="tag ticket">MAK-53</span></div>
+              <div class="receipts"><span class="tag ticket">MAK-53</span><span class="tag pr">#159</span></div>
             </div>
           </summary>
           <div class="guide">
@@ -372,7 +421,7 @@
             </div>
             <div class="sum-right">
               <span class="try">How to use<svg class="howto-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span>
-              <div class="receipts"><span class="tag ticket">MAK-43</span></div>
+              <div class="receipts"><span class="tag ticket">MAK-43</span><span class="tag pr">#151</span></div>
             </div>
           </summary>
           <div class="guide">
@@ -399,7 +448,7 @@
             </div>
             <div class="sum-right">
               <span class="try">How to use<svg class="howto-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span>
-              <div class="receipts"><span class="tag ticket">MAK-40</span></div>
+              <div class="receipts"><span class="tag ticket">MAK-40</span><span class="tag pr">#147</span></div>
             </div>
           </summary>
           <div class="guide">
@@ -426,7 +475,7 @@
             </div>
             <div class="sum-right">
               <span class="try">How to use<svg class="howto-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span>
-              <div class="receipts"><span class="tag ticket">MAK-42</span></div>
+              <div class="receipts"><span class="tag ticket">MAK-42</span><span class="tag pr">#148</span></div>
             </div>
           </summary>
           <div class="guide">
@@ -451,7 +500,7 @@
             </div>
             <div class="sum-right">
               <span class="try">How to use<svg class="howto-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span>
-              <div class="receipts"><span class="tag ticket">MAK-17</span></div>
+              <div class="receipts"><span class="tag ticket">MAK-17</span><span class="tag pr">#145</span></div>
             </div>
           </summary>
           <div class="guide">
@@ -502,7 +551,7 @@
             </div>
             <div class="sum-right">
               <span class="try">How to use<svg class="howto-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span>
-              <div class="receipts"><span class="tag ticket">MAK-34</span></div>
+              <div class="receipts"><span class="tag ticket">MAK-34</span><span class="tag pr">#150</span></div>
             </div>
           </summary>
           <div class="guide">
@@ -605,7 +654,7 @@
             </div>
             <div class="sum-right">
               <span class="try">How to use<svg class="howto-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span>
-              <div class="receipts"><span class="tag ticket">MAK-39</span></div>
+              <div class="receipts"><span class="tag ticket">MAK-39</span><span class="tag pr">#146</span></div>
             </div>
           </summary>
           <div class="guide">
@@ -930,9 +979,14 @@
     <div class="sec-head">
       <span class="dot fix"></span>
       <h2>Fixes</h2>
-      <span class="count">9 shipped</span>
+      <span class="count">10 shipped</span>
     </div>
     <ul class="entries">
+      <li class="entry">
+        <h3>Meeting summary failures now tell you what actually went wrong</h3>
+        <p>When a meeting summary failed, the UI showed a generic error even when the real cause was specific — the provider was unreachable, the model missing, the request rejected. The failure now surfaces the underlying reason so you can fix the right thing instead of guessing.</p>
+        <div class="receipts"><span class="tag pr">#161</span></div>
+      </li>
       <li class="entry">
         <h3>Cleanup can no longer silently translate your dictation</h3>
         <p>Dictating in Russian (or any non-Latin script) with automatic AI cleanup on, a small cleanup model would sometimes translate your text to English — the overlay showed your Russian words but the pasted text came back in English. OpenWhisp now checks the cleaned text against what you dictated: if the cleanup dropped your writing system for Latin, it's treated as a bad translation and your original transcript is kept instead (the same fail-open path used when the LLM errors). The check is deliberately conservative — same-language cleanups, Latin-to-Latin, short phrases, and Russian prose mixed with English code or URLs all pass untouched — and it never runs when you actually asked to translate (Translate to English, Improve-translation mode, a spoken refine instruction, or an agent-bridge refine). The cleanup prompts were hardened too.</p>
@@ -941,7 +995,7 @@
       <li class="entry">
         <h3>Refining an English dictation can no longer come back in another language</h3>
         <p>That language guard was one-directional: it caught Russian-cleaned-to-English, but not the inverse. If the “Improve translation” target-language picker was ever left on Russian, an English dictation you refined with AI would come back in Russian — the picker told the polish prompt to produce Russian even though the engine only ever translates <em>to</em> English. Now the improve-translation flow always polishes in English, the stale (and un-honorable) target-language picker is gone, and the language guard is symmetric: it rejects a cleanup that swapped your writing system in either direction, while genuinely-intended translations still pass because their expected target script is declared. Same conservative thresholds — same-language cleanups, short phrases, and mixed code/URLs are untouched, and spoken-instruction, agent-bridge, and custom-Mode refines still own their language contract.</p>
-        <div class="receipts"><span class="tag ticket">refine</span></div>
+        <div class="receipts"><span class="tag pr">#162</span></div>
       </li>
       <li class="entry">
         <h3>Silence no longer errors on one backend but not the other</h3>
@@ -1017,7 +1071,7 @@
       <li class="entry">
         <h3>Sturdier agent bridge — the MCP adapter now speaks a typed protocol and holds one connection</h3>
         <p>The MCP server that lets coding agents drive OpenWhisp was rebuilt on the same typed, tested message envelopes the rest of the bridge uses, instead of hand-assembled JSON. It also keeps a single connection to the app open across tool calls (reconnecting by itself if the app restarts) rather than reconnecting every time — fewer moving parts, same behavior, now covered by its own tests.</p>
-        <div class="receipts"><span class="tag ticket">MAK-5</span></div>
+        <div class="receipts"><span class="tag ticket">MAK-5</span><span class="tag pr">#154</span></div>
       </li>
     </ul>
   </section>

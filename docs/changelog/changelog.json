@@ -1,22 +1,65 @@
 {
   "$schema": "./changelog.schema.md",
   "project": "OpenWhisp",
-  "generated": "2026-07-10",
+  "generated": "2026-07-11",
   "releases": [
     {
       "id": "2026-07",
       "title": "July 2026",
-      "date": "2026-07-10",
+      "date": "2026-07-11",
       "summary": "A batch of new features, fixes, and under-the-hood hardening — all landed on main, all covered by tests, all on your machine. All twenty-five new features are live today: meeting mode that records a call and gives you an on-device transcript plus a local Markdown summary — now with Me/Them speaker attribution and a live talking indicator, and with a separate, optionally larger summarization model you can point at your own server — a floating Scratchpad to dictate into with no target app, quiet-dictation mode for whispering into your mic, opt-in on-device audio retention with one-click re-transcription and an auto-cleanup policy, a fully-remappable dictation trigger with a record-a-shortcut field, an AppleScript keystroke insert method and mouse-button dictation triggers, a local Usage Insights dashboard, opt-in screen-context awareness that biases transcription toward the names already on screen, batch file transcription with watch folders, hands-free (tap-to-lock) dictation, adjustable AI cleanup, voice editing, a self-learning dictionary, rich local formatting, spoken-filename @-mentions for code editors, agent-CLI cleanup, output targets that route a dictation to a file/Shortcut/webhook, first-class Modes you can invoke by name, a Rules engine that runs your own actions when a dictation finishes, and an openwhisp:// URL scheme so Raycast, Alfred, or any launcher can drive dictation.",
       "stats": {
-        "changesShipped": 40,
-        "newFeatures": 25,
-        "testsPassing": 1458,
+        "changesShipped": 43,
+        "newFeatures": 27,
+        "testsPassing": 1479,
         "onDevicePercent": 100,
-        "newFeaturesLive": 25,
+        "newFeaturesLive": 27,
         "newFeaturesCorePending": 0
       },
       "entries": [
+        {
+          "category": "feature",
+          "headline": "Parakeet Realtime — a true streaming engine: words appear ~0.3 s behind your voice",
+          "body": "A new on-device transcription engine built on NVIDIA Parakeet (CoreML, via the Apache-2.0 FluidAudio SDK). Unlike the batch engines, Parakeet is architecturally streaming: partials trail your voice by about a third of a second WITH punctuation and capitalization, and the final text lands ~50 ms after you release the hotkey — no end-of-dictation decode wait. Four model variants cover realtime English, best-accuracy English, an ultra-light 120M model, and a multilingual model (~40 languages, auto-detected). Meetings, batch file jobs, watch folders, and history re-transcription run on Parakeet too (a 25-language batch model), and the models show up in Settings › Storage with sizes and one-click delete. Compiled into default builds alongside WhisperKit.",
+          "tickets": [
+            "MAK-46"
+          ],
+          "prs": [
+            163
+          ],
+          "howTo": {
+            "availability": "live",
+            "summary": "Settings › Models › pick “Parakeet Realtime (CoreML)”, choose a variant, and dictate — the model downloads itself on first use.",
+            "steps": [
+              "Open Settings › Models and select “Parakeet Realtime (CoreML)” (badged Experimental).",
+              "Pick a variant: Unified realtime (default, 0.32 s latency, punctuation), Unified accurate, EOU ultra light (smallest), or Parakeet Multilingual (~40 languages, auto-detect).",
+              "The model (~150–600 MB) downloads automatically to Application Support/FluidAudio and is cached; the row shows Not downloaded / Downloading… / installed.",
+              "Dictate as usual — words stream in as you speak in preview and live-typing modes, and meetings/file jobs automatically use Parakeet's multilingual batch model."
+            ],
+            "note": "The English variants refuse a fixed non-English dictation language up front (switch to the Multilingual variant or Auto instead of silently mangling it). Parakeet is ASR-only: the translate-to-English toggle doesn't apply, and vocabulary biasing is text-side only."
+          }
+        },
+        {
+          "category": "feature",
+          "headline": "Agent dictations can end the moment you finish speaking — end-of-utterance auto-stop",
+          "body": "When a coding agent hands you the mic, the session previously ended on a timeout or an energy-silence heuristic. The Parakeet EOU model emits a genuine “the speaker finished” signal, and OpenWhisp can now use it: an experimental, default-off toggle ends agent-requested dictations right after your utterance settles — a crisper finish than waiting out the silence window. Your own hotkey dictations are never auto-stopped.",
+          "tickets": [
+            "MAK-46"
+          ],
+          "prs": [
+            163
+          ],
+          "howTo": {
+            "availability": "live",
+            "summary": "Settings › Agent Bridge › turn on “Stop on end-of-utterance (Parakeet EOU)” with the Parakeet EOU variant selected.",
+            "steps": [
+              "Select the Parakeet engine with the “EOU — ultra light” variant (Settings › Models).",
+              "Open Settings › Agent Bridge and enable “Stop on end-of-utterance (Parakeet EOU)”.",
+              "When an agent requests a dictation, speak your answer — the session finishes ~0.6 s after your utterance ends (a new word cancels the pending stop)."
+            ],
+            "note": "Experimental and default-off. Only the EOU variant emits the signal — on any other engine or variant the toggle is inert and the silence auto-stop still applies. Agent sessions only."
+          }
+        },
         {
           "category": "feature",
           "headline": "Meeting mode — record a call, get an on-device transcript and a local summary",
@@ -24,7 +67,9 @@
           "tickets": [
             "MAK-50"
           ],
-          "prs": [],
+          "prs": [
+            158
+          ],
           "howTo": {
             "availability": "live",
             "summary": "Start/Stop a recording from the menu bar, then open Settings → Meetings to read the transcript, run the summary, and export.",
@@ -45,7 +90,9 @@
           "tickets": [
             "MAK-52"
           ],
-          "prs": [],
+          "prs": [
+            160
+          ],
           "howTo": {
             "availability": "live",
             "summary": "Record a meeting as before — the transcript now comes back with Me:/Them: labels, and the live row shows who’s talking while you record.",
@@ -65,7 +112,9 @@
           "tickets": [
             "MAK-53"
           ],
-          "prs": [],
+          "prs": [
+            159
+          ],
           "howTo": {
             "availability": "live",
             "summary": "Open Settings → Meetings → Summarization model to pick a separate provider/model for summaries, or leave it on “Same as cleanup”.",
@@ -146,7 +195,9 @@
           "tickets": [
             "MAK-40"
           ],
-          "prs": [],
+          "prs": [
+            147
+          ],
           "howTo": {
             "availability": "live",
             "summary": "Settings › Privacy › turn on “Keep raw audio for re-transcription”, set the clip/day caps, then use the re-transcribe button on any saved history entry.",
@@ -168,7 +219,9 @@
           "tickets": [
             "MAK-42"
           ],
-          "prs": [],
+          "prs": [
+            148
+          ],
           "howTo": {
             "availability": "live",
             "summary": "Settings › Output › Insertion → “AppleScript keystroke”, and Settings › Dictation › Activation → “Mouse-button trigger”. Both can also be set per-app under Per-App Profiles.",
@@ -188,7 +241,9 @@
           "tickets": [
             "MAK-17"
           ],
-          "prs": [],
+          "prs": [
+            145
+          ],
           "howTo": {
             "availability": "live",
             "summary": "Settings › Dictation › Activation → “Record shortcut”, press your combo; the two presets remain as quick picks.",
@@ -231,7 +286,9 @@
           "tickets": [
             "MAK-34"
           ],
-          "prs": [],
+          "prs": [
+            150
+          ],
           "howTo": {
             "availability": "live",
             "summary": "Settings › Privacy › Screen Context: turn it on, add the apps you want, then dictate — names on screen bias transcription; local cleanup also gets the surrounding text.",
@@ -252,7 +309,9 @@
           "tickets": [
             "MAK-43"
           ],
-          "prs": [],
+          "prs": [
+            151
+          ],
           "howTo": {
             "availability": "live",
             "summary": "Settings › Rules › Add rule: pick when it fires and what it matches, then add one or more actions.",
@@ -342,7 +401,9 @@
           "tickets": [
             "MAK-39"
           ],
-          "prs": [],
+          "prs": [
+            146
+          ],
           "howTo": {
             "availability": "live",
             "summary": "Create a Mode in Settings › Modes, give it a tone/instruction, then set it active there or invoke it by key from an openwhisp:// URL.",
@@ -750,7 +811,18 @@
           "tickets": [
             "MAK-5"
           ],
-          "prs": []
+          "prs": [
+            154
+          ]
+        },
+        {
+          "category": "fix",
+          "headline": "Meeting summary failures now tell you what actually went wrong",
+          "body": "When a meeting summary failed, the UI showed a generic error even when the real cause was specific — the provider was unreachable, the model missing, the request rejected. The failure now surfaces the underlying reason so you can fix the right thing instead of guessing.",
+          "tickets": [],
+          "prs": [
+            161
+          ]
         }
       ]
     }
