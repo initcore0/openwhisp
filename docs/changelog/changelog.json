@@ -9,9 +9,9 @@
       "date": "2026-07-10",
       "summary": "A batch of new features, fixes, and under-the-hood hardening — all landed on main, all covered by tests, all on your machine. All twenty-five new features are live today: meeting mode that records a call and gives you an on-device transcript plus a local Markdown summary — now with Me/Them speaker attribution and a live talking indicator, and with a separate, optionally larger summarization model you can point at your own server — a floating Scratchpad to dictate into with no target app, quiet-dictation mode for whispering into your mic, opt-in on-device audio retention with one-click re-transcription and an auto-cleanup policy, a fully-remappable dictation trigger with a record-a-shortcut field, an AppleScript keystroke insert method and mouse-button dictation triggers, a local Usage Insights dashboard, opt-in screen-context awareness that biases transcription toward the names already on screen, batch file transcription with watch folders, hands-free (tap-to-lock) dictation, adjustable AI cleanup, voice editing, a self-learning dictionary, rich local formatting, spoken-filename @-mentions for code editors, agent-CLI cleanup, output targets that route a dictation to a file/Shortcut/webhook, first-class Modes you can invoke by name, a Rules engine that runs your own actions when a dictation finishes, and an openwhisp:// URL scheme so Raycast, Alfred, or any launcher can drive dictation.",
       "stats": {
-        "changesShipped": 39,
+        "changesShipped": 40,
         "newFeatures": 25,
-        "testsPassing": 1447,
+        "testsPassing": 1458,
         "onDevicePercent": 100,
         "newFeaturesLive": 25,
         "newFeaturesCorePending": 0
@@ -85,6 +85,15 @@
           "tickets": [],
           "prs": [
             157
+          ]
+        },
+        {
+          "category": "fix",
+          "headline": "Refining an English dictation can no longer come back in another language",
+          "body": "The language guard was one-directional: it caught a Russian dictation that AI cleanup translated to English, but not the inverse. If the “Improve translation” target-language picker was ever left on Russian, an ENGLISH dictation you refined with AI would come back in Russian — the picker told the polish prompt to produce Russian even though the transcription engine only ever translates to English. Two fixes: the improve-translation flow now always polishes in English (the only language the engine translates into), and the stale target-language picker — which could not be honored coherently — has been removed. And the language guard is now symmetric: it rejects a cleanup that swapped your writing system in EITHER direction (English→Russian as well as Russian→English), while genuinely-intended translations still pass because their expected target script is declared. Same conservative thresholds as before: same-language cleanups, short phrases, and mixed code/URLs are untouched, and spoken-instruction, agent-bridge, and custom-Mode refines still own their own language contract.",
+          "tickets": [],
+          "prs": [
+            162
           ]
         },
         {

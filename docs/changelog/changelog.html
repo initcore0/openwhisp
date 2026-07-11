@@ -251,9 +251,9 @@
   </header>
 
   <div class="stats">
-    <div class="stat"><div class="n">39</div><div class="k">changes shipped</div></div>
+    <div class="stat"><div class="n">40</div><div class="k">changes shipped</div></div>
     <div class="stat"><div class="n">25<small> live</small></div><div class="k">new features</div></div>
-    <div class="stat"><div class="n">1447</div><div class="k">tests passing</div></div>
+    <div class="stat"><div class="n">1458</div><div class="k">tests passing</div></div>
     <div class="stat"><div class="n">100<small>%</small></div><div class="k">on-device</div></div>
   </div>
 
@@ -930,13 +930,18 @@
     <div class="sec-head">
       <span class="dot fix"></span>
       <h2>Fixes</h2>
-      <span class="count">8 shipped</span>
+      <span class="count">9 shipped</span>
     </div>
     <ul class="entries">
       <li class="entry">
         <h3>Cleanup can no longer silently translate your dictation</h3>
         <p>Dictating in Russian (or any non-Latin script) with automatic AI cleanup on, a small cleanup model would sometimes translate your text to English — the overlay showed your Russian words but the pasted text came back in English. OpenWhisp now checks the cleaned text against what you dictated: if the cleanup dropped your writing system for Latin, it's treated as a bad translation and your original transcript is kept instead (the same fail-open path used when the LLM errors). The check is deliberately conservative — same-language cleanups, Latin-to-Latin, short phrases, and Russian prose mixed with English code or URLs all pass untouched — and it never runs when you actually asked to translate (Translate to English, Improve-translation mode, a spoken refine instruction, or an agent-bridge refine). The cleanup prompts were hardened too.</p>
         <div class="receipts"><span class="tag pr">#157</span></div>
+      </li>
+      <li class="entry">
+        <h3>Refining an English dictation can no longer come back in another language</h3>
+        <p>That language guard was one-directional: it caught Russian-cleaned-to-English, but not the inverse. If the “Improve translation” target-language picker was ever left on Russian, an English dictation you refined with AI would come back in Russian — the picker told the polish prompt to produce Russian even though the engine only ever translates <em>to</em> English. Now the improve-translation flow always polishes in English, the stale (and un-honorable) target-language picker is gone, and the language guard is symmetric: it rejects a cleanup that swapped your writing system in either direction, while genuinely-intended translations still pass because their expected target script is declared. Same conservative thresholds — same-language cleanups, short phrases, and mixed code/URLs are untouched, and spoken-instruction, agent-bridge, and custom-Mode refines still own their language contract.</p>
+        <div class="receipts"><span class="tag ticket">refine</span></div>
       </li>
       <li class="entry">
         <h3>Silence no longer errors on one backend but not the other</h3>
@@ -1001,7 +1006,7 @@
       </li>
       <li class="entry">
         <h3>End-to-end audio testing, so features stay working</h3>
-        <p>A full regression suite now feeds pre-recorded audio through the whole pipeline — the reason "1447 tests passing" is more than a number. Every feature above ships with coverage.</p>
+        <p>A full regression suite now feeds pre-recorded audio through the whole pipeline — the reason "1458 tests passing" is more than a number. Every feature above ships with coverage.</p>
         <div class="receipts"><span class="tag ticket">E2E</span><span class="tag pr">#107–110</span></div>
       </li>
       <li class="entry">
