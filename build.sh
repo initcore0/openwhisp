@@ -39,8 +39,8 @@ done < <(find "$PROJECT_DIR/OpenWhisp" -name "*.swift")
 source "$PROJECT_DIR/scripts/whisperkit-link-args.sh"
 resolve_whisperkit_args
 
-# Parakeet/FluidAudio streaming backend (MAK-46 spike). OFF by default; opt in
-# with PARAKEET=1 ./build.sh. See docs/PARAKEET_SPIKE.md.
+# Parakeet/FluidAudio streaming backend (MAK-46). ON by default; opt out with
+# PARAKEET=0 ./build.sh for a lean build. See docs/PARAKEET.md.
 # shellcheck source=scripts/fluidaudio-link-args.sh
 source "$PROJECT_DIR/scripts/fluidaudio-link-args.sh"
 resolve_fluidaudio_args

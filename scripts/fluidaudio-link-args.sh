@@ -2,10 +2,11 @@
 # Shared helper: resolve the swiftc flags that link the Parakeet (FluidAudio)
 # backend.
 #
-# OFF BY DEFAULT while MAK-46 is a spike — opt in with PARAKEET=1. Sourced by
-# both build.sh and build-dmg.sh so the two compile paths never drift on how
-# FluidAudio is linked. Mirrors scripts/whisperkit-link-args.sh. See
-# docs/PARAKEET_SPIKE.md.
+# Parakeet is ON BY DEFAULT (it ships in releases alongside WhisperKit) — opt
+# out with PARAKEET=0 for a lean build without the FluidAudio dependency.
+# Sourced by both build.sh and build-dmg.sh so the two compile paths never
+# drift on how FluidAudio is linked. Mirrors scripts/whisperkit-link-args.sh.
+# See docs/PARAKEET.md.
 #
 # Usage (source, don't exec):
 #   source "$PROJECT_DIR/scripts/fluidaudio-link-args.sh"
@@ -16,7 +17,8 @@
 
 resolve_fluidaudio_args() {
     FLUIDAUDIO_ARGS=()
-    if [ "${PARAKEET:-0}" != "1" ]; then
+    if [ "${PARAKEET:-1}" != "1" ]; then
+        echo "Parakeet backend: disabled (PARAKEET=0) — lean build." >&2
         return 0
     fi
 

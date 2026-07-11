@@ -18,21 +18,24 @@
 > original feasibility report) to a full integration. Mirrors the WhisperKit pilot
 > ([WHISPERKIT_PILOT.md](WHISPERKIT_PILOT.md)).
 
-## Build flag (off by default)
+## Build flag (on by default)
 
 The app is compiled by `build.sh`/`build-dmg.sh` with a raw `swiftc` glob. FluidAudio
-is a SwiftPM package linked via the `PARAKEET` flag, which is **OFF by default** —
-unlike WhisperKit, Parakeet is not yet a default-build cost (see follow-ups):
+is a SwiftPM package linked via the `PARAKEET` flag, which is **ON by default** —
+Parakeet ships in releases alongside WhisperKit:
 
-- **Opt-in** (`PARAKEET=1 ./build.sh`): builds FluidAudio into one static lib
+- **Default build** (`./build.sh`): builds FluidAudio into one static lib
   (`scripts/build-fluidaudio.sh` → `scripts/fluidaudio-link-args.sh`), links it,
   defines the `PARAKEET` compile flag that activates the real engines, and shows the
   Parakeet row in Settings › Models (labeled Experimental).
-- **Default build** (`./build.sh`): FluidAudio is not linked. `ParakeetStreamingEngine`
-  and `ParakeetFileEngine` compile to stubs that report unavailability if selected.
+- **Lean build** (`PARAKEET=0 ./build.sh`): FluidAudio is not linked.
+  `ParakeetStreamingEngine` and `ParakeetFileEngine` compile to stubs and the
+  Settings row is hidden.
+- `package.sh`/`build-dmg.sh` refuse to ship a stub binary unless `PARAKEET=0`
+  was explicit (`scripts/verify-parakeet-binary.sh`, mirroring the WhisperKit guard).
 
 ```bash
-PARAKEET=1 ./build.sh && ./package.sh --install
+./build.sh && ./package.sh    # Parakeet included by default
 ```
 
 ## Models
@@ -110,7 +113,7 @@ Pure mappers/gates live in OpenWhispCore and are unit-tested (`ParakeetSpikeTest
 - `ModelsPane.parakeetModelSection` (variant picker + download-state badge);
   `AgentBridgePane` (the EOU auto-stop toggle, `#if PARAKEET`).
 - Build: `third_party/fluidaudio-dep`, `scripts/build-fluidaudio.sh`,
-  `scripts/fluidaudio-link-args.sh`, `PARAKEET=1` → `-D PARAKEET`.
+  `scripts/fluidaudio-link-args.sh`, `PARAKEET` (default 1) → `-D PARAKEET`.
 
 ## Feature-matrix coverage
 
@@ -162,8 +165,9 @@ the level-tick clock finishes the session once the window elapses. Pure timing i
    — a follow-up if Parakeet backs meetings with per-speaker labels.
 5. **Multilingual detectedLanguage** returned nil for short English utterances in the
    harness (the lang tag isn't always emitted); transcription is unaffected.
-6. **Default-on decision** deferred: adding FluidAudio to the default build costs
-   static-lib size + clean-build time. Defer until the engines have real mileage.
+6. **Default-on: decided (on).** FluidAudio ships in default builds and releases
+   (PARAKEET=0 remains for lean builds). Cost accepted: static-lib size + one-time
+   clean-build compile of the dependency (~100 s, cached after).
 7. **Multilingual always downloads the full-vocab model.** The bridge passes
    `languageCode: "auto"` to `downloadVariant`, which selects the full 13k-token
    `multilingual` sub-model. FluidAudio also ships a smaller, faster Latin-script

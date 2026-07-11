@@ -73,9 +73,10 @@ also a `FileTranscriptionEngine` candidate) are follow-ups.
   `whisperkit-dep`) pinned **exact 0.15.5** (pre-1.0 API churn is real; bump
   deliberately and re-test).
 - `scripts/build-fluidaudio.sh` + `scripts/fluidaudio-link-args.sh` — build +
-  link plumbing, spliced into `build.sh`/`build-dmg.sh`. **OFF by default**:
-  `PARAKEET=1 ./build.sh` opts in; the plain build is unchanged (stub engine,
-  no Settings row).
+  link plumbing, spliced into `build.sh`/`build-dmg.sh`. OFF by default at
+  spike time (`PARAKEET=1` opted in); the flag has since flipped to **ON by
+  default** — see docs/PARAKEET.md. A lean `PARAKEET=0` build keeps the stub
+  engine and hides the Settings row.
 - `OpenWhisp/Services/ParakeetStreamingEngine.swift` — conforms to
   `StreamingTranscriptionEngine` (the Apple Speech seam; no protocol changes).
   Owns the mic via its own `AVAudioEngine` tap; buffers flow tap →
@@ -105,7 +106,7 @@ also a `FileTranscriptionEngine` candidate) are follow-ups.
 ## How to try it
 
 ```bash
-PARAKEET=1 ./build.sh          # opt-in build (also works for build-dmg.sh)
+./build.sh                     # Parakeet is included by default (PARAKEET=0 for a lean build)
 # run the app → Settings → Models → "Parakeet Realtime (CoreML)"
 # first selection downloads ~600 MB in the background; then dictate
 ```
@@ -152,4 +153,4 @@ never uses the file path — same routing as Apple Speech.
   `warmWhisperServerIfPossible` `case "parakeet"` → `prefetch()`.
 - `ModelsPane.parakeetModelSection` + the engine row (`#if PARAKEET`).
 - Build: `third_party/fluidaudio-dep`, `scripts/build-fluidaudio.sh`,
-  `scripts/fluidaudio-link-args.sh`, `PARAKEET=1` env → `-D PARAKEET`.
+  `scripts/fluidaudio-link-args.sh`, `PARAKEET` env (default 1) → `-D PARAKEET`.

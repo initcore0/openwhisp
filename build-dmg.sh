@@ -49,8 +49,8 @@ SWIFT_FILES=$(find "$PROJECT_DIR/OpenWhisp" -name "*.swift" | tr '\n' ' ')
 source "$PROJECT_DIR/scripts/whisperkit-link-args.sh"
 resolve_whisperkit_args
 
-# Parakeet/FluidAudio streaming backend (MAK-46 spike; OFF by default,
-# PARAKEET=1 to include). Shared with build.sh.
+# Parakeet/FluidAudio streaming backend (MAK-46; ON by default, PARAKEET=0
+# for a lean build). Shared with build.sh.
 # shellcheck source=scripts/fluidaudio-link-args.sh
 source "$PROJECT_DIR/scripts/fluidaudio-link-args.sh"
 resolve_fluidaudio_args
@@ -85,6 +85,10 @@ xcrun swiftc \
 # shellcheck source=scripts/verify-whisperkit-binary.sh
 source "$PROJECT_DIR/scripts/verify-whisperkit-binary.sh"
 verify_whisperkit_binary "$BUILD_DIR/OpenWhisp"
+# Same guard for the Parakeet backend (also on by default; PARAKEET=0 opts out).
+# shellcheck source=scripts/verify-parakeet-binary.sh
+source "$PROJECT_DIR/scripts/verify-parakeet-binary.sh"
+verify_parakeet_binary "$BUILD_DIR/OpenWhisp"
 
 # Build the openwhisp CLI / MCP adapter (separate SwiftPM executable). Bundled
 # into Contents/Helpers and signed inside-out with the hardened runtime below.

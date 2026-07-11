@@ -101,13 +101,12 @@ struct ModelsPane: View {
                 isSelected: isAppleSpeech
             ) { appState.transcriptionEngine = "appleSpeech" }
 
-            // MAK-46 spike: only offered when the build includes FluidAudio
-            // (PARAKEET=1) — unlike WhisperKit it is not on by default, so a
-            // visible-but-erroring row would be the common case.
+            // MAK-46: included in default builds (like WhisperKit); a lean
+            // PARAKEET=0 build hides the row rather than showing one that errors.
             #if PARAKEET
             SelectableRow(
                 title: "Parakeet Realtime (CoreML)",
-                subtitle: "True streaming — words appear ~0.3 s behind your voice. English only.",
+                subtitle: "True streaming — words appear ~0.3 s behind your voice. English + multilingual variants.",
                 badge: "Experimental",
                 isSelected: isParakeet
             ) { appState.transcriptionEngine = "parakeet" }
