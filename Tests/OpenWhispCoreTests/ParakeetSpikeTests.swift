@@ -32,6 +32,25 @@ final class ParakeetSpikeTests: XCTestCase {
         XCTAssertEqual(ParakeetCatalog.variant(for: "parakeet-eou-320ms").id, "parakeet-eou-320ms")
     }
 
+    func testEfficientTierIsInCatalogBetweenRealtimeAndAccurate() {
+        // The 640ms efficiency tier ([70,7,1]): same WER as the 320ms realtime
+        // tier at ~2.7x the throughput — a much lower sustained-CPU option.
+        let ids = ParakeetCatalog.variants.map(\.id)
+        guard let realtime = ids.firstIndex(of: "parakeet-unified-320ms"),
+              let efficient = ids.firstIndex(of: "parakeet-unified-640ms"),
+              let accurate = ids.firstIndex(of: "parakeet-unified-1120ms") else {
+            return XCTFail("unified tiers missing from catalog: \(ids)")
+        }
+        XCTAssertTrue(realtime < efficient && efficient < accurate)
+
+        let variant = ParakeetCatalog.variant(for: "parakeet-unified-640ms")
+        XCTAssertEqual(variant.name, "Parakeet Unified — efficient")
+        XCTAssertFalse(variant.multilingual)
+        XCTAssertFalse(variant.emitsEou)
+        // Adding the tier must NOT change the default variant.
+        XCTAssertEqual(ParakeetCatalog.defaultVariantID, "parakeet-unified-320ms")
+    }
+
     // MARK: - Streaming-session routing (the startDictation gate)
 
     func testParakeetAlwaysRoutesToStreamingSession() {
@@ -59,6 +78,50 @@ final class ParakeetSpikeTests: XCTestCase {
         XCTAssertTrue(StreamingRoutePolicy.needsSpeechAuthorization(engine: "appleSpeech"))
         XCTAssertFalse(StreamingRoutePolicy.needsSpeechAuthorization(engine: "parakeet"))
         XCTAssertFalse(StreamingRoutePolicy.needsSpeechAuthorization(engine: "whisperKit"))
+    }
+
+    // MARK: - Streaming callback session fence (late-final / stale-grant guards)
+
+    func testStreamingCallbackFreshWhenSameSession() {
+        let sid = UUID()
+        XCTAssertFalse(StreamingRoutePolicy.isStaleStreamingCallback(
+            callbackSessionID: sid, activeSessionID: sid))
+    }
+
+    func testStreamingCallbackStaleWhenSessionMovedOn() {
+        // The late-onFinal bug: a callback bound to a previous generation must be
+        // dropped once a newer session (a different activeSessionID) has begun.
+        XCTAssertTrue(StreamingRoutePolicy.isStaleStreamingCallback(
+            callbackSessionID: UUID(), activeSessionID: UUID()))
+    }
+
+    func testGrantCallbackProceedsWhenActiveAndNoPendingStop() {
+        let sid = UUID()
+        XCTAssertEqual(
+            StreamingRoutePolicy.grantCallbackAction(
+                callbackSessionID: sid, activeSessionID: sid, pendingStop: false),
+            .proceed)
+    }
+
+    func testGrantCallbackAbortsWhenActiveButPendingStop() {
+        let sid = UUID()
+        XCTAssertEqual(
+            StreamingRoutePolicy.grantCallbackAction(
+                callbackSessionID: sid, activeSessionID: sid, pendingStop: true),
+            .abort)
+    }
+
+    func testGrantCallbackDropsWhenNewerSessionBegan() {
+        // A stale grant must DROP (not abort) — aborting would tear down the
+        // successor session that already started. pendingStop is irrelevant here.
+        XCTAssertEqual(
+            StreamingRoutePolicy.grantCallbackAction(
+                callbackSessionID: UUID(), activeSessionID: UUID(), pendingStop: false),
+            .drop)
+        XCTAssertEqual(
+            StreamingRoutePolicy.grantCallbackAction(
+                callbackSessionID: UUID(), activeSessionID: UUID(), pendingStop: true),
+            .drop)
     }
 
     // MARK: - Variant-aware language gate
@@ -217,12 +280,26 @@ final class ParakeetSpikeTests: XCTestCase {
     }
 
     func testUnifiedTiersShareARepoFolder() {
-        // The two Unified tiers stage into ONE repo — installing either shows both
+        // The three Unified tiers stage into ONE repo — installing any shows all
         // as installed.
-        XCTAssertEqual(
-            ParakeetDownloadStatePolicy.repoFolder(forVariant: "parakeet-unified-320ms"),
-            ParakeetDownloadStatePolicy.repoFolder(forVariant: "parakeet-unified-1120ms")
-        )
+        for id in ["parakeet-unified-320ms", "parakeet-unified-640ms", "parakeet-unified-1120ms"] {
+            XCTAssertEqual(
+                ParakeetDownloadStatePolicy.repoFolder(forVariant: id),
+                "parakeet-unified-en-0.6b",
+                "unified tier \(id) must map to the shared repo folder"
+            )
+        }
+    }
+
+    func testEveryCatalogVariantMapsToARepoFolder() {
+        // A catalog variant WITHOUT a repo-folder mapping would show
+        // "Not downloaded" forever, even after installing — catch the drift.
+        for variant in ParakeetCatalog.variants {
+            XCTAssertNotNil(
+                ParakeetDownloadStatePolicy.repoFolder(forVariant: variant.id),
+                "catalog variant \(variant.id) has no repoFolder mapping"
+            )
+        }
     }
 
     func testParakeetRepoLabelsAreHumanReadable() {

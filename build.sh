@@ -32,6 +32,13 @@ while IFS= read -r f; do
     SWIFT_FILES+=("$f")
 done < <(find "$PROJECT_DIR/OpenWhisp" -name "*.swift")
 
+# Stamp the build with its git commit (shown in Settings › Advanced) — the
+# generated file lives in build/, outside the source glob, and is regenerated
+# every build.
+# shellcheck source=scripts/generate-build-info.sh
+source "$PROJECT_DIR/scripts/generate-build-info.sh"
+SWIFT_FILES+=("$(generate_build_info "$BUILD_DIR")")
+
 # WhisperKit backend. ON BY DEFAULT (it's the default transcription engine); opt
 # out with WHISPERKIT=0 for a lean build. The link-args logic is shared with
 # build-dmg.sh so the two compile paths never drift. See docs/WHISPERKIT_PILOT.md.

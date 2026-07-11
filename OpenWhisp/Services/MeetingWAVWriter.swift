@@ -59,6 +59,24 @@ final class MeetingWAVWriter {
     /// Best-effort: force buffered bytes to disk so a crash loses only the tail.
     func sync() { try? handle.synchronize() }
 
+    /// Monotonic timestamp of the last `syncThrottled` flush (0 = never, so the
+    /// first call always syncs).
+    private var lastSyncUptime: TimeInterval = 0
+
+    /// Throttled `sync()`. fsync is expensive and capture callbacks arrive many
+    /// times per second for the whole meeting, so steady-state writers flush to
+    /// disk at most once per `interval` (every append still WRITES the data; only
+    /// the fsync is throttled — a crash loses at most the last ~`interval` of
+    /// buffered tail). Stop/finalize paths call `sync()` directly so nothing is
+    /// left unflushed at the end. Call from the writer's single serial queue,
+    /// same as `append`.
+    func syncThrottled(interval: TimeInterval = 2.0) {
+        let now = ProcessInfo.processInfo.systemUptime
+        guard now - lastSyncUptime >= interval else { return }
+        lastSyncUptime = now
+        sync()
+    }
+
     var duration: TimeInterval { Double(framesWritten) / Double(sampleRate) }
 
     // MARK: Header

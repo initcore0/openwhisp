@@ -34,6 +34,7 @@ let package = Package(
                 "ParakeetDownloadState.swift",
                 "AgentEouAutoStop.swift",
                 "StreamingRoutePolicy.swift",
+                "SettingsResetDefaults.swift",
                 "ProfileResolver.swift",
                 "Mode.swift",
                 "ModeResolver.swift",

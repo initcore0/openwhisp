@@ -187,46 +187,55 @@ struct ModesPane: View {
                 "The key is normalized (lowercased, spaces → hyphens). Tone + " +
                 "instruction steer the AI refine. Language/output/AI-cleanup apply " +
                 "for that session; a per-mode transcription-model swap is not wired " +
-                "yet (see the changelog). App auto-activation also needs per-app " +
-                "modes enabled in the Dictation pane.")
+                "yet (see the changelog). App auto-activation also needs “Apply " +
+                "per-app profiles” enabled in the Per-App Profiles pane.")
         }
     }
 
     // MARK: Bindings
 
+    /// Bounds-safe write counterpart to the `[safe:]` getter: silently drops a
+    /// binding write that lands after the row was removed (SwiftUI can flush a
+    /// control's value one update after the deletion) instead of crashing on an
+    /// out-of-range index.
+    private func setMode(_ idx: Int, _ mutate: (inout Mode) -> Void) {
+        guard appState.modes.indices.contains(idx) else { return }
+        mutate(&appState.modes[idx])
+    }
+
     private func nameBinding(_ idx: Int) -> Binding<String> {
         Binding(get: { appState.modes[safe: idx]?.name ?? "" },
-                set: { appState.modes[idx].name = $0 })
+                set: { v in setMode(idx) { $0.name = v } })
     }
     private func keyBinding(_ idx: Int) -> Binding<String> {
         Binding(get: { appState.modes[safe: idx]?.key ?? "" },
-                set: { appState.modes[idx].key = Mode.normalizeKey($0) })
+                set: { v in setMode(idx) { $0.key = Mode.normalizeKey(v) } })
     }
     private func iconBinding(_ idx: Int) -> Binding<String> {
         Binding(get: { appState.modes[safe: idx]?.iconSymbol ?? "" },
-                set: { appState.modes[idx].iconSymbol = $0.isEmpty ? nil : $0 })
+                set: { v in setMode(idx) { $0.iconSymbol = v.isEmpty ? nil : v } })
     }
     private func instructionBinding(_ idx: Int) -> Binding<String> {
         Binding(get: { appState.modes[safe: idx]?.instruction ?? "" },
-                set: { appState.modes[idx].instruction = $0.isEmpty ? nil : $0 })
+                set: { v in setMode(idx) { $0.instruction = v.isEmpty ? nil : v } })
     }
     private func toneBinding(_ idx: Int) -> Binding<Tone?> {
         Binding(get: { appState.modes[safe: idx]?.tone },
-                set: { appState.modes[idx].tone = $0 })
+                set: { v in setMode(idx) { $0.tone = v } })
     }
     private func languageBinding(_ idx: Int) -> Binding<String> {
         Binding(get: { appState.modes[safe: idx]?.language ?? "__inherit__" },
-                set: { appState.modes[idx].language = $0 == "__inherit__" ? nil : $0 })
+                set: { v in setMode(idx) { $0.language = v == "__inherit__" ? nil : v } })
     }
     private func outputBinding(_ idx: Int) -> Binding<String> {
         Binding(get: { appState.modes[safe: idx]?.outputMode ?? "__inherit__" },
-                set: { appState.modes[idx].outputMode = $0 == "__inherit__" ? nil : $0 })
+                set: { v in setMode(idx) { $0.outputMode = v == "__inherit__" ? nil : v } })
     }
     private func appBinding(_ idx: Int) -> Binding<String> {
         Binding(get: { appState.modes[safe: idx]?.appBundleID ?? "" },
-                set: {
-                    let trimmed = $0.trimmingCharacters(in: .whitespacesAndNewlines)
-                    appState.modes[idx].appBundleID = trimmed.isEmpty ? nil : trimmed
+                set: { v in
+                    let trimmed = v.trimmingCharacters(in: .whitespacesAndNewlines)
+                    setMode(idx) { $0.appBundleID = trimmed.isEmpty ? nil : trimmed }
                 })
     }
     private func aiBinding(_ idx: Int) -> Binding<String> {
@@ -236,10 +245,12 @@ struct ModesPane: View {
                 return v ? "on" : "off"
             },
             set: { newValue in
-                switch newValue {
-                case "on":  appState.modes[idx].aiCleanupEnabled = true
-                case "off": appState.modes[idx].aiCleanupEnabled = false
-                default:    appState.modes[idx].aiCleanupEnabled = nil
+                setMode(idx) {
+                    switch newValue {
+                    case "on":  $0.aiCleanupEnabled = true
+                    case "off": $0.aiCleanupEnabled = false
+                    default:    $0.aiCleanupEnabled = nil
+                    }
                 }
             }
         )

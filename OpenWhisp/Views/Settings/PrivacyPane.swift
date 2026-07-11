@@ -215,8 +215,12 @@ struct PrivacyPane: View {
                 isOn: $appState.retainRawAudioEnabled
             )
             if appState.retainRawAudioEnabled {
+                // Per AudioRetentionPolicy, 0 means NO count cap — say so instead
+                // of the misleading "Keep at most 0 clips".
                 Stepper(
-                    "Keep at most \(appState.audioRetentionMaxClips) clips",
+                    appState.audioRetentionMaxClips == 0
+                        ? "Keep clips: no limit"
+                        : "Keep at most \(appState.audioRetentionMaxClips) clips",
                     value: $appState.audioRetentionMaxClips,
                     in: 0...500,
                     step: 10

@@ -30,6 +30,13 @@ final class ScratchpadWindowController: NSObject, NSWindowDelegate, NSTextViewDe
     /// The id of the note currently shown in the editor.
     private var selectedID: UUID?
     private var loaded = false
+    /// True while WE are programmatically reloading/re-selecting the list (e.g.
+    /// mid-keystroke from `textDidChange`, where the edited note re-sorts to row 0).
+    /// NSTableView posts `selectionDidChange` SYNCHRONOUSLY for programmatic
+    /// selection; without this guard that callback would round-trip into
+    /// `showNoteInEditor` and rewrite `textView.string` under the user's cursor —
+    /// resetting the insertion point and destroying IME marked text.
+    private var isSyncingList = false
 
     init(appState: AppState) {
         self.appState = appState
@@ -90,7 +97,14 @@ final class ScratchpadWindowController: NSObject, NSWindowDelegate, NSTextViewDe
         panel.minSize = NSSize(width: 460, height: 260)
         panel.delegate = self
         panel.contentView = buildContentView()
-        panel.center()
+        // Remember size/position across relaunches. Restore an existing saved
+        // frame first; only center at the 640x420 default when there is none
+        // (first run), so the autosave never fights the initial layout.
+        let autosaveName = "OpenWhispScratchpadPanel"
+        if !panel.setFrameUsingName(autosaveName) {
+            panel.center()
+        }
+        panel.setFrameAutosaveName(autosaveName)
         reloadList()
         // Show the most-recent note (or a fresh one) on first open.
         if let first = notes.notes.first?.id {
@@ -142,6 +156,9 @@ final class ScratchpadWindowController: NSObject, NSWindowDelegate, NSTextViewDe
         // Right: editor + provenance line.
         let editor = NSTextView()
         editor.isRichText = false
+        // Cmd+Z must work: edits persist per-keystroke, so without undo an
+        // accidental Select-All + Delete would irreversibly wipe the note.
+        editor.allowsUndo = true
         editor.font = .systemFont(ofSize: 14)
         editor.isAutomaticQuoteSubstitutionEnabled = false
         editor.delegate = self
@@ -179,13 +196,25 @@ final class ScratchpadWindowController: NSObject, NSWindowDelegate, NSTextViewDe
         split.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(split)
 
+        // The list is the NARROW sidebar; the editor gets the space. Without
+        // these, NSSplitView places the divider from intrinsic content sizes —
+        // the table's column dwarfed the text view and the editor rendered as a
+        // cramped strip on the right. A higher holding priority on the left pane
+        // sends all resize slack to the editor, the max-width cap keeps the list
+        // a sidebar, and setPosition puts the divider where the design intends.
+        split.setHoldingPriority(NSLayoutConstraint.Priority(261), forSubviewAt: 0)
+        split.setHoldingPriority(NSLayoutConstraint.Priority(250), forSubviewAt: 1)
+
         NSLayoutConstraint.activate([
             split.leadingAnchor.constraint(equalTo: container.leadingAnchor),
             split.trailingAnchor.constraint(equalTo: container.trailingAnchor),
             split.topAnchor.constraint(equalTo: container.topAnchor),
             split.bottomAnchor.constraint(equalTo: container.bottomAnchor),
             leftColumn.widthAnchor.constraint(greaterThanOrEqualToConstant: 160),
+            leftColumn.widthAnchor.constraint(lessThanOrEqualToConstant: 280),
         ])
+        container.layoutSubtreeIfNeeded()
+        split.setPosition(200, ofDividerAt: 0)
         return container
     }
 
@@ -214,7 +243,20 @@ final class ScratchpadWindowController: NSObject, NSWindowDelegate, NSTextViewDe
     }
 
     @objc private func deleteNoteAction() {
-        guard let id = selectedID else { return }
+        guard let id = selectedID, let note = notes.note(id) else { return }
+        // Deletion is permanent (persisted immediately, no undo), so confirm for
+        // any note with content. Empty notes still delete silently in one click.
+        let isEmpty = note.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        if !isEmpty {
+            let alert = NSAlert()
+            alert.messageText = "Delete “\(note.displayTitle)”?"
+            alert.informativeText = "This permanently deletes the note. It can't be undone."
+            alert.alertStyle = .warning
+            let deleteButton = alert.addButton(withTitle: "Delete")
+            deleteButton.hasDestructiveAction = true
+            alert.addButton(withTitle: "Cancel")
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+        }
         notes.delete(id)
         persist()
         selectedID = notes.notes.first?.id
@@ -230,13 +272,20 @@ final class ScratchpadWindowController: NSObject, NSWindowDelegate, NSTextViewDe
     }
 
     private func selectID(_ id: UUID) {
+        let body = notes.note(id)?.text ?? ""
+        // No-op when nothing would change: a spurious selection callback for the
+        // already-shown note must not reset `textView.string` (that would move the
+        // cursor to the end and kill in-progress IME composition).
+        if id == selectedID, textView?.string == body { return }
         selectedID = id
-        showNoteInEditor(id, body: notes.note(id)?.text ?? "")
+        showNoteInEditor(id, body: body)
     }
 
     // MARK: - View sync
 
     private func reloadList() {
+        isSyncingList = true
+        defer { isSyncingList = false }
         tableView?.reloadData()
         if let id = selectedID, let row = notes.notes.firstIndex(where: { $0.id == id }) {
             tableView?.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
@@ -269,11 +318,11 @@ final class ScratchpadWindowController: NSObject, NSWindowDelegate, NSTextViewDe
         notes.setText(textView.string, for: id)
         persist()
         // Refresh the list title/order and provenance line without stealing focus.
+        // reloadList's isSyncingList guard keeps the synchronous selectionDidChange
+        // this triggers (the edited note re-sorts to row 0) from rewriting the
+        // editor content mid-keystroke.
         provenanceLabel?.stringValue = Self.provenanceLine(notes.note(id))
-        tableView?.reloadData()
-        if let row = notes.notes.firstIndex(where: { $0.id == id }) {
-            tableView?.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
-        }
+        reloadList()
     }
 
     // MARK: - NSWindowDelegate
@@ -307,6 +356,9 @@ extension ScratchpadWindowController: NSTableViewDataSource, NSTableViewDelegate
     }
 
     func tableViewSelectionDidChange(_ notification: Notification) {
+        // Ignore the selection changes WE cause (programmatic reload/re-select in
+        // reloadList) — only user-driven selection should swap the editor content.
+        guard !isSyncingList else { return }
         tableClicked()
     }
 }

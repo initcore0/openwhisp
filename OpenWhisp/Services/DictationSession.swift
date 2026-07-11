@@ -34,6 +34,28 @@ enum SessionInitiator: Equatable {
     }
 }
 
+/// Decisions about the dictation-session lifecycle that must stay consistent
+/// across the (ordering-sensitive) start/cancel/finish sites. Pure so the
+/// invariant is unit-tested rather than re-derived at each call site.
+enum DictationSessionLifecycle {
+    /// Whether `finishSessionUI` should reset the hotkey activation machine when a
+    /// session ends.
+    ///
+    /// It must NOT reset while a preempt-replacement start is queued
+    /// (`pendingPreemptStart`): there the activation machine's current state
+    /// (mid-press or locked-open) describes the user's NEW session, and wiping it
+    /// would swallow the upcoming release — in hold mode the preempt-started mic
+    /// would then never stop on release.
+    ///
+    /// This is why the agent-preempt path in `startDictation` must set
+    /// `pendingPreemptStart` BEFORE calling `cancelDictation` (which runs
+    /// `finishSessionUI`): the flag has to be visible here, or the reset fires and
+    /// the release is lost.
+    static func shouldResetActivation(pendingPreemptStart: Bool) -> Bool {
+        !pendingPreemptStart
+    }
+}
+
 /// The terminal outcome of a dictation session, delivered exactly once to an
 /// agent-initiated waiter (see `AppState.onSessionEnd`).
 ///

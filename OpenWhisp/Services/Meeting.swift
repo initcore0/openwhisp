@@ -127,6 +127,23 @@ public enum MeetingStatus: Codable, Equatable {
         }
     }
 
+    /// The status a persisted meeting should be shown with after a fresh launch.
+    ///
+    /// `transcribing` / `summarizing` are *working* stages — they can only be true
+    /// while the coordinator is actively driving the engine/LLM. Finding one in the
+    /// store at launch means the app crashed or quit mid-work, so showing it verbatim
+    /// would be a permanent spinner over work nobody is doing. Roll each working
+    /// stage back to its resting predecessor so the work can simply be rerun:
+    /// `transcribing → recorded`, `summarizing → transcribed`. Resting and terminal
+    /// stages pass through unchanged.
+    public var normalizedForLaunch: MeetingStatus {
+        switch self {
+        case .transcribing: return .recorded
+        case .summarizing: return .transcribed
+        default: return self
+        }
+    }
+
     // Tagged-union coding: {"kind":"failed","reason":"…"} etc. Unknown kinds decode
     // to `.failed` so a newer status can't crash an older reader.
     private enum CodingKeys: String, CodingKey { case kind, reason }
