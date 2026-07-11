@@ -22,6 +22,12 @@ final class MeetingCaptureSession {
 
     /// State changes (main thread) for the UI (menu title, indicator).
     var onStateChanged: ((State) -> Void)?
+    /// Delivery of the finished recording (main thread). Set at `start` or passed to
+    /// `stop`; used by BOTH the normal-stop and leg-failure salvage paths so there is
+    /// exactly one delivery of any given recording. The integrator wires this to
+    /// `MeetingPipelineCoordinator.ingest(_:)` — a single, direct ingest path (no
+    /// NotificationCenter hop).
+    var onFinished: ((MeetingRecording) -> Void)?
 
     private let queue = DispatchQueue(label: "com.openwhisp.app.meeting.session")
     private var systemLeg: SystemAudioCapture?
@@ -30,7 +36,14 @@ final class MeetingCaptureSession {
     private var writer: MeetingWAVWriter?
     private var startedAt: Date?
     private var recordingID = UUID()
+    private var pendingID = UUID()
+    private var pendingStartedAt = Date()
     private var state: State = .idle
+    /// The id + start time of the in-flight recording, exposed so the integrator can
+    /// thread the SAME id into the pipeline's live row (`beginRecording(id:startedAt:)`)
+    /// before `stop` delivers the finished `MeetingRecording` under that id.
+    var currentRecordingID: UUID { recordingID }
+    var currentStartedAt: Date? { startedAt }
     /// Most recent per-leg level (0…1) for a coarse UI meter.
     private(set) var level: Float = 0
 
@@ -63,8 +76,15 @@ final class MeetingCaptureSession {
     /// `.recording` on success or `.failed` on any preflight/start error. The
     /// caller (AppState/menu) is responsible for refusing to start while a
     /// dictation is active (mic exclusivity — see `MeetingMicCapture`).
-    func start() {
+    /// - Parameters:
+    ///   - id/startedAt: optionally supplied by the integrator so the pipeline's live
+    ///     row (created at Start via `beginRecording(id:startedAt:)`) carries the SAME
+    ///     id/timestamp as the finished `MeetingRecording` — the live row becomes the
+    ///     real row. When omitted, a fresh id/now is used.
+    func start(id: UUID = UUID(), startedAt startTime: Date = Date()) {
         guard state == .idle else { return }
+        self.pendingID = id
+        self.pendingStartedAt = startTime
 
         // Preflight Screen Recording. If missing, fire the request (first-run
         // prompt) and fail this attempt with clear guidance — the user grants,
@@ -76,9 +96,9 @@ final class MeetingCaptureSession {
             return
         }
 
-        recordingID = UUID()
+        recordingID = pendingID
         mixer = MeetingMixer()
-        startedAt = Date()
+        startedAt = pendingStartedAt
 
         do {
             let url = try Self.newRecordingURL(id: recordingID)
@@ -126,10 +146,11 @@ final class MeetingCaptureSession {
         }
     }
 
-    /// Stop both legs, drain the mixer, finalize the WAV, and deliver the
-    /// `MeetingRecording` (both via `onFinished` and the seam notification).
+    /// Stop both legs, drain the mixer, finalize the WAV, and deliver the finished
+    /// `MeetingRecording` exactly once via `onFinished` (set here or at `start`).
     func stop(onFinished: ((MeetingRecording) -> Void)? = nil) {
         guard state == .recording else { return }
+        if let onFinished { self.onFinished = onFinished }
 
         let system = systemLeg
         micLeg?.stop()
@@ -138,11 +159,20 @@ final class MeetingCaptureSession {
         // buffers already enqueued on `queue` are written before we drain.
         Task { [weak self] in
             await system?.stop()
-            self?.finalizeAndDeliver(onFinished: onFinished)
+            self?.finalizeAndDeliver()
         }
     }
 
-    private func finalizeAndDeliver(onFinished: ((MeetingRecording) -> Void)?) {
+    /// Guards against a double delivery (normal stop racing a leg failure).
+    private var delivered = false
+
+    private func deliver(_ recording: MeetingRecording) {
+        guard !delivered else { return }
+        delivered = true
+        onFinished?(recording)
+    }
+
+    private func finalizeAndDeliver() {
         queue.async { [weak self] in
             guard let self, let writer = self.writer, let startedAt = self.startedAt else { return }
             // Emit whichever leg ran longer (mixed with silence) so the tail isn't lost.
@@ -165,8 +195,7 @@ final class MeetingCaptureSession {
 
             DispatchQueue.main.async {
                 self.setState(.finished)
-                onFinished?(recording)
-                Self.postFinished(recording)
+                self.deliver(recording)
             }
         }
     }
@@ -187,7 +216,7 @@ final class MeetingCaptureSession {
             DispatchQueue.main.async {
                 // Salvage: deliver the partial recording, then report the cause.
                 self.setState(.finished)
-                Self.postFinished(recording)
+                self.deliver(recording)
                 self.setState(.failed(message))
             }
         }
@@ -257,16 +286,5 @@ final class MeetingCaptureSession {
     private static func newRecordingURL(id: UUID) throws -> URL {
         let stamp = Int(Date().timeIntervalSince1970)
         return try meetingsDirectory().appendingPathComponent("meeting_\(stamp)_\(id.uuidString).wav")
-    }
-
-    /// Deliver over the seam notification (JSON-encoded `MeetingRecording` in
-    /// `userInfo["recording"]`). The integration pass replaces/routes this.
-    private static func postFinished(_ recording: MeetingRecording) {
-        guard let data = try? JSONEncoder().encode(recording) else { return }
-        NotificationCenter.default.post(
-            name: .openWhispMeetingRecordingFinished,
-            object: nil,
-            userInfo: ["recording": data]
-        )
     }
 }

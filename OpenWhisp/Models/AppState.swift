@@ -851,6 +851,10 @@ class AppState: ObservableObject {
     // MARK: - Runtime State
 
     @Published var isRecording = false
+    /// True while a Meeting-mode capture (MAK-50) is running. A meeting and a
+    /// dictation share the mic, so they are mutually exclusive: the app delegate
+    /// sets this on meeting Start/Stop and `startDictation` refuses while it's set.
+    @Published var meetingInProgress = false
     @Published var isTranscribing = false {
         didSet {
             // Stamp the moment finalize begins (recording stopped → transcribing) so
@@ -2092,6 +2096,13 @@ class AppState: ObservableObject {
     ///   stays open with the trigger released, shows the lock affordance, and arms
     ///   the silence safety auto-stop. Default `false` (ordinary press-to-talk).
     func startDictation(locked: Bool = false) {
+        // Mic exclusivity (MAK-50): a meeting owns the mic — refuse to start a
+        // dictation while one is recording (the reverse guard lives in the menu's
+        // Start Meeting item / startMeeting).
+        if meetingInProgress {
+            statusMessage = "Stop the meeting before dictating"
+            return
+        }
         // The dictation key is now ONLY dictation — refine has its own dedicated
         // chord (see startRefine). So a plain press always starts a normal
         // dictation and pastes instantly (no re-press disambiguation, no deferral).

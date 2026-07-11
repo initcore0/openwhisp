@@ -334,28 +334,43 @@ class OpenWhispApp: NSObject, NSApplicationDelegate {
             switch state {
             case .recording:
                 self.meetingActive = true
+                self.appState.meetingInProgress = true   // block dictation while recording
                 self.appState.statusMessage = "Meeting recording…"
             case .finished:
                 self.meetingActive = false
+                self.appState.meetingInProgress = false
             case .failed(let msg):
                 self.meetingActive = false
+                self.appState.meetingInProgress = false
+                // A start/preflight failure never delivers onFinished — clear the
+                // optimistic live row so it doesn't linger.
+                self.appState.meetingCoordinator.endRecording()
                 self.appState.statusMessage = msg
             case .idle:
                 break
             }
         }
-        session.start()
+        // Mint the id up front and open the live row in the Meetings pane under that
+        // SAME id; thread it into capture so the finished MeetingRecording carries it
+        // and `ingest` turns the live row into the real row.
+        let id = UUID()
+        let startedAt = Date()
+        appState.meetingCoordinator.beginRecording(id: id, startedAt: startedAt)
+        // Deliver the finished recording straight into the pipeline — a single,
+        // direct ingest path (no NotificationCenter hop, no double-ingest).
+        session.onFinished = { [weak self] recording in
+            guard let self else { return }
+            self.appState.meetingCoordinator.ingest(recording)   // clears the live row + kicks off transcription
+            self.appState.statusMessage = "Meeting saved (\(Int(recording.duration))s)"
+        }
+        session.start(id: id, startedAt: startedAt)
     }
 
     @available(macOS 13.0, *)
     @objc private func stopMeeting() {
         guard let session = meetingSession as? MeetingCaptureSession else { return }
-        session.stop { [weak self] recording in
-            // The integration pass routes the recording to the pipeline; capture
-            // side just confirms and clears state. The seam notification has also
-            // fired (see MeetingCaptureSession.postFinished).
-            self?.appState.statusMessage = "Meeting saved (\(Int(recording.duration))s)"
-        }
+        // Stop → finalize → the onFinished wired at start ingests exactly once.
+        session.stop()
         meetingActive = false
     }
 
