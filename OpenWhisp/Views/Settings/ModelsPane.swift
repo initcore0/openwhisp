@@ -381,7 +381,15 @@ struct ModelsPane: View {
                     .foregroundColor(.secondary)
                     .monospacedDigit()
                 Button("Open Models Folder") {
-                    NSWorkspace.shared.open(WhisperKitModelCatalog.baseDir.deletingLastPathComponent())
+                    // Engine-aware: Parakeet models live in FluidAudio's own cache
+                    // (~/Library/Application Support/FluidAudio/Models), not under
+                    // OpenWhisp's folder — opening the wrong one reads as "where
+                    // is my model?". Ensure the dir exists so Finder always opens.
+                    let dir = isParakeet
+                        ? AppState.fluidAudioModelsDirectory()
+                        : WhisperKitModelCatalog.baseDir.deletingLastPathComponent()
+                    try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+                    NSWorkspace.shared.open(dir)
                 }
             }
 
