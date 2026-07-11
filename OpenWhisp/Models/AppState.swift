@@ -2105,6 +2105,46 @@ class AppState: ObservableObject {
         engine.onFinal = { [weak self] text in
             Task { @MainActor in self?.handleAppleSpeechFinal(text, sessionID: sessionID) }
         }
+        engine.onStarted = { [weak self] in
+            Task { @MainActor in self?.handleStreamingCaptureStarted(sessionID: sessionID) }
+        }
+    }
+
+    /// The streaming engine reported capture genuinely live (mic tap installed,
+    /// audio being consumed) — or the arming-timeout fallback fired. Streaming
+    /// counterpart of the recorder's `.recording` transition: only NOW does the
+    /// session leave arming ("Starting…") and claim "Listening...". Flipping at
+    /// `engine.start()` return was the bug — WhisperKit/Parakeet only enqueue
+    /// their start there, so the UI said "Listening" through the whole model
+    /// load (or first-run download) while speech was silently dropped.
+    /// The decision is the tested `StreamingRoutePolicy.captureStartedAction`;
+    /// the isArming gate also makes the late duplicate (onStarted after the
+    /// timeout fallback, or vice versa) a no-op.
+    @MainActor
+    private func handleStreamingCaptureStarted(sessionID: UUID) {
+        switch StreamingRoutePolicy.captureStartedAction(
+            callbackSessionID: sessionID,
+            activeSessionID: activeSessionID,
+            isArming: isArming,
+            pendingStop: pendingStop
+        ) {
+        case .drop:
+            return
+        case .beginListening:
+            isArming = false
+            isRecording = true
+            statusMessage = "Listening..."
+        case .beginListeningThenStop:
+            // The hotkey-up landed while the engine was still arming (after the
+            // grant callback's pendingStop guard, so nothing else consumes it).
+            // Go live, then run the stop — otherwise the mic keeps capturing
+            // unattended. Same handling as the recorder's `.recording` case.
+            isArming = false
+            isRecording = true
+            statusMessage = "Listening..."
+            pendingStop = false
+            stopDictation()
+        }
     }
 
     /// Wire the Parakeet streaming engine's EOU signal to the agent EOU auto-stop
@@ -3226,8 +3266,10 @@ class AppState: ObservableObject {
         appleLiveInsertedText = ""
         appleDidCompleteFinal = false
         // Keep the "Starting..." arming cue from beginSession until the recognizer
-        // is actually live. Both backends have a startup gap: async mic grant (plus
-        // Speech-auth for Apple), then engine start.
+        // is actually live. Every backend has a startup gap: async mic grant (plus
+        // Speech-auth for Apple), then engine start — and for the chained engines
+        // (WhisperKit/Parakeet) the model load after start() is enqueued. The gap
+        // ends when the engine's onStarted signal fires (handleStreamingCaptureStarted).
         let sessionID = activeSessionID
         // Apple Speech needs Speech-framework authorization on top of the mic;
         // the on-device engines (WhisperKit, Parakeet) need only the mic.
@@ -3264,9 +3306,23 @@ class AppState: ObservableObject {
             do {
                 engine.selectDevice(micID)
                 try engine.start(language: self.engineLanguageSetting)
-                self.isArming = false
-                self.isRecording = true
-                self.statusMessage = "Listening..."
+                // Do NOT flip to Listening here: for WhisperKit/Parakeet,
+                // start() only ENQUEUED the real start on the engine's serial
+                // lifecycle chain — the model load (or first-run download)
+                // hasn't happened and no mic tap exists yet, so speech in that
+                // gap would be silently dropped behind a "Listening" UI. The
+                // session stays arming ("Starting…") until the engine's
+                // onStarted signal (bound per-session in
+                // bindStreamingSessionCallbacks) reports capture genuinely
+                // live. Apple Speech starts synchronously, so its onStarted has
+                // already fired inside start() and the session is live here.
+                // Timeout fallback: if the signal never lands (wiring bug),
+                // flip anyway rather than wedging the session at "Starting…".
+                Task { @MainActor in
+                    try? await Task.sleep(
+                        nanoseconds: UInt64(StreamingRoutePolicy.captureStartTimeout * 1_000_000_000))
+                    self.handleStreamingCaptureStarted(sessionID: sessionID)
+                }
             } catch {
                 self.error = error.localizedDescription
                 self.statusMessage = "Streaming Error"

@@ -107,6 +107,15 @@ protocol StreamingTranscriptionEngine: AnyObject {
     /// (the floor rises during speech, reading ongoing talk as "silence").
     /// Engines whose display level is already absolute pass the same value twice.
     var onLevelChanged: ((_ display: Float, _ vad: Float) -> Void)? { get set }
+    /// Fired once per session when capture is GENUINELY live — the mic tap is
+    /// installed and the engine is consuming audio. `start()` returning is not
+    /// that signal: WhisperKit and Parakeet only ENQUEUE their start on a serial
+    /// lifecycle chain, and the model load (or first-run download, up to minutes)
+    /// happens before any tap exists. Callers must keep the "Starting…"/arming
+    /// cue until this fires — flipping to "Listening" at `start()` return
+    /// silently drops everything spoken during the load gap. Fires on the main
+    /// actor. Never fires for a session that fails to start (`onError` ends it).
+    var onStarted: (() -> Void)? { get set }
 
     /// Pin the input device (an opaque platform UID, e.g. the CoreAudio device UID
     /// stored as `microphoneID`) for the NEXT `start()`. The empty string means

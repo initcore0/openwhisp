@@ -18,6 +18,7 @@ final class WhisperKitStreamingEngine: StreamingTranscriptionEngine {
     var onFinal: ((String) -> Void)?
     var onError: ((String) -> Void)?
     var onLevelChanged: ((_ display: Float, _ vad: Float) -> Void)?
+    var onStarted: (() -> Void)?
 
     /// WhisperKit model id (its own namespace). Defaults to the staged `small`
     /// (multilingual EN+RU) — the same model the file engine uses.
@@ -51,6 +52,12 @@ final class WhisperKitStreamingEngine: StreamingTranscriptionEngine {
     // unconfirmed/hypothesis tail.
     @MainActor private var lastConfirmedText: String = ""
     @MainActor private var didFinish: Bool = false
+    /// Whether this stream's `onStarted` already fired. AudioStreamTranscriber
+    /// installs the tap inside `handle.start()`, which doesn't return until the
+    /// stream ENDS — so the first state diff (they arrive per buffer, energy
+    /// updates included, even in silence) is the earliest proof the engine is
+    /// consuming audio. Reset per stream in `runStart`.
+    @MainActor private var startedNotified: Bool = false
 
     /// Stream generation, bumped when a stream starts (runStart) and when one is
     /// torn down (runStop). Each stream's state callback captures its own
@@ -121,6 +128,7 @@ final class WhisperKitStreamingEngine: StreamingTranscriptionEngine {
 
             let kit = try await ensureLoaded()
             generation += 1
+            startedNotified = false
             let myGeneration = generation
             let handle = try WhisperKitBridge.makeStreamHandle(
                 kit: kit,
@@ -198,6 +206,13 @@ final class WhisperKitStreamingEngine: StreamingTranscriptionEngine {
     /// Translate a WhisperKit stream state into our callbacks.
     @MainActor
     private func handleState(_ state: WhisperKitStreamState) {
+        // First state diff for this stream = capture is live (tap installed,
+        // buffers flowing). Fires before any partial from the same diff so the
+        // session leaves arming before text starts arriving.
+        if !startedNotified {
+            startedNotified = true
+            onStarted?()
+        }
         if let level = state.peakEnergy {
             // vadLevel is the absolute-curve reading; the display level's
             // silence-referenced scale must never reach the fixed VAD gates.

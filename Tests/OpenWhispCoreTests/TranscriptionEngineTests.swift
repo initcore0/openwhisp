@@ -50,6 +50,7 @@ final class FakeStreamingTranscriptionEngine: StreamingTranscriptionEngine {
     var onFinal: ((String) -> Void)?
     var onError: ((String) -> Void)?
     var onLevelChanged: ((_ display: Float, _ vad: Float) -> Void)?
+    var onStarted: (() -> Void)?
 
     private(set) var startedLanguages: [String] = []
     private(set) var stops: [Bool] = []
@@ -125,10 +126,13 @@ final class TranscriptionEngineTests: XCTestCase {
         var partials: [String] = []
         var finals: [String] = []
         var levels: [(display: Float, vad: Float)] = []
+        var startedCount = 0
         fake.onPartial = { partials.append($0) }
         fake.onFinal = { finals.append($0) }
         fake.onLevelChanged = { levels.append((display: $0, vad: $1)) }
+        fake.onStarted = { startedCount += 1 }
 
+        fake.onStarted?()
         fake.onPartial?("he")
         fake.onPartial?("hello")
         fake.onLevelChanged?(0.4, 0.2)
@@ -139,5 +143,6 @@ final class TranscriptionEngineTests: XCTestCase {
         XCTAssertEqual(levels.count, 1)
         XCTAssertEqual(levels.first?.display, 0.4)
         XCTAssertEqual(levels.first?.vad, 0.2)
+        XCTAssertEqual(startedCount, 1)
     }
 }

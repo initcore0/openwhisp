@@ -124,6 +124,50 @@ final class ParakeetSpikeTests: XCTestCase {
             .drop)
     }
 
+    // MARK: - Capture-started signal (the arming → Listening flip)
+
+    func testCaptureStartedFlipsToListeningWhileArming() {
+        let sid = UUID()
+        XCTAssertEqual(
+            StreamingRoutePolicy.captureStartedAction(
+                callbackSessionID: sid, activeSessionID: sid,
+                isArming: true, pendingStop: false),
+            .beginListening)
+    }
+
+    func testCaptureStartedHonorsStopThatLandedDuringArming() {
+        // Hotkey-up while the model was still loading: go live, then stop —
+        // the mic must never keep capturing unattended.
+        let sid = UUID()
+        XCTAssertEqual(
+            StreamingRoutePolicy.captureStartedAction(
+                callbackSessionID: sid, activeSessionID: sid,
+                isArming: true, pendingStop: true),
+            .beginListeningThenStop)
+    }
+
+    func testCaptureStartedDropsWhenSessionAlreadyLeftArming() {
+        // The duplicate signal (timeout fallback after onStarted, or a late
+        // onStarted after the fallback / after the session ended — every
+        // terminal clears isArming) must be a no-op.
+        let sid = UUID()
+        XCTAssertEqual(
+            StreamingRoutePolicy.captureStartedAction(
+                callbackSessionID: sid, activeSessionID: sid,
+                isArming: false, pendingStop: false),
+            .drop)
+    }
+
+    func testCaptureStartedDropsWhenNewerSessionBegan() {
+        // A late onStarted from a torn-down session must not flip the arming
+        // state of the successor session. pendingStop is irrelevant here.
+        XCTAssertEqual(
+            StreamingRoutePolicy.captureStartedAction(
+                callbackSessionID: UUID(), activeSessionID: UUID(),
+                isArming: true, pendingStop: true),
+            .drop)
+    }
+
     // MARK: - Variant-aware language gate
 
     func testLanguageGateAllowsAutoAndEnglishOnEnglishVariant() {
