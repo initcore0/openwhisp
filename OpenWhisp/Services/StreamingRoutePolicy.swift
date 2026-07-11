@@ -38,7 +38,7 @@ public enum StreamingRoutePolicy {
     /// fence, `isAppleSpeechSession` (a plain bool the successor also sets true)
     /// lets it through — pasting the old transcript and completing the new session
     /// early. Both handlers gate on this.
-    static func isStaleStreamingCallback(callbackSessionID: UUID, activeSessionID: UUID) -> Bool {
+    public static func isStaleStreamingCallback(callbackSessionID: UUID, activeSessionID: UUID) -> Bool {
         callbackSessionID != activeSessionID
     }
 
@@ -53,13 +53,13 @@ public enum StreamingRoutePolicy {
     /// - **abort**: still this session's own callback, but the user released/stopped
     ///   before the grant landed (`pendingStop`). Tear the half-started session down.
     /// - **proceed**: still active and no stop pending — start the engine.
-    enum GrantCallbackAction: Equatable {
+    public enum GrantCallbackAction: Equatable {
         case proceed
         case abort
         case drop
     }
 
-    static func grantCallbackAction(
+    public static func grantCallbackAction(
         callbackSessionID: UUID,
         activeSessionID: UUID,
         pendingStop: Bool
@@ -86,13 +86,13 @@ public enum StreamingRoutePolicy {
     ///   the engine was still arming (`pendingStop`) — go live and immediately
     ///   run the stop so the mic never keeps capturing unattended. Mirrors the
     ///   recorder path's `.recording` + pendingStop handling.
-    enum CaptureStartedAction: Equatable {
+    public enum CaptureStartedAction: Equatable {
         case beginListening
         case beginListeningThenStop
         case drop
     }
 
-    static func captureStartedAction(
+    public static func captureStartedAction(
         callbackSessionID: UUID,
         activeSessionID: UUID,
         isArming: Bool,
@@ -110,7 +110,7 @@ public enum StreamingRoutePolicy {
     /// speak-into-the-gap hole this signal exists to close. A first-run model
     /// DOWNLOAD can outlast even this; the flip is then optimistic, which is
     /// still strictly better than the old flip-at-enqueue behavior.
-    static let captureStartTimeout: TimeInterval = 15
+    public static let captureStartTimeout: TimeInterval = 15
 }
 
 /// Which concrete `FileTranscriptionEngine` backs a transcriptionEngine setting.

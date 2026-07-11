@@ -12,6 +12,17 @@ whisper.cpp), optional LLM refine, agent bridge + MCP.
   `build/OpenWhisp.app` → `/Applications/`.
 - The GUI app is a raw-`swiftc` glob (no `.xcodeproj`). `OpenWhispCore` is a
   Foundation-only SwiftPM package (the subset that `swift test` compiles).
+- **Toolchain floor: Xcode 16 / Swift 6 tools.** `Package.swift` is
+  `swift-tools-version:6.0` (needed for the `.iOS(.v18)` platform); older
+  toolchains fail `swift test` with a manifest error. The language mode stays
+  pinned to 5 (`swiftLanguageModes: [.v5]`).
+- **`OpenWhispCore` + `OpenWhispBridgeKit` are consumed by the iOS companion**
+  (openwhisp-ios, MAK-51) as library products. Treat their `public` API AND the
+  JSON file formats behind the public stores (profiles/vocabulary/history/…) as
+  a versioned contract — renames and format changes now have a second client to
+  migrate. New members on already-`public` core types should be `public` too
+  (CI's `ios-libraries` job builds both products for iOS, but it can't see a
+  missing `public` until the iOS app actually needs the symbol).
 
 ## When you build or change a feature — test it
 
