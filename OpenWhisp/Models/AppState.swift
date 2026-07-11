@@ -1127,6 +1127,11 @@ class AppState: ObservableObject {
     /// Concrete type (not the protocol) so `prefetch()` — the model download
     /// kick — is callable; sessions still go through `activeStreamingEngine`.
     var parakeetStreamEngine: ParakeetStreamingEngine!
+    /// Variant ids with a Parakeet model prefetch/warm in flight — drives the
+    /// coarse "Downloading…" badge in the Models pane (FluidAudio has no progress
+    /// callback, so this is presence-of-folder + this in-flight flag). Cleared
+    /// when the variant's repo folder appears on disk (polled by the pane).
+    @Published var parakeetInFlightVariants: Set<String> = []
     var translationService: OpenAITranslationService!
     var hotkeyMonitor: HotkeyControlling!
 
@@ -2798,7 +2803,34 @@ class AppState: ObservableObject {
                 ))
             }
         }
+
+        // Parakeet CoreML models (FluidAudio): each repo is a folder under
+        // Application Support/FluidAudio/Models. Shown so their ~600 MB each
+        // appears in disk usage and can be deleted (re-downloads on next use).
+        // isActive stays false — the folder→variant mapping is loose and the
+        // models re-download cheaply, so we keep them all deletable.
+        let faBase = Self.fluidAudioModelsDirectory()
+        for name in (try? fm.contentsOfDirectory(atPath: faBase.path)) ?? [] {
+            let path = faBase.appendingPathComponent(name)
+            guard (try? path.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true else { continue }
+            items.append(ModelStorage.Item(
+                kind: .parakeet,
+                label: ModelStorage.parakeetRepoLabel(forFolder: name),
+                path: path.path,
+                bytes: Self.directorySize(at: path),
+                isActive: false
+            ))
+        }
         return ModelStorage.sorted(items)
+    }
+
+    /// Base directory FluidAudio stages its CoreML model repos under
+    /// (`~/Library/Application Support/FluidAudio/Models`). Mirrors FluidAudio's
+    /// own `downloadVariant`/`defaultCacheDirectory` layout.
+    static func fluidAudioModelsDirectory() -> URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+            .appendingPathComponent("FluidAudio", isDirectory: true)
+            .appendingPathComponent("Models", isDirectory: true)
     }
 
     /// Delete a model's files. Refuses the currently-active model (removing it would
@@ -2876,6 +2908,54 @@ class AppState: ObservableObject {
         }
     }
 
+    /// Kick the streaming-variant model prefetch and mark it in-flight so the
+    /// Models pane shows a coarse "Downloading…" badge (FluidAudio gives no
+    /// progress). The badge clears once the variant's repo folder appears on disk
+    /// (`parakeetDownloadState(for:)` reads presence, so the flag is only the
+    /// "no folder yet but a fetch is running" case). Idempotent.
+    func prefetchParakeetVariant() {
+        let variant = ParakeetCatalog.normalize(parakeetVariant)
+        // If the repo is already on disk there's nothing to download — don't
+        // flash a badge; still call prefetch (it warms the loaded model cheaply).
+        let installed = Self.installedFluidAudioFolders()
+        if ParakeetDownloadStatePolicy.state(
+            forVariant: variant, installedFolders: installed, inFlightVariants: []
+        ) != .installed {
+            parakeetInFlightVariants.insert(variant)
+        }
+        parakeetStreamEngine?.prefetch()
+    }
+
+    /// The coarse download state for a Parakeet variant (Models pane badge).
+    func parakeetDownloadState(for variantID: String) -> ParakeetDownloadState {
+        let state = ParakeetDownloadStatePolicy.state(
+            forVariant: variantID,
+            installedFolders: Self.installedFluidAudioFolders(),
+            inFlightVariants: parakeetInFlightVariants
+        )
+        // Self-heal the in-flight flag: once the folder is present, the fetch is
+        // done — drop the stale flag so we don't show "Downloading…" forever.
+        if state == .installed {
+            let normalized = ParakeetCatalog.normalize(variantID)
+            if parakeetInFlightVariants.contains(normalized) {
+                parakeetInFlightVariants.remove(normalized)
+            }
+        }
+        return state
+    }
+
+    /// The set of FluidAudio Models repo folders present on disk right now.
+    static func installedFluidAudioFolders() -> Set<String> {
+        let base = fluidAudioModelsDirectory()
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: base.path)) ?? []
+        return Set(names.filter { name in
+            var isDir: ObjCBool = false
+            FileManager.default.fileExists(
+                atPath: base.appendingPathComponent(name).path, isDirectory: &isDir)
+            return isDir.boolValue
+        })
+    }
+
     func warmWhisperServerIfPossible() {
         // Warm the CURRENTLY SELECTED file-transcription backend — and only that
         // one. This must be engine-aware: `whisperEngine` is a WhisperKitEngine
@@ -2901,7 +2981,7 @@ class AppState: ObservableObject {
             // streaming variant now (the common dictation path); the file engine's
             // TDT v3 is warmed lazily on the first file/meeting job to avoid
             // paying two ~600 MB downloads up front when only one is used.
-            parakeetStreamEngine?.prefetch()
+            prefetchParakeetVariant()
             return
         default:
             // whisper.cpp: only the serverAPI backend keeps a warm server process.
@@ -5705,7 +5785,7 @@ class AppState: ObservableObject {
             // FluidAudio stages models itself (HuggingFace → Application
             // Support/FluidAudio). Kick the download now so it happens at
             // engine-select time, not mid-first-dictation.
-            parakeetStreamEngine?.prefetch()
+            prefetchParakeetVariant()
             return
         default:
             // whisper.cpp: download its GGML model (the original behavior, now scoped

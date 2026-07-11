@@ -13,12 +13,14 @@ enum ModelStorage {
         case whisperKit      // CoreML .mlmodelc folder
         case whisperCpp      // whisper.cpp GGML .bin
         case bundledLLM      // built-in llama.cpp GGUF
+        case parakeet        // FluidAudio CoreML repo folder (streaming + batch)
 
         var displayName: String {
             switch self {
             case .whisperKit: return "WhisperKit (CoreML)"
             case .whisperCpp: return "Whisper Local (whisper.cpp)"
             case .bundledLLM: return "Built-in LLM"
+            case .parakeet: return "Parakeet (CoreML)"
             }
         }
     }
@@ -57,8 +59,23 @@ enum ModelStorage {
     private static func kindRank(_ kind: Kind) -> Int {
         switch kind {
         case .whisperKit: return 0
-        case .whisperCpp: return 1
-        case .bundledLLM: return 2
+        case .parakeet:   return 1
+        case .whisperCpp: return 2
+        case .bundledLLM: return 3
+        }
+    }
+
+    /// A human label for a FluidAudio Models repo folder (the immediate children of
+    /// `~/Library/Application Support/FluidAudio/Models/`). Pure so the mapping is
+    /// unit-tested; the disk walk stays app-side. Unknown folders (a future
+    /// FluidAudio repo) fall back to the raw folder name so nothing is hidden.
+    static func parakeetRepoLabel(forFolder folder: String) -> String {
+        switch folder {
+        case "parakeet-tdt-0.6b-v3":     return "Parakeet TDT v3 (batch, 25 languages)"
+        case "parakeet-unified-en-0.6b": return "Parakeet Unified (English streaming)"
+        case "parakeet-eou-streaming":   return "Parakeet EOU (English streaming, light)"
+        case "nemotron-multilingual":    return "Parakeet Multilingual (streaming, ~40 languages)"
+        default:                          return folder
         }
     }
 

@@ -136,6 +136,74 @@ final class ParakeetSpikeTests: XCTestCase {
         )
     }
 
+    // MARK: - Download-state policy (Models pane badge, Phase 4)
+
+    func testDownloadStateInstalledWhenFolderPresent() {
+        let s = ParakeetDownloadStatePolicy.state(
+            forVariant: "parakeet-unified-320ms",
+            installedFolders: ["parakeet-unified-en-0.6b"],
+            inFlightVariants: []
+        )
+        XCTAssertEqual(s, .installed)
+        XCTAssertNil(s.badge, "installed variants get no badge")
+    }
+
+    func testDownloadStateDownloadingWhenInFlightAndNoFolder() {
+        let s = ParakeetDownloadStatePolicy.state(
+            forVariant: "nemotron-multilingual-1120ms",
+            installedFolders: [],
+            inFlightVariants: ["nemotron-multilingual-1120ms"]
+        )
+        XCTAssertEqual(s, .downloading)
+        XCTAssertEqual(s.badge, "Downloading…")
+    }
+
+    func testDownloadStateNotDownloadedWhenAbsentAndIdle() {
+        let s = ParakeetDownloadStatePolicy.state(
+            forVariant: "parakeet-eou-320ms", installedFolders: [], inFlightVariants: []
+        )
+        XCTAssertEqual(s, .notDownloaded)
+        XCTAssertEqual(s.badge, "Not downloaded")
+    }
+
+    func testDownloadStateInstalledWinsOverInFlight() {
+        // Folder present + a stale in-flight flag → installed (bytes are down).
+        let s = ParakeetDownloadStatePolicy.state(
+            forVariant: "parakeet-unified-1120ms",
+            installedFolders: ["parakeet-unified-en-0.6b"],
+            inFlightVariants: ["parakeet-unified-1120ms"]
+        )
+        XCTAssertEqual(s, .installed)
+    }
+
+    func testUnifiedTiersShareARepoFolder() {
+        // The two Unified tiers stage into ONE repo — installing either shows both
+        // as installed.
+        XCTAssertEqual(
+            ParakeetDownloadStatePolicy.repoFolder(forVariant: "parakeet-unified-320ms"),
+            ParakeetDownloadStatePolicy.repoFolder(forVariant: "parakeet-unified-1120ms")
+        )
+    }
+
+    func testParakeetRepoLabelsAreHumanReadable() {
+        XCTAssertEqual(
+            ModelStorage.parakeetRepoLabel(forFolder: "parakeet-tdt-0.6b-v3"),
+            "Parakeet TDT v3 (batch, 25 languages)"
+        )
+        // Unknown folders fall back to the raw name (nothing hidden).
+        XCTAssertEqual(ModelStorage.parakeetRepoLabel(forFolder: "future-repo"), "future-repo")
+    }
+
+    func testParakeetStorageSortsAfterWhisperKit() {
+        let items = [
+            ModelStorage.Item(kind: .parakeet, label: "P", path: "/p", bytes: 100, isActive: false),
+            ModelStorage.Item(kind: .whisperKit, label: "W", path: "/w", bytes: 100, isActive: false),
+            ModelStorage.Item(kind: .whisperCpp, label: "C", path: "/c", bytes: 100, isActive: false),
+        ]
+        let sorted = ModelStorage.sorted(items)
+        XCTAssertEqual(sorted.map(\.kind), [.whisperKit, .parakeet, .whisperCpp])
+    }
+
     // MARK: - Translate suppression (LanguageResolver)
 
     func testParakeetSuppressesTranslateToEnglish() {

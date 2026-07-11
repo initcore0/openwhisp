@@ -31,6 +31,7 @@ let package = Package(
                 "ParakeetCatalog.swift",
                 "ParakeetLanguageGate.swift",
                 "ParakeetLanguageHint.swift",
+                "ParakeetDownloadState.swift",
                 "StreamingRoutePolicy.swift",
                 "ProfileResolver.swift",
                 "Mode.swift",

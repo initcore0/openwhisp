@@ -142,16 +142,18 @@ struct ModelsPane: View {
         }
     }
 
-    /// Parakeet variant picker (MAK-46 spike). FluidAudio stages the model
-    /// itself on first use (HuggingFace → ~/Library/Application Support/
-    /// FluidAudio); selecting a variant prefetches it in the background, so
-    /// there is no download button/progress row yet — a spike follow-up.
+    /// Parakeet variant picker (MAK-46). FluidAudio stages the model itself on
+    /// first use (HuggingFace → ~/Library/Application Support/FluidAudio);
+    /// selecting a variant prefetches it in the background. FluidAudio exposes no
+    /// download progress, so each row shows a COARSE state — "Not downloaded" /
+    /// "Downloading…" / (installed → no badge) — via ParakeetDownloadStatePolicy.
     private var parakeetModelSection: some View {
         Section {
             ForEach(ParakeetCatalog.variants, id: \.id) { variant in
+                let state = appState.parakeetDownloadState(for: variant.id)
                 SelectableRow(
                     title: variant.name,
-                    subtitle: "\(variant.detail) (\(variant.size))",
+                    subtitle: parakeetSubtitle(for: variant, state: state),
                     isSelected: appState.parakeetVariant == variant.id
                 ) { appState.parakeetVariant = variant.id }
             }
@@ -160,6 +162,16 @@ struct ModelsPane: View {
         } footer: {
             SettingsFootnote("The model downloads automatically the first time it's needed and is cached under Application Support/FluidAudio. All transcription stays on your Mac.")
         }
+    }
+
+    /// Variant subtitle with the coarse download-state badge appended (installed
+    /// variants get no badge — the row is unadorned).
+    private func parakeetSubtitle(
+        for variant: ParakeetCatalog.Variant, state: ParakeetDownloadState
+    ) -> String {
+        let base = "\(variant.detail) (\(variant.size))"
+        guard let badge = state.badge else { return base }
+        return "\(base) · \(badge)"
     }
 
     private var whisperCppModelSection: some View {
