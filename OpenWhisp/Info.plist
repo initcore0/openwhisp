@@ -41,6 +41,8 @@
 	<string></string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>OpenWhisp needs microphone access to record your voice for local transcription.</string>
+	<key>NSScreenCaptureUsageDescription</key>
+	<string>OpenWhisp captures system audio to record and transcribe meetings locally.</string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
 	<key>NSSpeechRecognitionUsageDescription</key>

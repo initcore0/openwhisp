@@ -15,6 +15,12 @@ class OpenWhispApp: NSObject, NSApplicationDelegate {
     var tipsWindow: NSWindow?
     var appState: AppState!
 
+    /// Meeting-mode capture session (MAK-50), lazily created on Start Meeting.
+    /// Held as `Any?` so this file compiles on the macOS 12 SDK path too; cast
+    /// to `MeetingCaptureSession` at the `@available(macOS 13.0, *)` use sites.
+    private var meetingSession: Any?
+    private var meetingActive = false
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         print("[OpenWhisp] Application launching...")
 
@@ -56,6 +62,19 @@ class OpenWhispApp: NSObject, NSApplicationDelegate {
 
         // Agent Bridge (M8): start the local control-plane socket if enabled.
         appState.startAgentBridgeIfEnabled()
+
+        // Meeting mode (MAK-50): salvage any recording orphaned by a crash/quit
+        // mid-meeting — patch its placeholder WAV header and ingest it so the
+        // meeting shows up in the pane instead of silently rotting on disk.
+        if #available(macOS 13.0, *) {
+            let orphans = MeetingCaptureSession.recoverOrphanedRecordings()
+            for recording in orphans {
+                appState.meetingCoordinator.ingest(recording)
+            }
+            if !orphans.isEmpty {
+                appState.statusMessage = "Recovered \(orphans.count) interrupted meeting recording\(orphans.count == 1 ? "" : "s")"
+            }
+        }
 
         // First-run onboarding
         showOnboardingIfNeeded()
@@ -210,6 +229,24 @@ class OpenWhispApp: NSObject, NSApplicationDelegate {
             menu.addItem(start)
         }
 
+        // Meeting mode (MAK-50): record system audio + mic locally. A meeting and
+        // a dictation share the mic, so the two are mutually exclusive — the item
+        // is disabled while dictating, and starting a meeting refuses if dictation
+        // becomes active. macOS 13+ only (ScreenCaptureKit audio capture).
+        if #available(macOS 13.0, *) {
+            if meetingActive {
+                let stopMeeting = NSMenuItem(title: "🔴 Stop Meeting", action: #selector(stopMeeting), keyEquivalent: "")
+                menu.addItem(stopMeeting)
+            } else {
+                let startMeeting = NSMenuItem(title: "Start Meeting", action: #selector(startMeeting), keyEquivalent: "")
+                if appState.isRecording {
+                    startMeeting.action = nil   // disabled while dictating
+                    startMeeting.toolTip = "Stop dictation before starting a meeting."
+                }
+                menu.addItem(startMeeting)
+            }
+        }
+
         // Floating Scratchpad (MAK-49): a target-free surface to dictate into.
         let scratchpad = NSMenuItem(title: "📝 Scratchpad", action: #selector(openScratchpad), keyEquivalent: "s")
         menu.addItem(scratchpad)
@@ -291,6 +328,71 @@ class OpenWhispApp: NSObject, NSApplicationDelegate {
         guard let raw = sender.representedObject as? String,
               let permission = PermissionBannerPolicy.Permission(rawValue: raw) else { return }
         appState.openSettings(for: permission)
+    }
+
+    // MARK: Meeting mode (MAK-50)
+
+    @available(macOS 13.0, *)
+    @objc private func startMeeting() {
+        // Mic exclusivity: refuse to start a meeting while dictating.
+        guard !appState.isRecording else {
+            appState.statusMessage = "Stop dictation before starting a meeting"
+            return
+        }
+        guard !meetingActive else { return }
+        // Always a FRESH session: MeetingCaptureSession's state machine is one-shot
+        // (idle → recording → finished/failed, `delivered` never resets), so reusing
+        // a finished session would make `start()` a silent no-op — the second
+        // meeting would never record.
+        let session = MeetingCaptureSession()
+        meetingSession = session
+        session.onStateChanged = { [weak self, weak session] state in
+            guard let self else { return }
+            // Ignore late callbacks from a superseded session (e.g. a salvage
+            // `.failed` arriving after the user already started a new meeting) so
+            // they can't clear the NEW meeting's exclusivity flag.
+            guard let session, (self.meetingSession as? MeetingCaptureSession) === session else { return }
+            switch state {
+            case .recording:
+                self.meetingActive = true
+                self.appState.meetingInProgress = true   // block dictation while recording
+                self.appState.statusMessage = "Meeting recording…"
+            case .finished:
+                self.meetingActive = false
+                self.appState.meetingInProgress = false
+            case .failed(let msg):
+                self.meetingActive = false
+                self.appState.meetingInProgress = false
+                // A start/preflight failure never delivers onFinished — clear the
+                // optimistic live row so it doesn't linger.
+                self.appState.meetingCoordinator.endRecording()
+                self.appState.statusMessage = msg
+            case .idle:
+                break
+            }
+        }
+        // Mint the id up front and open the live row in the Meetings pane under that
+        // SAME id; thread it into capture so the finished MeetingRecording carries it
+        // and `ingest` turns the live row into the real row.
+        let id = UUID()
+        let startedAt = Date()
+        appState.meetingCoordinator.beginRecording(id: id, startedAt: startedAt)
+        // Deliver the finished recording straight into the pipeline — a single,
+        // direct ingest path (no NotificationCenter hop, no double-ingest).
+        session.onFinished = { [weak self] recording in
+            guard let self else { return }
+            self.appState.meetingCoordinator.ingest(recording)   // clears the live row + kicks off transcription
+            self.appState.statusMessage = "Meeting saved (\(Int(recording.duration))s)"
+        }
+        session.start(id: id, startedAt: startedAt)
+    }
+
+    @available(macOS 13.0, *)
+    @objc private func stopMeeting() {
+        guard let session = meetingSession as? MeetingCaptureSession else { return }
+        // Stop → finalize → the onFinished wired at start ingests exactly once.
+        session.stop()
+        meetingActive = false
     }
 
     @objc private func openScratchpad() { appState.openScratchpad() }

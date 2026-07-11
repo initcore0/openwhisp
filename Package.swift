@@ -103,12 +103,17 @@ let package = Package(
                 "ManagedServerSpec.swift",
                 "WhisperResponseClassifier.swift",
                 "FileTranscriptionQueue.swift",
+                "Meeting.swift",
+                "MeetingSessionStore.swift",
+                "MeetingSummarizer.swift",
                 "SubtitleFormatter.swift",
                 "WatchFolderPolicy.swift",
                 "Rules.swift",
                 "RuleStore.swift",
                 "TipsCatalog.swift",
-                "HintRotation.swift"
+                "HintRotation.swift",
+                "MeetingRecording.swift",
+                "MeetingMixer.swift"
             ]
         ),
         // The Agent Bridge client + MCP stdio adapter. A library (not folded into

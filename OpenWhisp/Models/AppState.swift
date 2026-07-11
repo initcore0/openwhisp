@@ -851,6 +851,10 @@ class AppState: ObservableObject {
     // MARK: - Runtime State
 
     @Published var isRecording = false
+    /// True while a Meeting-mode capture (MAK-50) is running. A meeting and a
+    /// dictation share the mic, so they are mutually exclusive: the app delegate
+    /// sets this on meeting Start/Stop and `startDictation` refuses while it's set.
+    @Published var meetingInProgress = false
     @Published var isTranscribing = false {
         didSet {
             // Stamp the moment finalize begins (recording stopped → transcribing) so
@@ -1020,6 +1024,58 @@ class AppState: ObservableObject {
             } : nil
         )
     }
+    /// Meeting mode (MAK-50): transcribe + locally summarize recorded meetings.
+    /// Lazily built so it only loads its store when the Meetings pane opens. Uses a
+    /// DEDICATED transcription engine per job (like `fileCoordinator`) and routes
+    /// summaries through the existing refine primitive. The capture half feeds it a
+    /// `MeetingRecording` via `ingest(_:)` (the integration seam).
+    lazy var meetingCoordinator: MeetingPipelineCoordinator = {
+        MeetingPipelineCoordinator(
+            transcriptionConfig: { [weak self] in
+                self?.meetingTranscriptionConfig() ?? .init(
+                    makeEngine: { WhisperEngine() }, binaryPath: "", modelPath: "",
+                    languageSetting: "auto", backend: .cli, prompt: ""
+                )
+            },
+            summarizeCall: { [weak self] instruction, input in
+                // Route each summarize prompt through the existing refine primitive
+                // (instruction = the summary/map/combine prompt, input = the text).
+                try await withCheckedThrowingContinuation { cont in
+                    Task { @MainActor in
+                        guard let self else {
+                            cont.resume(throwing: MeetingSummarizeError.unavailable); return
+                        }
+                        self.refineText(text: input, instruction: instruction) { result in
+                            switch result {
+                            case .success(let out): cont.resume(returning: out)
+                            case .failure(let err): cont.resume(throwing: err)
+                            }
+                        }
+                    }
+                }
+            },
+            providerIsLocal: { [weak self] in
+                guard let self else { return false }
+                return ScreenContextGate.localRefineProviders.contains(self.llmProvider)
+            }
+        )
+    }()
+
+    /// Transcription engine config for a meeting job, mirroring `fileEngineConfig`.
+    func meetingTranscriptionConfig() -> MeetingPipelineCoordinator.TranscriptionConfig {
+        let engineName = transcriptionEngine
+        let model = modelName
+        let wkModel = whisperKitModel
+        return .init(
+            makeEngine: { Self.makeFileEngine(for: engineName, model: model, whisperKitModel: wkModel) },
+            binaryPath: whisperBinaryPath,
+            modelPath: modelPath,
+            languageSetting: engineLanguageSetting,
+            backend: whisperBackend == "serverAPI" ? .serverAPI : .cli,
+            prompt: customVocabularyEnabled ? vocabulary.whisperPrompt : ""
+        )
+    }
+
     var appleSpeechEngine: StreamingTranscriptionEngine!
     /// Experimental real-time WhisperKit engine. Shares the streaming session
     /// machinery with Apple Speech (same handlers) but uses WhisperKit's
@@ -2040,6 +2096,13 @@ class AppState: ObservableObject {
     ///   stays open with the trigger released, shows the lock affordance, and arms
     ///   the silence safety auto-stop. Default `false` (ordinary press-to-talk).
     func startDictation(locked: Bool = false) {
+        // Mic exclusivity (MAK-50): a meeting owns the mic — refuse to start a
+        // dictation while one is recording (the reverse guard lives in the menu's
+        // Start Meeting item / startMeeting).
+        if meetingInProgress {
+            statusMessage = "Stop the meeting before dictating"
+            return
+        }
         // The dictation key is now ONLY dictation — refine has its own dedicated
         // chord (see startRefine). So a plain press always starts a normal
         // dictation and pastes instantly (no re-press disambiguation, no deferral).
@@ -3065,6 +3128,12 @@ class AppState: ObservableObject {
 
     func startRecording() {
         guard !isRecording, !isTranscribing else { return }
+        // Mic exclusivity (MAK-50): defense-in-depth for callers that bypass
+        // startDictation (which carries the primary guard).
+        if meetingInProgress {
+            statusMessage = "Stop the meeting before dictating"
+            return
+        }
         guard !SecureFieldDetector.focusedFieldIsSecure() else {
             refuseDictationIntoSecureField()
             return
@@ -3143,6 +3212,12 @@ class AppState: ObservableObject {
     /// Optional live mode: record chunks, transcribe each, paste stable-ish chunks.
     func startStreaming() {
         guard !isRecording, !isTranscribing else { return }
+        // Mic exclusivity (MAK-50): defense-in-depth for callers that bypass
+        // startDictation (which carries the primary guard).
+        if meetingInProgress {
+            statusMessage = "Stop the meeting before dictating"
+            return
+        }
         guard !SecureFieldDetector.focusedFieldIsSecure() else {
             refuseDictationIntoSecureField()
             return
