@@ -17,11 +17,13 @@ import Foundation
 //
 // Terminology: "step 1" = the content being refined (a just-dictated result or a
 // text selection). "instruction" = the spoken command applied to it.
-struct RefineFlow {
+public struct RefineFlow {
+
+    public init() {}
 
     // MARK: State
 
-    enum State: Equatable {
+    public enum State: Equatable {
         /// No refine in progress.
         case inactive
         /// Refine engaged; the instruction utterance is being captured. `step1` is
@@ -35,7 +37,7 @@ struct RefineFlow {
 
     // MARK: Events (things that happen in the app)
 
-    enum Event: Equatable {
+    public enum Event: Equatable {
         /// User re-pressed to engage refine. `step1` is the resolved content if we
         /// already have it (a text selection, or a just-finalized dictation), or nil
         /// if a dictation is still transcribing and step-1 will arrive shortly.
@@ -55,7 +57,7 @@ struct RefineFlow {
 
     // MARK: Effects (things AppState should do)
 
-    enum Effect: Equatable {
+    public enum Effect: Equatable {
         /// Begin capturing the instruction utterance (start a recording/streaming
         /// session dedicated to the instruction).
         case startInstructionCapture
@@ -73,16 +75,16 @@ struct RefineFlow {
 
     // MARK: - Machine
 
-    private(set) var state: State = .inactive
+    public private(set) var state: State = .inactive
 
-    var isActive: Bool { state != .inactive }
+    public var isActive: Bool { state != .inactive }
     /// True only while the LLM call is genuinely in flight — the watchdog uses this
     /// to distinguish "working" from "wedged".
-    var isApplying: Bool { if case .applying = state { return true }; return false }
+    public var isApplying: Bool { if case .applying = state { return true }; return false }
 
     /// Apply an event, returning the effects to perform (in order). Pure aside from
     /// mutating `state`.
-    mutating func handle(_ event: Event) -> [Effect] {
+    public mutating func handle(_ event: Event) -> [Effect] {
         // Switch on the EVENT first, then the relevant state(s) within — this keeps
         // the machine exhaustive without enumerating every (state, event) pair, and
         // makes each event's rules read top-to-bottom.
@@ -158,7 +160,7 @@ struct RefineFlow {
 
     /// Force the machine back to inactive without emitting effects (belt-and-braces
     /// reset used when the caller tears everything down itself).
-    mutating func reset() {
+    public mutating func reset() {
         state = .inactive
     }
 

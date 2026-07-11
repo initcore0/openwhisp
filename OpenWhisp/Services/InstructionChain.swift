@@ -9,12 +9,12 @@ import Foundation
 /// or to the last dictation. The trigger/timing lives in the hotkey layer and the
 /// lifecycle in `RefineFlow`; this type only decides availability and builds the
 /// LLM prompt.
-enum InstructionChain {
+public enum InstructionChain {
     /// Whether the refine flow is available at all for this configuration. Chaining
     /// only applies to whole-text output modes (preview / paste-at-end): in "type
     /// live" the text is already pasted incrementally, so there's nothing to hold
     /// back and refine. Requires an LLM (the instruction is applied by it).
-    static func isAvailable(outputMode: String, llmConfigured: Bool, enabled: Bool) -> Bool {
+    public static func isAvailable(outputMode: String, llmConfigured: Bool, enabled: Bool) -> Bool {
         guard enabled, llmConfigured else { return false }
         return outputMode == "preview" || outputMode == "finalOnly"
     }
@@ -28,7 +28,7 @@ enum InstructionChain {
     /// `userPayload` so the instruction and text are labeled in the SAME message —
     /// separating them across system/user messages is what makes small models
     /// answer the text instead of transforming it.
-    static let systemDirective = """
+    public static let systemDirective = """
     You transform text. The user's message contains an INSTRUCTION describing how \
     to rewrite a TEXT, followed by the TEXT itself. Apply the INSTRUCTION to the \
     TEXT and output ONLY the rewritten text — no preamble, no quotes, no \
@@ -42,7 +42,7 @@ enum InstructionChain {
     /// Build the single labeled user message carrying the spoken instruction and
     /// the target text. Labeling both in one message (not across system/user)
     /// keeps small models from mistaking the text for a prompt to answer.
-    static func userPayload(instruction: String, text: String) -> String {
+    public static func userPayload(instruction: String, text: String) -> String {
         let i = instruction.trimmingCharacters(in: .whitespacesAndNewlines)
         let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
         return "INSTRUCTION: \(i)\n\nTEXT:\n\(t)"
@@ -55,7 +55,7 @@ enum InstructionChain {
     /// an idle refine's fresh session contains only the instruction). Shared by
     /// the LLM call and the overlay's live instruction row, so what the user
     /// sees is exactly what the model receives.
-    static func instructionSuffix(fullFinal: String, content: String) -> String {
+    public static func instructionSuffix(fullFinal: String, content: String) -> String {
         let full = fullFinal.trimmingCharacters(in: .whitespacesAndNewlines)
         let head = content.trimmingCharacters(in: .whitespacesAndNewlines)
         if full.count > head.count, full.lowercased().hasPrefix(head.lowercased()) {

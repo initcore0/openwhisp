@@ -14,7 +14,7 @@ import Foundation
 ///
 /// Pure + Foundation-only so it lives in OpenWhispCore and is unit-tested; the
 /// FluidAudio managers themselves are behind the app-glob `#if PARAKEET`.
-enum ParakeetLanguageHint {
+public enum ParakeetLanguageHint {
     /// The whisper translate-to-English sentinel and the "auto"/empty settings
     /// all mean "let the model decide" for Parakeet (which is ASR-only and never
     /// translates — see LanguageResolver). Returns nil (auto) for those.
@@ -32,7 +32,7 @@ enum ParakeetLanguageHint {
     /// "de-DE" → "de", "en_US" → "en". THE single normalization for parakeet
     /// language decisions — ParakeetLanguageGate keys its English-only refusal
     /// on this too, so the gate and the hints can't drift.
-    static func baseCode(from setting: String) -> String? {
+    public static func baseCode(from setting: String) -> String? {
         guard let s = normalizedSetting(setting) else { return nil }
         // Split "de-de"/"de_de" → "de".
         let dashed = s.replacingOccurrences(of: "_", with: "-")
@@ -42,7 +42,7 @@ enum ParakeetLanguageHint {
 
     /// Bare 2-letter code for the batch engine's `Language(rawValue:)`, or nil for
     /// auto (the engine silently ignores an unknown code — degrades to auto).
-    static func batchLanguageCode(from setting: String) -> String? {
+    public static func batchLanguageCode(from setting: String) -> String? {
         baseCode(from: setting)
     }
 
@@ -50,7 +50,7 @@ enum ParakeetLanguageHint {
     /// region if present ("de-DE"), otherwise passes the bare code ("ru"); "auto"
     /// / empty / translate → "auto". The manager's `promptId(forLanguage:)` maps it
     /// (with its own normalizations) and falls back to auto for unknown codes.
-    static func multilingualLanguageCode(from setting: String) -> String {
+    public static func multilingualLanguageCode(from setting: String) -> String {
         guard let s = normalizedSetting(setting) else { return "auto" }
         return s.replacingOccurrences(of: "_", with: "-")
     }

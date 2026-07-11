@@ -1,10 +1,26 @@
 import Foundation
 
+/// Platform-neutral handle for an input device, threaded through the engine
+/// seams. On macOS the concrete recorder/engine speaks CoreAudio, so the handle
+/// IS a CoreAudio `AudioDeviceID` (an integer device id). On iOS there is no
+/// CoreAudio device enumeration — routing is by `AVAudioSession` route UID — so
+/// the handle is a `String`. The public protocol seams (`AudioCapture`,
+/// `StreamingTranscriptionEngine`) already select devices by opaque `String`;
+/// this typealias exists for the WhisperKit-linked (`#if WHISPERKIT`, macOS)
+/// stream handle that pins the CoreAudio device directly, so that code names a
+/// platform-neutral type instead of `AudioDeviceID` verbatim.
+#if os(macOS)
+import CoreAudio
+public typealias AudioDeviceHandle = AudioDeviceID
+#else
+public typealias AudioDeviceHandle = String
+#endif
+
 /// Lifecycle state of an audio capture session, surfaced via `onStateChanged`.
 ///
 /// Foundation-only so it lives in OpenWhispCore and can be named by the
 /// `AudioCapture` protocol and by AppState without pulling in AVFoundation.
-enum RecorderState: Equatable {
+public enum RecorderState: Equatable {
     case idle
     case recording
     case stopped
@@ -24,7 +40,7 @@ enum RecorderState: Equatable {
 /// listing returns platform device handles (CoreAudio `AudioDeviceID`), so the
 /// concrete `AudioDevice` type stays on the platform side. The protocol exposes
 /// only `selectDevice(_:)` by opaque string ID, which is all AppState drives.
-protocol AudioCapture: AnyObject {
+public protocol AudioCapture: AnyObject {
     /// Peak-normalize quiet input toward a healthy level. Settable live.
     var autoGainEnabled: Bool { get set }
     /// Quiet-dictation mode (MAK-45): swaps auto-gain to the stronger high-gain
@@ -65,7 +81,7 @@ protocol AudioCapture: AnyObject {
 extension AudioCapture {
     /// Convenience matching the concrete recorder's defaults, so AppState can
     /// call `startStreamingOnSilence(onChunk:)` through the protocol unchanged.
-    func startStreamingOnSilence(onChunk: @escaping (URL?) -> Void) {
+    public func startStreamingOnSilence(onChunk: @escaping (URL?) -> Void) {
         startStreamingOnSilence(
             silenceDuration: 0.75,
             minimumSpeechDuration: 0.35,
@@ -76,5 +92,5 @@ extension AudioCapture {
     }
 
     /// Convenience so `stop()` (no completion) works through the protocol.
-    func stop() { stop(completion: nil) }
+    public func stop() { stop(completion: nil) }
 }

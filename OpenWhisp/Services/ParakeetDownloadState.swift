@@ -8,7 +8,7 @@ import Foundation
 ///
 /// Pure + Foundation-only so the mapping (variant → repo folder → state) is
 /// unit-tested; the disk walk + in-flight tracking stay app-side.
-enum ParakeetDownloadState: Equatable {
+public enum ParakeetDownloadState: Equatable {
     /// The variant's repo folder isn't on disk yet.
     case notDownloaded
     /// A prefetch/load is running (indeterminate — no percentage available).
@@ -18,7 +18,7 @@ enum ParakeetDownloadState: Equatable {
 
     /// Short suffix for the variant row subtitle. `installed` returns nil (no
     /// badge needed — the row is unadorned when the model is present).
-    var badge: String? {
+    public var badge: String? {
         switch self {
         case .notDownloaded: return "Not downloaded"
         case .downloading:   return "Downloading…"
@@ -29,14 +29,14 @@ enum ParakeetDownloadState: Equatable {
 
 /// Maps ParakeetCatalog variant ids to the FluidAudio Models repo folder that
 /// must be present for that variant, and resolves the coarse state.
-enum ParakeetDownloadStatePolicy {
+public enum ParakeetDownloadStatePolicy {
     /// The repo folder name (immediate child of FluidAudio/Models) a variant
     /// stages into. Matches FluidAudio's on-disk layout (see the model dirs).
     ///
     /// The English Unified tiers share ONE repo (`parakeet-unified-en-0.6b`); the
     /// EOU and multilingual variants each have their own. A future/unknown id
     /// returns nil (treated as not-mappable → notDownloaded).
-    static func repoFolder(forVariant id: String) -> String? {
+    public static func repoFolder(forVariant id: String) -> String? {
         switch ParakeetCatalog.normalize(id) {
         case "parakeet-unified-320ms", "parakeet-unified-640ms", "parakeet-unified-1120ms":
             return "parakeet-unified-en-0.6b"
@@ -55,7 +55,7 @@ enum ParakeetDownloadStatePolicy {
     /// Downloading wins over installed only when the folder is NOT yet present —
     /// once the folder exists we report installed even if a warm/load is still
     /// running (the bytes are down; loading is a separate concern).
-    static func state(
+    public static func state(
         forVariant id: String,
         installedFolders: Set<String>,
         inFlightVariants: Set<String>

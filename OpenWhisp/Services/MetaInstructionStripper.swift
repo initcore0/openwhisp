@@ -9,7 +9,7 @@ import Foundation
 /// Deliberately narrow: only translate/transcribe phrasing, only at the very
 /// end, and only when real content precedes it (so a message that is *only*
 /// "translate this to English" is left untouched rather than emptied).
-enum MetaInstructionStripper {
+public enum MetaInstructionStripper {
 
     /// Language slot of a translate command: ONE free word, optionally preceded
     /// by a whitelisted modifier for real multi-word language names ("Brazilian
@@ -51,7 +51,7 @@ enum MetaInstructionStripper {
 
     /// Strip a trailing translate/transcribe instruction if present. Returns the
     /// input unchanged when none is found or when stripping would empty the text.
-    static func strip(_ text: String) -> String {
+    public static func strip(_ text: String) -> String {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return text }
 

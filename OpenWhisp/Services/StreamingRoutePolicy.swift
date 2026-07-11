@@ -7,14 +7,14 @@ import Foundation
 /// Pure and in OpenWhispCore so the routing gate is unit-tested — the exact
 /// wiring a "tested core, dead gate" regression hides in (see memory:
 /// wiring-review-lessons). AppState.startDictation is a thin caller.
-enum StreamingRoutePolicy {
+public enum StreamingRoutePolicy {
     /// Engines that ALWAYS stream (they have no file path at all).
     private static let streamingOnlyEngines: Set<String> = ["appleSpeech", "parakeet"]
 
     /// - Parameters:
     ///   - engine: the `transcriptionEngine` setting value.
     ///   - liveMode: the user wants live output (outputMode is liveChunks/preview).
-    static func usesStreamingSession(engine: String, liveMode: Bool) -> Bool {
+    public static func usesStreamingSession(engine: String, liveMode: Bool) -> Bool {
         if streamingOnlyEngines.contains(engine) { return true }
         // WhisperKit streams only when a live preview is wanted; otherwise its
         // file engine transcribes the recorded WAV.
@@ -23,7 +23,7 @@ enum StreamingRoutePolicy {
 
     /// Whether the engine needs Apple Speech-framework authorization in addition
     /// to microphone access before `start()`.
-    static func needsSpeechAuthorization(engine: String) -> Bool {
+    public static func needsSpeechAuthorization(engine: String) -> Bool {
         engine == "appleSpeech"
     }
 
@@ -117,7 +117,7 @@ enum StreamingRoutePolicy {
 /// Pure so the `AppState.makeFileEngine` routing — the seam that decides what
 /// transcribes meetings, queued files, watch folders, and history re-transcribes
 /// — is unit-tested; the factory is a thin switch over this.
-enum FileEngineChoice: Equatable {
+public enum FileEngineChoice: Equatable {
     /// whisper.cpp (whisper-cli / whisper-server). Also the fallback for
     /// engines with no file path of their own (Apple Speech never reaches the
     /// file path — startDictation routes it to streaming — so its value here
@@ -128,7 +128,7 @@ enum FileEngineChoice: Equatable {
     /// Parakeet TDT v3 batch CoreML (MAK-46) — multilingual file/meeting path.
     case parakeet
 
-    static func choice(for engine: String) -> FileEngineChoice {
+    public static func choice(for engine: String) -> FileEngineChoice {
         switch engine {
         case "whisperKit": return .whisperKit
         case "parakeet":   return .parakeet

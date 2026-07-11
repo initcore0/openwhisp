@@ -14,14 +14,14 @@ import Foundation
 ///
 /// Foundation-only (just a string-backed enum) so it lives in OpenWhispCore and
 /// is shared by every platform's inserter.
-enum InsertionMode: String {
+public enum InsertionMode: String {
     case auto
     case directAX
     case paste
     case appleScript
 
     /// Human-readable label for the settings picker.
-    var label: String {
+    public var label: String {
         switch self {
         case .auto:        return "Auto (accessibility, then paste)"
         case .directAX:    return "Accessibility (no clipboard)"
@@ -31,14 +31,14 @@ enum InsertionMode: String {
     }
 
     /// Parse a stored id, falling back to `.auto` for unknown values.
-    static func from(id: String) -> InsertionMode {
+    public static func from(id: String) -> InsertionMode {
         InsertionMode(rawValue: id) ?? .auto
     }
 }
 
 /// Result of an insertion attempt, reported back so the UI can tell the user when
 /// text couldn't be placed and was left on the clipboard instead (never lost).
-enum InsertionOutcome: Equatable {
+public enum InsertionOutcome: Equatable {
     /// Text was inserted (AX) or pasted into the focused app.
     case inserted
     /// Insertion couldn't be confirmed; the text was left on the clipboard for the
@@ -48,7 +48,7 @@ enum InsertionOutcome: Equatable {
 
 /// Pure decision logic for verifying an Accessibility insert "took". Foundation-only
 /// and string-based so it lives in OpenWhispCore and is unit-tested without AX.
-enum InsertVerifier {
+public enum InsertVerifier {
     /// After an AX set, decide whether the insert is reflected in the element's
     /// re-read value. `before` is the value read just BEFORE the set and `current`
     /// the value read after (nil = element exposes no readable value).
@@ -73,7 +73,7 @@ enum InsertVerifier {
     ///               containing the text even normalized (app rewrote it —
     ///               autocorrect, markdown rendering; pasting would duplicate) →
     ///               trust the AX status code.
-    static func axInsertReflected(expected: String, before: String?, current: String?) -> Bool? {
+    public static func axInsertReflected(expected: String, before: String?, current: String?) -> Bool? {
         let needle = expected.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !needle.isEmpty else { return nil }
         guard let current else { return nil }   // can't read → can't verify
@@ -98,7 +98,7 @@ enum InsertVerifier {
     /// app substitutes on insert back to their plain forms. Exposed so the overlay
     /// revert's suffix match (`ReplaceLastInsertion`) folds the same way this verifier
     /// does — otherwise a smart-quoting field (Notes/Pages/Mail) defeats the match.
-    static func foldTypography(_ s: String) -> String {
+    public static func foldTypography(_ s: String) -> String {
         var out = s
         for (fancy, plain) in [("\u{2018}", "'"), ("\u{2019}", "'"), ("\u{201C}", "\""),
                                ("\u{201D}", "\""), ("\u{2013}", "-"), ("\u{2014}", "-"),

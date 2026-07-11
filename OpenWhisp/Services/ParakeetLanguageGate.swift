@@ -13,14 +13,14 @@ import Foundation
 /// never refused. "auto" is always allowed.
 ///
 /// Pure + core so the gate is unit-tested.
-enum ParakeetLanguageGate {
+public enum ParakeetLanguageGate {
     /// Returns a user-facing refusal message when the fixed language can't be
     /// honored by the given variant, nil when the session may proceed.
     ///
     /// - Parameters:
     ///   - languageSetting: the dictation language ("auto"/"en"/"ru"/"de-DE"…).
     ///   - multilingual: whether the active variant is the multilingual manager.
-    static func refusalMessage(languageSetting: String, multilingual: Bool) -> String? {
+    public static func refusalMessage(languageSetting: String, multilingual: Bool) -> String? {
         // Multilingual variants accept everything (unknowns → auto-detect).
         if multilingual { return nil }
         // Shared normalization with the hint mapper (ParakeetLanguageHint), so

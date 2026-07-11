@@ -5,7 +5,7 @@ import Foundation
 /// Foundation-only (string-free enum) so it lives in OpenWhispCore and can be
 /// named by the `FileTranscriptionEngine` protocol and by AppState without
 /// pulling in the concrete engine.
-enum WhisperBackend {
+public enum WhisperBackend {
     /// Spawn the `whisper-cli` binary per request.
     case cli
     /// POST to a warm `whisper-server` over loopback HTTP.
@@ -20,7 +20,7 @@ enum WhisperBackend {
 /// are part of the contract so AppState can drive them without naming the concrete
 /// macOS `WhisperEngine`. A port keeps whisper.cpp (cross-platform C++) but
 /// supplies its own process/HTTP plumbing.
-protocol FileTranscriptionEngine: AnyObject {
+public protocol FileTranscriptionEngine: AnyObject {
     /// A finished transcription: (requestID, text).
     var onTranscriptionComplete: ((UUID, String) -> Void)? { get set }
     /// A failed transcription: (requestID, message).
@@ -57,12 +57,12 @@ protocol FileTranscriptionEngine: AnyObject {
 
 extension FileTranscriptionEngine {
     /// Default: most engines hold no per-session state.
-    func resetSession() {}
+    public func resetSession() {}
 
 
     /// Convenience matching the engine's own defaults, so call sites that don't
     /// care about `deleteWhenDone` can omit it when calling through the protocol.
-    func transcribe(
+    public func transcribe(
         requestID: UUID,
         binaryPath: String,
         modelPath: String,
@@ -92,7 +92,7 @@ extension FileTranscriptionEngine {
 /// WINDOWS_PORT.md), but behind a protocol so AppState's session orchestration
 /// doesn't name `AppleSpeechEngine`. Authorization stays a concrete-type concern
 /// (it returns platform permission types).
-protocol StreamingTranscriptionEngine: AnyObject {
+public protocol StreamingTranscriptionEngine: AnyObject {
     /// Interim hypothesis as the user speaks.
     var onPartial: ((String) -> Void)? { get set }
     /// Final recognized text for the utterance.

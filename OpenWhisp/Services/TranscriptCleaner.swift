@@ -11,32 +11,32 @@ import Foundation
 /// part of this chain — it has its own control flow (session guards, status,
 /// fallback-on-failure) in AppState. It can be added as a `PostProcessor` stage
 /// later; this stage covers exactly the prior synchronous behavior.
-struct TranscriptCleaner {
-    struct Config {
-        var language: String
-        var customVocabularyEnabled: Bool
-        var substitutions: [Vocabulary.Substitution]
-        var smartFormattingEnabled: Bool
-        var fillerRemovalEnabled: Bool
-        var spokenPunctuationEnabled: Bool
+public struct TranscriptCleaner {
+    public struct Config {
+        public var language: String
+        public var customVocabularyEnabled: Bool
+        public var substitutions: [Vocabulary.Substitution]
+        public var smartFormattingEnabled: Bool
+        public var fillerRemovalEnabled: Bool
+        public var spokenPunctuationEnabled: Bool
 
         // --- Opt-in structural formatting (MAK-20), all default OFF -----------
         // Threaded into SmartFormatter.Options below. Off by default so behavior
         // is unchanged until a caller / Settings opts in. UI wiring is a
         // deliberate follow-up (see PR notes) — no Settings toggles yet.
-        var normalizeNumbers: Bool
-        var normalizeCurrency: Bool
-        var spokenListsEnabled: Bool
-        var basicMarkdownEnabled: Bool
+        public var normalizeNumbers: Bool
+        public var normalizeCurrency: Bool
+        public var spokenListsEnabled: Bool
+        public var basicMarkdownEnabled: Bool
 
         /// Rewrite spoken filenames to editor `@`-mentions (MAK-48). Default OFF.
         /// `AppState` sets this true ONLY when the user's setting is on AND the
         /// frontmost app is a known AI-native editor (see
         /// `FileTagTransform.appliesTo(bundleID:)`), so ordinary dictation into
         /// non-editor apps is never touched.
-        var fileTaggingEnabled: Bool
+        public var fileTaggingEnabled: Bool
 
-        init(
+        public init(
             language: String,
             customVocabularyEnabled: Bool,
             substitutions: [Vocabulary.Substitution],
@@ -63,16 +63,16 @@ struct TranscriptCleaner {
         }
     }
 
-    let config: Config
+    public let config: Config
 
-    init(config: Config) {
+    public init(config: Config) {
         self.config = config
     }
 
     /// Clean a transcript. `isFinalTranscript` enables the trailing
     /// meta-instruction strip (only meaningful on the whole final utterance, not
     /// per live chunk). Returns "" when the transcript is empty/ignorable.
-    func clean(_ text: String, isFinalTranscript: Bool) -> String {
+    public func clean(_ text: String, isFinalTranscript: Bool) -> String {
         // 1+2) Normalize and drop ignorable transcripts BEFORE formatting so we
         //      never capitalize/punctuate a marker we're about to discard.
         guard var normalized = preVocabularyNormalized(text) else { return "" }
@@ -117,7 +117,7 @@ struct TranscriptCleaner {
     /// firing decision must be captured per `clean` call on the raw input — the
     /// session's final accumulated text no longer contains the `from` phrases.
     /// Empty when vocabulary is off / no rules / the transcript is ignorable.
-    func firedSubstitutionIDs(inRawTranscript rawTranscript: String) -> Set<Vocabulary.Substitution.ID> {
+    public func firedSubstitutionIDs(inRawTranscript rawTranscript: String) -> Set<Vocabulary.Substitution.ID> {
         guard let sub = vocabularyStage,
               let normalized = preVocabularyNormalized(rawTranscript) else { return [] }
         return sub.firedSubstitutionIDs(in: normalized)
@@ -147,7 +147,7 @@ struct TranscriptCleaner {
     /// and future stages (e.g. an LLM stage) can extend the pipeline uniformly.
     /// `clean(_:isFinalTranscript:)` is the synchronous fast path used today; this
     /// is the extensible form the rest of the roadmap builds on.
-    func makeChain(isFinalTranscript: Bool) -> PostProcessorChain {
+    public func makeChain(isFinalTranscript: Bool) -> PostProcessorChain {
         PostProcessorChain(localStages(isFinalTranscript: isFinalTranscript))
     }
 
@@ -163,7 +163,7 @@ struct TranscriptCleaner {
     ///
     /// `refiner == nil` yields a chain identical to `makeChain` (local-only), so a
     /// session with the AI step disabled routes through the very same assembly.
-    func makeFullChain(isFinalTranscript: Bool, refiner: AsyncTextRefiner?) -> PostProcessorChain {
+    public func makeFullChain(isFinalTranscript: Bool, refiner: AsyncTextRefiner?) -> PostProcessorChain {
         var stages = localStages(isFinalTranscript: isFinalTranscript)
         // The AI stage re-cleans its output the way the app does: a NON-final
         // `clean` (no meta-strip — the LLM result is not a spoken instruction).
@@ -210,7 +210,7 @@ struct TranscriptCleaner {
 
     // MARK: - Pure helpers (moved out of AppState)
 
-    static func removeNonSpeechMarkers(from text: String) -> String {
+    public static func removeNonSpeechMarkers(from text: String) -> String {
         var cleaned = text
         for term in markerTerms {
             cleaned = cleaned.replacingOccurrences(of: "[\(term)]", with: "", options: [.caseInsensitive])
@@ -219,7 +219,7 @@ struct TranscriptCleaner {
         return cleaned
     }
 
-    static func isIgnorable(_ text: String) -> Bool {
+    public static func isIgnorable(_ text: String) -> Bool {
         let lowercased = text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         return lowercased.isEmpty || ignorableTokens.contains(lowercased)
     }

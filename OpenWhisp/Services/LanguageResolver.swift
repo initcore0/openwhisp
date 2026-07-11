@@ -12,23 +12,23 @@ import Foundation
 /// concept** — Apple Speech always transcribes in the given locale, and Parakeet
 /// is ASR-only (MAK-46) — so translation is suppressed for those engines on both
 /// derivations.
-enum LanguageResolver {
+public enum LanguageResolver {
     /// The transcription engine's `appleSpeech` identifier (Apple's on-device
     /// recognizer). Kept for call sites that name it directly.
-    static let appleSpeechEngine = "appleSpeech"
+    public static let appleSpeechEngine = "appleSpeech"
 
     /// Engines with no speech→English translation path; the single source of
     /// truth for the suppression rule (and the settings UI's translate gate).
-    static let noTranslateEngines: Set<String> = [appleSpeechEngine, "parakeet"]
+    public static let noTranslateEngines: Set<String> = [appleSpeechEngine, "parakeet"]
 
-    static func supportsTranslation(transcriptionEngine: String) -> Bool {
+    public static func supportsTranslation(transcriptionEngine: String) -> Bool {
         !noTranslateEngines.contains(transcriptionEngine)
     }
 
     /// Language string to pass to `engine.start(language:)` / the file engine.
     /// Returns the `translate-to-English` sentinel when translating (and the engine
     /// supports it), else the spoken language ("auto" = detect).
-    static func engineLanguageSetting(
+    public static func engineLanguageSetting(
         language: String,
         translateToEnglish: Bool,
         transcriptionEngine: String
@@ -42,7 +42,7 @@ enum LanguageResolver {
     /// Language of the OUTPUT text, used to pick formatting rules (spoken
     /// punctuation, capitalization): English when translating, else the spoken
     /// language.
-    static func outputLanguageForCleaning(
+    public static func outputLanguageForCleaning(
         language: String,
         translateToEnglish: Bool,
         transcriptionEngine: String

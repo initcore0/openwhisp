@@ -14,13 +14,13 @@ import Foundation
 /// alone, because silently dropping or altering real words is worse than a
 /// missed cleanup. Options gate the riskier passes (filler removal, spoken
 /// punctuation) so they can be turned off.
-struct SmartFormatter: PostProcessor {
+public struct SmartFormatter: PostProcessor {
 
-    struct Options: Sendable {
-        var removeFillers: Bool
-        var applySpokenPunctuation: Bool
-        var capitalizeSentences: Bool
-        var ensureTerminalPunctuation: Bool
+    public struct Options: Sendable {
+        public var removeFillers: Bool
+        public var applySpokenPunctuation: Bool
+        public var capitalizeSentences: Bool
+        public var ensureTerminalPunctuation: Bool
 
         // --- Opt-in structural formatting (all default OFF) -------------------
         // These are the MAK-20 "richer local formatting" rule groups. They are
@@ -30,16 +30,16 @@ struct SmartFormatter: PostProcessor {
 
         /// Normalize small spelled cardinals in clearly-numeric contexts to
         /// digits, and combine year-style pairs ("twenty twenty six" -> "2026").
-        var normalizeNumbers: Bool
+        public var normalizeNumbers: Bool
         /// Normalize spoken currency ("five dollars" -> "$5", "ten cents" -> "10¢").
-        var normalizeCurrency: Bool
+        public var normalizeCurrency: Bool
         /// Turn spoken list markers at the start of a line into markdown list
         /// items ("bullet X" -> "- X", "number one X" -> "1. X").
-        var spokenLists: Bool
+        public var spokenLists: Bool
         /// Basic markdown commands: "bold X" -> "**X**", "heading X" -> "# X".
-        var basicMarkdown: Bool
+        public var basicMarkdown: Bool
 
-        static let `default` = Options(
+        public static let `default` = Options(
             removeFillers: true,
             applySpokenPunctuation: true,
             capitalizeSentences: true,
@@ -50,7 +50,7 @@ struct SmartFormatter: PostProcessor {
             basicMarkdown: false
         )
 
-        static let off = Options(
+        public static let off = Options(
             removeFillers: false,
             applySpokenPunctuation: false,
             capitalizeSentences: false,
@@ -61,7 +61,7 @@ struct SmartFormatter: PostProcessor {
             basicMarkdown: false
         )
 
-        init(
+        public init(
             removeFillers: Bool,
             applySpokenPunctuation: Bool,
             capitalizeSentences: Bool,
@@ -82,18 +82,18 @@ struct SmartFormatter: PostProcessor {
         }
     }
 
-    let options: Options
+    public let options: Options
 
-    init(options: Options = .default) {
+    public init(options: Options = .default) {
         self.options = options
     }
 
-    func process(_ text: String, context: PostProcessContext) async throws -> String {
+    public func process(_ text: String, context: PostProcessContext) async throws -> String {
         format(text, language: context.language)
     }
 
     /// Synchronous entry point (also used directly where async isn't convenient).
-    func format(_ text: String, language: String = "auto") -> String {
+    public func format(_ text: String, language: String = "auto") -> String {
         var s = text
 
         if options.applySpokenPunctuation {

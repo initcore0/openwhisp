@@ -9,15 +9,22 @@ import Foundation
 /// hand-exported file, so it only touches the sections it contains. Foundation-
 /// only and `Codable`, so it lives in OpenWhispCore and the parsing/listing logic
 /// is unit-tested.
-struct ConfigPack: Codable, Equatable, Identifiable {
+public struct ConfigPack: Codable, Equatable, Identifiable {
     /// Stable identifier (used for the SwiftUI list and de-duplication).
-    var id: String
+    public var id: String
     /// Short display name, e.g. "Developer Vocabulary".
-    var name: String
+    public var name: String
     /// One-line description of what applying it does.
-    var packDescription: String
+    public var packDescription: String
     /// The configuration this pack applies.
-    var bundle: ConfigBundle
+    public var bundle: ConfigBundle
+
+    public init(id: String, name: String, packDescription: String, bundle: ConfigBundle) {
+        self.id = id
+        self.name = name
+        self.packDescription = packDescription
+        self.bundle = bundle
+    }
 
     enum CodingKeys: String, CodingKey {
         case id, name
@@ -27,16 +34,16 @@ struct ConfigPack: Codable, Equatable, Identifiable {
 
     /// What applying this pack will change, derived from the bundle ("2 vocab
     /// terms, 1 prompt"). Surfaced in the UI so the action is never opaque.
-    var contentsSummary: String { bundle.summary }
+    public var contentsSummary: String { bundle.summary }
 
-    enum DecodeError: Error, Equatable {
+    public enum DecodeError: Error, Equatable {
         case malformed(String)
         case unsupportedVersion(found: Int, supported: Int)
     }
 
     /// Decode a single pack, validating the embedded bundle's schema version the
     /// same way a hand-imported file is validated.
-    static func decode(from data: Data) throws -> ConfigPack {
+    public static func decode(from data: Data) throws -> ConfigPack {
         let pack: ConfigPack
         do {
             pack = try JSONDecoder().decode(ConfigPack.self, from: data)
@@ -56,7 +63,7 @@ struct ConfigPack: Codable, Equatable, Identifiable {
     /// sorted by name and de-duplicated by id (first occurrence wins). Malformed
     /// or too-new files are skipped rather than failing the whole listing — a bad
     /// pack must never hide the good ones. Pure, so it's unit-tested without IO.
-    static func parseAll(_ files: [(name: String, data: Data)]) -> [ConfigPack] {
+    public static func parseAll(_ files: [(name: String, data: Data)]) -> [ConfigPack] {
         var seen = Set<String>()
         var packs: [ConfigPack] = []
         for file in files.sorted(by: { $0.name < $1.name }) {

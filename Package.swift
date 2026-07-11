@@ -1,4 +1,4 @@
-// swift-tools-version:5.9
+// swift-tools-version:6.0
 import PackageDescription
 
 // This package exists ONLY to unit-test OpenWhisp's pure-logic types
@@ -8,13 +8,19 @@ import PackageDescription
 // so they can be tested with `swift test` without pulling in AppKit/SwiftUI.
 let package = Package(
     name: "OpenWhispCore",
-    platforms: [.macOS(.v13)],
+    platforms: [.macOS(.v13), .iOS(.v18)],
     products: [
         // The agent-callable CLI + MCP stdio server. Built by `swift build
         // --product openwhisp` and bundled into the .app at Contents/Helpers by
         // package.sh; lives OUTSIDE OpenWhisp/ so build.sh's source glob (which
         // compiles the GUI app) never picks up its `main`.
         .executable(name: "openwhisp", targets: ["openwhisp"]),
+        // Library products so the iOS companion app (openwhisp-ios) can consume
+        // the Foundation-only core and the Agent Bridge wire as SwiftPM
+        // dependencies. The mac app still builds via build.sh's swiftc glob and
+        // never imports these products — they exist for the iOS consumer + CI.
+        .library(name: "OpenWhispCore", targets: ["OpenWhispCore"]),
+        .library(name: "OpenWhispBridgeKit", targets: ["OpenWhispBridgeKit"]),
     ],
     targets: [
         .target(
@@ -151,5 +157,11 @@ let package = Package(
             dependencies: ["OpenWhispBridgeKit", "OpenWhispCore"],
             path: "Tests/OpenWhispBridgeKitTests"
         )
-    ]
+    ],
+    // Tools-version was bumped to 6.0 solely to declare `.iOS(.v18)` (a
+    // PackageDescription 6.0 API). Pin the Swift language mode to 5 so the bump
+    // introduces ZERO behavior change: no strict-concurrency regressions in the
+    // existing sources or `swift test`. The mac app is built by build.sh's raw
+    // swiftc glob and is unaffected by this file regardless.
+    swiftLanguageModes: [.v5]
 )

@@ -9,25 +9,25 @@ import Foundation
 ///
 /// Contract: `save` with an empty string deletes the entry; `read` returns nil
 /// when no value is stored.
-protocol SecretStore: AnyObject {
+public protocol SecretStore: AnyObject {
     func read(key: String) -> String?
     func save(_ value: String, key: String)
 }
 
 /// A non-persistent `SecretStore` used by tests and as a safe fallback. Pure
 /// Foundation, so it lives in OpenWhispCore and is exercised by `swift test`.
-final class InMemorySecretStore: SecretStore {
+public final class InMemorySecretStore: SecretStore {
     private var storage: [String: String] = [:]
 
-    init(seed: [String: String] = [:]) {
+    public init(seed: [String: String] = [:]) {
         storage = seed
     }
 
-    func read(key: String) -> String? {
+    public func read(key: String) -> String? {
         storage[key]
     }
 
-    func save(_ value: String, key: String) {
+    public func save(_ value: String, key: String) {
         if value.isEmpty {
             storage.removeValue(forKey: key)
         } else {
