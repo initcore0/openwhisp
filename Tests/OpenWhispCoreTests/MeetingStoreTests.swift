@@ -137,4 +137,68 @@ final class MeetingStoreTests: XCTestCase {
         let good = Meeting(wavFileName: "meeting-ok.wav")
         XCTAssertEqual(s.wavURL(for: good)?.lastPathComponent, "meeting-ok.wav")
     }
+
+    // MARK: - MAK-52 speaker attribution: forward-compat + leg leaf-guard
+
+    func testOldJSONWithoutMAK52FieldsDecodes() throws {
+        // A record written by MAK-50 (no attributedTranscript / leg filenames) must
+        // still decode, with the new fields defaulting to nil.
+        let json = """
+        {"id":"\(UUID().uuidString)","startedAt":0,"duration":10,"wavFileName":"meeting-x.wav","transcript":"hi","status":{"kind":"transcribed"}}
+        """.data(using: .utf8)!
+        let m = try JSONDecoder().decode(Meeting.self, from: json)
+        XCTAssertEqual(m.transcript, "hi")
+        XCTAssertNil(m.attributedTranscript)
+        XCTAssertNil(m.micWavFileName)
+        XCTAssertNil(m.systemWavFileName)
+    }
+
+    func testMAK52FieldsRoundTrip() throws {
+        let m = Meeting(
+            id: UUID(), duration: 5, wavFileName: "meeting-x.wav",
+            micWavFileName: "meeting-x-mic.wav", systemWavFileName: "meeting-x-sys.wav",
+            transcript: "plain", attributedTranscript: "Me: hi\nThem: yo", status: .done
+        )
+        let back = try JSONDecoder().decode(Meeting.self, from: try JSONEncoder().encode(m))
+        XCTAssertEqual(m, back)
+        XCTAssertEqual(back.attributedTranscript, "Me: hi\nThem: yo")
+    }
+
+    func testMeetingRecordingOldJSONWithoutLegURLsDecodes() throws {
+        // MAK-50 MeetingRecording JSON (no leg URLs) must still decode.
+        let json = """
+        {"id":"\(UUID().uuidString)","wavURL":"file:///tmp/a.wav","startedAt":0,"duration":3}
+        """.data(using: .utf8)!
+        let r = try JSONDecoder().decode(MeetingRecording.self, from: json)
+        XCTAssertNil(r.micWavURL)
+        XCTAssertNil(r.systemWavURL)
+        XCTAssertEqual(r.duration, 3)
+    }
+
+    func testLegLeafNamesPassGuardAndTraversalRejected() {
+        let id = UUID()
+        XCTAssertTrue(MeetingWAVName.isValid(MeetingWAVName.micFileName(for: id)))
+        XCTAssertTrue(MeetingWAVName.isValid(MeetingWAVName.systemFileName(for: id)))
+        // A crafted leg-shaped name that tries to traverse is still rejected.
+        XCTAssertFalse(MeetingWAVName.isValid("../meeting-x-mic.wav"))
+        XCTAssertFalse(MeetingWAVName.isValid("sub/meeting-x-sys.wav"))
+    }
+
+    func testDeleteRemovesLegWAVs() throws {
+        let s = store()
+        let id = UUID()
+        try FileManager.default.createDirectory(at: s.audioDirectory, withIntermediateDirectories: true)
+        let mixed = MeetingWAVName.fileName(for: id)
+        let mic = MeetingWAVName.micFileName(for: id)
+        let sys = MeetingWAVName.systemFileName(for: id)
+        for name in [mixed, mic, sys] {
+            try Data([0x1]).write(to: s.audioDirectory.appendingPathComponent(name))
+        }
+        s.upsert(Meeting(id: id, wavFileName: mixed, micWavFileName: mic, systemWavFileName: sys))
+        s.delete(id: id)
+        for name in [mixed, mic, sys] {
+            XCTAssertFalse(FileManager.default.fileExists(atPath: s.audioDirectory.appendingPathComponent(name).path),
+                           "\(name) should be deleted")
+        }
+    }
 }

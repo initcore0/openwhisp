@@ -36,7 +36,23 @@ public struct MeetingSessionStore {
     /// Resolve a meeting's stored leaf `wavFileName` to an absolute URL inside
     /// `audioDirectory`, or nil if the name is missing/unsafe (never traverses out).
     public func wavURL(for meeting: Meeting) -> URL? {
-        guard let name = meeting.wavFileName, MeetingWAVName.isValid(name) else { return nil }
+        resolvedLeafURL(meeting.wavFileName)
+    }
+
+    /// Resolve the mic ("Me") leg WAV, or nil if absent/unsafe (MAK-52).
+    public func micWavURL(for meeting: Meeting) -> URL? {
+        resolvedLeafURL(meeting.micWavFileName)
+    }
+
+    /// Resolve the system ("Them") leg WAV, or nil if absent/unsafe (MAK-52).
+    public func systemWavURL(for meeting: Meeting) -> URL? {
+        resolvedLeafURL(meeting.systemWavFileName)
+    }
+
+    /// Leaf-guarded resolution of a stored filename against `audioDirectory`
+    /// (never traverses out). nil for a missing or unsafe name.
+    private func resolvedLeafURL(_ name: String?) -> URL? {
+        guard let name, MeetingWAVName.isValid(name) else { return nil }
         return audioDirectory.appendingPathComponent(name)
     }
 
@@ -73,9 +89,12 @@ public struct MeetingSessionStore {
     @discardableResult
     public func delete(id: UUID) -> [Meeting] {
         var all = load()
-        if let removed = all.first(where: { $0.id == id }), let wav = wavURL(for: removed) {
-            // Only ever deletes a validated leaf inside audioDirectory (MeetingWAVName).
-            try? FileManager.default.removeItem(at: wav)
+        if let removed = all.first(where: { $0.id == id }) {
+            // Only ever deletes validated leaves inside audioDirectory (MeetingWAVName):
+            // the mixed WAV plus, when present, both MAK-52 leg WAVs.
+            for wav in [wavURL(for: removed), micWavURL(for: removed), systemWavURL(for: removed)].compactMap({ $0 }) {
+                try? FileManager.default.removeItem(at: wav)
+            }
         }
         all.removeAll { $0.id == id }
         save(all)

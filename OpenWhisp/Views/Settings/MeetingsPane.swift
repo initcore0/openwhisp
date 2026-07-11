@@ -56,8 +56,10 @@ struct MeetingsPane: View {
                 HStack {
                     Image(systemName: "record.circle").foregroundStyle(.red)
                     VStack(alignment: .leading, spacing: 1) {
-                        Text("Recording…")
-                        Text(Self.dateString(live.startedAt)).font(.caption2).foregroundStyle(.secondary)
+                        // MAK-52: live "who's talking" indicator (mic = You, system = Them).
+                        Text(coordinator.talkState.label)
+                        Text("Recording · \(Self.dateString(live.startedAt))")
+                            .font(.caption2).foregroundStyle(.secondary)
                     }
                     Spacer()
                     ProgressView().controlSize(.small)
@@ -116,7 +118,11 @@ private struct MeetingRow: View {
                     Text("Summary").font(.caption).bold()
                     Text(summary).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
                 }
-                if let transcript = meeting.transcript, !transcript.isEmpty {
+                // MAK-52: prefer the attributed (Me/Them) transcript when present.
+                if let attributed = meeting.attributedTranscript, !attributed.isEmpty {
+                    Text("Transcript (attributed)").font(.caption).bold()
+                    Text(attributed).font(.caption).foregroundStyle(.secondary).lineLimit(12).textSelection(.enabled)
+                } else if let transcript = meeting.transcript, !transcript.isEmpty {
                     Text("Transcript").font(.caption).bold()
                     Text(transcript).font(.caption).foregroundStyle(.secondary).lineLimit(12).textSelection(.enabled)
                 }

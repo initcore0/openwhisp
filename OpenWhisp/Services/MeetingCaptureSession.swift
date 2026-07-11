@@ -34,6 +34,18 @@ final class MeetingCaptureSession {
     private var micLeg: MeetingMicCapture?
     private var mixer = MeetingMixer()
     private var writer: MeetingWAVWriter?
+    /// MAK-52 speaker-attribution legs: two progressive WAVs written ALONGSIDE the
+    /// mixed WAV (mic = "Me", system = "Them"). Each leg's samples are written as
+    /// they arrive — no mixing, no frontier alignment — so per-speaker transcription
+    /// gets clean single-source audio. A leg-write failure must NOT fail the meeting:
+    /// on any error we drop that writer and degrade to mixed-only.
+    private var micWriter: MeetingWAVWriter?
+    private var systemWriter: MeetingWAVWriter?
+    private var micLegURL: URL?
+    private var systemLegURL: URL?
+    /// One filesystem stamp per capture session, shared by the mixed WAV and both
+    /// legs so `recoverOrphanedRecordings` can group `meeting_<stamp>_<uuid>*`.
+    private var sessionStamp = Int(Date().timeIntervalSince1970)
     private var startedAt: Date?
     private var recordingID = UUID()
     private var pendingID = UUID()
@@ -44,8 +56,13 @@ final class MeetingCaptureSession {
     /// before `stop` delivers the finished `MeetingRecording` under that id.
     var currentRecordingID: UUID { recordingID }
     var currentStartedAt: Date? { startedAt }
-    /// Most recent per-leg level (0…1) for a coarse UI meter.
+    /// Most recent mixed level (0…1) for a coarse UI meter.
     private(set) var level: Float = 0
+    /// Most recent per-leg levels (0…1) for the MAK-52 talking indicator
+    /// (mic = "You", system = "Them"). Coarse RMS mapped through `AudioLevel`, same
+    /// as `level`. Updated on the main thread for the UI.
+    private(set) var micLevel: Float = 0
+    private(set) var systemLevel: Float = 0
 
     // MARK: Permission (MAK-24 style)
 
@@ -100,12 +117,31 @@ final class MeetingCaptureSession {
         mixer = MeetingMixer()
         startedAt = pendingStartedAt
 
+        sessionStamp = Int(Date().timeIntervalSince1970)
         do {
-            let url = try Self.newRecordingURL(id: recordingID)
+            let url = try newRecordingURL(id: recordingID)
             writer = try MeetingWAVWriter(url: url, sampleRate: Int(SystemAudioCapture.targetSampleRate))
         } catch {
             fail("Could not open the meeting recording file: \(error.localizedDescription)")
             return
+        }
+
+        // MAK-52: open the two speaker-attribution leg WAVs alongside the mixed WAV.
+        // Best-effort — a leg-open failure degrades to mixed-only (log + continue),
+        // it never fails the meeting.
+        micWriter = nil; systemWriter = nil; micLegURL = nil; systemLegURL = nil
+        let rate = Int(SystemAudioCapture.targetSampleRate)
+        if let micURL = try? newLegURL(id: recordingID, leg: "mic"),
+           let mw = try? MeetingWAVWriter(url: micURL, sampleRate: rate) {
+            micWriter = mw; micLegURL = micURL
+        } else {
+            NSLog("[Meeting] mic leg WAV unavailable — recording mixed-only attribution for this leg")
+        }
+        if let sysURL = try? newLegURL(id: recordingID, leg: "sys"),
+           let sw = try? MeetingWAVWriter(url: sysURL, sampleRate: rate) {
+            systemWriter = sw; systemLegURL = sysURL
+        } else {
+            NSLog("[Meeting] system leg WAV unavailable — recording mixed-only attribution for this leg")
         }
 
         let system = SystemAudioCapture()
@@ -184,11 +220,14 @@ final class MeetingCaptureSession {
                 return
             }
 
+            let (micURL, sysURL) = self.finalizeLegs()
             let recording = MeetingRecording(
                 id: self.recordingID,
                 wavURL: writer.url,
                 startedAt: startedAt,
-                duration: writer.duration
+                duration: writer.duration,
+                micWavURL: micURL,
+                systemWavURL: sysURL
             )
             self.teardownLegs()
             self.writer = nil
@@ -209,8 +248,10 @@ final class MeetingCaptureSession {
             if !remainder.isEmpty { try? writer.append(remainder) }
             writer.sync()
             try? writer.finalize()
+            let (micURL, sysURL) = self.finalizeLegs()
             let recording = MeetingRecording(id: self.recordingID, wavURL: writer.url,
-                                             startedAt: startedAt, duration: writer.duration)
+                                             startedAt: startedAt, duration: writer.duration,
+                                             micWavURL: micURL, systemWavURL: sysURL)
             self.teardownLegs()
             self.writer = nil
             DispatchQueue.main.async {
@@ -237,20 +278,48 @@ final class MeetingCaptureSession {
             var mixed = leg == .system ? self.mixer.appendSystem(samples)
                                        : self.mixer.appendMic(samples)
             mixed += self.mixer.flushImbalance(over: Self.maxPendingLeadFrames)
-            self.updateLevel(samples)
+            self.updateLevel(samples, from: leg)
+
+            // MAK-52: write this leg's raw samples straight through to its own WAV
+            // (no mixing/frontier — legs are single-source). A write failure drops
+            // that leg writer and degrades to mixed-only; the meeting continues.
+            self.writeLeg(samples, from: leg)
+
             guard !mixed.isEmpty else { return }
             try? self.writer?.append(mixed)
             self.writer?.sync()   // crash-safety: at most the un-flushed tail is lost
         }
     }
 
-    private func updateLevel(_ samples: [Float]) {
+    /// Append raw leg samples to the matching leg writer (queue-confined). On any
+    /// write failure, tear that leg writer down and forget its URL so the meeting
+    /// degrades cleanly to mixed-only.
+    private func writeLeg(_ samples: [Float], from leg: Leg) {
+        guard !samples.isEmpty else { return }
+        let writer = leg == .mic ? micWriter : systemWriter
+        guard let writer else { return }
+        do {
+            try writer.append(samples)
+            writer.sync()
+        } catch {
+            NSLog("[Meeting] leg WAV write failed — degrading to mixed-only for this leg: \(error.localizedDescription)")
+            if leg == .mic { micWriter = nil; micLegURL = nil }
+            else { systemWriter = nil; systemLegURL = nil }
+        }
+    }
+
+    private func updateLevel(_ samples: [Float], from leg: Leg) {
         guard !samples.isEmpty else { return }
         var sum: Float = 0
         for s in samples { sum += s * s }
         let rms = (sum / Float(samples.count)).squareRoot()
         let normalized = AudioLevel.fromRMS(rms)
-        DispatchQueue.main.async { self.level = normalized }
+        DispatchQueue.main.async {
+            // `level` tracks whichever leg most recently delivered (coarse meter,
+            // unchanged); the per-leg levels feed the MAK-52 talking indicator.
+            self.level = normalized
+            if leg == .mic { self.micLevel = normalized } else { self.systemLevel = normalized }
+        }
     }
 
     // MARK: Bookkeeping
@@ -267,6 +336,33 @@ final class MeetingCaptureSession {
     private func discardWriter() {
         if let url = writer?.url { try? FileManager.default.removeItem(at: url) }
         writer = nil
+        discardLegs()
+    }
+
+    /// MAK-52: finalize whichever leg writers survived and return their URLs (nil
+    /// for a leg that was never opened or failed mid-recording). Best-effort — a
+    /// finalize failure drops that leg to nil so ingest never references a bad file.
+    /// Queue-confined (called from `finalizeAndDeliver`/`legFailed`).
+    private func finalizeLegs() -> (mic: URL?, system: URL?) {
+        var mic: URL? = nil
+        var sys: URL? = nil
+        if let mw = micWriter {
+            mw.sync()
+            if (try? mw.finalize()) != nil { mic = micLegURL } else { try? FileManager.default.removeItem(at: mw.url) }
+        }
+        if let sw = systemWriter {
+            sw.sync()
+            if (try? sw.finalize()) != nil { sys = systemLegURL } else { try? FileManager.default.removeItem(at: sw.url) }
+        }
+        micWriter = nil; systemWriter = nil
+        return (mic, sys)
+    }
+
+    /// Discard leg WAVs without delivering them (start-failure path).
+    private func discardLegs() {
+        if let url = micLegURL { try? FileManager.default.removeItem(at: url) }
+        if let url = systemLegURL { try? FileManager.default.removeItem(at: url) }
+        micWriter = nil; systemWriter = nil; micLegURL = nil; systemLegURL = nil
     }
 
     private func fail(_ message: String) {
@@ -289,45 +385,69 @@ final class MeetingCaptureSession {
         return base
     }
 
-    private static func newRecordingURL(id: UUID) throws -> URL {
-        let stamp = Int(Date().timeIntervalSince1970)
-        return try meetingsDirectory().appendingPathComponent("meeting_\(stamp)_\(id.uuidString).wav")
+    private func newRecordingURL(id: UUID) throws -> URL {
+        return try Self.meetingsDirectory().appendingPathComponent("meeting_\(sessionStamp)_\(id.uuidString).wav")
+    }
+
+    /// MAK-52 in-flight leg WAV name: `meeting_<stamp>_<uuid>_<leg>.wav`, beside the
+    /// mixed WAV. The recovery sweep recognizes the `_mic`/`_sys` suffix.
+    private func newLegURL(id: UUID, leg: String) throws -> URL {
+        return try Self.meetingsDirectory().appendingPathComponent("meeting_\(sessionStamp)_\(id.uuidString)_\(leg).wav")
     }
 
     // MARK: Crash recovery (launch-time sweep)
 
     /// Salvage recordings orphaned by a crash/quit mid-meeting. In-flight capture
-    /// files are named `meeting_<stamp>_<uuid>.wav` and carry a placeholder WAV
-    /// header until `finalize()`; a successful ingest MOVES the file to its
-    /// canonical `meeting-<uuid>.wav` name, so anything still matching the
-    /// in-flight pattern at launch is an orphan. This patches each orphan's header
-    /// from its on-disk length (`MeetingWAVWriter.recoverInPlace`) and returns
-    /// `MeetingRecording`s ready for `MeetingPipelineCoordinator.ingest(_:)`.
-    /// Unparseable or empty stubs are deleted. Call BEFORE any new capture starts.
+    /// files are named `meeting_<stamp>_<uuid>.wav` (mixed) plus, since MAK-52, the
+    /// two leg WAVs `meeting_<stamp>_<uuid>_mic.wav` / `_sys.wav`. All carry a
+    /// placeholder WAV header until `finalize()`; a successful ingest MOVES them to
+    /// canonical names, so anything still matching the in-flight pattern at launch is
+    /// an orphan. This patches each orphan's header from its on-disk length
+    /// (`MeetingWAVWriter.recoverInPlace`), groups the legs with their mixed WAV by
+    /// `<stamp>_<uuid>`, and returns `MeetingRecording`s ready for
+    /// `MeetingPipelineCoordinator.ingest(_:)` — recovering with whatever legs exist
+    /// (a leg alone with no mixed WAV is still recovered as its own recording so no
+    /// audio is silently lost). Empty stubs are deleted. Call BEFORE any new capture.
     static func recoverOrphanedRecordings() -> [MeetingRecording] {
-        guard let dir = try? meetingsDirectory(),
-              let names = try? FileManager.default.contentsOfDirectory(atPath: dir.path) else { return [] }
-        var recovered: [MeetingRecording] = []
-        for name in names where name.hasPrefix("meeting_") && name.hasSuffix(".wav") {
+        guard let dir = try? meetingsDirectory() else { return [] }
+        return recoverOrphanedRecordings(in: dir)
+    }
+
+    /// Testable core of the recovery sweep over an explicit directory. Name parsing
+    /// + leg grouping live in the pure `MeetingOrphanScan` (unit-tested); here we do
+    /// the filesystem IO: header recovery, empty-stub deletion, and size→duration.
+    static func recoverOrphanedRecordings(in dir: URL) -> [MeetingRecording] {
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: dir.path) else { return [] }
+
+        // Recover each parseable file's header in place; drop empty (header-only)
+        // stubs so a group only carries files that actually hold audio.
+        var live = Set<String>()
+        for name in names where MeetingOrphanScan.parse(name) != nil {
             let url = dir.appendingPathComponent(name)
-            // meeting_<stamp>_<uuid>.wav
-            let stem = String(name.dropFirst("meeting_".count).dropLast(".wav".count))
-            let parts = stem.split(separator: "_", maxSplits: 1)
-            guard parts.count == 2, let stamp = TimeInterval(parts[0]), let id = UUID(uuidString: String(parts[1])) else {
-                continue   // not ours; leave it alone
-            }
-            guard MeetingWAVWriter.recoverInPlace(url: url) else {
-                // Header-only stub (crashed before any audio): nothing to salvage.
-                try? FileManager.default.removeItem(at: url)
-                continue
-            }
+            if MeetingWAVWriter.recoverInPlace(url: url) { live.insert(name) }
+            else { try? FileManager.default.removeItem(at: url) }
+        }
+
+        func frames(_ url: URL) -> Int {
             let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int).flatMap { $0 } ?? 0
-            let frames = max(0, size - 44) / 2
+            return max(0, size - 44) / 2
+        }
+
+        var recovered: [MeetingRecording] = []
+        for g in MeetingOrphanScan.group(Array(live)) {
+            let mixed = g.mixed.map { dir.appendingPathComponent($0) }
+            let mic = g.mic.map { dir.appendingPathComponent($0) }
+            let sys = g.system.map { dir.appendingPathComponent($0) }
+            // Prefer the mixed WAV as the canonical `wavURL`; if only legs survived,
+            // fall back to whichever leg exists so the recording isn't lost.
+            guard let primary = mixed ?? mic ?? sys else { continue }
             recovered.append(MeetingRecording(
-                id: id,
-                wavURL: url,
-                startedAt: Date(timeIntervalSince1970: stamp),
-                duration: Double(frames) / SystemAudioCapture.targetSampleRate
+                id: g.id,
+                wavURL: primary,
+                startedAt: Date(timeIntervalSince1970: g.stamp),
+                duration: Double(frames(primary)) / SystemAudioCapture.targetSampleRate,
+                micWavURL: mic,
+                systemWavURL: sys
             ))
         }
         return recovered

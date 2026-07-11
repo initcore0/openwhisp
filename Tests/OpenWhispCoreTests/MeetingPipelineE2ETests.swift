@@ -131,4 +131,60 @@ final class MeetingPipelineE2ETests: XCTestCase {
         XCTAssertNotNil(persisted?.transcript)
         XCTAssertNil(persisted?.summary)
     }
+
+    // MARK: - MAK-52 speaker attribution (two scripted leg transcripts)
+
+    /// E2E through the core attribution seams: two per-leg chunk sets are
+    /// interleaved into an attributed transcript, the attributed transcript is
+    /// preferred as the summarizer input, and the whole thing persists. This mirrors
+    /// the coordinator's `attributeAndThenSummarize → summarize` composition without
+    /// the app-only engine/decoder.
+    func testAttributedTranscriptIsBuiltAndPreferredForSummary() async throws {
+        let store = MeetingSessionStore(baseDirectory: dir)
+
+        // Scripted per-leg chunk results (as the leg transcription would return).
+        let micChunks = [
+            TranscriptInterleaver.Chunk(speaker: "Me", start: 0, text: "Hi, thanks for joining."),
+            TranscriptInterleaver.Chunk(speaker: "Me", start: 4, text: "Let's ship Friday."),
+        ]
+        let themChunks = [
+            TranscriptInterleaver.Chunk(speaker: "Them", start: 2, text: "Happy to be here."),
+            TranscriptInterleaver.Chunk(speaker: "Them", start: 6, text: "I'll update the changelog."),
+        ]
+        let attributed = TranscriptInterleaver.merge(micChunks + themChunks)
+        // Interleaved by start time, labeled per speaker.
+        XCTAssertEqual(attributed,
+            "Me: Hi, thanks for joining.\nThem: Happy to be here.\nMe: Let's ship Friday.\nThem: I'll update the changelog.")
+
+        let plain = "Hi, thanks for joining. Happy to be here. Let's ship Friday. I'll update the changelog."
+        var meeting = Meeting(wavFileName: MeetingWAVName.fileName(for: UUID()),
+                              transcript: plain, attributedTranscript: attributed, status: .transcribed)
+        store.upsert(meeting)
+
+        // The coordinator prefers the attributed transcript as the summarizer input.
+        let summarizerInput = (meeting.attributedTranscript?.isEmpty == false)
+            ? meeting.attributedTranscript! : plain
+        XCTAssertEqual(summarizerInput, attributed, "attributed transcript must be preferred over plain")
+
+        // Summarizer receives the attributed text; its Me/Them labels reach the model
+        // (the summarizer normalizes whitespace but keeps the label tokens).
+        var seenInput: String?
+        let summary = try await MeetingSummarizer.run(transcript: summarizerInput) { _, input in
+            seenInput = input
+            return "## Summary\nKickoff.\n## Decisions\n- Ship Friday\n## Action items\n- Them: changelog"
+        }
+        XCTAssertTrue(seenInput?.contains("Me:") ?? false, "labels should reach the summarizer")
+        XCTAssertTrue(seenInput?.contains("Them:") ?? false)
+        // Language guard runs against the PLAIN transcript, not the labeled one.
+        XCTAssertFalse(RefineOutputGuard.outputTranslatedAway(input: plain, output: summary))
+
+        meeting.summary = summary
+        meeting.status = .done
+        store.upsert(meeting)
+
+        let persisted = store.load().first { $0.id == meeting.id }
+        XCTAssertEqual(persisted?.attributedTranscript, attributed)
+        XCTAssertEqual(persisted?.transcript, plain, "plain transcript is kept alongside")
+        XCTAssertTrue(persisted?.summary?.contains("Them: changelog") ?? false)
+    }
 }

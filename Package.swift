@@ -113,7 +113,10 @@ let package = Package(
                 "TipsCatalog.swift",
                 "HintRotation.swift",
                 "MeetingRecording.swift",
-                "MeetingMixer.swift"
+                "MeetingMixer.swift",
+                "MeetingTalkState.swift",
+                "TranscriptInterleaver.swift",
+                "MeetingOrphanScan.swift"
             ]
         ),
         // The Agent Bridge client + MCP stdio adapter. A library (not folded into

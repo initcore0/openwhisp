@@ -20,6 +20,9 @@ class OpenWhispApp: NSObject, NSApplicationDelegate {
     /// to `MeetingCaptureSession` at the `@available(macOS 13.0, *)` use sites.
     private var meetingSession: Any?
     private var meetingActive = false
+    /// MAK-52: polls the capture session's per-leg live levels a few times a second
+    /// to drive the "who's talking" indicator (pane row + menu-title glyph).
+    private var meetingTalkTimer: Timer?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         print("[OpenWhisp] Application launching...")
@@ -357,12 +360,15 @@ class OpenWhispApp: NSObject, NSApplicationDelegate {
                 self.meetingActive = true
                 self.appState.meetingInProgress = true   // block dictation while recording
                 self.appState.statusMessage = "Meeting recording…"
+                self.startMeetingTalkTimer(session: session)
             case .finished:
                 self.meetingActive = false
                 self.appState.meetingInProgress = false
+                self.stopMeetingTalkTimer()
             case .failed(let msg):
                 self.meetingActive = false
                 self.appState.meetingInProgress = false
+                self.stopMeetingTalkTimer()
                 // A start/preflight failure never delivers onFinished — clear the
                 // optimistic live row so it doesn't linger.
                 self.appState.meetingCoordinator.endRecording()
@@ -393,6 +399,42 @@ class OpenWhispApp: NSObject, NSApplicationDelegate {
         // Stop → finalize → the onFinished wired at start ingests exactly once.
         session.stop()
         meetingActive = false
+        stopMeetingTalkTimer()
+    }
+
+    // MARK: MAK-52 live talking indicator
+
+    @available(macOS 13.0, *)
+    private func startMeetingTalkTimer(session: MeetingCaptureSession) {
+        stopMeetingTalkTimer()
+        // 5 Hz is plenty for a coarse indicator and negligible cost; the resolver's
+        // hysteresis (MeetingTalkState) keeps the label from flickering.
+        let timer = Timer(timeInterval: 0.2, repeats: true) { [weak self, weak session] _ in
+            guard let self, let session else { return }
+            self.appState.meetingCoordinator.updateTalkState(
+                micLevel: session.micLevel, systemLevel: session.systemLevel
+            )
+            self.refreshMeetingMenuGlyph()
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        meetingTalkTimer = timer
+    }
+
+    private func stopMeetingTalkTimer() {
+        meetingTalkTimer?.invalidate()
+        meetingTalkTimer = nil
+        refreshMeetingMenuGlyph()
+    }
+
+    /// Reflect the current talk state as a cheap status-item title glyph while a
+    /// meeting records; cleared when idle.
+    private func refreshMeetingMenuGlyph() {
+        guard let button = statusItem?.button else { return }
+        if meetingActive {
+            button.title = appState.meetingCoordinator.talkState.glyph
+        } else if button.title != "" {
+            button.title = ""
+        }
     }
 
     @objc private func openScratchpad() { appState.openScratchpad() }

@@ -251,9 +251,9 @@
   </header>
 
   <div class="stats">
-    <div class="stat"><div class="n">37</div><div class="k">changes shipped</div></div>
-    <div class="stat"><div class="n">23<small> live</small></div><div class="k">new features</div></div>
-    <div class="stat"><div class="n">1409</div><div class="k">tests passing</div></div>
+    <div class="stat"><div class="n">38</div><div class="k">changes shipped</div></div>
+    <div class="stat"><div class="n">24<small> live</small></div><div class="k">new features</div></div>
+    <div class="stat"><div class="n">1434</div><div class="k">tests passing</div></div>
     <div class="stat"><div class="n">100<small>%</small></div><div class="k">on-device</div></div>
   </div>
 
@@ -262,7 +262,7 @@
     <div class="sec-head">
       <span class="dot feature"></span>
       <h2>New features</h2>
-      <span class="count">23 live</span>
+      <span class="count">24 live</span>
     </div>
     <ul class="entries">
       <li>
@@ -286,7 +286,31 @@
               <li>For a summary: with a LOCAL LLM configured it runs automatically once transcription finishes; with a cloud or agent-CLI provider you get a per-meeting “Summarize (transcript leaves this Mac)” confirmation first, so cloud text-sharing is never silent.</li>
               <li>Use the row’s Actions menu to Re-transcribe, Summarize, Export .md (summary + transcript), or Delete (which also deletes the recording’s audio).</li>
             </ol>
-            <p class="g-note">Live now. The summary is map-reduced for long meetings and always demanded in the transcript’s own language — if a small model translates it away, OpenWhisp rejects the summary and keeps the transcript. Speaker diarization (“who said what”) is a planned follow-on; today’s transcript and summary are un-attributed. Cloud summaries only ever run after your explicit confirmation.</p>
+            <p class="g-note">Live now. The summary is map-reduced for long meetings and always demanded in the transcript’s own language — if a small model translates it away, OpenWhisp rejects the summary and keeps the transcript. Speaker attribution (Me vs. Them) now ships too — see the next entry. Cloud summaries only ever run after your explicit confirmation.</p>
+          </div>
+        </details>
+      </li>
+      <li>
+        <details class="entry">
+          <summary>
+            <div class="sum-left">
+              <h3>Meeting mode now labels who spoke — Me vs. Them — plus a live talking indicator</h3>
+              <p>Meeting recordings are now attributed. Alongside the mixed recording, OpenWhisp writes two separate on-device WAVs — your microphone (“Me”) and the system audio (“Them”) — and transcribes each leg on its own, then interleaves them by time into a single transcript with Me:/Them: labels. The Meetings pane shows the attributed transcript, the .md export includes it, and the local summary is built from the labeled transcript so action items can be pinned to a speaker. While a meeting records, the live row tells you who’s talking (“You’re talking” / “They’re talking” / “Both” / “…”), with a matching glyph in the menu bar. Everything stays on your Mac. This is a robust, degrade-safe addition: the mixed recording is unchanged and still the fallback, and if a leg can’t be captured or transcribed the meeting simply keeps its plain, un-attributed transcript.</p>
+            </div>
+            <div class="sum-right">
+              <span class="try">How to use<svg class="howto-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span>
+              <div class="receipts"><span class="tag ticket">MAK-52</span></div>
+            </div>
+          </summary>
+          <div class="guide">
+            <span class="avail live">Available now</span>
+            <p class="g-sum">Record a meeting as before — the transcript now comes back with Me:/Them: labels, and the live row shows who’s talking while you record.</p>
+            <ol>
+              <li>Start a meeting from the menu bar as usual. OpenWhisp records the mixed audio plus two per-speaker legs (your mic and the system audio), all on-device.</li>
+              <li>While recording, the Meetings pane’s live row shows “You’re talking”, “They’re talking”, “Both”, or “…”, and the menu-bar item shows a matching glyph.</li>
+              <li>When transcription finishes, the pane shows the attributed transcript (Me:/Them: lines). Export .md includes it, and the local summary is built from the labeled transcript so action items can carry the speaker.</li>
+            </ol>
+            <p class="g-note">Live now. “Them” is everyone on the remote side of the call — system audio is a single mixed stream, so distinguishing individual remote participants (per-person diarization) is a separate follow-on. Attribution is degrade-safe: the mixed recording is unchanged and remains the fallback, and if a leg can’t be captured or transcribed the meeting keeps its plain, un-attributed transcript.</p>
           </div>
         </details>
       </li>
