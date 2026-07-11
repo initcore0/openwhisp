@@ -92,7 +92,9 @@
           "headline": "Refining an English dictation can no longer come back in another language",
           "body": "The language guard was one-directional: it caught a Russian dictation that AI cleanup translated to English, but not the inverse. If the “Improve translation” target-language picker was ever left on Russian, an ENGLISH dictation you refined with AI would come back in Russian — the picker told the polish prompt to produce Russian even though the transcription engine only ever translates to English. Two fixes: the improve-translation flow now always polishes in English (the only language the engine translates into), and the stale target-language picker — which could not be honored coherently — has been removed. And the language guard is now symmetric: it rejects a cleanup that swapped your writing system in EITHER direction (English→Russian as well as Russian→English), while genuinely-intended translations still pass because their expected target script is declared. Same conservative thresholds as before: same-language cleanups, short phrases, and mixed code/URLs are untouched, and spoken-instruction, agent-bridge, and custom-Mode refines still own their own language contract.",
           "tickets": [],
-          "prs": []
+          "prs": [
+            162
+          ]
         },
         {
           "category": "improvement",
