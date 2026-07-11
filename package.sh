@@ -33,6 +33,10 @@ rm -f "$BUILD_DIR/OpenWhisp"
 # shellcheck source=scripts/verify-whisperkit-binary.sh
 source "$PROJECT_DIR/scripts/verify-whisperkit-binary.sh"
 verify_whisperkit_binary "$BUILD_DIR/OpenWhisp"
+# Same guard for the Parakeet backend (also on by default; PARAKEET=0 opts out).
+# shellcheck source=scripts/verify-parakeet-binary.sh
+source "$PROJECT_DIR/scripts/verify-parakeet-binary.sh"
+verify_parakeet_binary "$BUILD_DIR/OpenWhisp"
 
 # Build the openwhisp CLI + MCP adapter (a separate SwiftPM executable, so it
 # never picks up the GUI app's `main`). Bundled into Contents/Helpers below; the

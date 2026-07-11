@@ -139,8 +139,8 @@ struct DictationPane: View {
                     Text("Arabic").tag("ar")
                 }
 
-                // Whisper engines only — Apple Speech doesn't translate.
-                if appState.transcriptionEngine != "appleSpeech" {
+                // Whisper engines only — Apple Speech and Parakeet don't translate.
+                if LanguageResolver.supportsTranslation(transcriptionEngine: appState.transcriptionEngine) {
                     SubtitledToggle(
                         "Translate to English",
                         subtitle: "Speech in any language comes out as English text.",

@@ -320,15 +320,31 @@ class AppState: ObservableObject {
         }
     }
 
-    /// Build the file-transcription engine for the given setting. "whisperKit" is
-    /// the experimental CoreML backend (only functional in a WHISPERKIT build —
-    /// otherwise its stub reports unavailability); everything else uses whisper.cpp.
+    /// Build the file-transcription engine for the given setting. The routing
+    /// decision is the tested `FileEngineChoice.choice(for:)`; this is a thin
+    /// switch that constructs the (app-only) concrete engines.
     private static func makeFileEngine(for engine: String, model: String, whisperKitModel: String) -> FileTranscriptionEngine {
-        switch engine {
+        switch FileEngineChoice.choice(for: engine) {
         // WhisperKit uses its OWN model namespace (openai_whisper-*), not the
         // whisper.cpp GGML model id.
-        case "whisperKit": return WhisperKitEngine(modelName: whisperKitModel)
-        default:           return WhisperEngine()
+        case .whisperKit: return WhisperKitEngine(modelName: whisperKitModel)
+        // Parakeet: live dictation streams (ParakeetStreamingEngine), but every
+        // FILE path (meetings, queue, watch folders, history re-transcribe) uses
+        // the batch TDT v3 engine here — multilingual, on-device CoreML.
+        case .parakeet:   return ParakeetFileEngine()
+        case .whisperCpp: return WhisperEngine()
+        }
+    }
+
+    /// Parakeet streaming-model variant (ParakeetCatalog id, MAK-46 spike).
+    /// Changing it rebuilds the streaming engine so the next session uses the
+    /// new variant, and prefetches its model when Parakeet is the active engine.
+    @Published var parakeetVariant: String {
+        didSet {
+            guard parakeetVariant != oldValue else { return }
+            UserDefaults.standard.set(parakeetVariant, forKey: "parakeetVariant")
+            rebuildFileEngine()
+            ensureSelectedEngineModel()
         }
     }
 
@@ -747,6 +763,14 @@ class AppState: ObservableObject {
     @Published var agentBridgeSilenceAutoStop: Bool {
         didSet { UserDefaults.standard.set(agentBridgeSilenceAutoStop, forKey: "agentBridgeSilenceAutoStop") }
     }
+    /// Finish an AGENT dictation on the Parakeet EOU variant's end-of-utterance
+    /// signal (MAK-46 Phase 5), a crisper "the human finished" than energy silence.
+    /// Default-OFF and experimental: only the `parakeet-eou-320ms` variant emits
+    /// EOU events, so it's a no-op on any other engine/variant. Agent sessions
+    /// only, alongside (not replacing) the silence detector.
+    @Published var agentBridgeEouAutoStop: Bool {
+        didSet { UserDefaults.standard.set(agentBridgeEouAutoStop, forKey: "agentBridgeEouAutoStop") }
+    }
     /// Auto-stop a hands-free (locked) dictation after a long stretch of silence,
     /// so a forgotten toggle session doesn't record forever (MAK-16). Default-ON;
     /// a safety net, not a quick-finish gesture — the hangover is deliberately
@@ -809,6 +833,10 @@ class AppState: ObservableObject {
     /// waveform reads; when it fires, the session finishes as if the user tapped
     /// done (`endedBy: .user`). Reset in `finishSessionUI`.
     private var agentSilenceDetector: SilenceAutoStop?
+    /// Per-session EOU auto-stop timing (MAK-46 Phase 5), armed for an agent
+    /// session only when `agentBridgeEouAutoStop` is on and the active engine emits
+    /// EOU events (the Parakeet EOU variant). nil for every other session.
+    private var agentEouDetector: AgentEouAutoStop?
     /// The control-plane socket server. Lazily constructed (no cost until the
     /// bridge is enabled); owns the socket, per-connection auth, and dispatch.
     private lazy var agentBridgeServer = AgentBridgeServer(host: self)
@@ -1107,6 +1135,15 @@ class AppState: ObservableObject {
     /// machinery with Apple Speech (same handlers) but uses WhisperKit's
     /// `AudioStreamTranscriber` (owns the mic, built-in VAD, multilingual).
     var whisperKitStreamEngine: StreamingTranscriptionEngine!
+    /// True-streaming Parakeet/CoreML engine (MAK-46 spike, PARAKEET builds).
+    /// Concrete type (not the protocol) so `prefetch()` — the model download
+    /// kick — is callable; sessions still go through `activeStreamingEngine`.
+    var parakeetStreamEngine: ParakeetStreamingEngine!
+    /// Variant ids with a Parakeet model prefetch/warm in flight — drives the
+    /// coarse "Downloading…" badge in the Models pane (FluidAudio has no progress
+    /// callback, so this is presence-of-folder + this in-flight flag). Cleared
+    /// when the variant's repo folder appears on disk (polled by the pane).
+    @Published var parakeetInFlightVariants: Set<String> = []
     var translationService: OpenAITranslationService!
     var hotkeyMonitor: HotkeyControlling!
 
@@ -1265,15 +1302,21 @@ class AppState: ObservableObject {
     /// pasted text is `voiceEditBuffer.text` — the dictation AFTER the spoken edits.
     /// Reset at beginSession; only read when `voiceEditingActiveForSession`.
     private var voiceEditBuffer = VoiceEditBuffer()
-    /// True when the current streaming session is WhisperKit (vs Apple Speech).
-    /// Selects the engine and whether to run the Speech-framework authorization.
-    private var streamingUsesWhisperKit = false
+    /// True when the active engine/variant emits end-of-utterance events — only
+    /// the Parakeet EOU streaming variant does (MAK-46 Phase 5). Gates arming the
+    /// agent EOU auto-stop so it stays inert on every other engine.
+    var activeEngineEmitsEou: Bool {
+        transcriptionEngine == "parakeet" && ParakeetCatalog.emitsEou(parakeetVariant)
+    }
 
-    /// The streaming engine for the current/next session. WhisperKit when its
-    /// backend is selected, otherwise Apple Speech. Both conform to the same
-    /// protocol and route through the same session handlers.
+    /// The streaming engine for the current/next session. All conform to the
+    /// same protocol and route through the same session handlers.
     private var activeStreamingEngine: StreamingTranscriptionEngine {
-        transcriptionEngine == "whisperKit" ? whisperKitStreamEngine : appleSpeechEngine
+        switch transcriptionEngine {
+        case "whisperKit": return whisperKitStreamEngine
+        case "parakeet":   return parakeetStreamEngine
+        default:           return appleSpeechEngine
+        }
     }
     /// Model paths with a download currently in flight. Per-path (not a single
     /// value): switching models mid-download starts a second download, and each
@@ -1658,6 +1701,9 @@ class AppState: ObservableObject {
         pauseBasedLiveChunksEnabled = UserDefaults.standard.object(forKey: "pauseBasedLiveChunksEnabled") as? Bool ?? false
         transcriptionEngine = UserDefaults.standard.string(forKey: "transcriptionEngine") ?? Self.defaultTranscriptionEngine
         whisperKitModel = UserDefaults.standard.string(forKey: "whisperKitModel") ?? "openai_whisper-small"
+        parakeetVariant = ParakeetCatalog.normalize(
+            UserDefaults.standard.string(forKey: "parakeetVariant") ?? ParakeetCatalog.defaultVariantID
+        )
         if let savedBackend = UserDefaults.standard.string(forKey: "whisperBackend") {
             whisperBackend = savedBackend
         } else {
@@ -1739,6 +1785,7 @@ class AppState: ObservableObject {
         agentBridgeAllowCloudAI = UserDefaults.standard.bool(forKey: "agentBridgeAllowCloudAI")
         // Default-ON (silence auto-stop is the expected agent-dictate UX).
         agentBridgeSilenceAutoStop = UserDefaults.standard.object(forKey: "agentBridgeSilenceAutoStop") as? Bool ?? true
+        agentBridgeEouAutoStop = UserDefaults.standard.object(forKey: "agentBridgeEouAutoStop") as? Bool ?? false
         handsFreeSilenceAutoStop = UserDefaults.standard.object(forKey: "handsFreeSilenceAutoStop") as? Bool ?? true
         // Default-ON: the chime and spoken question are the whole point of an
         // agent handing you the mic — you should notice and be able to answer
@@ -1870,10 +1917,13 @@ class AppState: ObservableObject {
             ?? Self.makeFileEngine(for: transcriptionEngine, model: modelName, whisperKitModel: whisperKitModel)
         appleSpeechEngine = AppleSpeechEngine()
         whisperKitStreamEngine = WhisperKitStreamingEngine(modelName: whisperKitModel)
+        parakeetStreamEngine = ParakeetStreamingEngine(variantID: parakeetVariant)
         translationService = OpenAITranslationService()
 
         wireFileEngineCallbacks()
         wireStreamingEngineCallbacks(whisperKitStreamEngine)
+        wireStreamingEngineCallbacks(parakeetStreamEngine)
+        wireParakeetEouCallback()
 
         audioRecorder = injectedAudioCapture ?? AudioRecorder()
         audioRecorder.autoGainEnabled = autoGainEnabled
@@ -2037,6 +2087,29 @@ class AppState: ObservableObject {
         }
     }
 
+    /// Wire the Parakeet streaming engine's EOU signal to the agent EOU auto-stop
+    /// (MAK-46 Phase 5). Only the EOU variant ever fires this; the detector is only
+    /// armed for an agent session with the setting on (see `armAgentEouDetector`),
+    /// so this is inert otherwise.
+    private func wireParakeetEouCallback() {
+        parakeetStreamEngine.onEouDetected = { [weak self] in
+            Task { @MainActor in self?.handleAgentEouEvent() }
+        }
+    }
+
+    /// An end-of-utterance event fired: arm the settle window. The actual stop
+    /// decision runs on the continuous audio-level tick (`updateAudioLevel`),
+    /// which re-checks `shouldStop` once the window has elapsed with no newer
+    /// partial — a fresh EOU can never satisfy the window at arming time.
+    @MainActor
+    private func handleAgentEouEvent() {
+        guard agentEouDetector != nil,
+              agentBridgeEouAutoStop,
+              sessionActive, isRecording,
+              sessionInitiator.isAgent else { return }
+        agentEouDetector?.noteEou(now: ProcessInfo.processInfo.systemUptime)
+    }
+
     /// Publish a new audio level for the overlay AND drive the agent-session
     /// silence detector. The single place every level source (AVAudioRecorder
     /// metering + the streaming engine taps) funnels through, so the VAD sees
@@ -2047,6 +2120,16 @@ class AppState: ObservableObject {
     private func updateAudioLevel(_ level: Float, vadLevel: Float) {
         audioLevel = level
         feedLockSafetyAutoStop(vadLevel: vadLevel)
+        // EOU settle check (MAK-46 Phase 5): the level tick is a free continuous
+        // clock. If an EOU is pending and its settle window has elapsed with no new
+        // partial, finish the agent session. Cheap: detector is nil except for an
+        // armed agent EOU session.
+        if agentEouDetector != nil, sessionActive, isRecording, sessionInitiator.isAgent,
+           agentEouDetector?.shouldStop(now: ProcessInfo.processInfo.systemUptime) == true {
+            agentEouDetector = nil
+            finishAgentDictationOnSilence()
+            return
+        }
         // Only agent sessions auto-stop on silence; a user's hotkey dictation ends
         // on their own gesture and must be untouched. The detector-nil test comes
         // first so the dominant case (user sessions, where it is always nil) pays
@@ -2143,6 +2226,11 @@ class AppState: ObservableObject {
         whisperKitStreamEngine?.stop(cancel: true)
         whisperKitStreamEngine = WhisperKitStreamingEngine(modelName: whisperKitModel)
         wireStreamingEngineCallbacks(whisperKitStreamEngine)
+        // Same for the Parakeet streaming engine (it caches its variant's model).
+        parakeetStreamEngine?.stop(cancel: true)
+        parakeetStreamEngine = ParakeetStreamingEngine(variantID: parakeetVariant)
+        wireStreamingEngineCallbacks(parakeetStreamEngine)
+        wireParakeetEouCallback()
         whisperWorkerStatus = "Not started"
         // `warmWhisperServerIfPossible()` is engine-aware: it warms WhisperKit's
         // CoreML model up front, warms whisper.cpp's server only for the serverAPI
@@ -2235,10 +2323,11 @@ class AppState: ObservableObject {
         // routing. The gate re-checks the secure-field and per-app rules.
         captureScreenContext()
         let liveMode = outputMode == "liveChunks" || outputMode == "preview"
-        // Streaming backends (Apple Speech always; WhisperKit when a live preview is
-        // wanted) run the real-time path. Both go through the shared streaming
-        // session starter; `activeStreamingEngine` picks the recognizer.
-        if transcriptionEngine == "appleSpeech" || (transcriptionEngine == "whisperKit" && liveMode) {
+        // Streaming backends (Apple Speech and Parakeet always; WhisperKit when a
+        // live preview is wanted) run the real-time path. All go through the shared
+        // streaming session starter; `activeStreamingEngine` picks the recognizer.
+        // The gate is a tested core policy — see StreamingRoutePolicyTests.
+        if StreamingRoutePolicy.usesStreamingSession(engine: transcriptionEngine, liveMode: liveMode) {
             startStreamingSession()
             return
         }
@@ -2769,7 +2858,34 @@ class AppState: ObservableObject {
                 ))
             }
         }
+
+        // Parakeet CoreML models (FluidAudio): each repo is a folder under
+        // Application Support/FluidAudio/Models. Shown so their ~600 MB each
+        // appears in disk usage and can be deleted (re-downloads on next use).
+        // isActive stays false — the folder→variant mapping is loose and the
+        // models re-download cheaply, so we keep them all deletable.
+        let faBase = Self.fluidAudioModelsDirectory()
+        for name in (try? fm.contentsOfDirectory(atPath: faBase.path)) ?? [] {
+            let path = faBase.appendingPathComponent(name)
+            guard (try? path.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true else { continue }
+            items.append(ModelStorage.Item(
+                kind: .parakeet,
+                label: ModelStorage.parakeetRepoLabel(forFolder: name),
+                path: path.path,
+                bytes: Self.directorySize(at: path),
+                isActive: false
+            ))
+        }
         return ModelStorage.sorted(items)
+    }
+
+    /// Base directory FluidAudio stages its CoreML model repos under
+    /// (`~/Library/Application Support/FluidAudio/Models`). Mirrors FluidAudio's
+    /// own `downloadVariant`/`defaultCacheDirectory` layout.
+    static func fluidAudioModelsDirectory() -> URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+            .appendingPathComponent("FluidAudio", isDirectory: true)
+            .appendingPathComponent("Models", isDirectory: true)
     }
 
     /// Delete a model's files. Refuses the currently-active model (removing it would
@@ -2847,6 +2963,40 @@ class AppState: ObservableObject {
         }
     }
 
+    /// Kick the streaming-variant model prefetch and mark it in-flight so the
+    /// Models pane shows a coarse "Downloading…" badge (FluidAudio gives no
+    /// progress). Event-driven: the badge clears when the engine's load task
+    /// completes — success or failure (on failure the row honestly reverts to
+    /// "Not downloaded"). No disk polling, and no state mutation during view
+    /// rendering. Idempotent (the engine coalesces concurrent loads).
+    func prefetchParakeetVariant() {
+        let variant = ParakeetCatalog.normalize(parakeetVariant)
+        // If the repo is already on disk there's nothing to download — don't
+        // flash a badge; still prefetch (it warms the loaded model cheaply).
+        let installed = Self.installedFluidAudioFolders()
+        if ParakeetDownloadStatePolicy.state(
+            forVariant: variant, installedFolders: installed, inFlightVariants: []
+        ) != .installed {
+            parakeetInFlightVariants.insert(variant)
+        }
+        Task { @MainActor in
+            await parakeetStreamEngine?.prefetchAwaiting()
+            parakeetInFlightVariants.remove(variant)
+        }
+    }
+
+    /// The set of FluidAudio Models repo folders present on disk right now.
+    static func installedFluidAudioFolders() -> Set<String> {
+        let base = fluidAudioModelsDirectory()
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: base.path)) ?? []
+        return Set(names.filter { name in
+            var isDir: ObjCBool = false
+            FileManager.default.fileExists(
+                atPath: base.appendingPathComponent(name).path, isDirectory: &isDir)
+            return isDir.boolValue
+        })
+    }
+
     func warmWhisperServerIfPossible() {
         // Warm the CURRENTLY SELECTED file-transcription backend — and only that
         // one. This must be engine-aware: `whisperEngine` is a WhisperKitEngine
@@ -2865,6 +3015,14 @@ class AppState: ObservableObject {
             whisperEngine?.warmServer(binaryPath: whisperBinaryPath, modelPath: modelPath)
         case "appleSpeech":
             // Apple Speech is a streaming engine; nothing to warm here.
+            return
+        case "parakeet":
+            // Parakeet has two model families: the streaming variant (live
+            // dictation) and the batch TDT v3 (meetings / file jobs). Warm the
+            // streaming variant now (the common dictation path); the file engine's
+            // TDT v3 is warmed lazily on the first file/meeting job to avoid
+            // paying two ~600 MB downloads up front when only one is used.
+            prefetchParakeetVariant()
             return
         default:
             // whisper.cpp: only the serverAPI backend keeps a warm server process.
@@ -3016,14 +3174,15 @@ class AppState: ObservableObject {
             suppressOutput: suppressOutput
         )
         voiceEditBuffer = VoiceEditBuffer()
-        streamingUsesWhisperKit = transcriptionEngine == "whisperKit"
         appleLiveInsertedText = ""
         appleDidCompleteFinal = false
         // Keep the "Starting..." arming cue from beginSession until the recognizer
         // is actually live. Both backends have a startup gap: async mic grant (plus
         // Speech-auth for Apple), then engine start.
         let sessionID = activeSessionID
-        let usesWhisperKit = streamingUsesWhisperKit
+        // Apple Speech needs Speech-framework authorization on top of the mic;
+        // the on-device engines (WhisperKit, Parakeet) need only the mic.
+        let needsSpeechAuth = StreamingRoutePolicy.needsSpeechAuthorization(engine: transcriptionEngine)
         let engine = activeStreamingEngine
         // Snapshot the selected input device for this session. Both streaming engines
         // apply it in start(): Apple Speech retargets its own AVAudioEngine input
@@ -3065,8 +3224,8 @@ class AppState: ObservableObject {
                     self.finishSessionUI()
                     return
                 }
-                // WhisperKit needs only the mic; Apple Speech also needs Speech auth.
-                if usesWhisperKit {
+                // WhisperKit/Parakeet need only the mic; Apple Speech also needs Speech auth.
+                if !needsSpeechAuth {
                     launch()
                 } else {
                     AppleSpeechEngine.requestAuthorization { status in
@@ -3115,6 +3274,9 @@ class AppState: ObservableObject {
 
     private func handleAppleSpeechPartial(_ rawText: String) {
         guard isAppleSpeechSession else { return }
+        // A new partial means the speaker kept going — cancel any pending EOU stop
+        // (MAK-46 Phase 5). Inert unless an agent EOU session is armed.
+        agentEouDetector?.notePartial()
         let text = postProcess(rawText)
         streamingText = text
         statusMessage = text.isEmpty ? "Listening..." : "Listening..."
@@ -4732,6 +4894,7 @@ class AppState: ObservableObject {
         agentDictateQuestion = nil
         agentDictateReadingQuestion = false
         agentSilenceDetector = nil
+        agentEouDetector = nil
         // Clear the hands-free lock state and its safety detector, and return the
         // interaction machine to idle — a session ending off-trigger (silence
         // safety, agent preempt, error) would otherwise leave the machine thinking
@@ -5398,8 +5561,12 @@ class AppState: ObservableObject {
         guard let startedAt = recordingStartedAt else { return }
 
         let now = Date()
-        let model: String? = transcriptionEngine == "whisperKit" ? whisperKitModel
-            : (transcriptionEngine == "appleSpeech" ? nil : modelName)
+        let model: String? = switch transcriptionEngine {
+        case "whisperKit":  whisperKitModel
+        case "parakeet":    parakeetVariant
+        case "appleSpeech": nil
+        default:            modelName
+        }
         let latency = transcriptionStartedAt.map { now.timeIntervalSince($0) }
 
         let event = DictationEvent(
@@ -5674,6 +5841,12 @@ class AppState: ObservableObject {
             downloadWhisperKitModel(whisperKitModel)
         case "appleSpeech":
             // Uses the built-in macOS dictation model — nothing to download.
+            return
+        case "parakeet":
+            // FluidAudio stages models itself (HuggingFace → Application
+            // Support/FluidAudio). Kick the download now so it happens at
+            // engine-select time, not mid-first-dictation.
+            prefetchParakeetVariant()
             return
         default:
             // whisper.cpp: download its GGML model (the original behavior, now scoped
@@ -6263,6 +6436,14 @@ extension AppState: AgentBridgeHost {
             // timeout below remains the hard ceiling / no-speech fallback.
             self.agentSilenceDetector = self.agentBridgeSilenceAutoStop
                 ? SilenceAutoStop(config: QuietDictationMode.silenceAutoStopConfig(quietEnabled: self.quietDictationEnabled))
+                : nil
+
+            // Arm the EOU auto-stop (MAK-46 Phase 5) alongside the silence detector,
+            // but only when the setting is on AND the active engine emits EOU events
+            // (the Parakeet EOU variant). Otherwise no EOU callback ever fires and
+            // the detector stays inert. Default-off + experimental.
+            self.agentEouDetector = (self.agentBridgeEouAutoStop && self.activeEngineEmitsEou)
+                ? AgentEouAutoStop()
                 : nil
 
             let sid = self.activeSessionID
