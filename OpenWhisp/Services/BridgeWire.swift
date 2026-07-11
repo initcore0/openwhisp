@@ -291,6 +291,15 @@ extension BridgeWire {
         }
     }
 
+    /// Surface the wire error's human-readable `message` wherever Foundation
+    /// formats the error (`localizedDescription`, string interpolation of
+    /// NSError). Without this, the NSError bridge renders the useless
+    /// "OpenWhisp.BridgeWire.ErrorObject error 1." and the real reason —
+    /// "built-in model unavailable", "busy dictating", the HTTP failure — is
+    /// swallowed at every display site (meeting summary status, agent errors).
+    ///
+    /// Kept in BridgeWire so the CLI/MCP side benefits identically.
+
     public struct ErrorData: Codable, Sendable, Equatable {
         public var reason: ErrorCode?
         /// On `refine` failure, the caller's original text — so an agent can
@@ -611,4 +620,8 @@ extension BridgeWire {
             return defaultSocketPath()
         }
     }
+}
+
+extension BridgeWire.ErrorObject: LocalizedError {
+    public var errorDescription: String? { message }
 }
