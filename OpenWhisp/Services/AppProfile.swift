@@ -30,6 +30,9 @@ public struct AppProfile: Codable, Identifiable, Equatable {
     /// unstamped legacy data — see ``ConfigBundle`` for the schema note.
     public var updatedAt: Date
 
+    /// The sentinel a pre-v3 (unstamped) profile decodes to.
+    public static let unstampedEpoch = Date(timeIntervalSince1970: 0)
+
     public init(
         id: UUID = UUID(),
         appBundleID: String,
@@ -103,6 +106,13 @@ public extension Array where Element == AppProfile {
         mutate(&copy[idx])
         copy[idx].updatedAt = now
         return copy
+    }
+
+    /// Stamp `now` onto every profile that decoded unstamped (pre-v3 source).
+    /// Applied on a deliberate config import / pack apply so imported profiles
+    /// win the next sync's LWW rather than losing to a stamped peer copy.
+    func restampingUnstamped(now: Date = Date()) -> [AppProfile] {
+        map { $0.updatedAt == AppProfile.unstampedEpoch ? $0.stamped(now) : $0 }
     }
 }
 

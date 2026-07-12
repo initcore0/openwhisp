@@ -292,6 +292,58 @@ public enum SyncMerge {
         return all.filter { $0.date > cutoff }
     }
 
+    // MARK: - Paged history (frame-cap safe)
+
+    /// One page of the FULL history log, keyed by a total order (date, then id) so
+    /// no entry is ever skipped by an equal-timestamp tie — the puller keeps
+    /// re-pulling until `hasMore` is false, so it always sees every entry the
+    /// server has, including older-but-unseen ones. This is the frame-cap-safe
+    /// replacement for shipping the whole log in one NDJSON frame.
+    ///
+    /// - `afterCursor`: the previous page's `nextCursor` (nil → first page).
+    /// - `limit`: max entries this page (clamped to ≥ 1).
+    /// Returns the page, the cursor for the next page (nil when drained), and
+    /// whether more remain.
+    public struct HistoryPage: Equatable, Sendable {
+        public let entries: [TranscriptionEntry]
+        public let nextCursor: String?
+        public let hasMore: Bool
+    }
+
+    /// A total-order cursor: ISO-8601 date + "|" + entry id, so ties on `date`
+    /// still advance deterministically.
+    private static func pageCursor(_ e: TranscriptionEntry) -> String {
+        BridgeWire.iso8601String(from: e.date) + "|" + e.id.uuidString
+    }
+
+    private static func orderedAscending(_ all: [TranscriptionEntry]) -> [TranscriptionEntry] {
+        all.sorted {
+            $0.date != $1.date ? $0.date < $1.date : $0.id.uuidString < $1.id.uuidString
+        }
+    }
+
+    public static func historyPage(
+        _ all: [TranscriptionEntry], afterCursor: String?, limit: Int
+    ) -> HistoryPage {
+        let pageSize = max(1, limit)
+        let ordered = orderedAscending(all)
+        let start: Int
+        if let cursor = afterCursor, !cursor.isEmpty {
+            // Advance past every entry whose (date,id) key is <= the cursor.
+            start = ordered.firstIndex { pageCursor($0) > cursor } ?? ordered.count
+        } else {
+            start = 0
+        }
+        let end = min(start + pageSize, ordered.count)
+        let page = Array(ordered[start..<end])
+        let hasMore = end < ordered.count
+        return HistoryPage(
+            entries: page,
+            nextCursor: page.last.map(pageCursor),
+            hasMore: hasMore
+        )
+    }
+
     // MARK: - Manifest head
 
     /// The `SyncHistoryHead` for a history list: count + the id/ISO-date of the

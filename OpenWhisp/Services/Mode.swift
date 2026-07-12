@@ -67,6 +67,9 @@ public struct Mode: Codable, Identifiable, Equatable {
     /// unstamped legacy data — see ``ConfigBundle`` for the schema note.
     public var updatedAt: Date
 
+    /// The sentinel a pre-v3 (unstamped) mode decodes to.
+    public static let unstampedEpoch = Date(timeIntervalSince1970: 0)
+
     public init(
         id: UUID = UUID(),
         key: String,
@@ -205,6 +208,13 @@ public extension Array where Element == Mode {
         mutate(&copy[idx])
         copy[idx].updatedAt = now
         return copy
+    }
+
+    /// Stamp `now` onto every mode that decoded unstamped (pre-v3 source), so an
+    /// imported/pack-applied mode wins the next sync's LWW rather than losing to
+    /// a stamped peer copy.
+    func restampingUnstamped(now: Date = Date()) -> [Mode] {
+        map { $0.updatedAt == Mode.unstampedEpoch ? $0.stamped(now) : $0 }
     }
 }
 

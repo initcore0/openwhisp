@@ -39,6 +39,11 @@ public struct Vocabulary: Codable, Equatable {
         /// unstamped legacy data — see ``ConfigBundle`` for the schema note.
         public var updatedAt: Date
 
+        /// The sentinel a pre-v3 (unstamped) entry decodes to: the distant past,
+        /// so it loses every last-writer-wins race until deliberately restamped
+        /// (see ``Vocabulary/restampingUnstamped(now:)``).
+        public static let unstampedEpoch = Date(timeIntervalSince1970: 0)
+
         public init(id: UUID = UUID(), from: String, to: String,
              starred: Bool = false, usageCount: Int = 0,
              updatedAt: Date = Date()) {
@@ -64,7 +69,7 @@ public struct Vocabulary: Codable, Equatable {
             self.starred = try c.decodeIfPresent(Bool.self, forKey: .starred) ?? false
             self.usageCount = try c.decodeIfPresent(Int.self, forKey: .usageCount) ?? 0
             self.updatedAt = try c.decodeIfPresent(Date.self, forKey: .updatedAt)
-                ?? Date(timeIntervalSince1970: 0)
+                ?? Substitution.unstampedEpoch
         }
 
         /// Return a copy stamped as edited `now`. Pure — the mutation-path
@@ -151,6 +156,20 @@ public struct Vocabulary: Codable, Equatable {
         guard let idx = copy.substitutions.firstIndex(where: { $0.id == id }) else { return self }
         mutate(&copy.substitutions[idx])
         copy.substitutions[idx].updatedAt = now
+        return copy
+    }
+
+    /// Stamp `now` onto every substitution that decoded with the epoch sentinel
+    /// (i.e. came from a pre-v3 source with no `updatedAt`). Used when a user
+    /// deliberately IMPORTS a config or applies a pack: the act of importing is a
+    /// user edit, so those entries must win the next sync's last-writer-wins race
+    /// rather than losing to any stamped peer copy of the same id. Genuinely
+    /// stamped v3 entries keep their real timestamps untouched.
+    public func restampingUnstamped(now: Date = Date()) -> Vocabulary {
+        var copy = self
+        for idx in copy.substitutions.indices where copy.substitutions[idx].updatedAt == Substitution.unstampedEpoch {
+            copy.substitutions[idx].updatedAt = now
+        }
         return copy
     }
 

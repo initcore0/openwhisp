@@ -99,14 +99,26 @@ struct SyncVerbHandlers {
         // the phone imports them through its own pack path); the section is present
         // in the manifest for identity, but pull returns the live config, not packs.
 
-        let history: [TranscriptionEntry]
-        if want.contains(.history) {
-            history = SyncMerge.historyDelta(store.syncHistory, sinceCursor: params.sinceHistoryCursor)
-        } else {
-            history = []
+        // History: first apply the date delta-filter (sinceHistoryCursor =
+        // "everything after what I last saw"), then PAGE the filtered set so no
+        // frame exceeds the 1 MiB NDJSON cap. The client re-pulls with
+        // `pageCursor = nextHistoryCursor` until `hasMoreHistory` is false.
+        // Config sections ride the FIRST page only (pageCursor nil); continuation
+        // pages carry history alone, so we don't re-ship vocab/profiles/modes.
+        guard want.contains(.history) else {
+            return BridgeWire.SyncBundleResult(bundle: bundle, historyEntries: [])
         }
-
-        return BridgeWire.SyncBundleResult(bundle: bundle, historyEntries: history)
+        let filtered = SyncMerge.historyDelta(store.syncHistory, sinceCursor: params.sinceHistoryCursor)
+        let limit = params.historyLimit ?? BridgeWire.SyncPullParams.defaultHistoryPageSize
+        let page = SyncMerge.historyPage(filtered, afterCursor: params.pageCursor, limit: limit)
+        let isFirstPage = (params.pageCursor?.isEmpty ?? true)
+        let pageBundle = isFirstPage ? bundle : ConfigBundle(profiles: nil, modes: nil, vocabulary: nil)
+        return BridgeWire.SyncBundleResult(
+            bundle: pageBundle,
+            historyEntries: page.entries,
+            hasMoreHistory: page.hasMore,
+            nextHistoryCursor: page.nextCursor
+        )
     }
 
     // MARK: sync.push

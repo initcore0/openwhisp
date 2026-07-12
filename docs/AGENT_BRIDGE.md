@@ -48,6 +48,22 @@ so any stamped v3 edit always wins over unstamped legacy data. Every merge is
 (`mergedCounts` all zero). The whole policy is the pure `SyncMerge` funnel in
 `OpenWhispCore` and is exhaustively unit-tested.
 
+**Two v1 scope limits, by design.** (1) **No tombstones:** a deleted vocabulary
+entry / profile / mode leaves no trace, so union-by-id resurrects it from the
+peer on the next sync — delete-then-sync brings it back. A tombstone model is
+deferred. (2) **Import restamps:** applying an imported config or a bundled pack
+restamps its (pre-v3, epoch-dated) entries to *now* — the act of importing is a
+user edit, so the imported data wins the next sync rather than losing to a
+stamped peer copy of the same id.
+
+**History paging.** `sync.pull` returns history one page at a time so no NDJSON
+frame exceeds `maxFrameBytes` (1 MiB): `sinceHistoryCursor` is the date
+delta-filter ("everything I haven't seen"), then the server pages the filtered
+set by a total-order (`date`+`id`) `pageCursor` — the client re-pulls with the
+result's `nextHistoryCursor` while `hasMoreHistory` is true. Config sections ride
+the first page only. The total-order cursor guarantees equal-timestamp entries
+are never skipped.
+
 ### LAN transport (MAK-51 WP6-mac)
 
 The paired iPhone reaches those verbs over the LAN, not the UNIX socket. A

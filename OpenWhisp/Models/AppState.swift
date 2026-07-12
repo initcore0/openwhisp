@@ -5977,14 +5977,21 @@ class AppState: ObservableObject {
     /// user feedback.
     @discardableResult
     func applyConfig(_ bundle: ConfigBundle) -> String {
+        // A user importing a config or applying a pack IS a user edit, so entries
+        // from a pre-v3 source (bundled packs are schemaVersion 1 with fixed ids;
+        // any v2 export) — which decode to the epoch sentinel — get restamped now.
+        // Otherwise the just-imported data would silently lose the next sync's
+        // last-writer-wins to a stamped peer copy of the same id and revert.
+        // Genuinely stamped v3 imports keep their real timestamps.
+        let now = Date()
         if let importedProfiles = bundle.profiles {
-            profiles = importedProfiles
+            profiles = importedProfiles.restampingUnstamped(now: now)
         }
         if let importedModes = bundle.modes {
-            modes = importedModes
+            modes = importedModes.restampingUnstamped(now: now)
         }
         if let importedVocab = bundle.vocabulary {
-            vocabulary = importedVocab
+            vocabulary = importedVocab.restampingUnstamped(now: now)
         }
         return bundle.summary
     }

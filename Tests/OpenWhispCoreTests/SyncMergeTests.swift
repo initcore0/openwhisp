@@ -344,4 +344,80 @@ final class SyncMergeTests: XCTestCase {
         XCTAssertEqual(first.history.map(\.id), second.history.map(\.id))
         XCTAssertEqual(second.counts, BridgeWire.SyncMergedCounts()) // all zero
     }
+
+    // MARK: - Paged history (frame-cap safety)
+
+    func testHistoryPagingWalksEveryEntryInOrder() {
+        // 5 entries, page size 2 → the puller re-pulls until drained and must see
+        // ALL five exactly once, in order, with no skips or repeats.
+        let ids = (0..<5).map { _ in UUID() }
+        let all = ids.enumerated().map { entry($0.element, "e\($0.offset)", Date(timeIntervalSince1970: Double(1_000 + $0.offset * 10))) }
+        var seen: [UUID] = []
+        var cursor: String? = nil
+        var guardCount = 0
+        while true {
+            let page = SyncMerge.historyPage(all, afterCursor: cursor, limit: 2)
+            seen.append(contentsOf: page.entries.map(\.id))
+            guardCount += 1; XCTAssertLessThan(guardCount, 10, "paging must terminate")
+            if !page.hasMore { break }
+            cursor = page.nextCursor
+        }
+        XCTAssertEqual(seen, ids, "every entry, once, in date order")
+    }
+
+    func testHistoryPagingNeverSkipsEqualTimestampTies() {
+        // Three entries share the SAME date — a date-only cursor would skip some.
+        // The total-order (date,id) cursor must still visit all three.
+        let same = Date(timeIntervalSince1970: 5_000)
+        let ids = (0..<3).map { _ in UUID() }
+        let all = ids.map { entry($0, "tie", same) }
+        var seen: Set<UUID> = []
+        var cursor: String? = nil
+        for _ in 0..<5 {
+            let page = SyncMerge.historyPage(all, afterCursor: cursor, limit: 1)
+            seen.formUnion(page.entries.map(\.id))
+            if !page.hasMore { break }
+            cursor = page.nextCursor
+        }
+        XCTAssertEqual(seen, Set(ids), "all equal-timestamp entries must be paged")
+    }
+
+    func testHistoryPageLimitClampedAndSingleWhenSmall() {
+        let all = [entry(UUID(), "a", t0), entry(UUID(), "b", t1)]
+        let page = SyncMerge.historyPage(all, afterCursor: nil, limit: 0) // clamps to 1
+        XCTAssertEqual(page.entries.count, 1)
+        XCTAssertTrue(page.hasMore)
+        let full = SyncMerge.historyPage(all, afterCursor: nil, limit: 50)
+        XCTAssertEqual(full.entries.count, 2)
+        XCTAssertFalse(full.hasMore)
+    }
+
+    // MARK: - Restamp-on-import (the imported data must win the next sync)
+
+    func testRestampUnstampedVocabularyWinsMergeAfterImport() {
+        // A pack-style substitution with a fixed id and NO stamp (epoch). Without
+        // restamping it loses LWW to any stamped peer copy; with it, it wins.
+        let id = UUID()
+        let imported = Vocabulary(terms: [], substitutions: [
+            .init(id: id, from: "gpt", to: "GPT", updatedAt: Vocabulary.Substitution.unstampedEpoch)
+        ])
+        XCTAssertEqual(imported.substitutions[0].updatedAt, Vocabulary.Substitution.unstampedEpoch)
+
+        let restamped = imported.restampingUnstamped(now: t2)
+        XCTAssertEqual(restamped.substitutions[0].updatedAt, t2, "unstamped entry gets now")
+
+        // A peer holds the same id, stamped at t1 (< t2). After restamp, the
+        // imported copy wins the merge; without it (epoch), the peer would win.
+        let peer = Vocabulary(terms: [], substitutions: [.init(id: id, from: "gpt", to: "gpt", updatedAt: t1)])
+        let merged = SyncMerge.mergeVocabulary(local: restamped, incoming: peer)
+        XCTAssertEqual(merged.substitutions.first(where: { $0.id == id })?.to, "GPT",
+                       "the just-imported entry must win the sync race")
+    }
+
+    func testRestampLeavesGenuineV3StampsUntouched() {
+        let id = UUID()
+        let v3 = Vocabulary(terms: [], substitutions: [.init(id: id, from: "a", to: "b", updatedAt: t1)])
+        let restamped = v3.restampingUnstamped(now: t2)
+        XCTAssertEqual(restamped.substitutions[0].updatedAt, t1, "a real v3 stamp is preserved")
+    }
 }
