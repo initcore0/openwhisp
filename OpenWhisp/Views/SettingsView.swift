@@ -23,6 +23,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
     case meetings
     case profiles
     case agentBridge
+    case sync
     case privacy
     case advanced
 
@@ -42,6 +43,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
         case .meetings:    return "Meetings"
         case .profiles:    return "Per-App Profiles"
         case .agentBridge: return "Agent Bridge"
+        case .sync:        return "Sync"
         case .privacy:     return "Privacy & Permissions"
         case .advanced:    return "Advanced"
         }
@@ -61,6 +63,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
         case .meetings:    return "person.2.wave.2"
         case .profiles:    return "square.grid.2x2"
         case .agentBridge: return "point.3.connected.trianglepath.dotted"
+        case .sync:        return "arrow.triangle.2.circlepath"
         case .privacy:     return "lock.shield"
         case .advanced:    return "wrench.and.screwdriver"
         }
@@ -122,6 +125,7 @@ struct SettingsView: View {
         case .meetings:  MeetingsPane(appState: appState, coordinator: appState.meetingCoordinator)
         case .profiles:  ProfilesPane(appState: appState)
         case .agentBridge: AgentBridgePane(appState: appState)
+        case .sync:      SyncPane(appState: appState)
         case .privacy:   PrivacyPane(appState: appState)
         case .advanced:  AdvancedPane(appState: appState)
         }

@@ -1,0 +1,347 @@
+import XCTest
+@testable import OpenWhispCore
+
+/// The MAK-51 WP6 merge-policy matrix: every syncable entity × the conflict axes
+/// (newer / older / absent-on-one-side / both-changed) × **idempotency** (applying
+/// the same payload twice = no further change). The pure `SyncMerge` funnel is the
+/// single source of "what wins", so this is where the boring v1 policy is proven —
+/// the transport just carries bytes.
+final class SyncMergeTests: XCTestCase {
+
+    private let t0 = Date(timeIntervalSince1970: 1_000)   // oldest
+    private let t1 = Date(timeIntervalSince1970: 2_000)
+    private let t2 = Date(timeIntervalSince1970: 3_000)   // newest
+
+    // MARK: - Vocabulary substitutions
+
+    func testVocabIncomingNewerWins() {
+        let id = UUID()
+        let local = Vocabulary(terms: [], substitutions: [
+            .init(id: id, from: "clod", to: "cloud", updatedAt: t0)
+        ])
+        let incoming = Vocabulary(terms: [], substitutions: [
+            .init(id: id, from: "clod", to: "Claude", updatedAt: t2)
+        ])
+        let merged = SyncMerge.mergeVocabulary(local: local, incoming: incoming)
+        XCTAssertEqual(merged.substitutions.count, 1)
+        XCTAssertEqual(merged.substitutions.first?.to, "Claude")
+        XCTAssertEqual(SyncMerge.vocabularyChangeCount(local: local, incoming: incoming), 1)
+    }
+
+    func testVocabIncomingOlderLoses() {
+        let id = UUID()
+        let local = Vocabulary(terms: [], substitutions: [
+            .init(id: id, from: "clod", to: "Claude", updatedAt: t2)
+        ])
+        let incoming = Vocabulary(terms: [], substitutions: [
+            .init(id: id, from: "clod", to: "cloud", updatedAt: t0)
+        ])
+        let merged = SyncMerge.mergeVocabulary(local: local, incoming: incoming)
+        XCTAssertEqual(merged.substitutions.first?.to, "Claude")
+        XCTAssertEqual(SyncMerge.vocabularyChangeCount(local: local, incoming: incoming), 0)
+    }
+
+    func testVocabTieKeepsLocal() {
+        let id = UUID()
+        let local = Vocabulary(terms: [], substitutions: [.init(id: id, from: "a", to: "LOCAL", updatedAt: t1)])
+        let incoming = Vocabulary(terms: [], substitutions: [.init(id: id, from: "a", to: "REMOTE", updatedAt: t1)])
+        let merged = SyncMerge.mergeVocabulary(local: local, incoming: incoming)
+        XCTAssertEqual(merged.substitutions.first?.to, "LOCAL")
+        XCTAssertEqual(SyncMerge.vocabularyChangeCount(local: local, incoming: incoming), 0)
+    }
+
+    func testVocabIncomingAbsentEntryPreserved() {
+        // A substitution only local has must survive (union, not replace).
+        let onlyLocal = UUID()
+        let local = Vocabulary(terms: [], substitutions: [.init(id: onlyLocal, from: "x", to: "y", updatedAt: t1)])
+        let incoming = Vocabulary(terms: [], substitutions: [])
+        let merged = SyncMerge.mergeVocabulary(local: local, incoming: incoming)
+        XCTAssertEqual(merged.substitutions.map(\.id), [onlyLocal])
+    }
+
+    func testVocabIncomingNewEntryAppended() {
+        let localID = UUID(); let remoteID = UUID()
+        let local = Vocabulary(terms: [], substitutions: [.init(id: localID, from: "a", to: "b", updatedAt: t1)])
+        let incoming = Vocabulary(terms: [], substitutions: [.init(id: remoteID, from: "c", to: "d", updatedAt: t1)])
+        let merged = SyncMerge.mergeVocabulary(local: local, incoming: incoming)
+        XCTAssertEqual(merged.substitutions.map(\.id), [localID, remoteID]) // local first, deterministic
+        XCTAssertEqual(SyncMerge.vocabularyChangeCount(local: local, incoming: incoming), 1)
+    }
+
+    func testVocabTermsSetUnionOrderPreserved() {
+        let local = Vocabulary(terms: ["Claude", "Anthropic"], substitutions: [])
+        let incoming = Vocabulary(terms: ["Anthropic", "kubectl"], substitutions: [])
+        let merged = SyncMerge.mergeVocabulary(local: local, incoming: incoming)
+        XCTAssertEqual(merged.terms, ["Claude", "Anthropic", "kubectl"]) // local first, dedup, append new
+        XCTAssertEqual(SyncMerge.vocabularyChangeCount(local: local, incoming: incoming), 1) // only "kubectl" is new
+    }
+
+    func testVocabUnstampedLegacyLosesToStampedEdit() {
+        // A v2 entry decodes to epoch updatedAt; any stamped v3 edit must win.
+        let id = UUID()
+        let legacy = Vocabulary.Substitution(id: id, from: "a", to: "OLD", updatedAt: Date(timeIntervalSince1970: 0))
+        let stamped = Vocabulary.Substitution(id: id, from: "a", to: "NEW", updatedAt: t1)
+        let merged = SyncMerge.mergeVocabulary(
+            local: Vocabulary(terms: [], substitutions: [legacy]),
+            incoming: Vocabulary(terms: [], substitutions: [stamped]))
+        XCTAssertEqual(merged.substitutions.first?.to, "NEW")
+    }
+
+    func testVocabMergeIsIdempotent() {
+        let shared = UUID(); let remoteOnly = UUID()
+        let local = Vocabulary(terms: ["a"], substitutions: [.init(id: shared, from: "x", to: "L", updatedAt: t0)])
+        let incoming = Vocabulary(terms: ["a", "b"], substitutions: [
+            .init(id: shared, from: "x", to: "R", updatedAt: t2),
+            .init(id: remoteOnly, from: "y", to: "z", updatedAt: t1)
+        ])
+        let once = SyncMerge.mergeVocabulary(local: local, incoming: incoming)
+        let twice = SyncMerge.mergeVocabulary(local: once, incoming: incoming)
+        XCTAssertEqual(once, twice)
+        XCTAssertEqual(SyncMerge.vocabularyChangeCount(local: once, incoming: incoming), 0) // second push changes nothing
+    }
+
+    // MARK: - Profiles (LWW per object)
+
+    private func profile(_ id: UUID, _ name: String, _ at: Date) -> AppProfile {
+        AppProfile(id: id, appBundleID: "com.x", displayName: name, updatedAt: at)
+    }
+
+    func testProfilesIncomingNewerWins() {
+        let id = UUID()
+        let local = [profile(id, "Local", t0)]
+        let incoming = [profile(id, "Remote", t2)]
+        let merged = SyncMerge.mergeProfiles(local: local, incoming: incoming)
+        XCTAssertEqual(merged.first?.displayName, "Remote")
+        XCTAssertEqual(SyncMerge.profilesChangeCount(local: local, incoming: incoming), 1)
+    }
+
+    func testProfilesIncomingOlderLoses() {
+        let id = UUID()
+        let local = [profile(id, "Local", t2)]
+        let incoming = [profile(id, "Remote", t0)]
+        let merged = SyncMerge.mergeProfiles(local: local, incoming: incoming)
+        XCTAssertEqual(merged.first?.displayName, "Local")
+        XCTAssertEqual(SyncMerge.profilesChangeCount(local: local, incoming: incoming), 0)
+    }
+
+    func testProfilesAbsentOnIncomingPreserved() {
+        let id = UUID()
+        let local = [profile(id, "Local", t1)]
+        let merged = SyncMerge.mergeProfiles(local: local, incoming: [])
+        XCTAssertEqual(merged.map(\.id), [id])
+    }
+
+    func testProfilesNewIncomingAppended() {
+        let a = UUID(); let b = UUID()
+        let merged = SyncMerge.mergeProfiles(local: [profile(a, "A", t1)], incoming: [profile(b, "B", t1)])
+        XCTAssertEqual(merged.map(\.id), [a, b])
+        XCTAssertEqual(SyncMerge.profilesChangeCount(local: [profile(a, "A", t1)], incoming: [profile(b, "B", t1)]), 1)
+    }
+
+    func testProfilesBothChangedNewestWinsPerObject() {
+        let a = UUID(); let b = UUID()
+        let local = [profile(a, "A-local", t2), profile(b, "B-local", t0)]
+        let incoming = [profile(a, "A-remote", t0), profile(b, "B-remote", t2)]
+        let merged = SyncMerge.mergeProfiles(local: local, incoming: incoming)
+        XCTAssertEqual(merged.first(where: { $0.id == a })?.displayName, "A-local")   // local newer
+        XCTAssertEqual(merged.first(where: { $0.id == b })?.displayName, "B-remote")  // remote newer
+        XCTAssertEqual(SyncMerge.profilesChangeCount(local: local, incoming: incoming), 1) // only b changed
+    }
+
+    func testProfilesMergeIdempotent() {
+        let id = UUID()
+        let local = [profile(id, "Local", t0)]
+        let incoming = [profile(id, "Remote", t2), profile(UUID(), "New", t1)]
+        let once = SyncMerge.mergeProfiles(local: local, incoming: incoming)
+        let twice = SyncMerge.mergeProfiles(local: once, incoming: incoming)
+        XCTAssertEqual(once, twice)
+        XCTAssertEqual(SyncMerge.profilesChangeCount(local: once, incoming: incoming), 0)
+    }
+
+    // MARK: - Modes (LWW per object)
+
+    private func mode(_ id: UUID, _ name: String, _ at: Date) -> Mode {
+        Mode(id: id, key: name.lowercased(), name: name, updatedAt: at)
+    }
+
+    func testModesNewerWinsOlderLosesBothChanged() {
+        let a = UUID(); let b = UUID()
+        let local = [mode(a, "Alocal", t2), mode(b, "Blocal", t0)]
+        let incoming = [mode(a, "Aremote", t0), mode(b, "Bremote", t2)]
+        let merged = SyncMerge.mergeModes(local: local, incoming: incoming)
+        XCTAssertEqual(merged.first(where: { $0.id == a })?.name, "Alocal")
+        XCTAssertEqual(merged.first(where: { $0.id == b })?.name, "Bremote")
+        XCTAssertEqual(SyncMerge.modesChangeCount(local: local, incoming: incoming), 1)
+    }
+
+    func testModesAbsentAndNewAndIdempotent() {
+        let localID = UUID(); let remoteID = UUID()
+        let local = [mode(localID, "Local", t1)]
+        let incoming = [mode(remoteID, "Remote", t1)]
+        let once = SyncMerge.mergeModes(local: local, incoming: incoming)
+        XCTAssertEqual(once.map(\.id), [localID, remoteID])
+        let twice = SyncMerge.mergeModes(local: once, incoming: incoming)
+        XCTAssertEqual(once, twice)
+        XCTAssertEqual(SyncMerge.modesChangeCount(local: once, incoming: incoming), 0)
+    }
+
+    // MARK: - History (append-only union by id)
+
+    private func entry(_ id: UUID, _ text: String, _ at: Date) -> TranscriptionEntry {
+        TranscriptionEntry(id: id, text: text, date: at, appBundleID: nil, appName: nil)
+    }
+
+    func testHistoryAppendsNewEntries() {
+        let a = UUID(); let b = UUID()
+        let local = [entry(a, "first", t0)]
+        let incoming = [entry(b, "second", t1)]
+        let merged = SyncMerge.mergeHistory(local: local, incoming: incoming)
+        XCTAssertEqual(merged.map(\.id), [a, b])
+        XCTAssertEqual(SyncMerge.historyChangeCount(local: local, incoming: incoming), 1)
+    }
+
+    func testHistoryExistingIdNeverOverwritten() {
+        // Append-only: an id already present is immutable even if incoming text differs.
+        let id = UUID()
+        let local = [entry(id, "canonical", t0)]
+        let incoming = [entry(id, "tampered", t2)]
+        let merged = SyncMerge.mergeHistory(local: local, incoming: incoming)
+        XCTAssertEqual(merged.count, 1)
+        XCTAssertEqual(merged.first?.text, "canonical")
+        XCTAssertEqual(SyncMerge.historyChangeCount(local: local, incoming: incoming), 0)
+    }
+
+    func testHistoryAbsentOnIncomingPreserved() {
+        let id = UUID()
+        let merged = SyncMerge.mergeHistory(local: [entry(id, "keep", t0)], incoming: [])
+        XCTAssertEqual(merged.map(\.id), [id])
+    }
+
+    func testHistoryMergeIdempotent() {
+        let a = UUID(); let b = UUID()
+        let local = [entry(a, "a", t0)]
+        let incoming = [entry(a, "a", t0), entry(b, "b", t1)]
+        let once = SyncMerge.mergeHistory(local: local, incoming: incoming)
+        let twice = SyncMerge.mergeHistory(local: once, incoming: incoming)
+        XCTAssertEqual(once.map(\.id), twice.map(\.id))
+        XCTAssertEqual(SyncMerge.historyChangeCount(local: once, incoming: incoming), 0)
+    }
+
+    // MARK: - History delta / head cursor
+
+    func testHistoryDeltaStrictlyAfterCursor() {
+        let all = [entry(UUID(), "old", t0), entry(UUID(), "mid", t1), entry(UUID(), "new", t2)]
+        let cursor = BridgeWire.iso8601String(from: t1)
+        let delta = SyncMerge.historyDelta(all, sinceCursor: cursor)
+        XCTAssertEqual(delta.map(\.text), ["new"]) // strict >, so t1 itself excluded
+    }
+
+    func testHistoryDeltaNilCursorReturnsAll() {
+        let all = [entry(UUID(), "x", t0), entry(UUID(), "y", t1)]
+        XCTAssertEqual(SyncMerge.historyDelta(all, sinceCursor: nil).count, 2)
+        XCTAssertEqual(SyncMerge.historyDelta(all, sinceCursor: "").count, 2)
+    }
+
+    func testHistoryHeadPicksNewest() {
+        let newestID = UUID()
+        let all = [entry(UUID(), "a", t0), entry(newestID, "z", t2), entry(UUID(), "m", t1)]
+        let head = SyncMerge.historyHead(all)
+        XCTAssertEqual(head.count, 3)
+        XCTAssertEqual(head.newestID, newestID)
+        XCTAssertEqual(head.newestDate, BridgeWire.iso8601String(from: t2))
+    }
+
+    func testHistoryHeadEmpty() {
+        let head = SyncMerge.historyHead([])
+        XCTAssertEqual(head.count, 0)
+        XCTAssertNil(head.newestID)
+        XCTAssertNil(head.newestDate)
+    }
+
+    // MARK: - Content hashing (manifest identity)
+
+    func testContentHashStableAcrossOrdering() {
+        // Two vocabularies equal by value hash identically regardless of dict order.
+        let subs = [Vocabulary.Substitution(from: "a", to: "b", updatedAt: t1)]
+        let v1 = Vocabulary(terms: ["x", "y"], substitutions: subs)
+        let v2 = Vocabulary(terms: ["x", "y"], substitutions: subs)
+        XCTAssertEqual(SyncMerge.contentHash(v1), SyncMerge.contentHash(v2))
+        XCTAssertFalse(SyncMerge.contentHash(v1).isEmpty)
+    }
+
+    func testContentHashDistinguishesEmptyFromNil() {
+        let nilHash = SyncMerge.contentHash(Optional<Vocabulary>.none)
+        let emptyHash = SyncMerge.contentHash(Vocabulary.empty)
+        XCTAssertEqual(nilHash, "")            // absent section
+        XCTAssertNotEqual(emptyHash, "")       // present-but-empty section
+    }
+
+    func testContentHashChangesWithContent() {
+        let a = SyncMerge.contentHash(Vocabulary(terms: ["a"], substitutions: []))
+        let b = SyncMerge.contentHash(Vocabulary(terms: ["b"], substitutions: []))
+        XCTAssertNotEqual(a, b)
+    }
+
+    // MARK: - Bundle-level merge (the sync.push funnel)
+
+    func testBundleMergeAppliesAllSectionsAndCounts() {
+        let subID = UUID(); let profID = UUID(); let modeID = UUID(); let entID = UUID()
+        let incomingBundle = ConfigBundle(
+            profiles: [profile(profID, "P", t1)],
+            modes: [mode(modeID, "M", t1)],
+            vocabulary: Vocabulary(terms: ["w"], substitutions: [.init(id: subID, from: "a", to: "b", updatedAt: t1)])
+        )
+        let outcome = SyncMerge.merge(
+            localVocabulary: .empty, localProfiles: [], localModes: [], localHistory: [],
+            incomingBundle: incomingBundle,
+            incomingHistory: [entry(entID, "h", t1)]
+        )
+        XCTAssertEqual(outcome.counts.vocabulary, 2)  // 1 sub + 1 term
+        XCTAssertEqual(outcome.counts.profiles, 1)
+        XCTAssertEqual(outcome.counts.modes, 1)
+        XCTAssertEqual(outcome.counts.history, 1)
+        XCTAssertEqual(outcome.vocabulary.substitutions.first?.id, subID)
+        XCTAssertEqual(outcome.profiles.map(\.id), [profID])
+        XCTAssertEqual(outcome.modes.map(\.id), [modeID])
+        XCTAssertEqual(outcome.history.map(\.id), [entID])
+    }
+
+    func testBundleMergeAbsentSectionsLeaveLocalUntouched() {
+        let localVocab = Vocabulary(terms: ["keep"], substitutions: [])
+        // A bundle with ONLY modes: vocab/profiles must be untouched, counts 0.
+        let bundle = ConfigBundle(modes: [mode(UUID(), "M", t1)])
+        let outcome = SyncMerge.merge(
+            localVocabulary: localVocab, localProfiles: [profile(UUID(), "P", t1)],
+            localModes: [], localHistory: [],
+            incomingBundle: bundle, incomingHistory: [])
+        XCTAssertEqual(outcome.vocabulary, localVocab)
+        XCTAssertEqual(outcome.counts.vocabulary, 0)
+        XCTAssertEqual(outcome.counts.profiles, 0)
+        XCTAssertEqual(outcome.profiles.count, 1)
+        XCTAssertEqual(outcome.counts.modes, 1)
+    }
+
+    func testBundleMergeIsIdempotentEndToEnd() {
+        let bundle = ConfigBundle(
+            profiles: [profile(UUID(), "P", t2)],
+            modes: [mode(UUID(), "M", t2)],
+            vocabulary: Vocabulary(terms: ["a", "b"], substitutions: [.init(from: "x", to: "y", updatedAt: t2)])
+        )
+        let history = [entry(UUID(), "h1", t1), entry(UUID(), "h2", t2)]
+
+        let first = SyncMerge.merge(
+            localVocabulary: .empty, localProfiles: [], localModes: [], localHistory: [],
+            incomingBundle: bundle, incomingHistory: history)
+        // Second apply onto the first result: every count must be 0, state identical.
+        let second = SyncMerge.merge(
+            localVocabulary: first.vocabulary, localProfiles: first.profiles,
+            localModes: first.modes, localHistory: first.history,
+            incomingBundle: bundle, incomingHistory: history)
+
+        XCTAssertEqual(first.vocabulary, second.vocabulary)
+        XCTAssertEqual(first.profiles, second.profiles)
+        XCTAssertEqual(first.modes, second.modes)
+        XCTAssertEqual(first.history.map(\.id), second.history.map(\.id))
+        XCTAssertEqual(second.counts, BridgeWire.SyncMergedCounts()) // all zero
+    }
+}

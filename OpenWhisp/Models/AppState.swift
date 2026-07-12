@@ -841,6 +841,28 @@ class AppState: ObservableObject {
     /// bridge is enabled); owns the socket, per-connection auth, and dispatch.
     private lazy var agentBridgeServer = AgentBridgeServer(host: self)
 
+    // MARK: P2P sync — LAN bridge + pairing (MAK-51 WP6)
+
+    /// The Mac's pairing state (local peer id, paired iPhones, per-peer PSK in the
+    /// Keychain). Lazily built on the injected `secretStore`. Published so the
+    /// pairing pane's device list updates when a device is paired/unpaired.
+    lazy var pairingStore = PairingStore(secrets: secretStore)
+    /// The freshly-minted QR payload while the pairing pane is open (nil otherwise).
+    /// Rendered as a QR for the phone to scan.
+    @Published var pendingPairingPayload: LANPairingPayload?
+    /// The LAN counterpart of the agent bridge: NWListener + Bonjour + TLS-PSK,
+    /// feeding accepted connections into the SAME BridgeRouter pipeline. Runs only
+    /// while a device is paired or the pairing pane is open. Lazily constructed.
+    lazy var lanBridgeServer: LANBridgeServer = {
+        LANBridgeServer(
+            host: self,
+            pskProvider: { [weak self] in self?.pairingStore.pskLookup() ?? [:] },
+            deviceName: { Host.current().localizedName ?? "Mac" },
+            onPeerHandshake: { [weak self] peerID, clientName in
+                self?.pairingStore.confirmPairing(peerID: peerID, phoneDisplayName: clientName)
+            })
+    }()
+
     /// Bias whisper recognition toward custom terms. Default-on; harmless when
     /// the vocabulary is empty (no prompt is sent).
     @Published var customVocabularyEnabled: Bool {
@@ -1826,6 +1848,9 @@ class AppState: ObservableObject {
         // MAK-40: enforce the retention policy on launch (age cap may have elapsed
         // while the app was closed) — a no-op when retention is off.
         applyRetentionPolicy()
+        // MAK-51 WP6: bring the LAN sync bridge up iff a device is already paired
+        // (zero cost otherwise — no listener, nothing on the LAN).
+        lanBridgeServer.refresh(hasPairedPeers: pairingStore.hasPairedPeers)
     }
 
     private static func modelFileName(for modelName: String) -> String {
@@ -2520,6 +2545,7 @@ class AppState: ObservableObject {
         // so a rapid dictate-then-quit doesn't lose the last increment (MAK-41).
         flushVocabularySave()
         agentBridgeServer.stop()
+        lanBridgeServer.stop()
         whisperEngine.stopServer()
         llamaEngine?.stopServer()
         hotkeyMonitor.stop()
@@ -6340,7 +6366,8 @@ extension AppState: AgentBridgeHost {
     /// steps 6–7 wire them; advertising only what works keeps agents from calling
     /// unimplemented tools.
     func bridgeCapabilities() -> [String] {
-        [BridgeWire.Capability.dictate, BridgeWire.Capability.refine, BridgeWire.Capability.history]
+        [BridgeWire.Capability.dictate, BridgeWire.Capability.refine,
+         BridgeWire.Capability.history, BridgeWire.Capability.sync]
     }
 
     // MARK: Refine (M8)

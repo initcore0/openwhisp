@@ -43,7 +43,49 @@ append-only union by entry `id`; profiles/modes/settings = last-writer-wins per
 object by `updatedAt`; packs = content-hash identity. This needs the `updatedAt`
 stamps added to `Vocabulary.Substitution`, `AppProfile`, and `Mode` in
 **ConfigBundle schema v3** — a v2 file decodes its missing stamps as the epoch,
-so any stamped v3 edit always wins over unstamped legacy data.
+so any stamped v3 edit always wins over unstamped legacy data. Every merge is
+**idempotent**: pushing the same payload twice changes nothing the second time
+(`mergedCounts` all zero). The whole policy is the pure `SyncMerge` funnel in
+`OpenWhispCore` and is exhaustively unit-tested.
+
+### LAN transport (MAK-51 WP6-mac)
+
+The paired iPhone reaches those verbs over the LAN, not the UNIX socket. A
+`LANBridgeServer` advertises `_openwhisp._tcp` over **Bonjour**, accepts a
+**TLS pre-shared-key** connection, and feeds each connection's NDJSON frames into
+the *same* `BridgeRouter` → host pipeline the UNIX socket uses — routing, consent,
+and rate-limit are reused verbatim. The only substitution is authentication: with
+no cross-device code-signing identity, a peer is authenticated by "the TLS
+handshake completed with a PSK we minted at pairing" (each paired device = one
+PSK; the client presents its peer UUID as the TLS identity, and the connection
+recovers *which* peer authenticated from the negotiated PSK identity, binding
+consent to that device).
+
+- **Pairing** is out-of-band: **Settings → Sync → Pair iPhone…** shows a QR the
+  phone scans. The QR JSON is
+  `{ version, peerID, displayName, psk (base64 of 32 random bytes), serviceInstanceName }`.
+  The PSK lives in the Mac **Keychain** (keyed by the peer UUID); **Unpair**
+  destroys it and drops the connection, so that device can no longer authenticate.
+- **TLS.** We request the version range **TLS 1.2…1.3** with the PSK AEAD
+  ciphersuite `TLS_PSK_WITH_AES_128_GCM_SHA256`. The intent is TLS 1.3, but
+  Network.framework's `NWListener` does not accept an external TLS-1.3 PSK on the
+  SDK the CI runners ship, so it negotiates down to TLS 1.2 with the PSK suite,
+  which preserves the property that matters: a 32-byte pre-shared key, AEAD
+  encryption, **no certificate/CA**, and nothing readable on the wire before the
+  handshake. The iOS `SyncKit` client MUST use the same version range +
+  ciphersuite and add its `(psk, peerID-as-identity)` pair, or the handshake
+  won't complete.
+- **When it runs.** The listener runs **only** while at least one device is
+  paired, or while the pairing pane is open — a user who never pairs pays zero
+  cost and nothing is exposed on the LAN.
+
+**Cross-repo integration harness.** `scripts/sync-loopback-server.sh` boots the
+real `LANBridgeServer` standalone on `127.0.0.1` with a fixed PSK + port + a
+file-backed fixture store (all from `OPENWHISP_SYNC_PSK` / `OPENWHISP_SYNC_PORT` /
+`OPENWHISP_SYNC_PEER_ID` / `OPENWHISP_SYNC_FIXTURE_DIR`) and prints `READY <port>`
+once listening, so the openwhisp-ios sync test can drive it over TLS-TCP. The
+in-repo `OpenWhispSyncLANTests` E2E does the same in-process: real server, real
+TLS-PSK NDJSON client, hello → consent → manifest → push → pull.
 
 ## Setup
 
