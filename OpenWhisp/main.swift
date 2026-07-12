@@ -66,6 +66,13 @@ class OpenWhispApp: NSObject, NSApplicationDelegate {
         // Agent Bridge (M8): start the local control-plane socket if enabled.
         appState.startAgentBridgeIfEnabled()
 
+        // Sparkle auto-update (MAK-56): start the updater. Touching `.shared`
+        // constructs the SPUStandardUpdaterController and begins the scheduled
+        // check cycle (honoring the user's persisted auto-check preference). On a
+        // SPARKLE=0 lean build this is a no-op stand-in. The updater only makes a
+        // network call to fetch the appcast — see docs/AUTO_UPDATE.md.
+        _ = UpdaterManager.shared
+
         // Meeting mode (MAK-50): salvage any recording orphaned by a crash/quit
         // mid-meeting — patch its placeholder WAV header and ingest it so the
         // meeting shows up in the pane instead of silently rotting on disk.

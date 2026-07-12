@@ -11,6 +11,9 @@ struct GeneralPane: View {
     @State private var configPacks: [ConfigPack] = []
     // Reset-all confirmation.
     @State private var confirmingReset = false
+    // Software-update toggle mirror (Sparkle lives in the AppKit UpdaterManager,
+    // not AppState; seed from its live value on appear).
+    @State private var autoUpdateEnabled = UpdaterManager.shared.automaticallyChecksForUpdates
 
     /// Styles available to pick this build. Grows as later phases land (orb).
     private var availableIndicatorStyles: [VoiceIndicatorStyle] { [.bars, .waveform] }
@@ -28,6 +31,24 @@ struct GeneralPane: View {
                 Text("Startup")
             } footer: {
                 SettingsFootnote("Automatically start OpenWhisp after you log in or reboot. If macOS asks you to approve it, enable OpenWhisp under System Settings › General › Login Items.")
+            }
+
+            // Software Update (Sparkle, MAK-56). Hidden entirely on a SPARKLE=0
+            // lean build where the updater is a no-op stand-in.
+            if UpdaterManager.shared.isAvailable {
+                Section {
+                    Toggle("Check for updates automatically", isOn: $autoUpdateEnabled)
+                        .onChange(of: autoUpdateEnabled) { newValue in
+                            UpdaterManager.shared.automaticallyChecksForUpdates = newValue
+                        }
+                    Button("Check for Updates…") {
+                        UpdaterManager.shared.checkForUpdates()
+                    }
+                } header: {
+                    Text("Software Update")
+                } footer: {
+                    SettingsFootnote("The update check is the only network request OpenWhisp makes on its own. It sends just your app and macOS version to fetch the release feed — no analytics, no system profile. Updates are EdDSA-signed (and, in official builds, notarized by Apple) before they install. Turn this off to check manually only.")
+                }
             }
 
             Section {

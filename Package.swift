@@ -57,6 +57,7 @@ let package = Package(
                 "ScreenContext.swift",
                 "DownloadProgressFormatter.swift",
                 "PrivacyStatus.swift",
+                "UpdatePreferences.swift",
                 "TranscriptCleaner.swift",
                 "SecretStore.swift",
                 "LaunchAtLoginService.swift",

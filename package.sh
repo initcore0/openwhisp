@@ -89,6 +89,15 @@ else
     echo "The built-in AI provider (the app default) will be unavailable in this build — run scripts/build-llama.sh to include it."
 fi
 
+# Bundle Sparkle.framework (auto-update, MAK-56) into Contents/Frameworks. The
+# framework was fetched by build.sh above; re-resolve its path here (a cheap
+# cache hit). No-op on a SPARKLE=0 lean build. Ad-hoc for local dev — the app's
+# --deep sign below reseals it.
+# shellcheck source=scripts/sparkle-link-args.sh
+source "$PROJECT_DIR/scripts/sparkle-link-args.sh"
+resolve_sparkle_args
+"$PROJECT_DIR/scripts/bundle-sparkle-framework.sh" "$APP_DIR" "${SPARKLE_FRAMEWORK:-}"
+
 # Copy entitlements
 if [ -f "$PROJECT_DIR/OpenWhisp/OpenWhisp.entitlements" ]; then
     cp "$PROJECT_DIR/OpenWhisp/OpenWhisp.entitlements" "$APP_DIR/Contents/"

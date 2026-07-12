@@ -52,6 +52,14 @@ resolve_whisperkit_args
 source "$PROJECT_DIR/scripts/fluidaudio-link-args.sh"
 resolve_fluidaudio_args
 
+# Sparkle auto-update framework (MAK-56). ON by default; opt out with
+# SPARKLE=0 ./build.sh for a lean build (all Sparkle code is #if SPARKLE gated).
+# The link-args logic is shared with build-dmg.sh so the two compile paths never
+# drift. See docs/AUTO_UPDATE.md.
+# shellcheck source=scripts/sparkle-link-args.sh
+source "$PROJECT_DIR/scripts/sparkle-link-args.sh"
+resolve_sparkle_args
+
 # Developer instrumentation (timing signposts + console logs). OFF by default;
 # INSTRUMENTATION=1 ./build.sh defines OPENWHISP_INSTRUMENTATION. Shared with build-dmg.sh.
 # shellcheck source=scripts/instrumentation-args.sh
@@ -76,6 +84,7 @@ if xcrun swiftc \
     -framework CoreGraphics \
     "${WHISPERKIT_ARGS[@]}" \
     "${FLUIDAUDIO_ARGS[@]+"${FLUIDAUDIO_ARGS[@]}"}" \
+    "${SPARKLE_ARGS[@]+"${SPARKLE_ARGS[@]}"}" \
     "${INSTRUMENTATION_ARGS[@]+"${INSTRUMENTATION_ARGS[@]}"}" \
     "${SWIFT_FILES[@]}" \
     -o "$BUILD_DIR/OpenWhisp" \

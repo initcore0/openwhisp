@@ -132,10 +132,47 @@ jobs:
         if: steps.signing.outputs.enabled == 'true'
         run: ./scripts/verify-signed-notarized.sh dist/OpenWhisp.dmg
 
+      # Sparkle appcast (MAK-56). Only runs when the EdDSA private key secret is
+      # present — forks without it skip this and publish a DMG with no appcast
+      # (their users just don't get auto-update, everything else works). The
+      # enclosure points at the TAG-SPECIFIC asset URL so old appcast entries stay
+      # valid; the feed is hosted via the stable releases/latest/download redirect
+      # declared in Info.plist's SUFeedURL.
+      - name: Generate signed appcast
+        id: appcast
+        env:
+          SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
+        run: |
+          if [ -z "$SPARKLE_ED_PRIVATE_KEY" ]; then
+            echo "No SPARKLE_ED_PRIVATE_KEY secret — skipping appcast (auto-update disabled for this build)."
+            echo "generated=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Materialize the pinned Sparkle tools (sign_update) via the fetch script.
+          eval "$(./scripts/fetch-sparkle.sh)"
+          TAG="${{ steps.version.outputs.tag }}"
+          DMG_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/OpenWhisp.dmg"
+          NOTES_LINK="https://github.com/${GITHUB_REPOSITORY}/releases/tag/${TAG}"
+          MIN_SYSTEM="$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' OpenWhisp/Info.plist)"
+          ./scripts/gen-appcast.sh \
+            --version "${{ steps.version.outputs.base }}" \
+            --build "${GITHUB_RUN_NUMBER}" \
+            --dmg dist/OpenWhisp.dmg \
+            --url "$DMG_URL" \
+            --notes-link "$NOTES_LINK" \
+            --sign-tool "$SPARKLE_BIN/sign_update" \
+            --min-system "$MIN_SYSTEM" \
+            --changelog docs/changelog/changelog.json \
+            --out dist/appcast.xml
+          echo "generated=true" >> "$GITHUB_OUTPUT"
+          echo "----- appcast.xml -----"
+          cat dist/appcast.xml
+
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
           SIGNED: ${{ steps.signing.outputs.enabled }}
+          APPCAST: ${{ steps.appcast.outputs.generated }}
         run: |
           TAG="${{ steps.version.outputs.tag }}"
           NOTES_FILE="$(mktemp)"
@@ -154,11 +191,25 @@ jobs:
               echo "> • **Any version (Terminal):** \`xattr -dr com.apple.quarantine /Applications/OpenWhisp.app\`"
             fi
             echo ""
+            if [ "$APPCAST" = "true" ]; then
+              echo "> Once installed, OpenWhisp keeps itself up to date via **Sparkle** — the"
+              echo "> update check is EdDSA-signed and the only network call the app makes by"
+              echo "> default. Turn it off in **Settings → General → Software Update**."
+              echo ""
+            fi
             echo "See the [README](https://github.com/${GITHUB_REPOSITORY}#readme) for setup and permissions."
           } > "$NOTES_FILE"
 
+          # Attach the appcast alongside the DMG when it was generated. The
+          # Info.plist SUFeedURL uses the stable releases/latest/download redirect,
+          # so this asset becomes the live feed the moment the release publishes.
+          ASSETS=(dist/OpenWhisp.dmg)
+          if [ "$APPCAST" = "true" ] && [ -f dist/appcast.xml ]; then
+            ASSETS+=(dist/appcast.xml)
+          fi
+
           gh release create "$TAG" \
-            dist/OpenWhisp.dmg \
+            "${ASSETS[@]}" \
             --title "OpenWhisp $TAG" \
             --notes-file "$NOTES_FILE" \
             --target "$GITHUB_SHA"
