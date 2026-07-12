@@ -4964,7 +4964,9 @@ class AppState: ObservableObject {
             CorrectionProposal.key(from: $0.from, to: $0.to) == key
         }
         if !exists {
-            vocabulary.substitutions.append(accepted)
+            // Route through the stamping helper so the accepted rule carries a
+            // fresh updatedAt (a user action edits the vocabulary → LWW must see it).
+            vocabulary = vocabulary.addingSubstitution(accepted)
         }
     }
 

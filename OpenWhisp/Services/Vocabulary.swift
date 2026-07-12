@@ -31,20 +31,31 @@ public struct Vocabulary: Codable, Equatable {
         /// Drives sort-by-usage-frequency in the editor. Defaults to `0` for the
         /// same backward-compatibility reason.
         public var usageCount: Int
+        /// When this entry was last edited by the user (ConfigBundle schema v3,
+        /// MAK-51 WP0b). The sync merge does per-entry last-writer-wins by this
+        /// stamp: on a conflict the newer `updatedAt` wins. A v2 file written
+        /// before this field existed decodes to `Date(timeIntervalSince1970: 0)`
+        /// (the distant past) so any stamped edit from a v3 peer always wins over
+        /// unstamped legacy data — see ``ConfigBundle`` for the schema note.
+        public var updatedAt: Date
 
         public init(id: UUID = UUID(), from: String, to: String,
-             starred: Bool = false, usageCount: Int = 0) {
+             starred: Bool = false, usageCount: Int = 0,
+             updatedAt: Date = Date()) {
             self.id = id
             self.from = from
             self.to = to
             self.starred = starred
             self.usageCount = usageCount
+            self.updatedAt = updatedAt
         }
 
         // Custom decoding so an OLD substitution JSON that predates `starred` /
-        // `usageCount` still decodes: the two new keys are optional and fall back
-        // to their defaults. `id` is likewise defensively defaulted (a hand-edited
-        // file could omit it) rather than failing the whole load.
+        // `usageCount` / `updatedAt` still decodes: the new keys are optional and
+        // fall back to their defaults. `id` is likewise defensively defaulted (a
+        // hand-edited file could omit it) rather than failing the whole load.
+        // `updatedAt` falls back to the EPOCH (not "now") so unstamped v2 data
+        // always loses the last-writer-wins race to any stamped v3 edit.
         public init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
             self.id = try c.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
@@ -52,6 +63,17 @@ public struct Vocabulary: Codable, Equatable {
             self.to = try c.decode(String.self, forKey: .to)
             self.starred = try c.decodeIfPresent(Bool.self, forKey: .starred) ?? false
             self.usageCount = try c.decodeIfPresent(Int.self, forKey: .usageCount) ?? 0
+            self.updatedAt = try c.decodeIfPresent(Date.self, forKey: .updatedAt)
+                ?? Date(timeIntervalSince1970: 0)
+        }
+
+        /// Return a copy stamped as edited `now`. Pure — the mutation-path
+        /// helpers on ``Vocabulary`` call this so every user edit advances the
+        /// stamp (a stamp that never moves makes last-writer-wins silently wrong).
+        public func stamped(_ now: Date = Date()) -> Substitution {
+            var copy = self
+            copy.updatedAt = now
+            return copy
         }
     }
 
@@ -90,6 +112,45 @@ public struct Vocabulary: Codable, Equatable {
         for idx in copy.substitutions.indices where ids.contains(copy.substitutions[idx].id) {
             copy.substitutions[idx].usageCount += 1
         }
+        return copy
+    }
+
+    // MARK: - Stamped edits (MAK-51 WP0b)
+    //
+    // Every USER edit of a substitution must advance its `updatedAt`, or the sync
+    // merge's per-entry last-writer-wins silently keeps stale data. These pure,
+    // value-semantic helpers are the single funnel the editors route through so no
+    // callsite can mutate a field without also stamping it. `incrementingUsage`
+    // above is deliberately NOT stamped: a usage bump is a machine-driven counter,
+    // not a user edit, and stamping it would let a passive dictation win the merge
+    // over a real remote edit.
+
+    /// Append a new substitution, stamped `now`. Returns a new Vocabulary.
+    public func addingSubstitution(_ sub: Substitution, now: Date = Date()) -> Vocabulary {
+        var copy = self
+        copy.substitutions.append(sub.stamped(now))
+        return copy
+    }
+
+    /// Remove the substitution with `id`. Returns a new Vocabulary (no stamp —
+    /// the entry is gone; a tombstone model is out of scope for the v1 merge).
+    public func removingSubstitution(_ id: Substitution.ID) -> Vocabulary {
+        var copy = self
+        copy.substitutions.removeAll { $0.id == id }
+        return copy
+    }
+
+    /// Apply `mutate` to the substitution with `id`, then stamp it `now`. Returns
+    /// a new Vocabulary; no-op if no entry matches. The one funnel every field
+    /// edit (from/to/starred) goes through so the stamp can never be forgotten.
+    public func editingSubstitution(
+        _ id: Substitution.ID, now: Date = Date(),
+        _ mutate: (inout Substitution) -> Void
+    ) -> Vocabulary {
+        var copy = self
+        guard let idx = copy.substitutions.firstIndex(where: { $0.id == id }) else { return self }
+        mutate(&copy.substitutions[idx])
+        copy.substitutions[idx].updatedAt = now
         return copy
     }
 

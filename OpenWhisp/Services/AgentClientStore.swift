@@ -20,6 +20,12 @@ public enum AgentScope: String, Codable, Equatable, Sendable, CaseIterable {
     case dictate
     case history
     case refine
+    /// P2P config/history sync (MAK-51 WP0b): the paired iPhone reading and merging
+    /// your vocabulary, profiles/modes, packs, and history over the LAN link. A
+    /// per-scope grant so pairing a phone for sync never implies letting it drive
+    /// your mic (`dictate`) or your LLM (`refine`). An old consent file that
+    /// predates this scope simply has no decision recorded → first sync prompts.
+    case sync
 
     /// A short human label for the consent window / settings pane.
     public var title: String {
@@ -27,6 +33,7 @@ public enum AgentScope: String, Codable, Equatable, Sendable, CaseIterable {
         case .dictate: return "ask you to dictate"
         case .history: return "read your dictation history"
         case .refine:  return "rewrite text with your on-device AI"
+        case .sync:    return "sync your vocabulary, modes, and history"
         }
     }
 
@@ -36,6 +43,7 @@ public enum AgentScope: String, Codable, Equatable, Sendable, CaseIterable {
         case .dictate: return "Dictate"
         case .history: return "History"
         case .refine:  return "Refine"
+        case .sync:    return "Sync"
         }
     }
 
@@ -45,6 +53,7 @@ public enum AgentScope: String, Codable, Equatable, Sendable, CaseIterable {
         case .dictate: return "mic.badge.plus"
         case .history: return "clock.arrow.circlepath"
         case .refine:  return "wand.and.stars"
+        case .sync:    return "arrow.triangle.2.circlepath"
         }
     }
 
@@ -56,6 +65,7 @@ public enum AgentScope: String, Codable, Equatable, Sendable, CaseIterable {
         case .dictate: return "It opens your voice overlay so you can speak an answer; the transcript goes back to the agent."
         case .history: return "It can read the text of your recent dictations and which apps they went to."
         case .refine:  return "It can send text to your configured AI model to rewrite it."
+        case .sync:    return "It can read and merge your vocabulary, profiles, modes, packs, and dictation history with this paired device over your local network."
         }
     }
 }

@@ -108,7 +108,7 @@ struct ProfilesPane: View {
 
             Button {
                 if let id = selectedProfileID {
-                    appState.profiles.removeAll { $0.id == id }
+                    appState.profiles = appState.profiles.removingProfile(id)
                     selectedProfileID = nil
                 }
             } label: {
@@ -128,8 +128,9 @@ struct ProfilesPane: View {
         Binding(
             get: { appState.profiles.first(where: { $0.id == id })?.language ?? "__inherit__" },
             set: { newValue in
-                guard let idx = appState.profiles.firstIndex(where: { $0.id == id }) else { return }
-                appState.profiles[idx].language = newValue == "__inherit__" ? nil : newValue
+                appState.profiles = appState.profiles.editingProfile(id) {
+                    $0.language = newValue == "__inherit__" ? nil : newValue
+                }
             }
         )
     }
@@ -138,8 +139,9 @@ struct ProfilesPane: View {
         Binding(
             get: { appState.profiles.first(where: { $0.id == id })?.outputMode ?? "__inherit__" },
             set: { newValue in
-                guard let idx = appState.profiles.firstIndex(where: { $0.id == id }) else { return }
-                appState.profiles[idx].outputMode = newValue == "__inherit__" ? nil : newValue
+                appState.profiles = appState.profiles.editingProfile(id) {
+                    $0.outputMode = newValue == "__inherit__" ? nil : newValue
+                }
             }
         )
     }
@@ -151,11 +153,12 @@ struct ProfilesPane: View {
                 return v ? "on" : "off"
             },
             set: { newValue in
-                guard let idx = appState.profiles.firstIndex(where: { $0.id == id }) else { return }
-                switch newValue {
-                case "on":  appState.profiles[idx].aiCleanupEnabled = true
-                case "off": appState.profiles[idx].aiCleanupEnabled = false
-                default:    appState.profiles[idx].aiCleanupEnabled = nil
+                appState.profiles = appState.profiles.editingProfile(id) {
+                    switch newValue {
+                    case "on":  $0.aiCleanupEnabled = true
+                    case "off": $0.aiCleanupEnabled = false
+                    default:    $0.aiCleanupEnabled = nil
+                    }
                 }
             }
         )
@@ -165,8 +168,9 @@ struct ProfilesPane: View {
         Binding(
             get: { appState.profiles.first(where: { $0.id == id })?.insertionMode ?? "__inherit__" },
             set: { newValue in
-                guard let idx = appState.profiles.firstIndex(where: { $0.id == id }) else { return }
-                appState.profiles[idx].insertionMode = newValue == "__inherit__" ? nil : newValue
+                appState.profiles = appState.profiles.editingProfile(id) {
+                    $0.insertionMode = newValue == "__inherit__" ? nil : newValue
+                }
             }
         )
     }
@@ -218,7 +222,7 @@ struct ProfilesPane: View {
             return
         }
         let profile = AppProfile(appBundleID: bundleID, displayName: name)
-        appState.profiles.append(profile)
+        appState.profiles = appState.profiles.addingProfile(profile)
         selectedProfileID = profile.id
         profileAddMessage = "Added profile for “\(name)”."
     }

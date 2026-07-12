@@ -51,6 +51,42 @@ protocol AgentBridgeHost: AnyObject {
         clientName: String, text: String, instruction: String,
         completion: @escaping (Result<String, BridgeWire.ErrorObject>) -> Void
     )
+
+    // MARK: P2P sync (MAK-51 WP0b) — the SEAM only.
+    //
+    // These three are the sync verbs' host hooks. WP0b defines the wire, router,
+    // consent scope, and this seam; the REAL mac-side implementations (reading the
+    // local ConfigBundle/history, running the boring v1 merge) are WP6-mac. Default
+    // implementations below keep AppState compiling until then: manifest reports an
+    // empty peer, pull returns an empty bundle, push refuses (accepted:false) so
+    // nothing is silently dropped. The `sync` capability is only advertised once a
+    // build actually implements these, so a peer never calls into the defaults.
+
+    /// A read-only manifest of this device's syncable sections (hashes, history
+    /// head, per-section updatedAt) for the peer's `SyncEngine.plan`.
+    func bridgeSyncManifest() -> BridgeWire.SyncManifestResult
+    /// The requested sections + history delta since the cursor.
+    func bridgeSyncPull(params: BridgeWire.SyncPullParams) -> BridgeWire.SyncBundleResult
+    /// Merge the peer's offered bundle + history delta (boring v1 merge policy),
+    /// returning what was accepted/merged.
+    func bridgeSyncPush(params: BridgeWire.SyncBundleResult) -> BridgeWire.SyncPushResult
+}
+
+extension AgentBridgeHost {
+    func bridgeSyncManifest() -> BridgeWire.SyncManifestResult {
+        BridgeWire.SyncManifestResult(
+            schemaVersion: ConfigBundle.currentSchemaVersion,
+            vocabHash: "", profilesHash: "", modesHash: "", packsHash: "",
+            historyHead: BridgeWire.SyncHistoryHead(count: 0, newestID: nil, newestDate: nil),
+            updatedAt: [:]
+        )
+    }
+    func bridgeSyncPull(params: BridgeWire.SyncPullParams) -> BridgeWire.SyncBundleResult {
+        BridgeWire.SyncBundleResult(bundle: ConfigBundle(), historyEntries: [])
+    }
+    func bridgeSyncPush(params: BridgeWire.SyncBundleResult) -> BridgeWire.SyncPushResult {
+        BridgeWire.SyncPushResult(accepted: false)
+    }
 }
 
 /// Per-connection state carried across frames on one connection.
@@ -360,6 +396,42 @@ final class AgentBridgeServer {
                 send(fd, id: id, result: BridgeWire.RefineResult(text: text))
             case .failure(let err):
                 sendError(fd, id: id, error: err)
+            }
+            return true
+
+        case .syncManifest(let id):
+            let clientName = state.clientName
+            guard consentGranted(clientName, scope: .sync, fd: fd, id: id) else { return true }
+            let result = onMain { self.host?.bridgeSyncManifest() }
+            if let result {
+                onMain { self.host?.bridgeDidCall(clientName: clientName, tool: AgentScope.sync.rawValue) }
+                send(fd, id: id, result: result)
+            } else {
+                sendError(fd, id: id, error: .domain(.internalError, message: "sync manifest unavailable"))
+            }
+            return true
+
+        case .syncPull(let id, let params):
+            let clientName = state.clientName
+            guard consentGranted(clientName, scope: .sync, fd: fd, id: id) else { return true }
+            let result = onMain { self.host?.bridgeSyncPull(params: params) }
+            if let result {
+                onMain { self.host?.bridgeDidCall(clientName: clientName, tool: AgentScope.sync.rawValue) }
+                send(fd, id: id, result: result)
+            } else {
+                sendError(fd, id: id, error: .domain(.internalError, message: "sync pull unavailable"))
+            }
+            return true
+
+        case .syncPush(let id, let params):
+            let clientName = state.clientName
+            guard consentGranted(clientName, scope: .sync, fd: fd, id: id) else { return true }
+            let result = onMain { self.host?.bridgeSyncPush(params: params) }
+            if let result {
+                onMain { self.host?.bridgeDidCall(clientName: clientName, tool: AgentScope.sync.rawValue) }
+                send(fd, id: id, result: result)
+            } else {
+                sendError(fd, id: id, error: .domain(.internalError, message: "sync push unavailable"))
             }
             return true
         }
