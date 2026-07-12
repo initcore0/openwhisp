@@ -49,5 +49,18 @@
 	<string>OpenWhisp uses Apple Speech Recognition for optional native streaming dictation.</string>
 	<key>NSUserNotificationsUsageDescription</key>
 	<string>OpenWhisp uses notifications to show transcription results.</string>
+	<!-- Sparkle auto-update (MAK-56). The appcast is published as a GitHub
+	     Release asset; the stable "latest/download" redirect always resolves to
+	     the newest release's appcast. Updates are EdDSA-signed with SUPublicEDKey
+	     and (in signed releases) Developer ID + notarized. Automatic checks are
+	     ON by default; the ONLY network call the app makes without user opt-in.
+	     System profiling is deliberately NOT enabled (no SUEnableSystemProfiling),
+	     so update checks send only app + OS version, nothing more. -->
+	<key>SUFeedURL</key>
+	<string>https://github.com/initcore0/openwhisp/releases/latest/download/appcast.xml</string>
+	<key>SUPublicEDKey</key>
+	<string>KwxG/3YPhd4ox1WSRpimTa+6vfzvapYE1XmjP3T/ZKE=</string>
+	<key>SUEnableAutomaticChecks</key>
+	<true/>
 </dict>
 </plist>

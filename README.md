@@ -269,7 +269,8 @@ Settings → Advanced → **Script Post‑processor** lets you pipe the **final*
 
 - Transcription is **on‑device**. Audio is recorded to `~/Library/Caches/com.openwhisp.app/` and the WAV is deleted after each transcription.
 - History and settings are stored locally (`~/Library/Application Support/OpenWhisp/`, UserDefaults, Keychain).
-- The **only** time text leaves your machine is if you turn on AI post‑processing with the **OpenAI** provider. The **local** provider keeps everything on your machine/LAN.
+- The **one network call OpenWhisp makes by default is the update check** (via [Sparkle](https://sparkle-project.org)): once a day it fetches a small **EdDSA‑signed** release feed over HTTPS, sending **only your app version and macOS version** — no analytics, no system profile, no dictation data. Toggle it off in **Settings → General → Software Update**. Details in [docs/AUTO_UPDATE.md](docs/AUTO_UPDATE.md).
+- The **only** time your dictated **text** leaves your machine is if you turn on AI post‑processing with the **OpenAI** provider. The **local** provider keeps everything on your machine/LAN.
 - Transcript text is **not** written to the app's log files.
 - **Password / secure fields** are detected and skipped — OpenWhisp won't dictate into, insert, or store their contents.
 - Settings → Status shows a live **privacy indicator** ("Fully on‑device" vs "Sends text to OpenAI") for your current configuration.
@@ -277,7 +278,9 @@ Settings → Advanced → **Script Post‑processor** lets you pipe the **final*
 **Verify it yourself** — you don't have to take our word for it:
 
 ```bash
-# Should stay silent while you dictate, unless you enabled the OpenAI cloud provider:
+# Should stay silent while you dictate, unless you enabled the OpenAI cloud
+# provider. (The daily Sparkle update check is the one exception — disable it in
+# Settings → General → Software Update to see zero egress.)
 nettop -p "$(pgrep -x OpenWhisp)"
 ```
 

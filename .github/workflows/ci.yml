@@ -30,6 +30,18 @@ jobs:
       - name: Run unit tests
         run: swift test
 
+  appcast:
+    # Verifies the Sparkle appcast generator (MAK-56) end-to-end with a throwaway
+    # key + dummy DMG: well-formed XML, correct enclosure metadata, and a
+    # signature that verifies. No secrets, no real signing. See
+    # scripts/test-gen-appcast.sh.
+    name: appcast generator self-test
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run appcast generator self-test
+        run: ./scripts/test-gen-appcast.sh
+
   ios-libraries:
     # Guards the iOS consumability of the library products (MAK-51): a
     # visibility or platform regression in core must not break the iPhone

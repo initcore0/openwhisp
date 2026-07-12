@@ -62,6 +62,13 @@ resolve_whisperkit_args
 source "$PROJECT_DIR/scripts/fluidaudio-link-args.sh"
 resolve_fluidaudio_args
 
+# Sparkle auto-update framework (MAK-56; ON by default, SPARKLE=0 for a lean
+# build). Shared with build.sh so the released DMG links Sparkle exactly the way
+# a local build does. SPARKLE_FRAMEWORK is copied into Contents/Frameworks below.
+# shellcheck source=scripts/sparkle-link-args.sh
+source "$PROJECT_DIR/scripts/sparkle-link-args.sh"
+resolve_sparkle_args
+
 # Developer instrumentation (OFF by default; INSTRUMENTATION=1 to enable). Shared
 # with build.sh. Release DMGs are built without it.
 # shellcheck source=scripts/instrumentation-args.sh
@@ -84,6 +91,7 @@ xcrun swiftc \
     -framework CoreGraphics \
     "${WHISPERKIT_ARGS[@]+"${WHISPERKIT_ARGS[@]}"}" \
     "${FLUIDAUDIO_ARGS[@]+"${FLUIDAUDIO_ARGS[@]}"}" \
+    "${SPARKLE_ARGS[@]+"${SPARKLE_ARGS[@]}"}" \
     "${INSTRUMENTATION_ARGS[@]+"${INSTRUMENTATION_ARGS[@]}"}" \
     $SWIFT_FILES \
     -o "$BUILD_DIR/OpenWhisp"
@@ -184,6 +192,13 @@ ENTITLEMENTS_ARGS=()
 if [ -f "$PROJECT_DIR/OpenWhisp/OpenWhisp.entitlements" ]; then
     ENTITLEMENTS_ARGS=(--entitlements "$PROJECT_DIR/OpenWhisp/OpenWhisp.entitlements")
 fi
+
+# Bundle + re-sign Sparkle.framework (auto-update, MAK-56) BEFORE the nested
+# inside-out signing below. The helper re-signs Sparkle's own nested pieces
+# (XPCServices, Autoupdate, Updater.app) innermost-first with the hardened
+# runtime — the app's outer sign then seals the framework in place. No-op on a
+# SPARKLE=0 lean build. (SPARKLE_FRAMEWORK was populated by resolve_sparkle_args.)
+"$PROJECT_DIR/scripts/bundle-sparkle-framework.sh" "$APP_DIR" "${SPARKLE_FRAMEWORK:-}" "$SIGN_IDENTITY" "${HARDENED_ARGS[@]+"${HARDENED_ARGS[@]}"}"
 
 # Sign INSIDE-OUT. `--deep` is unreliable with the hardened runtime (it can skip
 # nested Mach-O and mis-apply flags), so sign the bundled dylibs and helper
