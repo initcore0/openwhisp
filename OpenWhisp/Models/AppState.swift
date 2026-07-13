@@ -284,12 +284,17 @@ class AppState: ObservableObject {
         didSet { UserDefaults.standard.set(pauseBasedLiveChunksEnabled, forKey: "pauseBasedLiveChunksEnabled") }
     }
 
-    /// Default transcription engine for a fresh install. WhisperKit is the preferred
-    /// default, but only when it's actually compiled in (`WHISPERKIT` build flag) —
-    /// a lean `WHISPERKIT=0` build would otherwise default to an engine that errors,
-    /// so it falls back to whisper.cpp there.
+    /// Default transcription engine for a fresh install. Parakeet is the preferred
+    /// default (true streaming, ~0.3 s latency with punctuation) whenever it's
+    /// compiled in (`PARAKEET` build flag); a lean `PARAKEET=0` build falls back to
+    /// WhisperKit, and a `WHISPERKIT=0` build below that to whisper.cpp — each guard
+    /// keeps the default from landing on an engine that isn't in the binary and
+    /// would error. Existing installs keep whatever they chose (SettingsMigration
+    /// v4 pins the pre-Parakeet default for them), so this only affects new users.
     static var defaultTranscriptionEngine: String {
-        #if WHISPERKIT
+        #if PARAKEET
+        return "parakeet"
+        #elseif WHISPERKIT
         return "whisperKit"
         #else
         return "whisper"
@@ -1144,6 +1149,13 @@ class AppState: ObservableObject {
     /// callback, so this is presence-of-folder + this in-flight flag). Cleared
     /// when the variant's repo folder appears on disk (polled by the pane).
     @Published var parakeetInFlightVariants: Set<String> = []
+    /// True when the last Parakeet model prefetch FAILED (e.g. offline first-run)
+    /// and its repo folder never landed. FluidAudio exposes no progress or error
+    /// callback, so this is the only failure signal — it lets onboarding show a
+    /// retryable "couldn't download" state instead of a perpetual spinner. Set
+    /// when `prefetchAwaiting()` returns false with the folder still absent;
+    /// cleared whenever a fresh prefetch is kicked (the Retry path).
+    @Published var parakeetPrefetchFailed = false
     var translationService: OpenAITranslationService!
     var hotkeyMonitor: HotkeyControlling!
 
@@ -3049,6 +3061,9 @@ class AppState: ObservableObject {
     /// rendering. Idempotent (the engine coalesces concurrent loads).
     func prefetchParakeetVariant() {
         let variant = ParakeetCatalog.normalize(parakeetVariant)
+        // A new prefetch attempt clears any stale failure — this doubles as the
+        // Retry path (onboarding re-kicks this on the retry button).
+        parakeetPrefetchFailed = false
         // If the repo is already on disk there's nothing to download — don't
         // flash a badge; still prefetch (it warms the loaded model cheaply).
         let installed = Self.installedFluidAudioFolders()
@@ -3063,8 +3078,20 @@ class AppState: ObservableObject {
         // started — not whichever engine happens to exist when the await resumes.
         let engine = parakeetStreamEngine
         Task { @MainActor in
-            await engine?.prefetchAwaiting()
+            let ok = await engine?.prefetchAwaiting() ?? false
             parakeetInFlightVariants.remove(variant)
+            // Only report a failure when the model genuinely isn't on disk. A load
+            // can "fail" for reasons unrelated to the download (e.g. the engine was
+            // replaced by a variant switch) while the bytes are already staged; a
+            // present folder means the user is not stuck, so don't cry failure.
+            if !ok {
+                let onDisk = ParakeetDownloadStatePolicy.state(
+                    forVariant: variant,
+                    installedFolders: Self.installedFluidAudioFolders(),
+                    inFlightVariants: []
+                ) == .installed
+                parakeetPrefetchFailed = !onDisk
+            }
         }
     }
 

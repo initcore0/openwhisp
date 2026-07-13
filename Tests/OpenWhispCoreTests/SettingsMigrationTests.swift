@@ -141,6 +141,58 @@ final class SettingsMigrationTests: XCTestCase {
                        SettingsMigration.currentVersion)
     }
 
+    // MARK: - v4 (Parakeet promoted to default engine)
+
+    func testExistingInstallWithoutEngineIsPinnedToOldDefault() {
+        let store = MemoryStore()
+        store.values["didCompleteOnboarding"] = true   // install marker, no engine set
+
+        SettingsMigration.migrate(store)
+
+        // An install that ran before v4 but never explicitly chose an engine was
+        // running on the OLD default — pin that so promoting Parakeet to the
+        // default doesn't silently swap a working engine (and pull a fresh
+        // ~600 MB download) out from under them.
+        XCTAssertEqual(store.values["transcriptionEngine"] as? String,
+                       SettingsMigration.preParakeetDefaultEngine)
+    }
+
+    func testExistingInstallKeepsChosenEngine() {
+        let store = MemoryStore()
+        store.values["didCompleteOnboarding"] = true
+        store.values["transcriptionEngine"] = "appleSpeech"   // user picked this
+
+        SettingsMigration.migrate(store)
+
+        // A deliberately-chosen engine is never overwritten.
+        XCTAssertEqual(store.values["transcriptionEngine"] as? String, "appleSpeech")
+    }
+
+    func testFreshInstallGetsNoPinnedEngine() {
+        let store = MemoryStore()
+
+        SettingsMigration.migrate(store)
+
+        // Fresh install: the engine default comes from AppState's read fallback
+        // (Parakeet) — the migration must not write anything here.
+        XCTAssertNil(store.values["transcriptionEngine"])
+    }
+
+    func testVersion3InstallGetsOnlyV4Step() {
+        let store = MemoryStore()
+        store.values["didCompleteOnboarding"] = true
+        store.values[SettingsMigration.versionKey] = 3
+        store.values["refineKey"] = "rightControl"   // a v3-era value
+
+        SettingsMigration.migrate(store)
+
+        // v4 pins the engine…
+        XCTAssertEqual(store.values["transcriptionEngine"] as? String,
+                       SettingsMigration.preParakeetDefaultEngine)
+        // …but the v3 refine-key fix must NOT re-run (it already ran at v3).
+        XCTAssertEqual(store.values["refineKey"] as? String, "rightControl")
+    }
+
     func testMigrationRunsOnlyOnce() {
         let store = MemoryStore()
         store.values["didCompleteOnboarding"] = true

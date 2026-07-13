@@ -27,7 +27,8 @@ Parakeet ships in releases alongside WhisperKit:
 - **Default build** (`./build.sh`): builds FluidAudio into one static lib
   (`scripts/build-fluidaudio.sh` → `scripts/fluidaudio-link-args.sh`), links it,
   defines the `PARAKEET` compile flag that activates the real engines, and shows the
-  Parakeet row in Settings › Models (labeled Experimental).
+  Parakeet row in Settings › Models (labeled **Recommended** — it's the default
+  transcription engine on a fresh install; see "Default engine" below).
 - **Lean build** (`PARAKEET=0 ./build.sh`): FluidAudio is not linked.
   `ParakeetStreamingEngine` and `ParakeetFileEngine` compile to stubs and the
   Settings row is hidden.
@@ -37,6 +38,33 @@ Parakeet ships in releases alongside WhisperKit:
 ```bash
 ./build.sh && ./package.sh    # Parakeet included by default
 ```
+
+## Default engine (fresh installs)
+
+Parakeet is the **default transcription engine** for a new install — true streaming
+at ~0.32 s with punctuation beats WhisperKit's file/streaming split for the common
+dictation case. The default is resolved by build flag in `AppState`:
+
+```
+defaultTranscriptionEngine:  #if PARAKEET → "parakeet"
+                             #elseif WHISPERKIT → "whisperKit"
+                             #else → "whisper"   (lean WHISPERKIT=0 build)
+```
+
+so a lean `PARAKEET=0` build never defaults to an engine that isn't in the binary,
+and WhisperKit reclaims the **Recommended** badge in Settings › Models there.
+
+**Existing installs keep the engine they were already using.** `SettingsMigration`
+v4 pins the pre-Parakeet default (`preParakeetDefaultEngine` — WhisperKit, or
+whisper.cpp on a lean build) for any install that never explicitly chose an engine,
+so an update never silently swaps a working, already-downloaded engine out from
+under a user (and pulls a fresh ~600 MB Parakeet download). An install that *did*
+pick an engine already has `transcriptionEngine` persisted and is untouched.
+
+On first launch the selected variant's model prefetch fires from
+`ensureSelectedEngineModel()`; the onboarding "model" step is engine-aware
+(`OnboardingModelStatus`) so it shows Parakeet's coarse Downloading… state rather
+than a false "ready".
 
 ## Models
 

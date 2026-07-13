@@ -89,7 +89,7 @@ struct AgentBridgePane: View {
             #if PARAKEET
             SubtitledToggle(
                 "Stop on end-of-utterance (Parakeet EOU)",
-                subtitle: "Experimental: end an agent dictation on the Parakeet EOU variant's end-of-utterance signal — a crisper “done” than silence. Only takes effect with the Parakeet “EOU — ultra light” variant selected; otherwise it does nothing.",
+                subtitle: "End an agent dictation on the Parakeet EOU variant's end-of-utterance signal — a crisper “done” than silence. Only takes effect with the Parakeet “EOU — ultra light” variant selected; otherwise it does nothing.",
                 isOn: $appState.agentBridgeEouAutoStop
             )
             #endif
