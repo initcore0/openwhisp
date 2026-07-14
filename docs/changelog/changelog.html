@@ -246,14 +246,14 @@
 <div class="wrap">
   <header>
     <p class="eyebrow">Shipped · July 2026</p>
-    <h1>Forty-three ways OpenWhisp got<br><span class="accent">sharper, faster, and more yours.</span></h1>
-    <p class="lede">A batch of new features, fixes, and under-the-hood hardening — all landed on main, all covered by tests, all on your machine. All twenty-seven new features are live today: Parakeet Realtime — a true streaming engine whose words appear about a third of a second behind your voice, with punctuation, in English or ~40 auto-detected languages — meeting mode that records a call and gives you an on-device transcript plus a local Markdown summary — now with Me/Them speaker attribution and a live talking indicator, and with a separate, optionally larger summarization model you can point at your own server — a floating Scratchpad to dictate into with no target app, quiet-dictation mode for whispering into your mic, opt-in on-device audio retention with one-click re-transcription and an auto-cleanup policy, a fully-remappable dictation trigger with a record-a-shortcut field, an AppleScript keystroke insert method and mouse-button dictation triggers, a local Usage Insights dashboard, opt-in screen-context awareness that biases transcription toward the names already on screen, batch file transcription with watch folders, hands-free (tap-to-lock) dictation, adjustable AI cleanup, voice editing, a self-learning dictionary, rich local formatting, spoken-filename @-mentions for code editors, agent-CLI cleanup, output targets that route a dictation to a file/Shortcut/webhook, first-class Modes you can invoke by name, a Rules engine that runs your own actions when a dictation finishes, and an openwhisp:// URL scheme so Raycast, Alfred, or any launcher can drive dictation.</p>
+    <h1>Forty-six ways OpenWhisp got<br><span class="accent">sharper, faster, and more yours.</span></h1>
+    <p class="lede">The headline: Parakeet — our fast, on-device realtime streaming engine — is now the default on a fresh install. Alongside it, a big batch of new features, fixes, and under-the-hood hardening, all landed on main, all covered by tests, all on your machine. New this release also includes built-in auto-update and a 28-fix stability sweep. Among the features: meeting mode that records a call and gives you an on-device transcript plus a local Markdown summary — now with Me/Them speaker attribution and a live talking indicator, and with a separate, optionally larger summarization model you can point at your own server — a floating Scratchpad to dictate into with no target app, quiet-dictation mode for whispering into your mic, opt-in on-device audio retention with one-click re-transcription and an auto-cleanup policy, a fully-remappable dictation trigger with a record-a-shortcut field, an AppleScript keystroke insert method and mouse-button dictation triggers, a local Usage Insights dashboard, opt-in screen-context awareness that biases transcription toward the names already on screen, batch file transcription with watch folders, hands-free (tap-to-lock) dictation, adjustable AI cleanup, voice editing, a self-learning dictionary, rich local formatting, spoken-filename @-mentions for code editors, agent-CLI cleanup, output targets that route a dictation to a file/Shortcut/webhook, first-class Modes you can invoke by name, a Rules engine that runs your own actions when a dictation finishes, and an openwhisp:// URL scheme so Raycast, Alfred, or any launcher can drive dictation.</p>
   </header>
 
   <div class="stats">
-    <div class="stat"><div class="n">43</div><div class="k">changes shipped</div></div>
-    <div class="stat"><div class="n">27<small> live</small></div><div class="k">new features</div></div>
-    <div class="stat"><div class="n">1479</div><div class="k">tests passing</div></div>
+    <div class="stat"><div class="n">46</div><div class="k">changes shipped</div></div>
+    <div class="stat"><div class="n">28<small> live</small></div><div class="k">new features</div></div>
+    <div class="stat"><div class="n">1539</div><div class="k">tests passing</div></div>
     <div class="stat"><div class="n">100<small>%</small></div><div class="k">on-device</div></div>
   </div>
 
@@ -262,7 +262,7 @@
     <div class="sec-head">
       <span class="dot feature"></span>
       <h2>New features</h2>
-      <span class="count">27 live</span>
+      <span class="count">28 live</span>
     </div>
     <ul class="entries">
       <li>
@@ -270,7 +270,7 @@
           <summary>
             <div class="sum-left">
               <h3>Parakeet Realtime — a true streaming engine: words appear ~0.3 s behind your voice</h3>
-              <p>A new on-device transcription engine built on NVIDIA Parakeet (CoreML, via the Apache-2.0 FluidAudio SDK). Unlike the batch engines, Parakeet is architecturally streaming: partials trail your voice by about a third of a second WITH punctuation and capitalization, and the final text lands ~50 ms after you release the hotkey — no end-of-dictation decode wait. Four model variants cover realtime English, best-accuracy English, an ultra-light 120M model, and a multilingual model (~40 languages, auto-detected). Meetings, batch file jobs, watch folders, and history re-transcription run on Parakeet too (a 25-language batch model), and the models show up in Settings › Storage with sizes and one-click delete. Compiled into default builds alongside WhisperKit.</p>
+              <p>A new on-device transcription engine built on NVIDIA Parakeet (CoreML, via the Apache-2.0 FluidAudio SDK). Unlike the batch engines, Parakeet is architecturally streaming: partials trail your voice by about a third of a second WITH punctuation and capitalization, and the final text lands ~50 ms after you release the hotkey — no end-of-dictation decode wait. Four model variants cover realtime English, best-accuracy English, an ultra-light 120M model, and a multilingual model (~40 languages, auto-detected). Meetings, batch file jobs, watch folders, and history re-transcription run on Parakeet too (a 25-language batch model), and the models show up in Settings › Storage with sizes and one-click delete. It's now the default, recommended engine on a fresh install (existing users keep whatever engine they already chose).</p>
             </div>
             <div class="sum-right">
               <span class="try">How to use<svg class="howto-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span>
@@ -281,8 +281,31 @@
             <span class="avail live">Available now</span>
             <p class="g-sum">Settings › Models › pick “Parakeet Realtime (CoreML)”, choose a variant, and dictate — the model downloads itself on first use.</p>
             <ol>
-              <li>Open Settings › Models and select “Parakeet Realtime (CoreML)” (badged Experimental).</li>
-              <li>Pick a variant: Unified realtime (default, 0.32 s latency, punctuation), Unified accurate, EOU ultra light (smallest), or Parakeet Multilingual (~40 languages, auto-detect).</li>
+              <li>Open Settings › Models and select “Parakeet Realtime (CoreML)” (badged Recommended).</li>
+
+      <li>
+        <details class="entry">
+          <summary>
+            <div class="sum-left">
+              <h3>OpenWhisp keeps itself up to date — built-in auto-update</h3>
+              <p>OpenWhisp now updates itself. A built-in updater (Sparkle 2) checks for new signed releases and offers to install them, so you're no longer re-downloading the app by hand. Updates are delivered from a cryptographically signed feed, and the update check is disclosed in the privacy docs. It's part of the notarized release build.</p>
+            </div>
+            <div class="sum-right">
+              <span class="try">How to use<svg class="howto-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span>
+              <div class="receipts"><span class="tag ticket">MAK-56</span><span class="tag pr">#169</span></div>
+            </div>
+          </summary>
+          <div class="guide">
+            <span class="avail live">Available now</span>
+            <p class="g-sum">OpenWhisp checks for updates on its own and offers to install them.</p>
+            <ol>
+              <li>Nothing to set up — the app checks for new signed releases automatically and prompts you when one is available.</li>
+              <li>You can also check on demand from the app menu.</li>
+              <li>Updates come from a cryptographically signed appcast; the update check is disclosed in the privacy documentation.</li>
+            </ol>
+          </div>
+        </details>
+      </li>              <li>Pick a variant: Unified realtime (default, 0.32 s latency, punctuation), Unified accurate, EOU ultra light (smallest), or Parakeet Multilingual (~40 languages, auto-detect).</li>
               <li>The model (~150–600 MB) downloads automatically to Application Support/FluidAudio and is cached; the row shows Not downloaded / Downloading… / installed.</li>
               <li>Dictate as usual — words stream in as you speak in preview and live-typing modes, and meetings/file jobs automatically use Parakeet's multilingual batch model.</li>
             </ol>
@@ -979,9 +1002,14 @@
     <div class="sec-head">
       <span class="dot fix"></span>
       <h2>Fixes</h2>
-      <span class="count">10 shipped</span>
+      <span class="count">11 shipped</span>
     </div>
     <ul class="entries">
+      <li class="entry">
+        <h3>A 28-fix stability sweep — Scratchpad layout, Settings reset, and a snappier app</h3>
+        <p>A broad bug-hunt across the recent releases fixed 28 verified issues. Highlights: the Scratchpad's note list no longer dwarfs the editor (and the panel remembers its size), “Reset all settings” now actually resets everything it promised, and the app feels faster — the Parakeet audio path was moved off the main thread, removing a source of UI lag during dictation.</p>
+        <div class="receipts"><span class="tag pr">#166</span></div>
+      </li>
       <li class="entry">
         <h3>Meeting summary failures now tell you what actually went wrong</h3>
         <p>When a meeting summary failed, the UI showed a generic error even when the real cause was specific — the provider was unreachable, the model missing, the request rejected. The failure now surfaces the underlying reason so you can fix the right thing instead of guessing.</p>
@@ -1040,9 +1068,22 @@
     <div class="sec-head">
       <span class="dot improve"></span>
       <h2>Under the hood</h2>
-      <span class="count">6 shipped</span>
+      <span class="count">7 shipped</span>
     </div>
     <ul class="entries">
+      <li>
+        <details class="entry">
+          <summary>
+            <div class="sum-left">
+              <h3>Parakeet is now the default, recommended transcription engine</h3>
+              <p>After testing well, the Parakeet realtime engine is promoted from experimental to the default: a fresh install downloads and uses it from the very first launch, and it carries the “Recommended” badge in Settings › Models. The change is safe for existing users — anyone already on WhisperKit (or any engine they chose) is left exactly where they were, so an update never swaps a working engine out from under you.</p>
+            </div>
+            <div class="sum-right">
+              <div class="receipts"><span class="tag ticket">MAK-46</span><span class="tag pr">#172</span></div>
+            </div>
+          </summary>
+        </details>
+      </li>
       <li class="entry">
         <h3>Discover what OpenWhisp can do — a Tips &amp; Commands cheat sheet + first-run overlay hints</h3>
         <p>A new "Tips &amp; Commands" menu item opens a cheat sheet of every gesture, spoken command, and feature that actually ships — with the real Settings path for each. Onboarding now ends with a short "What's next" card, and for your first few sessions the dictation overlay rotates a dismissible one-line tip ("say 'scratch that' to undo") so the deeper features aren't buried. Hints auto-off after the first-run window and never interrupt an agent question or a refine.</p>
