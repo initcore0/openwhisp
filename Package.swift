@@ -109,6 +109,7 @@ let package = Package(
                 "WhisperKitModelCatalog.swift",
                 "PermissionBannerPolicy.swift",
                 "OnboardingHotkeyGate.swift",
+                "OnboardingModelStatus.swift",
                 "ModelStorage.swift",
                 "SettingsMigration.swift",
                 "RefineTap.swift",

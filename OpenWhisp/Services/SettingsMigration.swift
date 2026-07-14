@@ -23,7 +23,7 @@ extension UserDefaults: SettingsStore {}
 /// Fresh installs skip straight to the new defaults.
 enum SettingsMigration {
     static let versionKey = "settingsVersion"
-    static let currentVersion = 3
+    static let currentVersion = 4
 
     /// Keys whose presence marks an existing (pre-versioning) install. Every
     /// install that ran the app at least once has `didCompleteOnboarding` (set
@@ -53,6 +53,7 @@ enum SettingsMigration {
 
         if version < 2 { applyVersion2(store) }
         if version < 3 { applyVersion3(store) }
+        if version < 4 { applyVersion4(store) }
     }
 
     /// v2 — Settings redesign: preserve old defaults; split the language overload.
@@ -89,5 +90,30 @@ enum SettingsMigration {
            provider != "bundled" {
             store.set("bundled", forKey: "llmProvider")
         }
+    }
+
+    /// v4 — Parakeet promoted to the default transcription engine for fresh
+    /// installs. Existing installs must keep the engine they were already using:
+    /// an update should never silently swap a working, already-downloaded engine
+    /// (and pull a fresh ~600 MB Parakeet download) out from under someone. Any
+    /// pre-v4 install that never explicitly picked an engine was running on the
+    /// old default (WhisperKit, or whisper.cpp on a lean build), so we pin that
+    /// old default explicitly here. An install that DID choose an engine already
+    /// has `transcriptionEngine` set and is left untouched.
+    private static func applyVersion4(_ store: SettingsStore) {
+        guard store.object(forKey: "transcriptionEngine") == nil else { return }
+        store.set(preParakeetDefaultEngine, forKey: "transcriptionEngine")
+    }
+
+    /// The default transcription engine before Parakeet took over (v4). Mirrors
+    /// the build-flag fallback in `AppState.defaultTranscriptionEngine` minus the
+    /// Parakeet branch, so a lean `WHISPERKIT=0` build pins whisper.cpp rather
+    /// than an engine that isn't in the binary.
+    static var preParakeetDefaultEngine: String {
+        #if WHISPERKIT
+        return "whisperKit"
+        #else
+        return "whisper"
+        #endif
     }
 }

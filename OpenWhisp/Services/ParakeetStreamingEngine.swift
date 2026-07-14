@@ -307,12 +307,23 @@ final class ParakeetStreamingEngine: StreamingTranscriptionEngine {
     /// load failed). Awaitable so AppState can clear the "Downloading…" badge
     /// the moment the fetch actually completes — event-driven, no disk polling.
     /// Idempotent: joins the in-flight load / returns immediately when cached.
+    ///
+    /// Returns `true` when the model is loaded/staged, `false` when the load
+    /// failed (e.g. offline first-run). The caller uses this to surface a
+    /// retryable failure instead of leaving the UI on a perpetual spinner — the
+    /// model download is otherwise the only signal Parakeet exposes.
     @MainActor
-    func prefetchAwaiting() async {
+    @discardableResult
+    func prefetchAwaiting() async -> Bool {
         // Route through ensureLoaded so a FAILED load clears `inFlightLoad`
         // (clearFailedLoad) before the error is swallowed — otherwise a failed
         // download poisons the cache and later prefetches no-op forever.
-        _ = try? await ensureLoaded()
+        do {
+            _ = try await ensureLoaded()
+            return true
+        } catch {
+            return false
+        }
     }
 
     @discardableResult
@@ -378,7 +389,8 @@ final class ParakeetStreamingEngine: StreamingTranscriptionEngine {
 
     func stop(cancel: Bool) {}
 
-    func prefetchAwaiting() async {}
+    @discardableResult
+    func prefetchAwaiting() async -> Bool { false }
 
     @MainActor
     func cancelLoading() {}
