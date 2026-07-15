@@ -388,4 +388,23 @@ final class ParakeetSpikeTests: XCTestCase {
         XCTAssertTrue(LanguageResolver.supportsTranslation(transcriptionEngine: "whisperKit"))
         XCTAssertTrue(LanguageResolver.supportsTranslation(transcriptionEngine: "whisper"))
     }
+
+    /// Every engine that suppresses translate downstream must also be hidden by
+    /// the translate UI gate — otherwise a surface offers a toggle that silently
+    /// does nothing. The menu bar (main.swift) drifted exactly this way when
+    /// parakeet joined `noTranslateEngines` but the gate stayed hardcoded to
+    /// `!= "appleSpeech"`; both UI surfaces must ask `supportsTranslation`, so
+    /// the gate and the suppression rule can never disagree per engine.
+    func testTranslateUIGateMatchesSuppressionForEveryEngine() {
+        for engine in LanguageResolver.noTranslateEngines {
+            XCTAssertFalse(
+                LanguageResolver.supportsTranslation(transcriptionEngine: engine),
+                "\(engine) suppresses translate, so the UI gate must hide the toggle")
+            XCTAssertEqual(
+                LanguageResolver.engineLanguageSetting(
+                    language: "ru", translateToEnglish: true, transcriptionEngine: engine),
+                "ru",
+                "\(engine) must never receive the translate sentinel")
+        }
+    }
 }

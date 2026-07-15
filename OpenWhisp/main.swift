@@ -283,7 +283,7 @@ class OpenWhispApp: NSObject, NSApplicationDelegate {
 
         // Translate is its own switch now (split from the old "English —
         // translate to English" language overload). Whisper engines only.
-        if appState.transcriptionEngine != "appleSpeech" {
+        if LanguageResolver.supportsTranslation(transcriptionEngine: appState.transcriptionEngine) {
             let translateItem = NSMenuItem(
                 title: "Translate to English",
                 action: #selector(toggleTranslateToEnglish),
