@@ -23,44 +23,62 @@ public enum EngineCapabilities {
     public static let parakeet = "parakeet"
     public static let appleSpeech = "appleSpeech"
 
-    /// Engines that bias recognition toward user-supplied vocabulary terms.
+    /// Which paths an engine can bias toward user-supplied vocabulary terms.
     ///
-    /// Only whisper.cpp does. It accepts a free-text `initial_prompt`
-    /// (`--prompt` on the CLI, a `prompt` form field on the server), which is how
-    /// the vocabulary terms reach the decoder.
-    ///
-    /// The others do not, for three different reasons — worth keeping straight,
-    /// because they have different fixes. **None of these is a dead end; all
-    /// three are unwired seams, not missing capabilities:**
-    ///   - **whisperKit**: biases via `DecodingOptions.promptTokens: [Int]?`, i.e.
-    ///     token IDs, not a string. Wiring it needs the WhisperKit tokenizer;
-    ///     deferred as a known pilot limitation (`WhisperKitBridge`).
-    ///   - **parakeet**: has no prompt concept — but that's the wrong frame.
-    ///     FluidAudio ships a full CTC context-biasing subsystem (a port of
-    ///     NVIDIA's CTC-WS word spotter, arXiv:2406.07096) under
-    ///     `ASR/Parakeet/SlidingWindow/CustomVocabulary/`, public in our pinned
-    ///     0.15.5. We don't call it: it hangs off `SlidingWindowAsrManager`, and
-    ///     `ParakeetBridge` uses `AsrManager`/`StreamingAsrManager`. Biasing is
-    ///     post-processing over CTC log-probs, so no retrain/export change — but
-    ///     TDT 0.6B v3 has no CTC head, so it needs a second ~97.5MB CTC-110M
-    ///     encoder alongside. Streaming support is weak (no cross-chunk
-    ///     detection); batch is where the win is. See MAK-69.
-    ///     NB: FluidAudio's own `CustomVocabulary.md` documents a
-    ///     `transcribe(_:customVocabulary:)` call that **does not exist** — don't
-    ///     follow the doc, read the source.
-    ///   - **appleSpeech**: Apple offers `SFSpeechAudioBufferRecognitionRequest`
-    ///     `.contextualStrings`, which is a real seam we simply haven't wired.
-    ///
-    /// Note this covers **bias terms only**. Vocabulary *substitutions* are a
-    /// local regex pass applied after transcription (`VocabularySubstitutor`), so
-    /// they work on every engine and must stay offered everywhere.
-    public static let vocabularyBiasingEngines: Set<String> = [whisperCpp]
+    /// Not a boolean, because the honest answer isn't one: Parakeet biases on the
+    /// batch path but not the live streaming path (MAK-71). Collapsing that to
+    /// "parakeet supports vocabulary" would re-create the exact bug this type
+    /// exists to prevent — a control that's offered and then quietly does nothing
+    /// for the thing the user is actually doing.
+    public enum VocabularySupport: Equatable {
+        /// The engine discards vocabulary terms everywhere.
+        case none
+        /// Biased on batch/file paths (files, meetings, re-transcribe) but NOT on
+        /// live dictation.
+        case batchOnly
+        /// Biased on every path, live dictation included.
+        case all
 
-    /// Whether `engine` biases recognition toward custom vocabulary terms.
-    /// The single source of truth for the vocabulary UI's bias-terms gate and for
-    /// any pipeline decision about whether building a prompt is worth the work.
+        public var isSupportedAnywhere: Bool { self != .none }
+    }
+
+    /// How each engine handles vocabulary bias terms.
+    ///
+    ///   - **whisper.cpp** — `.all`. Takes a free-text `initial_prompt` (`--prompt`
+    ///     on the CLI, a `prompt` form field on the server) on both paths.
+    ///   - **parakeet** — `.batchOnly`. Has no prompt concept, but FluidAudio ships
+    ///     a CTC context-biasing subsystem (a port of NVIDIA's CTC-WS word spotter,
+    ///     arXiv:2406.07096); `ParakeetVocabularyBiaser` drives it as a second pass
+    ///     over the finished transcript. Batch only: rescoring needs the full
+    ///     log-prob matrix over complete audio, and FluidAudio documents weak
+    ///     streaming support (no cross-chunk detection, poor multi-word). Costs a
+    ///     separate ~97.5MB CTC-110M model, since TDT v3 has no CTC head.
+    ///     NB: FluidAudio's own `CustomVocabulary.md` documents a
+    ///     `transcribe(_:customVocabulary:)` call that **does not exist** — read the
+    ///     source, not the doc.
+    ///   - **whisperKit** — `.none` for now. Biases via `DecodingOptions.promptTokens:
+    ///     [Int]?` (token IDs, not a string); wiring it needs the WhisperKit
+    ///     tokenizer. A known pilot limitation, not a dead end (MAK-69).
+    ///   - **appleSpeech** — `.none` for now. Apple offers
+    ///     `SFSpeechAudioBufferRecognitionRequest.contextualStrings`, unwired (MAK-69).
+    ///
+    /// Note this covers **bias terms only**. Vocabulary *substitutions* are a local
+    /// regex pass applied after transcription (`VocabularySubstitutor`), so they
+    /// work on every engine and must stay offered everywhere.
+    public static func vocabularySupport(transcriptionEngine: String) -> VocabularySupport {
+        switch transcriptionEngine {
+        case whisperCpp: return .all
+        case parakeet:   return .batchOnly
+        default:         return .none
+        }
+    }
+
+    /// Whether `engine` biases recognition toward custom vocabulary terms on ANY
+    /// path. The single source of truth for the vocabulary UI's bias-terms gate:
+    /// the field is worth offering if the terms reach the engine somewhere.
+    /// Use `vocabularySupport` directly when the *path* matters.
     public static func supportsVocabularyBiasing(transcriptionEngine: String) -> Bool {
-        vocabularyBiasingEngines.contains(transcriptionEngine)
+        vocabularySupport(transcriptionEngine: transcriptionEngine).isSupportedAnywhere
     }
 
     /// Human-readable engine name, for UI that has to explain a capability gap

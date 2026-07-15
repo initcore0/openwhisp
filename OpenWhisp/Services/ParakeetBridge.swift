@@ -63,14 +63,135 @@ enum ParakeetBridge {
     /// Transcribe a WAV file with the batch model. `languageCode` is the bare
     /// 2-letter hint from ParakeetLanguageHint (nil = auto); an unknown code
     /// degrades to auto inside FluidAudio (v3-only script filtering).
+    ///
+    /// `biasTerms` (MAK-71) enables CTC context biasing toward custom vocabulary.
+    /// Empty = the plain path, byte-for-byte as before.
     static func transcribeBatch(
-        handle: BatchHandle, wavURL: URL, languageCode: String?
+        handle: BatchHandle, wavURL: URL, languageCode: String?, biasTerms: [String] = []
     ) async throws -> String {
         var state = try TdtDecoderState(decoderLayers: handle.decoderLayers)
         let language: Language? = languageCode.flatMap { Language(rawValue: $0) }
         let result = try await handle.manager.transcribe(
             wavURL, decoderState: &state, language: language)
-        return result.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard !biasTerms.isEmpty, !text.isEmpty else { return text }
+        return await ParakeetVocabularyBiaser.shared.rescore(
+            transcript: text, tokenTimings: result.tokenTimings, wavURL: wavURL, terms: biasTerms)
+    }
+}
+
+// MARK: - CTC context biasing (MAK-71)
+
+/// Biases a finished Parakeet transcript toward the user's vocabulary terms,
+/// using FluidAudio's CTC-WS subsystem (a port of NVIDIA's word spotter,
+/// arXiv:2406.07096).
+///
+/// **Why this exists as a second pass.** TDT v3 has no CTC head, so biasing needs
+/// a separate CTC-110M model (~97.5MB) run alongside: it re-derives log-probs over
+/// the same audio, spots vocabulary terms acoustically, then rescores the TDT
+/// transcript where the spotter found evidence. That's why it only substitutes
+/// where the acoustics agree — unlike `VocabularySubstitutor`'s blind regex.
+///
+/// **Fail-open, always.** Every failure path returns the original transcript. A
+/// vocabulary feature must never cost the user their dictation: no model, no
+/// timings, a download failure, or a throwing spotter all degrade to plain text.
+///
+/// Batch paths only. The streaming engine can't use this — rescoring wants the
+/// full log-prob matrix over complete audio, and FluidAudio documents weak
+/// streaming support (no cross-chunk detection). See MAK-71.
+actor ParakeetVocabularyBiaser {
+    static let shared = ParakeetVocabularyBiaser()
+
+    private var models: CtcModels?
+    private var tokenizer: CtcTokenizer?
+    /// Set once a load attempt has failed, so we don't re-attempt a ~97.5MB
+    /// download on every single transcription.
+    private var loadFailed = false
+
+    /// Rescore `transcript` toward `terms`. Returns the input unchanged on any
+    /// failure, or when the CTC models aren't available.
+    func rescore(
+        transcript: String, tokenTimings: [TokenTiming]?, wavURL: URL, terms: [String]
+    ) async -> String {
+        // Rescoring aligns TDT words to CTC frames by time; without timings there
+        // is nothing to align. FluidAudio types this as optional, so handle it.
+        guard let tokenTimings, !tokenTimings.isEmpty else { return transcript }
+
+        do {
+            guard let (models, tokenizer) = try await ensureLoaded() else { return transcript }
+
+            let vocabTerms: [CustomVocabularyTerm] = terms.compactMap { term in
+                let ids = tokenizer.encode(term)
+                guard !ids.isEmpty else { return nil }
+                return CustomVocabularyTerm(
+                    text: term, weight: nil, aliases: nil,
+                    tokenIds: nil, ctcTokenIds: ids, minSimilarity: nil)
+            }
+            guard !vocabTerms.isEmpty else { return transcript }
+
+            let vocabulary = CustomVocabularyContext(terms: vocabTerms)
+            let samples = try Self.samples(from: wavURL)
+            guard !samples.isEmpty else { return transcript }
+
+            let spotter = CtcKeywordSpotter(models: models)
+            let spotted = try await spotter.spotKeywordsWithLogProbs(
+                audioSamples: samples, customVocabulary: vocabulary, minScore: nil)
+            guard !spotted.logProbs.isEmpty else { return transcript }
+
+            let rescorer = try await VocabularyRescorer.create(
+                spotter: spotter,
+                vocabulary: vocabulary,
+                config: .default,
+                ctcModelDirectory: CtcModels.defaultCacheDirectory(for: models.variant))
+
+            // Similarity/boost thresholds scale with vocabulary size. FluidAudio's
+            // own benchmark calls minSimilarity the main WER-vs-recall lever and
+            // tunes it against measured false-positive rates — take their tuning
+            // rather than inventing numbers we haven't measured.
+            let tuning = ContextBiasingConstants.rescorerConfig(forVocabSize: vocabTerms.count)
+            let output = rescorer.ctcTokenRescore(
+                transcript: transcript,
+                tokenTimings: tokenTimings,
+                logProbs: spotted.logProbs,
+                frameDuration: spotted.frameDuration,
+                cbw: tuning.cbw,
+                minSimilarity: tuning.minSimilarity)
+            return output.text
+        } catch {
+            NSLog("[Parakeet] vocabulary biasing skipped: %@", error.localizedDescription)
+            return transcript
+        }
+    }
+
+    /// Read a WAV into the 16 kHz mono `[Float]` the CTC spotter expects.
+    /// FluidAudio exposes no URL→samples helper, so this mirrors what its own
+    /// benchmark CLI does: read the file, resample via the public AudioConverter.
+    private static func samples(from url: URL) throws -> [Float] {
+        let file = try AVAudioFile(forReading: url)
+        guard let buffer = AVAudioPCMBuffer(
+            pcmFormat: file.processingFormat,
+            frameCapacity: AVAudioFrameCount(file.length)
+        ) else { return [] }
+        try file.read(into: buffer)
+        return try AudioConverter().resampleBuffer(buffer)
+    }
+
+    private func ensureLoaded() async throws -> (CtcModels, CtcTokenizer)? {
+        if loadFailed { return nil }
+        if let models, let tokenizer { return (models, tokenizer) }
+        do {
+            let loadedModels = try await CtcModels.downloadAndLoad(variant: .ctc110m)
+            let loadedTokenizer = try await CtcTokenizer.load()
+            models = loadedModels
+            tokenizer = loadedTokenizer
+            return (loadedModels, loadedTokenizer)
+        } catch {
+            // One shot: a missing/failed CTC model shouldn't re-download per file.
+            loadFailed = true
+            NSLog("[Parakeet] CTC biasing model unavailable: %@", error.localizedDescription)
+            return nil
+        }
     }
 }
 

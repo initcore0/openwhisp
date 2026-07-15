@@ -17,33 +17,51 @@ final class EngineCapabilitiesTests: XCTestCase {
         EngineCapabilities.appleSpeech,
     ]
 
-    func testOnlyWhisperCppBiasesVocabulary() {
-        // whisper.cpp takes a free-text initial_prompt; nothing else does today.
-        XCTAssertTrue(EngineCapabilities.supportsVocabularyBiasing(
-            transcriptionEngine: EngineCapabilities.whisperCpp))
+    func testVocabularySupportPerEngine() {
+        // whisper.cpp takes a free-text initial_prompt on both paths.
+        XCTAssertEqual(
+            EngineCapabilities.vocabularySupport(transcriptionEngine: EngineCapabilities.whisperCpp),
+            .all)
 
-        for engine in [EngineCapabilities.whisperKit,
-                       EngineCapabilities.parakeet,
-                       EngineCapabilities.appleSpeech] {
-            XCTAssertFalse(
-                EngineCapabilities.supportsVocabularyBiasing(transcriptionEngine: engine),
+        // Parakeet biases via FluidAudio's CTC-WS pass, which needs the full
+        // log-prob matrix over complete audio — batch only (MAK-71).
+        XCTAssertEqual(
+            EngineCapabilities.vocabularySupport(transcriptionEngine: EngineCapabilities.parakeet),
+            .batchOnly)
+
+        // Both have real but unwired seams (MAK-69): WhisperKit's promptTokens
+        // needs the tokenizer; Apple Speech has contextualStrings.
+        for engine in [EngineCapabilities.whisperKit, EngineCapabilities.appleSpeech] {
+            XCTAssertEqual(
+                EngineCapabilities.vocabularySupport(transcriptionEngine: engine), .none,
                 "\(engine) discards the prompt — the bias-terms UI must not be offered for it")
         }
     }
 
-    /// The default engine is Parakeet. This test exists to make the cost of that
-    /// gap explicit: if someone wires Parakeet biasing, this test fails and they
-    /// update the capability — rather than the UI staying hidden by accident.
-    ///
-    /// This is a "not yet", NOT a "can't". FluidAudio 0.15.5 already ships a CTC
-    /// context-biasing subsystem (CTC-WS word spotter) that we simply don't call —
-    /// it lives on `SlidingWindowAsrManager` while `ParakeetBridge` uses
-    /// `AsrManager`/`StreamingAsrManager`. Closing that gap is MAK-69's job.
-    func testDefaultEngineVocabularyGapIsDeliberate() {
-        XCTAssertFalse(
-            EngineCapabilities.supportsVocabularyBiasing(
-                transcriptionEngine: EngineCapabilities.parakeet),
-            "Parakeet is the default engine and doesn't bias vocabulary today — FluidAudio's CTC-WS seam is unwired (MAK-69). If this now fails, biasing was wired: offer the UI again.")
+    /// The bias-terms field is offered iff terms reach the engine *somewhere*.
+    /// Parakeet now qualifies on the strength of its batch path alone — the UI
+    /// says so explicitly rather than implying live dictation is covered.
+    func testBiasTermsUIGateFollowsAnyPathSupport() {
+        XCTAssertTrue(EngineCapabilities.supportsVocabularyBiasing(
+            transcriptionEngine: EngineCapabilities.parakeet))
+        XCTAssertTrue(EngineCapabilities.supportsVocabularyBiasing(
+            transcriptionEngine: EngineCapabilities.whisperCpp))
+        XCTAssertFalse(EngineCapabilities.supportsVocabularyBiasing(
+            transcriptionEngine: EngineCapabilities.whisperKit))
+        XCTAssertFalse(EngineCapabilities.supportsVocabularyBiasing(
+            transcriptionEngine: EngineCapabilities.appleSpeech))
+    }
+
+    /// `.batchOnly` must never quietly read as "fully supported". This is the
+    /// distinction that keeps the batch/streaming split honest — if someone
+    /// collapses VocabularySupport back into a Bool, this fails.
+    func testBatchOnlyIsNotTheSameAsFullSupport() {
+        XCTAssertNotEqual(
+            EngineCapabilities.vocabularySupport(transcriptionEngine: EngineCapabilities.parakeet),
+            .all,
+            "Parakeet does NOT bias live dictation — claiming .all would re-create the silent-no-op bug")
+        XCTAssertTrue(EngineCapabilities.VocabularySupport.batchOnly.isSupportedAnywhere)
+        XCTAssertFalse(EngineCapabilities.VocabularySupport.none.isSupportedAnywhere)
     }
 
     /// An unknown engine id must not silently claim capabilities it can't back.
