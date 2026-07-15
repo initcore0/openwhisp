@@ -188,25 +188,55 @@ class OpenWhispApp: NSObject, NSApplicationDelegate {
 
     // MARK: - Menu
 
+    /// Build a menu row, optionally with an SF Symbol in the icon gutter.
+    ///
+    /// Icons are the exception, not the rule. The HIG is explicit — include them
+    /// "only for menu items for which they add significant value and don't
+    /// include them for every menu item" — and macOS 26's icon-on-every-row
+    /// experiment is being walked back (macOS 27 hides menu-item images by
+    /// default behind `NSMenuItem.preferredImageVisibility`, which doesn't exist
+    /// in the 26.5 SDK we build against). So symbols here mark a row's *kind* —
+    /// currently the two submenu pickers — and plain verbs stay plain.
+    ///
+    /// What this replaces is unambiguous either way: the emoji this menu used to
+    /// inline into its titles (`📋`, `🔴`, `📝`, `⚠️`, `●`, `⚙`). Those are text,
+    /// so they dodge the system's image controls entirely, render as color glyphs
+    /// that ignore menu tinting and dark mode, sit off the icon gutter, and get
+    /// read aloud by VoiceOver ("memo emoji Scratchpad").
+    private func menuItem(
+        _ title: String,
+        symbol: String? = nil,
+        action: Selector?,
+        keyEquivalent: String = ""
+    ) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: action, keyEquivalent: keyEquivalent)
+        if let symbol {
+            item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
+        }
+        return item
+    }
+
     @objc private func showMenu() {
         guard let appState, let btn = statusItem.button else { return }
 
         let menu = NSMenu()
 
         // Status (single line). Health details only surface when not ready.
-        let statusItem = NSMenuItem(title: "● \(appState.statusMessage)", action: nil, keyEquivalent: "")
-        statusItem.isEnabled = false
-        menu.addItem(statusItem)
+        // `nil` action = disabled, which is also what dims it — no bullet glyph
+        // needed to signal "this is a label, not a command".
+        let status = NSMenuItem(title: appState.statusMessage, action: nil, keyEquivalent: "")
+        status.isEnabled = false
+        menu.addItem(status)
 
         // Missing-permission affordance. OpenWhisp is a menu-bar app, so an
         // accessory-app activation may never fire while the user only uses the
         // status item — re-check here too, and surface a one-click deep link.
         appState.refreshPermissionBanners()
         for permission in appState.missingPermissionBanners {
-            let item = NSMenuItem(
-                title: "⚠️ \(permission.bannerTitle) — Open System Settings",
-                action: #selector(openPermissionSettings),
-                keyEquivalent: ""
+            let item = menuItem(
+                "\(permission.bannerTitle) — Open System Settings",
+                symbol: "exclamationmark.triangle",
+                action: #selector(openPermissionSettings)
             )
             item.representedObject = permission.rawValue
             menu.addItem(item)
@@ -223,20 +253,18 @@ class OpenWhispApp: NSObject, NSApplicationDelegate {
         // Last transcription
         if let last = appState.lastTranscription, !last.isEmpty {
             let display = String(last.prefix(40)) + (last.count > 40 ? "..." : "")
-            let copyItem = NSMenuItem(title: "📋 \"\(display)\"", action: #selector(copyLast), keyEquivalent: "c")
-            menu.addItem(copyItem)
+            menu.addItem(menuItem("Copy \"\(display)\"",
+                                  action: #selector(copyLast),
+                                  keyEquivalent: "c"))
             menu.addItem(.separator())
         }
 
         // Recording actions
         if appState.isRecording {
-            let stop = NSMenuItem(title: "Stop Dictation", action: #selector(stopDictation), keyEquivalent: "")
-            menu.addItem(stop)
-            let cancel = NSMenuItem(title: "Cancel Dictation", action: #selector(cancelDictation), keyEquivalent: "")
-            menu.addItem(cancel)
+            menu.addItem(menuItem("Stop Dictation", action: #selector(stopDictation)))
+            menu.addItem(menuItem("Cancel Dictation", action: #selector(cancelDictation)))
         } else {
-            let start = NSMenuItem(title: "Start Dictation", action: #selector(startDictation), keyEquivalent: "")
-            menu.addItem(start)
+            menu.addItem(menuItem("Start Dictation", action: #selector(startDictation)))
         }
 
         // Meeting mode (MAK-50): record system audio + mic locally. A meeting and
@@ -245,10 +273,9 @@ class OpenWhispApp: NSObject, NSApplicationDelegate {
         // becomes active. macOS 13+ only (ScreenCaptureKit audio capture).
         if #available(macOS 13.0, *) {
             if meetingActive {
-                let stopMeeting = NSMenuItem(title: "🔴 Stop Meeting", action: #selector(stopMeeting), keyEquivalent: "")
-                menu.addItem(stopMeeting)
+                menu.addItem(menuItem("Stop Meeting", action: #selector(stopMeeting)))
             } else {
-                let startMeeting = NSMenuItem(title: "Start Meeting", action: #selector(startMeeting), keyEquivalent: "")
+                let startMeeting = menuItem("Start Meeting", action: #selector(startMeeting))
                 if appState.isRecording {
                     startMeeting.action = nil   // disabled while dictating
                     startMeeting.toolTip = "Stop dictation before starting a meeting."
@@ -258,8 +285,7 @@ class OpenWhispApp: NSObject, NSApplicationDelegate {
         }
 
         // Floating Scratchpad (MAK-49): a target-free surface to dictate into.
-        let scratchpad = NSMenuItem(title: "📝 Scratchpad", action: #selector(openScratchpad), keyEquivalent: "s")
-        menu.addItem(scratchpad)
+        menu.addItem(menuItem("Scratchpad", action: #selector(openScratchpad), keyEquivalent: "s"))
 
         menu.addItem(.separator())
 
@@ -277,51 +303,60 @@ class OpenWhispApp: NSObject, NSApplicationDelegate {
             languageMenu.addItem(item)
         }
 
-        let languageItem = NSMenuItem(title: "Language: \(appState.languageDisplayName)", action: nil, keyEquivalent: "")
+        let languageItem = menuItem("Language: \(appState.languageDisplayName)", symbol: "globe", action: nil)
         languageItem.submenu = languageMenu
         menu.addItem(languageItem)
 
         // Translate is its own switch now (split from the old "English —
-        // translate to English" language overload). Whisper engines only.
-        if LanguageResolver.supportsTranslation(transcriptionEngine: appState.transcriptionEngine) {
-            let translateItem = NSMenuItem(
-                title: "Translate to English",
-                action: #selector(toggleTranslateToEnglish),
-                keyEquivalent: ""
-            )
-            translateItem.state = appState.translateToEnglish ? .on : .off
-            menu.addItem(translateItem)
+        // translate to English" language overload).
+        //
+        // Parakeet and Apple Speech are ASR-only — they have no translate task
+        // (LanguageResolver.noTranslateEngines). #175 stopped the menu offering a
+        // dead toggle there, but by hiding the row the menu silently disagreed
+        // with itself between engines. Keep the row and disable it, naming the
+        // reason: macOS menus dim unavailable commands rather than hiding them,
+        // so the capability stays discoverable instead of looking like a bug.
+        let canTranslate = LanguageResolver.supportsTranslation(transcriptionEngine: appState.transcriptionEngine)
+        let translateItem = menuItem(
+            canTranslate ? "Translate to English" : "Translate to English (needs WhisperKit)",
+            action: canTranslate ? #selector(toggleTranslateToEnglish) : nil
+        )
+        translateItem.state = (canTranslate && appState.translateToEnglish) ? .on : .off
+        if !canTranslate {
+            translateItem.toolTip = "The current engine transcribes only — it has no translation model. Switch to WhisperKit in Settings to translate."
         }
+        menu.addItem(translateItem)
 
         // AI refinement: ONE self-describing row that shows the live state
         // (on/off + which engine) and opens a small submenu. Model selection is
         // deliberately NOT here — it's a configure-once choice that lives in
         // Settings, reachable via "AI Settings…" below.
-        let aiItem = NSMenuItem(title: aiMenuTitle, action: nil, keyEquivalent: "")
+        let aiItem = menuItem(aiMenuTitle, symbol: "sparkles", action: nil)
         aiItem.submenu = makeAIMenu()
         menu.addItem(aiItem)
 
         menu.addItem(.separator())
 
         // Settings
-        let settings = NSMenuItem(title: "⚙ Settings", action: #selector(openSettings), keyEquivalent: ",")
-        menu.addItem(settings)
+        menu.addItem(menuItem("Settings…", action: #selector(openSettings), keyEquivalent: ","))
 
-        let setupGuide = NSMenuItem(title: "Setup Guide…", action: #selector(openSetupGuide), keyEquivalent: "")
-        menu.addItem(setupGuide)
-
+        // Help: two rarely-used, configure-once destinations. They belong in the
+        // menu (discoverability) but not at the top level competing with the
+        // things you flip between dictations.
+        let helpMenu = NSMenu()
+        helpMenu.addItem(menuItem("Setup Guide…", action: #selector(openSetupGuide)))
         // Discoverability (MAK-25): a cheat sheet of gestures, spoken commands, and
         // features — sourced from what actually ships (TipsCatalog).
-        let tips = NSMenuItem(title: "Tips & Commands…", action: #selector(openTips), keyEquivalent: "")
-        menu.addItem(tips)
+        helpMenu.addItem(menuItem("Tips & Commands…", action: #selector(openTips)))
+        let helpItem = menuItem("Help", action: nil)
+        helpItem.submenu = helpMenu
+        menu.addItem(helpItem)
 
         menu.addItem(.separator())
 
         // Quit
-        let quit = NSMenuItem(title: "Quit", action: #selector(terminate), keyEquivalent: "q")
-        menu.addItem(quit)
+        menu.addItem(menuItem("Quit OpenWhisp", action: #selector(terminate), keyEquivalent: "q"))
 
-        statusItem.menu = menu
         menu.popUp(positioning: nil,
                    at: NSPoint(x: 0, y: btn.frame.maxY),
                    in: btn)
@@ -524,8 +559,7 @@ class OpenWhispApp: NSObject, NSApplicationDelegate {
         }
 
         aiMenu.addItem(.separator())
-        let aiSettings = NSMenuItem(title: "AI Settings…", action: #selector(openSettings), keyEquivalent: "")
-        aiMenu.addItem(aiSettings)
+        aiMenu.addItem(menuItem("AI Settings…", action: #selector(openSettings)))
 
         #if OPENWHISP_INSTRUMENTATION
         aiMenu.addItem(.separator())
