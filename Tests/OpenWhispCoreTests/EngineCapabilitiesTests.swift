@@ -34,11 +34,16 @@ final class EngineCapabilitiesTests: XCTestCase {
     /// The default engine is Parakeet. This test exists to make the cost of that
     /// gap explicit: if someone wires Parakeet biasing, this test fails and they
     /// update the capability — rather than the UI staying hidden by accident.
+    ///
+    /// This is a "not yet", NOT a "can't". FluidAudio 0.15.5 already ships a CTC
+    /// context-biasing subsystem (CTC-WS word spotter) that we simply don't call —
+    /// it lives on `SlidingWindowAsrManager` while `ParakeetBridge` uses
+    /// `AsrManager`/`StreamingAsrManager`. Closing that gap is MAK-69's job.
     func testDefaultEngineVocabularyGapIsDeliberate() {
         XCTAssertFalse(
             EngineCapabilities.supportsVocabularyBiasing(
                 transcriptionEngine: EngineCapabilities.parakeet),
-            "Parakeet is the default engine and cannot bias vocabulary (FluidAudio exposes no seam). If this now fails, biasing was wired — offer the UI again.")
+            "Parakeet is the default engine and doesn't bias vocabulary today — FluidAudio's CTC-WS seam is unwired (MAK-69). If this now fails, biasing was wired: offer the UI again.")
     }
 
     /// An unknown engine id must not silently claim capabilities it can't back.

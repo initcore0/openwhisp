@@ -150,7 +150,7 @@ struct CleanupPane: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Bias terms")
                         .foregroundStyle(.secondary)
-                    SettingsFootnote("\(EngineCapabilities.displayName(transcriptionEngine: appState.transcriptionEngine)) can't be steered toward specific words — it takes no prompt. Switch to whisper.cpp in Models to use bias terms, or use Substitutions below, which work on every engine.")
+                    SettingsFootnote("Bias terms don't apply to \(EngineCapabilities.displayName(transcriptionEngine: appState.transcriptionEngine)) yet — only whisper.cpp steers recognition toward specific words today. Switch to whisper.cpp in Models to use them, or use Substitutions below, which work on every engine.")
                 }
                 .padding(.vertical, 2)
             }

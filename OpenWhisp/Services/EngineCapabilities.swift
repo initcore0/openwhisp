@@ -30,12 +30,24 @@ public enum EngineCapabilities {
     /// the vocabulary terms reach the decoder.
     ///
     /// The others do not, for three different reasons — worth keeping straight,
-    /// because they have different fixes:
+    /// because they have different fixes. **None of these is a dead end; all
+    /// three are unwired seams, not missing capabilities:**
     ///   - **whisperKit**: biases via `DecodingOptions.promptTokens: [Int]?`, i.e.
     ///     token IDs, not a string. Wiring it needs the WhisperKit tokenizer;
     ///     deferred as a known pilot limitation (`WhisperKitBridge`).
-    ///   - **parakeet**: CTC/TDT ASR with no prompt concept, and FluidAudio
-    ///     exposes no biasing seam. May be unfixable at the model level.
+    ///   - **parakeet**: has no prompt concept — but that's the wrong frame.
+    ///     FluidAudio ships a full CTC context-biasing subsystem (a port of
+    ///     NVIDIA's CTC-WS word spotter, arXiv:2406.07096) under
+    ///     `ASR/Parakeet/SlidingWindow/CustomVocabulary/`, public in our pinned
+    ///     0.15.5. We don't call it: it hangs off `SlidingWindowAsrManager`, and
+    ///     `ParakeetBridge` uses `AsrManager`/`StreamingAsrManager`. Biasing is
+    ///     post-processing over CTC log-probs, so no retrain/export change — but
+    ///     TDT 0.6B v3 has no CTC head, so it needs a second ~97.5MB CTC-110M
+    ///     encoder alongside. Streaming support is weak (no cross-chunk
+    ///     detection); batch is where the win is. See MAK-69.
+    ///     NB: FluidAudio's own `CustomVocabulary.md` documents a
+    ///     `transcribe(_:customVocabulary:)` call that **does not exist** — don't
+    ///     follow the doc, read the source.
     ///   - **appleSpeech**: Apple offers `SFSpeechAudioBufferRecognitionRequest`
     ///     `.contextualStrings`, which is a real seam we simply haven't wired.
     ///
