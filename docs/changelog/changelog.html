@@ -270,7 +270,7 @@
           <summary>
             <div class="sum-left">
               <h3>Parakeet Realtime — a true streaming engine: words appear ~0.3 s behind your voice</h3>
-              <p>A new on-device transcription engine built on NVIDIA Parakeet (CoreML, via the Apache-2.0 FluidAudio SDK). Unlike the batch engines, Parakeet is architecturally streaming: partials trail your voice by about a third of a second WITH punctuation and capitalization, and the final text lands ~50 ms after you release the hotkey — no end-of-dictation decode wait. Four model variants cover realtime English, best-accuracy English, an ultra-light 120M model, and a multilingual model (~40 languages, auto-detected). Meetings, batch file jobs, watch folders, and history re-transcription run on Parakeet too (a 25-language batch model), and the models show up in Settings › Storage with sizes and one-click delete. It's now the default, recommended engine on a fresh install (existing users keep whatever engine they already chose).</p>
+              <p>A new on-device transcription engine built on NVIDIA Parakeet (CoreML, via the Apache-2.0 FluidAudio SDK). Unlike the batch engines, Parakeet is architecturally streaming: partials trail your voice by about a third of a second WITH punctuation and capitalization, and the final text lands ~50 ms after you release the hotkey — no end-of-dictation decode wait. Five model variants cover realtime English, an efficiency tier, best-accuracy English, an ultra-light 120M model, and a multilingual model (~40 languages, auto-detected). Meetings, batch file jobs, watch folders, and history re-transcription run on Parakeet too (a 25-language batch model), and the models show up in Settings › Storage with sizes and one-click delete. It's now the default, recommended engine on a fresh install (existing users keep whatever engine they already chose).</p>
             </div>
             <div class="sum-right">
               <span class="try">How to use<svg class="howto-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span>
@@ -300,12 +300,12 @@
             <p class="g-sum">OpenWhisp checks for updates on its own and offers to install them.</p>
             <ol>
               <li>Nothing to set up — the app checks for new signed releases automatically and prompts you when one is available.</li>
-              <li>You can also check on demand from the app menu.</li>
+              <li>You can also check on demand from Settings → General → Check for Updates.</li>
               <li>Updates come from a cryptographically signed appcast; the update check is disclosed in the privacy documentation.</li>
             </ol>
           </div>
         </details>
-      </li>              <li>Pick a variant: Unified realtime (default, 0.32 s latency, punctuation), Unified accurate, EOU ultra light (smallest), or Parakeet Multilingual (~40 languages, auto-detect).</li>
+      </li>              <li>Pick a variant: Unified realtime (default, 0.32 s latency, punctuation), Unified efficient (same accuracy, lower CPU), Unified accurate, EOU ultra light (smallest), or Parakeet Multilingual (~40 languages, auto-detect).</li>
               <li>The model (~150–600 MB) downloads automatically to Application Support/FluidAudio and is cached; the row shows Not downloaded / Downloading… / installed.</li>
               <li>Dictate as usual — words stream in as you speak in preview and live-typing modes, and meetings/file jobs automatically use Parakeet's multilingual batch model.</li>
             </ol>

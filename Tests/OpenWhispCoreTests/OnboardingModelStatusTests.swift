@@ -18,7 +18,8 @@ final class OnboardingModelStatusTests: XCTestCase {
         whisperCppFailed: Bool = false,
         whisperKitStaged: Bool = false,
         whisperKitDownloading: Bool = false,
-        whisperKitProgress: Double? = nil
+        whisperKitProgress: Double? = nil,
+        whisperKitFailed: Bool = false
     ) -> OnboardingModelStatus.State {
         OnboardingModelStatus.state(
             engine: engine,
@@ -30,7 +31,8 @@ final class OnboardingModelStatusTests: XCTestCase {
             whisperCppFailed: whisperCppFailed,
             whisperKitStaged: whisperKitStaged,
             whisperKitDownloading: whisperKitDownloading,
-            whisperKitProgress: whisperKitProgress
+            whisperKitProgress: whisperKitProgress,
+            whisperKitFailed: whisperKitFailed
         )
     }
 
@@ -132,6 +134,31 @@ final class OnboardingModelStatusTests: XCTestCase {
             status(engine: "whisper", whisperCppDownloading: true,
                    whisperCppProgress: 0.2, whisperCppFailed: true),
             .downloading(progress: 0.2)
+        )
+    }
+
+    func testWhisperKitFailedIsFailed() {
+        // Offline first run on a lean (WhisperKit-default) build: a failed
+        // download with nothing staged must surface the retryable failure card,
+        // not spin forever (the exact bug the parakeetFailed input fixed).
+        XCTAssertEqual(
+            status(engine: "whisperKit", whisperKitFailed: true),
+            .failed
+        )
+    }
+
+    func testWhisperKitFailedButRetryingReportsDownloading() {
+        XCTAssertEqual(
+            status(engine: "whisperKit", whisperKitDownloading: true,
+                   whisperKitProgress: 0.3, whisperKitFailed: true),
+            .downloading(progress: 0.3)
+        )
+    }
+
+    func testWhisperKitStagedBeatsStaleFailure() {
+        XCTAssertEqual(
+            status(engine: "whisperKit", whisperKitStaged: true, whisperKitFailed: true),
+            .ready
         )
     }
 

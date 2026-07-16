@@ -117,6 +117,20 @@ public enum MeetingStatus: Codable, Equatable {
         }
     }
 
+    /// Whether a (re-)transcription may start from this stage. Every resting
+    /// stage qualifies — `recorded` (first transcription), `transcribed`/`done`
+    /// (re-transcribe), `failed` (retry) — because the Transcribe/Re-transcribe
+    /// menu legitimately targets all of them. Only the mid-work stages refuse.
+    /// The queue drain (`kickPendingTranscription`) must use THIS, not
+    /// `== .recorded`: a queued re-transcribe the UI promised would "start
+    /// automatically" was silently dropped otherwise.
+    public var canStartTranscription: Bool {
+        switch self {
+        case .recorded, .transcribed, .done, .failed: return true
+        case .transcribing, .summarizing: return false
+        }
+    }
+
     /// No further automatic work is scheduled from a terminal stage. `done` and
     /// `failed` are terminal; `transcribed` is a *resting* stage (transcription
     /// finished, summary is user/consent-gated) and is not terminal.

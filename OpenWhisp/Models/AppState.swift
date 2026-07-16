@@ -963,6 +963,10 @@ class AppState: ObservableObject {
     @Published var whisperKitDownloadProgress: Double = 0
     /// Human-readable status/error for the WhisperKit model manager.
     @Published var whisperKitDownloadStatus: String = ""
+    /// Set when the most recent WhisperKit download failed (mirrors
+    /// `modelDownloadFailed` for the GGML path) — the onboarding model step's
+    /// retryable failure card keys on it. Cleared when a (re)download starts.
+    @Published var whisperKitDownloadFailed = false
     /// Staged WhisperKit model ids (refreshed after a download / on open).
     @Published var whisperKitStagedModels: [String] = []
 
@@ -1513,7 +1517,7 @@ class AppState: ObservableObject {
             ?? CleanupIntensity.wholeTextCustomInstruction(
                 intensity: cleanupIntensity,
                 mode: openAIEnhancementMode,
-                translateToEnglish: translateToEnglish
+                translateToEnglish: effectiveTranslateToEnglish
             )
         // MAK-34: when the gate captured surrounding text this session (only ever
         // for a LOCAL provider — see ScreenContextGate), append it to the cleanup
@@ -1618,6 +1622,20 @@ class AppState: ObservableObject {
     private var outputLanguageForCleaning: String {
         LanguageResolver.outputLanguageForCleaning(
             language: language,
+            translateToEnglish: translateToEnglish,
+            transcriptionEngine: transcriptionEngine
+        )
+    }
+
+    /// The translate intent actually in effect: the stored toggle gated on the
+    /// engine's translation capability. The refine layer (cleanup prompts,
+    /// RefineOutputGuard's expected script) must key on THIS, never on the raw
+    /// `translateToEnglish` — on Parakeet/Apple Speech the transcript stays in the
+    /// spoken language (and the UI shows translate as off), so a stale stored
+    /// `true` would otherwise disarm the language guard and, in improveTranslation
+    /// mode, actively LLM-translate the dictation the engine refused to.
+    var effectiveTranslateToEnglish: Bool {
+        LanguageResolver.effectiveTranslateToEnglish(
             translateToEnglish: translateToEnglish,
             transcriptionEngine: transcriptionEngine
         )
@@ -2084,9 +2102,16 @@ class AppState: ObservableObject {
     /// they're wired once here.
     private func wireStreamingEngineCallbacks(_ engine: StreamingTranscriptionEngine) {
         bindStreamingSessionCallbacks(engine, sessionID: activeSessionID)
+        let sessionID = activeSessionID
         engine.onError = { [weak self] message in
             Task { @MainActor in
                 guard let self, self.isAppleSpeechSession else { return }
+                // Session fence, same as partial/final/started: a late error from
+                // a torn-down session must not abort the successor session
+                // (isAppleSpeechSession alone can't catch that — the successor
+                // sets it true too).
+                guard !StreamingRoutePolicy.isStaleStreamingCallback(
+                    callbackSessionID: sessionID, activeSessionID: self.activeSessionID) else { return }
                 self.error = message
                 self.statusMessage = "Streaming Error"
                 self.isRecording = false
@@ -3022,6 +3047,7 @@ class AppState: ObservableObject {
     func downloadWhisperKitModel(_ model: String) {
         guard whisperKitDownloadingModel == nil else { return }
         whisperKitDownloadingModel = model
+        whisperKitDownloadFailed = false
         whisperKitDownloadProgress = 0
         let label = WhisperKitModelCatalog.displayInfo(for: model).label
         whisperKitDownloadStatus = "Downloading \(label)…"
@@ -3047,6 +3073,10 @@ class AppState: ObservableObject {
                 }
             } catch {
                 self.whisperKitDownloadStatus = "Download failed: \(error.localizedDescription)"
+                // Discrete flag, not just status text: the onboarding model step
+                // keys its retryable failure card on this (a text-only signal left
+                // it spinning forever behind "Preparing your speech model").
+                self.whisperKitDownloadFailed = true
             }
             self.whisperKitDownloadingModel = nil
             self.whisperKitDownloadProgress = 0
@@ -3976,7 +4006,7 @@ class AppState: ObservableObject {
                 customInstruction: CleanupIntensity.wholeTextCustomInstruction(
                     intensity: self.cleanupIntensity,
                     mode: self.openAIEnhancementMode,
-                    translateToEnglish: self.translateToEnglish
+                    translateToEnglish: self.effectiveTranslateToEnglish
                 )
             ) { [weak self] result in
                 Task { @MainActor in
@@ -3994,7 +4024,7 @@ class AppState: ObservableObject {
                         // "rephrase" and never agent sessions, so the exemptions reduce
                         // to translateToEnglish.
                         let chunkExpectedScript = RefineOutputGuard.expectedCleanupScript(
-                            translateToEnglish: self.translateToEnglish,
+                            translateToEnglish: self.effectiveTranslateToEnglish,
                             mode: self.openAIEnhancementMode,
                             translationTargetLanguage: self.translationTargetLanguage
                         )
@@ -4208,7 +4238,7 @@ class AppState: ObservableObject {
                     // path is never the spoken-instruction refine (that returned early
                     // above) and agent sessions never enhance, so both are false here.
                     let expectedScript = RefineOutputGuard.expectedCleanupScript(
-                        translateToEnglish: self.translateToEnglish,
+                        translateToEnglish: self.effectiveTranslateToEnglish,
                         mode: self.openAIEnhancementMode,
                         translationTargetLanguage: self.translationTargetLanguage
                     )

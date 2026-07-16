@@ -385,6 +385,16 @@ class OpenWhispApp: NSObject, NSApplicationDelegate {
             return
         }
         guard !meetingActive else { return }
+        // Claim exclusivity NOW, not on `.recording`: SCK startup takes seconds,
+        // and during that window (a) a second Start Meeting click would replace
+        // `meetingSession` and orphan the first capture — live, invisible, and
+        // unstoppable (the identity guard below discards its `.recording`), and
+        // (b) the dictation hotkey would pass the `meetingInProgress` gate and
+        // tap the mic the meeting's mic leg already owns. Both flags are cleared
+        // by `.finished`/`.failed` — including the failure a stop-during-startup
+        // now surfaces (see MeetingCaptureSession.stop).
+        meetingActive = true
+        appState.meetingInProgress = true
         // Always a FRESH session: MeetingCaptureSession's state machine is one-shot
         // (idle → recording → finished/failed, `delivered` never resets), so reusing
         // a finished session would make `start()` a silent no-op — the second
