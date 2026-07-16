@@ -188,21 +188,31 @@ class OpenWhispApp: NSObject, NSApplicationDelegate {
 
     // MARK: - Menu
 
-    /// Build a menu row, optionally with an SF Symbol in the icon gutter.
+    /// Build a menu row with an SF Symbol in the icon gutter.
     ///
-    /// Icons are the exception, not the rule. The HIG is explicit — include them
-    /// "only for menu items for which they add significant value and don't
-    /// include them for every menu item" — and macOS 26's icon-on-every-row
-    /// experiment is being walked back (macOS 27 hides menu-item images by
-    /// default behind `NSMenuItem.preferredImageVisibility`, which doesn't exist
-    /// in the 26.5 SDK we build against). So symbols here mark a row's *kind* —
-    /// currently the two submenu pickers — and plain verbs stay plain.
+    /// **Every actionable row gets one.** That's what macOS itself does today:
+    /// Finder's File menu puts a monochrome symbol on essentially every item, on
+    /// the OS we build against and ship to. A menu with symbols on a favored few
+    /// doesn't read as restraint, it reads as broken — which is the complaint
+    /// that started this.
     ///
-    /// What this replaces is unambiguous either way: the emoji this menu used to
-    /// inline into its titles (`📋`, `🔴`, `📝`, `⚠️`, `●`, `⚙`). Those are text,
-    /// so they dodge the system's image controls entirely, render as color glyphs
-    /// that ignore menu tinting and dark mode, sit off the icon gutter, and get
-    /// read aloud by VoiceOver ("memo emoji Scratchpad").
+    /// A previous pass cut symbols back to the pickers alone, reasoning from the
+    /// HIG's "don't include them for every menu item" plus a report that macOS 27
+    /// hides menu-item images by default behind `NSMenuItem.preferredImageVisibility`.
+    /// That API doesn't exist in the 26.5 SDK, so the claim couldn't be checked —
+    /// and it lost to what Apple's shipping menus actually do here and now. If a
+    /// future OS does suppress menu images, this degrades to plain text, which is
+    /// exactly where cutting them lands us anyway. There's no downside worth
+    /// paying up front.
+    ///
+    /// `symbol` stays optional for rows where no glyph honestly fits — better
+    /// nothing than a misleading one (the HIG's real point).
+    ///
+    /// What this permanently replaces is unambiguous either way: the emoji this
+    /// menu used to inline into its titles (`📋`, `🔴`, `📝`, `⚠️`, `●`, `⚙`).
+    /// Those are text, so they dodge the system's image controls entirely, render
+    /// as color glyphs that ignore menu tinting and dark mode, sit off the icon
+    /// gutter, and get read aloud by VoiceOver ("memo emoji Scratchpad").
     private func menuItem(
         _ title: String,
         symbol: String? = nil,
@@ -254,6 +264,7 @@ class OpenWhispApp: NSObject, NSApplicationDelegate {
         if let last = appState.lastTranscription, !last.isEmpty {
             let display = String(last.prefix(40)) + (last.count > 40 ? "..." : "")
             menu.addItem(menuItem("Copy \"\(display)\"",
+                                  symbol: "doc.on.doc",
                                   action: #selector(copyLast),
                                   keyEquivalent: "c"))
             menu.addItem(.separator())
@@ -261,10 +272,10 @@ class OpenWhispApp: NSObject, NSApplicationDelegate {
 
         // Recording actions
         if appState.isRecording {
-            menu.addItem(menuItem("Stop Dictation", action: #selector(stopDictation)))
-            menu.addItem(menuItem("Cancel Dictation", action: #selector(cancelDictation)))
+            menu.addItem(menuItem("Stop Dictation", symbol: "stop.fill", action: #selector(stopDictation)))
+            menu.addItem(menuItem("Cancel Dictation", symbol: "xmark.circle", action: #selector(cancelDictation)))
         } else {
-            menu.addItem(menuItem("Start Dictation", action: #selector(startDictation)))
+            menu.addItem(menuItem("Start Dictation", symbol: "mic.fill", action: #selector(startDictation)))
         }
 
         // Meeting mode (MAK-50): record system audio + mic locally. A meeting and
@@ -273,9 +284,9 @@ class OpenWhispApp: NSObject, NSApplicationDelegate {
         // becomes active. macOS 13+ only (ScreenCaptureKit audio capture).
         if #available(macOS 13.0, *) {
             if meetingActive {
-                menu.addItem(menuItem("Stop Meeting", action: #selector(stopMeeting)))
+                menu.addItem(menuItem("Stop Meeting", symbol: "stop.circle", action: #selector(stopMeeting)))
             } else {
-                let startMeeting = menuItem("Start Meeting", action: #selector(startMeeting))
+                let startMeeting = menuItem("Start Meeting", symbol: "record.circle", action: #selector(startMeeting))
                 if appState.isRecording {
                     startMeeting.action = nil   // disabled while dictating
                     startMeeting.toolTip = "Stop dictation before starting a meeting."
@@ -285,7 +296,7 @@ class OpenWhispApp: NSObject, NSApplicationDelegate {
         }
 
         // Floating Scratchpad (MAK-49): a target-free surface to dictate into.
-        menu.addItem(menuItem("Scratchpad", action: #selector(openScratchpad), keyEquivalent: "s"))
+        menu.addItem(menuItem("Scratchpad", symbol: "note.text", action: #selector(openScratchpad), keyEquivalent: "s"))
 
         menu.addItem(.separator())
 
@@ -319,6 +330,7 @@ class OpenWhispApp: NSObject, NSApplicationDelegate {
         let canTranslate = LanguageResolver.supportsTranslation(transcriptionEngine: appState.transcriptionEngine)
         let translateItem = menuItem(
             canTranslate ? "Translate to English" : "Translate to English (needs WhisperKit)",
+            symbol: "character.bubble",
             action: canTranslate ? #selector(toggleTranslateToEnglish) : nil
         )
         translateItem.state = (canTranslate && appState.translateToEnglish) ? .on : .off
@@ -338,24 +350,24 @@ class OpenWhispApp: NSObject, NSApplicationDelegate {
         menu.addItem(.separator())
 
         // Settings
-        menu.addItem(menuItem("Settings…", action: #selector(openSettings), keyEquivalent: ","))
+        menu.addItem(menuItem("Settings…", symbol: "gearshape", action: #selector(openSettings), keyEquivalent: ","))
 
         // Help: two rarely-used, configure-once destinations. They belong in the
         // menu (discoverability) but not at the top level competing with the
         // things you flip between dictations.
         let helpMenu = NSMenu()
-        helpMenu.addItem(menuItem("Setup Guide…", action: #selector(openSetupGuide)))
+        helpMenu.addItem(menuItem("Setup Guide…", symbol: "checklist", action: #selector(openSetupGuide)))
         // Discoverability (MAK-25): a cheat sheet of gestures, spoken commands, and
         // features — sourced from what actually ships (TipsCatalog).
-        helpMenu.addItem(menuItem("Tips & Commands…", action: #selector(openTips)))
-        let helpItem = menuItem("Help", action: nil)
+        helpMenu.addItem(menuItem("Tips & Commands…", symbol: "lightbulb", action: #selector(openTips)))
+        let helpItem = menuItem("Help", symbol: "questionmark.circle", action: nil)
         helpItem.submenu = helpMenu
         menu.addItem(helpItem)
 
         menu.addItem(.separator())
 
         // Quit
-        menu.addItem(menuItem("Quit OpenWhisp", action: #selector(terminate), keyEquivalent: "q"))
+        menu.addItem(menuItem("Quit OpenWhisp", symbol: "power", action: #selector(terminate), keyEquivalent: "q"))
 
         menu.popUp(positioning: nil,
                    at: NSPoint(x: 0, y: btn.frame.maxY),
@@ -569,7 +581,7 @@ class OpenWhispApp: NSObject, NSApplicationDelegate {
         }
 
         aiMenu.addItem(.separator())
-        aiMenu.addItem(menuItem("AI Settings…", action: #selector(openSettings)))
+        aiMenu.addItem(menuItem("AI Settings…", symbol: "gearshape", action: #selector(openSettings)))
 
         #if OPENWHISP_INSTRUMENTATION
         aiMenu.addItem(.separator())
