@@ -80,6 +80,8 @@ let package = Package(
                 "ConfigBundle.swift",
                 "BridgeWire.swift",
                 "BridgeRouter.swift",
+                "SyncMerge.swift",
+                "LANPairing.swift",
                 "URLScheme.swift",
                 "Scratchpad.swift",
                 "DictationSession.swift",
@@ -151,6 +153,34 @@ let package = Package(
             dependencies: ["OpenWhispCore", "OpenWhispBridgeKit"],
             path: "Sources/OpenWhispCLI"
         ),
+        // The app-side LAN sync transport + host as a testable library (MAK-51
+        // WP6). These are Foundation/Network-only app-glob files (NOT part of
+        // OpenWhispCore); compiling them as their own module lets the E2E test
+        // @testable-import a real LANBridgeServer and drive it over TLS-TCP, and
+        // lets the loopback harness executable link them. The mac app still
+        // compiles the SAME source files via build.sh's swiftc glob (the
+        // `#if canImport(OpenWhispCore)` guard makes the core import a no-op there).
+        // macOS-only (Network.framework + the mac transport).
+        .target(
+            name: "OpenWhispSyncLAN",
+            dependencies: ["OpenWhispCore"],
+            path: "OpenWhisp",
+            sources: [
+                "Services/AgentBridgeHost.swift",
+                "Services/SyncBridgeHost.swift",
+                "Services/LANBridgeServer.swift",
+                "SyncLoopback/Runtime.swift",
+            ]
+        ),
+        // Standalone boot of the REAL LANBridgeServer for cross-repo sync
+        // integration (the openwhisp-ios test drives it over TLS-TCP). Thin `main`
+        // over OpenWhispSyncLAN. See scripts/sync-loopback-server.sh.
+        .executableTarget(
+            name: "openwhisp-sync-loopback",
+            dependencies: ["OpenWhispCore", "OpenWhispSyncLAN"],
+            path: "OpenWhisp",
+            sources: ["SyncLoopback/main.swift"]
+        ),
         .testTarget(
             name: "OpenWhispCoreTests",
             dependencies: ["OpenWhispCore"],
@@ -160,6 +190,14 @@ let package = Package(
             name: "OpenWhispBridgeKitTests",
             dependencies: ["OpenWhispBridgeKit", "OpenWhispCore"],
             path: "Tests/OpenWhispBridgeKitTests"
+        ),
+        // The LAN sync E2E: starts a REAL LANBridgeServer on 127.0.0.1 with a
+        // fixed PSK against temp stores and drives a real TLS-TCP NDJSON client
+        // through hello -> consent -> manifest -> push -> pull (MAK-51 WP6).
+        .testTarget(
+            name: "OpenWhispSyncLANTests",
+            dependencies: ["OpenWhispSyncLAN", "OpenWhispCore"],
+            path: "Tests/OpenWhispSyncLANTests"
         )
     ],
     // Tools-version was bumped to 6.0 solely to declare `.iOS(.v18)` (a

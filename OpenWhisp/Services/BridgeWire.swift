@@ -370,15 +370,29 @@ extension BridgeWire {
         /// A best-effort hint (e.g. the bare CLI's parent process name); never
         /// trusted for authorization.
         public var parentProcess: String?
+        /// LAN transport only (cross-repo BINDING contract): the paired peer's
+        /// UUID this client claims to be. MUST be accompanied by `peerProof`; the
+        /// LAN server closes the connection when either is missing or the proof
+        /// doesn't verify. Absent (and ignored) on the UNIX socket, where the
+        /// code-signing identity authenticates instead. Additive + optional, so
+        /// v1 clients are untouched.
+        public var peerID: String?
+        /// base64(HMAC-SHA256(key: pairing PSK, msg: "openwhisp-peer-binding:" +
+        /// peerID)) — see `LANPeerProof`. Proves possession of the CLAIMED peer's
+        /// PSK, because TLS alone only proves possession of SOME registered PSK
+        /// (the metadata API can't say which one was negotiated).
+        public var peerProof: String?
 
         public init(
             protocolVersion: Int, clientName: String, clientVersion: String,
-            parentProcess: String? = nil
+            parentProcess: String? = nil, peerID: String? = nil, peerProof: String? = nil
         ) {
             self.protocolVersion = protocolVersion
             self.clientName = clientName
             self.clientVersion = clientVersion
             self.parentProcess = parentProcess
+            self.peerID = peerID
+            self.peerProof = peerProof
         }
     }
 
@@ -642,21 +656,46 @@ extension BridgeWire {
     /// Params for `sync.pull`: which sections to fetch, and (for history) an
     /// optional cursor so only entries strictly newer than it come back.
     public struct SyncPullParams: Codable, Sendable, Equatable {
-        /// ISO-8601 cursor; nil = full history. Entries with `date` > cursor return.
+        /// ISO-8601 cursor; nil/empty = full history. Entries with `date` > cursor
+        /// return. This is the "everything since I last synced" delta filter, and
+        /// is orthogonal to paging (`pageCursor`): the server first filters by this
+        /// date, then PAGES the filtered set under the frame cap.
         public var sinceHistoryCursor: String?
-        /// Sections to fetch. Absent/empty → the server returns every section it
-        /// has (a convenience for a first full sync).
+        /// Sections to fetch. ABSENT → the server returns every section it has (a
+        /// convenience for a first full sync). Present-but-EMPTY → no sections:
+        /// the tolerant decode maps unknown future section tokens to [], and a
+        /// newer peer asking only for a section this build doesn't know must get
+        /// nothing, not everything.
         public var want: [SyncSection]?
+        /// Opaque continuation token for the NEXT history page (the previous
+        /// result's `nextHistoryCursor`). nil = first page. A whole install's
+        /// history can exceed the 1 MiB NDJSON frame cap, which would silently
+        /// close the connection; the client re-pulls with this until the result's
+        /// `hasMoreHistory` is false. Distinct from `sinceHistoryCursor`: that is a
+        /// date delta-filter, this is a within-page position over the filtered set.
+        public var pageCursor: String?
+        /// Max history entries per page. nil → `defaultHistoryPageSize`.
+        public var historyLimit: Int?
 
-        public init(sinceHistoryCursor: String? = nil, want: [SyncSection]? = nil) {
+        /// Server-side default when a puller sends no `historyLimit`. Sized so a
+        /// page of full ``TranscriptionEntry`` values (rawText + metadata) stays
+        /// comfortably under ``maxFrameBytes``.
+        public static let defaultHistoryPageSize = 200
+
+        public init(sinceHistoryCursor: String? = nil, want: [SyncSection]? = nil,
+                    pageCursor: String? = nil, historyLimit: Int? = nil) {
             self.sinceHistoryCursor = sinceHistoryCursor
             self.want = want
+            self.pageCursor = pageCursor
+            self.historyLimit = historyLimit
         }
 
         // Tolerant: drop unknown section tokens rather than fail the whole request.
         public init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
             self.sinceHistoryCursor = try c.decodeIfPresent(String.self, forKey: .sinceHistoryCursor)
+            self.pageCursor = try c.decodeIfPresent(String.self, forKey: .pageCursor)
+            self.historyLimit = try c.decodeIfPresent(Int.self, forKey: .historyLimit)
             if let raw = try c.decodeIfPresent([String].self, forKey: .want) {
                 self.want = raw.compactMap(SyncSection.init(rawValue:))
             } else {
@@ -665,7 +704,7 @@ extension BridgeWire {
         }
 
         private enum CodingKeys: String, CodingKey {
-            case sinceHistoryCursor, want
+            case sinceHistoryCursor, want, pageCursor, historyLimit
         }
     }
 
@@ -678,10 +717,38 @@ extension BridgeWire {
     public struct SyncBundleResult: Codable, Sendable, Equatable {
         public var bundle: ConfigBundle
         public var historyEntries: [TranscriptionEntry]
+        /// True when the server has more history beyond this page. The client
+        /// re-pulls with `nextHistoryCursor` as **`pageCursor`** (NOT as
+        /// `sinceHistoryCursor` — that is the date delta-filter; a page cursor
+        /// fed there fails to parse and restarts pagination from page one,
+        /// forever) until false, keeping every frame under ``maxFrameBytes``. Absent (nil) on a
+        /// `sync.push` payload (push is always the full local set in one shot,
+        /// which the pusher is responsible for keeping within the frame cap by
+        /// pushing history in pages itself).
+        public var hasMoreHistory: Bool?
+        /// The cursor to pass as `pageCursor` for the next page; nil when
+        /// `hasMoreHistory` is false/absent.
+        public var nextHistoryCursor: String?
 
-        public init(bundle: ConfigBundle, historyEntries: [TranscriptionEntry] = []) {
+        public init(bundle: ConfigBundle, historyEntries: [TranscriptionEntry] = [],
+                    hasMoreHistory: Bool? = nil, nextHistoryCursor: String? = nil) {
             self.bundle = bundle
             self.historyEntries = historyEntries
+            self.hasMoreHistory = hasMoreHistory
+            self.nextHistoryCursor = nextHistoryCursor
+        }
+
+        // Tolerant decode: older peers omit the paging fields (single-page result).
+        public init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            self.bundle = try c.decode(ConfigBundle.self, forKey: .bundle)
+            self.historyEntries = try c.decodeIfPresent([TranscriptionEntry].self, forKey: .historyEntries) ?? []
+            self.hasMoreHistory = try c.decodeIfPresent(Bool.self, forKey: .hasMoreHistory)
+            self.nextHistoryCursor = try c.decodeIfPresent(String.self, forKey: .nextHistoryCursor)
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case bundle, historyEntries, hasMoreHistory, nextHistoryCursor
         }
     }
 

@@ -30,7 +30,10 @@ echo "Step 1: Compiling Swift files..."
 SWIFT_FILES=()
 while IFS= read -r f; do
     SWIFT_FILES+=("$f")
-done < <(find "$PROJECT_DIR/OpenWhisp" -name "*.swift")
+done < <(find "$PROJECT_DIR/OpenWhisp" -name "*.swift" -not -path "*/SyncLoopback/*")
+# SyncLoopback/ is a standalone SwiftPM executable target (the sync loopback
+# harness). Its main.swift has top-level executable code + an OpenWhispCore import,
+# so it must NOT be folded into the mac app's single-module glob.
 
 # Stamp the build with its git commit (shown in Settings › Advanced) — the
 # generated file lives in build/, outside the source glob, and is regenerated

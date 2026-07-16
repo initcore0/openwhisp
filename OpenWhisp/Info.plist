@@ -49,6 +49,16 @@
 	<string>OpenWhisp uses Apple Speech Recognition for optional native streaming dictation.</string>
 	<key>NSUserNotificationsUsageDescription</key>
 	<string>OpenWhisp uses notifications to show transcription results.</string>
+	<!-- P2P sync (MAK-51 WP6): discover + connect to a paired iPhone on the LAN
+	     over Bonjour + TLS-PSK. macOS 15+ requires the local-network usage string
+	     and the advertised/browsed Bonjour service type to be declared here; the
+	     LAN listener only runs while a device is paired or the pairing pane is open. -->
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>OpenWhisp syncs your vocabulary, profiles, modes, and history with a paired iPhone over your local network. Nothing leaves your devices.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_openwhisp._tcp</string>
+	</array>
 	<!-- Sparkle auto-update (MAK-56). The appcast is published as a GitHub
 	     Release asset; the stable "latest/download" redirect always resolves to
 	     the newest release's appcast. Updates are EdDSA-signed with SUPublicEDKey

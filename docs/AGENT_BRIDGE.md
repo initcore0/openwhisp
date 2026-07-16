@@ -43,7 +43,85 @@ append-only union by entry `id`; profiles/modes/settings = last-writer-wins per
 object by `updatedAt`; packs = content-hash identity. This needs the `updatedAt`
 stamps added to `Vocabulary.Substitution`, `AppProfile`, and `Mode` in
 **ConfigBundle schema v3** — a v2 file decodes its missing stamps as the epoch,
-so any stamped v3 edit always wins over unstamped legacy data.
+so any stamped v3 edit always wins over unstamped legacy data. Every merge is
+**idempotent**: pushing the same payload twice changes nothing the second time
+(`mergedCounts` all zero). The whole policy is the pure `SyncMerge` funnel in
+`OpenWhispCore` and is exhaustively unit-tested.
+
+**Clock skew is silently authoritative.** All `updatedAt` stamps are wall-clock
+`Date()` on the mutating device; a device with a fast clock wins every LWW
+conflict and a slow one can never overwrite. v1 accepts this (same-owner devices,
+NTP-synced in practice); there is no skew detection.
+
+**Two v1 scope limits, by design.** (1) **No tombstones:** a deleted vocabulary
+entry / profile / mode leaves no trace, so union-by-id resurrects it from the
+peer on the next sync — delete-then-sync brings it back. A tombstone model is
+deferred. (2) **Import restamps:** applying an imported config or a bundled pack
+restamps its (pre-v3, epoch-dated) entries to *now* — the act of importing is a
+user edit, so the imported data wins the next sync rather than losing to a
+stamped peer copy of the same id.
+
+**History paging.** `sync.pull` returns history one page at a time so no NDJSON
+frame exceeds `maxFrameBytes` (1 MiB): `sinceHistoryCursor` is the date
+delta-filter ("everything I haven't seen"), then the server pages the filtered
+set by a total-order (`date`+`id`) `pageCursor` — the client re-pulls with the
+result's `nextHistoryCursor` while `hasMoreHistory` is true. Config sections ride
+the first page only. The total-order cursor guarantees equal-timestamp entries
+are never skipped.
+
+### LAN transport (MAK-51 WP6-mac)
+
+The paired iPhone reaches those verbs over the LAN, not the UNIX socket. A
+`LANBridgeServer` advertises `_openwhisp._tcp` over **Bonjour**, accepts a
+**TLS pre-shared-key** connection, and feeds each connection's NDJSON frames into
+the *same* `BridgeRouter` → host pipeline the UNIX socket uses — routing, consent,
+and rate-limit are reused verbatim, but the LAN link is **scoped to the sync
+verbs** (`sync.*` + `bridge.hello`/`bridge.status`): dictate/refine/history are
+answered with `methodNotFound` over the LAN, because a sync pairing must never
+quietly become remote mic/LLM control. Authentication replaces code-signing with
+two layers:
+
+1. **TLS-PSK**: each paired device has one 32-byte PSK; a client whose PSK isn't
+   registered can't complete the handshake, so no unpaired device yields a byte.
+2. **Hello identity proof** (BINDING contract, see `LANPeerProof`): TLS proves
+   the client held *some* registered PSK, but not *which* (the metadata API
+   enumerates the locally-configured PSKs, not the negotiated one) — so the
+   client's `bridge.hello` must carry `peerID` plus
+   `peerProof = base64(HMAC-SHA256(key: psk, msg: "openwhisp-peer-binding:" + peerID))`.
+   The server verifies the proof against the PSK it stored for that peer and
+   closes the connection on any mismatch. This is what binds consent to a
+   specific paired device and stops one paired phone from riding another's
+   grants.
+
+- **Pairing** is out-of-band: **Settings → Sync → Pair iPhone…** shows a QR the
+  phone scans. The QR JSON is
+  `{ version, peerID, displayName, psk (base64 of 32 random bytes), serviceInstanceName }`.
+  A freshly-minted pairing is staged **in memory only** — the PSK enters the Mac
+  **Keychain** (keyed by the peer UUID) and the peer joins the device list only
+  once the phone connects and proves it (an abandoned QR leaves nothing behind,
+  and closing the sheet discards the staged PSK). **Unpair** destroys the
+  Keychain PSK, drops the connection, and revokes the device's consent record,
+  so that device can no longer authenticate.
+- **TLS.** We request the version range **TLS 1.2…1.3** with the PSK AEAD
+  ciphersuite `TLS_PSK_WITH_AES_128_GCM_SHA256`. The intent is TLS 1.3, but
+  Network.framework's `NWListener` does not accept an external TLS-1.3 PSK on the
+  SDK the CI runners ship, so it negotiates down to TLS 1.2 with the PSK suite,
+  which preserves the property that matters: a 32-byte pre-shared key, AEAD
+  encryption, **no certificate/CA**, and nothing readable on the wire before the
+  handshake. The iOS `SyncKit` client MUST use the same version range +
+  ciphersuite and add its `(psk, peerID-as-identity)` pair, or the handshake
+  won't complete.
+- **When it runs.** The listener runs **only** while at least one device is
+  paired, or while the pairing pane is open — a user who never pairs pays zero
+  cost and nothing is exposed on the LAN.
+
+**Cross-repo integration harness.** `scripts/sync-loopback-server.sh` boots the
+real `LANBridgeServer` standalone on `127.0.0.1` with a fixed PSK + port + a
+file-backed fixture store (all from `OPENWHISP_SYNC_PSK` / `OPENWHISP_SYNC_PORT` /
+`OPENWHISP_SYNC_PEER_ID` / `OPENWHISP_SYNC_FIXTURE_DIR`) and prints `READY <port>`
+once listening, so the openwhisp-ios sync test can drive it over TLS-TCP. The
+in-repo `OpenWhispSyncLANTests` E2E does the same in-process: real server, real
+TLS-PSK NDJSON client, hello → consent → manifest → push → pull.
 
 ## Setup
 
