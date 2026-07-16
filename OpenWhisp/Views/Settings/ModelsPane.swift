@@ -23,6 +23,17 @@ struct ModelsPane: View {
     private var isAppleSpeech: Bool { appState.transcriptionEngine == "appleSpeech" }
     private var isParakeet: Bool { appState.transcriptionEngine == "parakeet" }
 
+    /// True when Parakeet is compiled into this build (the default engine). When
+    /// it isn't (a lean `PARAKEET=0` build), WhisperKit reclaims the "Recommended"
+    /// badge so exactly one engine ever carries it.
+    private var parakeetAvailable: Bool {
+        #if PARAKEET
+        return true
+        #else
+        return false
+        #endif
+    }
+
     // The three recommended whisper.cpp tiers (redesign §4.3): one tier
     // vocabulary — Fast / Balanced / Accurate — with the model id and size as
     // metadata. large-v3-turbo stays the recommended tier (near large-v3
@@ -82,10 +93,23 @@ struct ModelsPane: View {
 
     private var engineSection: some View {
         Section {
+            // MAK-46: Parakeet is the recommended default (true streaming, ~0.3 s
+            // latency with punctuation). Included in default builds; a lean
+            // PARAKEET=0 build hides the row rather than showing one that errors —
+            // WhisperKit then carries the "Recommended" badge (see below).
+            #if PARAKEET
+            SelectableRow(
+                title: "Parakeet Realtime (CoreML)",
+                subtitle: "True streaming — words appear ~0.3 s behind your voice, with punctuation. English + multilingual variants. Fastest and most accurate on Apple Silicon.",
+                badge: "Recommended",
+                isSelected: isParakeet
+            ) { appState.transcriptionEngine = "parakeet" }
+            #endif
+
             SelectableRow(
                 title: "WhisperKit (CoreML)",
                 subtitle: "Optimized for Apple Silicon (GPU/Neural Engine). Streams partials in real time.",
-                badge: "Recommended",
+                badge: parakeetAvailable ? nil : "Recommended",
                 isSelected: isWhisperKit
             ) { appState.transcriptionEngine = "whisperKit" }
 
@@ -101,17 +125,6 @@ struct ModelsPane: View {
                 isSelected: isAppleSpeech
             ) { appState.transcriptionEngine = "appleSpeech" }
 
-            // MAK-46: included in default builds (like WhisperKit); a lean
-            // PARAKEET=0 build hides the row rather than showing one that errors.
-            #if PARAKEET
-            SelectableRow(
-                title: "Parakeet Realtime (CoreML)",
-                subtitle: "True streaming — words appear ~0.3 s behind your voice. English + multilingual variants.",
-                badge: "Experimental",
-                isSelected: isParakeet
-            ) { appState.transcriptionEngine = "parakeet" }
-            #endif
-
             // Never change state silently: switching to WhisperKit while "Type
             // live" was on snaps the output mode, and this says so.
             if let notice = appState.engineSwitchNotice {
@@ -122,7 +135,7 @@ struct ModelsPane: View {
         } header: {
             Text("Engine")
         } footer: {
-            SettingsFootnote("Everything transcribes on your Mac with any engine. WhisperKit requires a build that includes it (the default; a lean WHISPERKIT=0 build falls back to whisper.cpp).")
+            SettingsFootnote("Everything transcribes on your Mac with any engine. Parakeet is the recommended default — a lean PARAKEET=0 build hides it and falls back to WhisperKit (or whisper.cpp).")
         }
     }
 

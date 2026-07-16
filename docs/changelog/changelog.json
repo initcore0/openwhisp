@@ -1,26 +1,66 @@
 {
   "$schema": "./changelog.schema.md",
   "project": "OpenWhisp",
-  "generated": "2026-07-11",
+  "generated": "2026-07-14",
   "releases": [
     {
       "id": "2026-07",
       "title": "July 2026",
-      "date": "2026-07-11",
-      "summary": "A batch of new features, fixes, and under-the-hood hardening — all landed on main, all covered by tests, all on your machine. All twenty-five new features are live today: meeting mode that records a call and gives you an on-device transcript plus a local Markdown summary — now with Me/Them speaker attribution and a live talking indicator, and with a separate, optionally larger summarization model you can point at your own server — a floating Scratchpad to dictate into with no target app, quiet-dictation mode for whispering into your mic, opt-in on-device audio retention with one-click re-transcription and an auto-cleanup policy, a fully-remappable dictation trigger with a record-a-shortcut field, an AppleScript keystroke insert method and mouse-button dictation triggers, a local Usage Insights dashboard, opt-in screen-context awareness that biases transcription toward the names already on screen, batch file transcription with watch folders, hands-free (tap-to-lock) dictation, adjustable AI cleanup, voice editing, a self-learning dictionary, rich local formatting, spoken-filename @-mentions for code editors, agent-CLI cleanup, output targets that route a dictation to a file/Shortcut/webhook, first-class Modes you can invoke by name, a Rules engine that runs your own actions when a dictation finishes, and an openwhisp:// URL scheme so Raycast, Alfred, or any launcher can drive dictation.",
+      "date": "2026-07-14",
+      "summary": "The headline: Parakeet — our fast, on-device realtime streaming engine — is now the default on a fresh install. Alongside it, a big batch of new features, fixes, and under-the-hood hardening, all landed on main, all covered by tests, all on your machine. New this release also includes built-in auto-update and a 28-fix stability sweep. Among the features: meeting mode that records a call and gives you an on-device transcript plus a local Markdown summary — now with Me/Them speaker attribution and a live talking indicator, and with a separate, optionally larger summarization model you can point at your own server — a floating Scratchpad to dictate into with no target app, quiet-dictation mode for whispering into your mic, opt-in on-device audio retention with one-click re-transcription and an auto-cleanup policy, a fully-remappable dictation trigger with a record-a-shortcut field, an AppleScript keystroke insert method and mouse-button dictation triggers, a local Usage Insights dashboard, opt-in screen-context awareness that biases transcription toward the names already on screen, batch file transcription with watch folders, hands-free (tap-to-lock) dictation, adjustable AI cleanup, voice editing, a self-learning dictionary, rich local formatting, spoken-filename @-mentions for code editors, agent-CLI cleanup, output targets that route a dictation to a file/Shortcut/webhook, first-class Modes you can invoke by name, a Rules engine that runs your own actions when a dictation finishes, and an openwhisp:// URL scheme so Raycast, Alfred, or any launcher can drive dictation.",
       "stats": {
-        "changesShipped": 43,
-        "newFeatures": 27,
-        "testsPassing": 1479,
+        "changesShipped": 46,
+        "newFeatures": 28,
+        "testsPassing": 1539,
         "onDevicePercent": 100,
-        "newFeaturesLive": 27,
+        "newFeaturesLive": 28,
         "newFeaturesCorePending": 0
       },
       "entries": [
         {
+          "category": "improvement",
+          "headline": "Parakeet is now the default, recommended transcription engine",
+          "body": "After testing well, the Parakeet realtime engine is promoted from experimental to the default: a fresh install downloads and uses it from the very first launch, and it carries the “Recommended” badge in Settings › Models. The change is safe for existing users — anyone already on WhisperKit (or any engine they chose) is left exactly where they were, so an update never swaps a working engine out from under you.",
+          "tickets": [
+            "MAK-46"
+          ],
+          "prs": [
+            172
+          ]
+        },
+        {
+          "category": "feature",
+          "headline": "OpenWhisp keeps itself up to date — built-in auto-update",
+          "body": "OpenWhisp now updates itself. A built-in updater (Sparkle 2) checks for new signed releases and offers to install them, so you're no longer re-downloading the app by hand. Updates are delivered from a cryptographically signed feed, and the update check is disclosed in the privacy docs. It's part of the notarized release build.",
+          "tickets": [
+            "MAK-56"
+          ],
+          "prs": [
+            169
+          ],
+          "howTo": {
+            "availability": "live",
+            "summary": "OpenWhisp checks for updates on its own and offers to install them.",
+            "steps": [
+              "Nothing to set up — the app checks for new signed releases automatically and prompts you when one is available.",
+              "You can also check on demand from Settings → General → Check for Updates.",
+              "Updates come from a cryptographically signed appcast; the update check is disclosed in the privacy documentation."
+            ]
+          }
+        },
+        {
+          "category": "fix",
+          "headline": "A 28-fix stability sweep — Scratchpad layout, Settings reset, and a snappier app",
+          "body": "A broad bug-hunt across the recent releases fixed 28 verified issues. Highlights: the Scratchpad's note list no longer dwarfs the editor (and the panel remembers its size), “Reset all settings” now actually resets everything it promised, and the app feels faster — the Parakeet audio path was moved off the main thread, removing a source of UI lag during dictation.",
+          "tickets": [],
+          "prs": [
+            166
+          ]
+        },
+        {
           "category": "feature",
           "headline": "Parakeet Realtime — a true streaming engine: words appear ~0.3 s behind your voice",
-          "body": "A new on-device transcription engine built on NVIDIA Parakeet (CoreML, via the Apache-2.0 FluidAudio SDK). Unlike the batch engines, Parakeet is architecturally streaming: partials trail your voice by about a third of a second WITH punctuation and capitalization, and the final text lands ~50 ms after you release the hotkey — no end-of-dictation decode wait. Four model variants cover realtime English, best-accuracy English, an ultra-light 120M model, and a multilingual model (~40 languages, auto-detected). Meetings, batch file jobs, watch folders, and history re-transcription run on Parakeet too (a 25-language batch model), and the models show up in Settings › Storage with sizes and one-click delete. Compiled into default builds alongside WhisperKit.",
+          "body": "A new on-device transcription engine built on NVIDIA Parakeet (CoreML, via the Apache-2.0 FluidAudio SDK). Unlike the batch engines, Parakeet is architecturally streaming: partials trail your voice by about a third of a second WITH punctuation and capitalization, and the final text lands ~50 ms after you release the hotkey — no end-of-dictation decode wait. Five model variants cover realtime English, an efficiency tier, best-accuracy English, an ultra-light 120M model, and a multilingual model (~40 languages, auto-detected). Meetings, batch file jobs, watch folders, and history re-transcription run on Parakeet too (a 25-language batch model), and the models show up in Settings › Storage with sizes and one-click delete. It's now the default, recommended engine on a fresh install (existing users keep whatever engine they already chose).",
           "tickets": [
             "MAK-46"
           ],
@@ -32,7 +72,7 @@
             "summary": "Settings › Models › pick “Parakeet Realtime (CoreML)”, choose a variant, and dictate — the model downloads itself on first use.",
             "steps": [
               "Open Settings › Models and select “Parakeet Realtime (CoreML)” (badged Experimental).",
-              "Pick a variant: Unified realtime (default, 0.32 s latency, punctuation), Unified accurate, EOU ultra light (smallest), or Parakeet Multilingual (~40 languages, auto-detect).",
+              "Pick a variant: Unified realtime (default, 0.32 s latency, punctuation), Unified efficient (same accuracy, lower CPU), Unified accurate, EOU ultra light (smallest), or Parakeet Multilingual (~40 languages, auto-detect).",
               "The model (~150–600 MB) downloads automatically to Application Support/FluidAudio and is cached; the row shows Not downloaded / Downloading… / installed.",
               "Dictate as usual — words stream in as you speak in preview and live-typing modes, and meetings/file jobs automatically use Parakeet's multilingual batch model."
             ],

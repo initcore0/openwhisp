@@ -128,16 +128,42 @@ struct CleanupPane: View {
         Section {
             Toggle("Use custom vocabulary", isOn: $appState.customVocabularyEnabled)
 
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Bias terms")
-                SettingsFootnote("Names, jargon, and acronyms Whisper usually gets wrong. Press Return to add each term.")
-                TokenField(
-                    tokens: $appState.vocabulary.terms,
-                    placeholder: "e.g. Claude, Anthropic, kubectl, OpenWhisp",
-                    isEnabled: appState.customVocabularyEnabled
-                )
+            // Bias terms steer the transcription engine itself, so they only
+            // exist on engines that can act on them — whisper.cpp (all paths)
+            // and Parakeet (batch paths, MAK-71). Offering the field on an
+            // engine that discards it is the #175 bug again: the user types
+            // terms, nothing happens, nothing says why. Show it disabled with
+            // the reason rather than hiding it, so the capability stays
+            // discoverable. Substitutions below are a local post-pass and keep
+            // working on every engine.
+            if EngineCapabilities.supportsVocabularyBiasing(transcriptionEngine: appState.transcriptionEngine) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Bias terms")
+                    // Say which paths actually honor the terms. Parakeet biases
+                    // finished audio (files/meetings) but not live dictation, and
+                    // a user typing names in deserves to know that up front rather
+                    // than infer it from terms that "sometimes work".
+                    if EngineCapabilities.vocabularySupport(
+                        transcriptionEngine: appState.transcriptionEngine) == .batchOnly {
+                        SettingsFootnote("Names, jargon, and acronyms the engine usually gets wrong. Applied to files, meetings, and re-transcribes — not to live dictation on this engine. Press Return to add each term.")
+                    } else {
+                        SettingsFootnote("Names, jargon, and acronyms the engine usually gets wrong. Press Return to add each term.")
+                    }
+                    TokenField(
+                        tokens: $appState.vocabulary.terms,
+                        placeholder: "e.g. Claude, Anthropic, kubectl, OpenWhisp",
+                        isEnabled: appState.customVocabularyEnabled
+                    )
+                }
+                .padding(.vertical, 2)
+            } else {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Bias terms")
+                        .foregroundStyle(.secondary)
+                    SettingsFootnote("Bias terms don't apply to \(EngineCapabilities.displayName(transcriptionEngine: appState.transcriptionEngine)) yet — whisper.cpp (everywhere) and Parakeet (files and meetings) steer recognition toward specific words today. Switch engine in Models to use them, or use Substitutions below, which work on every engine.")
+                }
+                .padding(.vertical, 2)
             }
-            .padding(.vertical, 2)
 
             // Self-learning dictionary (MAK-41 Part C): correction proposals the app
             // captured from your type-overs, shown here for you to accept or reject.

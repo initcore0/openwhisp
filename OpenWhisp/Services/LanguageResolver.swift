@@ -25,6 +25,20 @@ public enum LanguageResolver {
         !noTranslateEngines.contains(transcriptionEngine)
     }
 
+    /// The translate intent that is actually IN EFFECT for a session: the stored
+    /// toggle, gated on the engine being able to act on it. On no-translate
+    /// engines the transcript stays in the spoken language, so every downstream
+    /// consumer (refine prompts, the RefineOutputGuard expected script) must see
+    /// `false` here — keying on the raw stored flag re-arms the exact
+    /// silent-translation bug the guard exists to prevent (a stale `true` carried
+    /// over from a whisper engine would make the guard EXPECT Latin output).
+    public static func effectiveTranslateToEnglish(
+        translateToEnglish: Bool,
+        transcriptionEngine: String
+    ) -> Bool {
+        translateToEnglish && supportsTranslation(transcriptionEngine: transcriptionEngine)
+    }
+
     /// Language string to pass to `engine.start(language:)` / the file engine.
     /// Returns the `translate-to-English` sentinel when translating (and the engine
     /// supports it), else the spoken language ("auto" = detect).

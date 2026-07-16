@@ -21,6 +21,10 @@ struct OnboardingView: View {
     // Live Input-Monitoring status, refreshed by the same poll timer. Drives the
     // hotkey step's readiness and the "try it" hotkey-is-dead guard (MAK-24).
     @State private var inputMonitoringStatus: OnboardingHotkeyGate.InputMonitoringStatus = .unknown
+    // FluidAudio repo folders on disk, so the model step can tell whether the
+    // (default) Parakeet model has finished downloading. Refreshed by the poll
+    // timer — cheap dir listing — so "downloading…" flips to "ready" on its own.
+    @State private var parakeetInstalledFolders: Set<String> = []
 
     private let pollTimer = Timer.publish(every: 1.0, on: .main, in: .common).autoconnect()
 
@@ -135,47 +139,114 @@ struct OnboardingView: View {
         }
     }
 
+    /// Readiness of whichever engine is active — the model step is engine-aware
+    /// so a Parakeet (default) or WhisperKit first-launch download shows real
+    /// progress instead of a false "ready". Recomputed on each render (the 1 Hz
+    /// poll refreshes the underlying signals).
+    private var modelStatus: OnboardingModelStatus.State {
+        let variant = ParakeetCatalog.normalize(appState.parakeetVariant)
+        let parakeetState = ParakeetDownloadStatePolicy.state(
+            forVariant: variant,
+            installedFolders: parakeetInstalledFolders,
+            inFlightVariants: appState.parakeetInFlightVariants
+        )
+        return OnboardingModelStatus.state(
+            engine: appState.transcriptionEngine,
+            parakeetInstalled: parakeetState == .installed,
+            parakeetInFlight: parakeetState == .downloading,
+            parakeetFailed: appState.parakeetPrefetchFailed,
+            whisperCppDownloading: appState.isModelDownloading,
+            whisperCppProgress: appState.modelDownloadProgress,
+            whisperCppFailed: appState.modelDownloadFailed,
+            whisperKitStaged: WhisperKitModelCatalog.isStaged(appState.whisperKitModel),
+            whisperKitDownloading: appState.whisperKitDownloadingModel != nil,
+            whisperKitProgress: appState.whisperKitDownloadProgress,
+            whisperKitFailed: appState.whisperKitDownloadFailed
+        )
+    }
+
     private var modelStep: some View {
-        let failed = appState.modelDownloadFailed && !appState.isModelDownloading
+        let status = modelStatus
+        let downloading = status != .ready && status != .failed
         return stepLayout(
-            icon: failed ? "exclamationmark.triangle.fill"
-                : (appState.isModelDownloading ? "arrow.down.circle" : "checkmark.circle.fill"),
-            iconColor: failed ? .orange : (appState.isModelDownloading ? .accentColor : .green),
-            title: failed ? "Couldn't download the speech model"
-                : (appState.isModelDownloading ? "Preparing your speech model" : "Your speech model is ready"),
-            subtitle: failed
+            icon: status == .failed ? "exclamationmark.triangle.fill"
+                : (downloading ? "arrow.down.circle" : "checkmark.circle.fill"),
+            iconColor: status == .failed ? .orange : (downloading ? .accentColor : .green),
+            title: status == .failed ? "Couldn't download the speech model"
+                : (downloading ? "Preparing your speech model" : "Your speech model is ready"),
+            subtitle: status == .failed
                 ? "The download didn't complete. Check your internet connection and try again — it runs entirely on your Mac once installed."
-                : (appState.isModelDownloading
+                : (downloading
                     ? "Downloading the speech model. This is a one-time download and runs entirely on your Mac afterward."
                     : "OpenWhisp is ready to transcribe locally — no internet required from here on.")
         ) {
-            if appState.isModelDownloading {
+            switch status {
+            case .downloading(let progress):
                 VStack(spacing: 8) {
-                    if let progress = appState.modelDownloadProgress {
+                    if let progress {
                         ProgressView(value: progress)
                             .frame(maxWidth: 280)
                     } else {
                         ProgressView().controlSize(.small)
                     }
-                    Text(appState.modelDownloadStatus)
+                    Text(modelDownloadCaption)
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
-            } else if failed {
+            case .failed:
                 VStack(spacing: 10) {
-                    Text(appState.modelDownloadStatus)
+                    Text(modelFailureDetail)
                         .font(.caption)
                         .foregroundColor(.orange)
-                    Button("Retry Download") {
-                        appState.retryModelDownload()
-                    }
-                    .controlSize(.large)
+                    Button("Retry Download") { retryModelDownload() }
+                        .controlSize(.large)
                 }
-            } else {
-                Label(appState.modelDownloadStatus, systemImage: "internaldrive")
+            case .ready:
+                Label("Ready — runs offline", systemImage: "internaldrive")
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
+        }
+    }
+
+    /// Progress caption during a download. whisper.cpp publishes a rich status
+    /// string (bytes/percent); the streaming engines (Parakeet / WhisperKit
+    /// preload) don't, so fall back to a plain one-liner for them.
+    private var modelDownloadCaption: String {
+        if appState.transcriptionEngine == "whisper", !appState.modelDownloadStatus.isEmpty {
+            return appState.modelDownloadStatus
+        }
+        if !appState.whisperKitDownloadStatus.isEmpty,
+           appState.transcriptionEngine == "whisperKit" {
+            return appState.whisperKitDownloadStatus
+        }
+        return "Downloading the speech model…"
+    }
+
+    /// Failure caption. whisper.cpp and WhisperKit carry specific status strings;
+    /// the streaming engines (Parakeet) don't, so fall back to a plain one-liner.
+    private var modelFailureDetail: String {
+        if appState.transcriptionEngine == "whisper", !appState.modelDownloadStatus.isEmpty {
+            return appState.modelDownloadStatus
+        }
+        if appState.transcriptionEngine == "whisperKit", !appState.whisperKitDownloadStatus.isEmpty {
+            return appState.whisperKitDownloadStatus
+        }
+        return "Couldn't reach the model server. Check your connection and retry."
+    }
+
+    /// Engine-aware retry: whisper.cpp re-runs its GGML download; Parakeet
+    /// re-kicks its FluidAudio prefetch (which also clears the failure flag);
+    /// WhisperKit re-runs the model-manager download for the selected model
+    /// (its start clears `whisperKitDownloadFailed`).
+    private func retryModelDownload() {
+        switch appState.transcriptionEngine {
+        case "parakeet":
+            appState.prefetchParakeetVariant()
+        case "whisperKit":
+            appState.downloadWhisperKitModel(appState.whisperKitModel)
+        default:
+            appState.retryModelDownload()
         }
     }
 
@@ -420,8 +491,8 @@ struct OnboardingView: View {
     }
 
     private var primaryDisabled: Bool {
-        // Don't hard-block on permissions (the user can grant later), but nudge:
-        // only the model step waits, and only while actively downloading.
+        // Never hard-block: permissions can be granted later, and the model can
+        // finish downloading after setup — the user can always advance.
         false
     }
 
@@ -454,6 +525,11 @@ struct OnboardingView: View {
         micGranted = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
         accessibilityGranted = AXIsProcessTrusted()
         inputMonitoringStatus = appState.liveInputMonitoringStatus
+        // Only the Parakeet path needs the on-disk folder scan; skip the listing
+        // for the other engines so the poll stays cheap.
+        if appState.transcriptionEngine == "parakeet" {
+            parakeetInstalledFolders = AppState.installedFluidAudioFolders()
+        }
         appState.refreshPermissionLabels()
     }
 

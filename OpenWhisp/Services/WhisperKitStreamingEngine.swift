@@ -83,6 +83,14 @@ final class WhisperKitStreamingEngine: StreamingTranscriptionEngine {
         MainActor.assumeIsolated {
             self.lastConfirmedText = ""
             self.didFinish = false
+            // Snapshot the session-bound callbacks at ENQUEUE time (see
+            // SessionCallbacks): runStart can sit awaiting the model load while a
+            // cancel+restart rebinds these properties to the NEXT session, and a
+            // fire-time read would deliver this superseded start's signals with
+            // the successor's sessionID — through AppState's session fence.
+            let callbacks = SessionCallbacks(
+                started: self.onStarted, partial: self.onPartial,
+                level: self.onLevelChanged, error: self.onError)
             // Strong capture on purpose: the chain must keep the engine alive until
             // its lifecycle work completes. AppState may drop its (only) reference
             // right after stop() (e.g. rebuildFileEngine swaps the engine), and a
@@ -90,15 +98,26 @@ final class WhisperKitStreamingEngine: StreamingTranscriptionEngine {
             // runs — leaving the mic streaming forever. The Task releases the
             // closure when it finishes, so this is not a retain cycle.
             self.lifecycle.enqueue {
-                await self.runStart(task: task)
+                await self.runStart(task: task, callbacks: callbacks)
             }
         }
+    }
+
+    /// Session-bound callbacks snapshotted when the start was enqueued, so a
+    /// superseded start fires the OLD session's closures (whose stale sessionID
+    /// the AppState fence drops) instead of leaking "started"/partials/errors
+    /// into the successor session. Same fix as ParakeetStreamingEngine.
+    private struct SessionCallbacks {
+        let started: (() -> Void)?
+        let partial: ((String) -> Void)?
+        let level: ((_ display: Float, _ vad: Float) -> Void)?
+        let error: ((String) -> Void)?
     }
 
     /// The start pipeline, run inside the serialized lifecycle chain (so any prior
     /// stop's teardown has already completed — no installTap race, no sleep needed).
     @MainActor
-    private func runStart(task: WhisperKitTaskMapper.Resolved) async {
+    private func runStart(task: WhisperKitTaskMapper.Resolved, callbacks: SessionCallbacks) async {
         do {
             // Resolve the selected input device. It's passed straight into
             // AudioStreamTranscriber(inputDeviceID:) (our WhisperKit fork backports
@@ -117,12 +136,12 @@ final class WhisperKitStreamingEngine: StreamingTranscriptionEngine {
                 // between canResolve and now) is treated as unresolved — a hard error,
                 // NOT a silent nil that would fall back to the system default.
                 guard let id = AudioInputRouter.resolve(uid: uid)?.deviceID else {
-                    onError?(AudioInputRoutingPolicy.unresolvedMessage(uid: uid))
+                    callbacks.error?(AudioInputRoutingPolicy.unresolvedMessage(uid: uid))
                     return
                 }
                 inputDeviceID = id
             case .unresolved(let uid):
-                onError?(AudioInputRoutingPolicy.unresolvedMessage(uid: uid))
+                callbacks.error?(AudioInputRoutingPolicy.unresolvedMessage(uid: uid))
                 return
             }
 
@@ -138,7 +157,7 @@ final class WhisperKitStreamingEngine: StreamingTranscriptionEngine {
             ) { [weak self] newState in
                 Task { @MainActor in
                     guard let self, self.generation == myGeneration else { return }
-                    self.handleState(newState)
+                    self.handleState(newState, callbacks: callbacks)
                 }
             }
             transcriber = handle
@@ -156,13 +175,13 @@ final class WhisperKitStreamingEngine: StreamingTranscriptionEngine {
                 } catch {
                     NSLog("[WhisperKitStream] stream error: %@", error.localizedDescription)
                     guard let self, self.transcriber === handle, !self.didFinish else { return }
-                    self.onError?("WhisperKit streaming failed: \(error.localizedDescription)")
+                    callbacks.error?("WhisperKit streaming failed: \(error.localizedDescription)")
                 }
             }
         } catch {
             NSLog("[WhisperKitStream] start error: %@", error.localizedDescription)
             guard !didFinish else { return }
-            onError?("WhisperKit streaming failed: \(error.localizedDescription)")
+            callbacks.error?("WhisperKit streaming failed: \(error.localizedDescription)")
         }
     }
 
@@ -205,19 +224,19 @@ final class WhisperKitStreamingEngine: StreamingTranscriptionEngine {
 
     /// Translate a WhisperKit stream state into our callbacks.
     @MainActor
-    private func handleState(_ state: WhisperKitStreamState) {
+    private func handleState(_ state: WhisperKitStreamState, callbacks: SessionCallbacks) {
         // First state diff for this stream = capture is live (tap installed,
         // buffers flowing). Fires before any partial from the same diff so the
         // session leaves arming before text starts arriving.
         if !startedNotified {
             startedNotified = true
-            onStarted?()
+            callbacks.started?()
         }
         if let level = state.peakEnergy {
             // vadLevel is the absolute-curve reading; the display level's
             // silence-referenced scale must never reach the fixed VAD gates.
             // (Fallback only for the rare startup tick before audioEnergy fills.)
-            onLevelChanged?(level, state.vadLevel ?? level)
+            callbacks.level?(level, state.vadLevel ?? level)
         }
         // Emit the FULL current transcript (confirmed + unconfirmed) as the live
         // partial. WhisperKit only promotes segments to `confirmedSegments` after
@@ -228,7 +247,7 @@ final class WhisperKitStreamingEngine: StreamingTranscriptionEngine {
         let text = state.fullText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, text != lastConfirmedText else { return }
         lastConfirmedText = text
-        onPartial?(text)
+        callbacks.partial?(text)
     }
 
     @discardableResult
