@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 
 /// The out-of-band **pairing payload** the Mac renders as a QR (openwhisp menu →
 /// "Pair iPhone…") for the phone's camera to scan (ARCHITECTURE §6.5). It carries
@@ -213,7 +214,55 @@ public enum LANBridgeService {
     public static let txtKeyDeviceName = "dn"
     /// TXT-record key: the human-readable wire version label (BridgeWire.wireVersionLabel).
     public static let txtKeyWireVersion = "wv"
-    /// TXT-record key: the Mac's peer id (UUID string) — lets a browsing phone match
-    /// a discovered instance to a stored pairing without connecting.
+    /// TXT-record key: the Mac's LOCAL peer id (UUID string) — lets a browsing
+    /// phone match a discovered instance to a stored pairing without connecting
+    /// (the QR carries the same value as `localPeerID`).
     public static let txtKeyPeerID = "pid"
+
+    /// The consent-record client name derived from a paired peer id — defined ONCE
+    /// so the LAN server (recording consent) and unpair (revoking it) can never
+    /// drift on the naming and leave an orphaned grant behind.
+    public static func clientName(forPeerID id: UUID) -> String {
+        "iPhone (\(id.uuidString.prefix(8)))"
+    }
+}
+
+/// Application-layer peer-identity proof for the LAN link (cross-repo BINDING
+/// contract, both repos run this exact derivation).
+///
+/// **Why TLS alone isn't enough:** the listener registers one PSK per paired
+/// peer, and a completed handshake proves the client held *some* registered PSK —
+/// but Network.framework's metadata API (`sec_protocol_metadata_access_pre_shared_keys`)
+/// enumerates the PSKs the LOCAL side configured, not the one that was negotiated,
+/// so with two or more paired devices the server cannot tell WHICH peer connected.
+/// Binding consent to a guessed identity would let device B inherit device A's
+/// standing grants.
+///
+/// So the client proves its identity in `bridge.hello`: it sends its `peerID`
+/// plus `peerProof = base64(HMAC-SHA256(key: psk, msg: "openwhisp-peer-binding:" + peerID))`.
+/// Only the holder of that peer's PSK can compute it; another paired device can
+/// neither compute it (different PSK) nor capture it (it travels only inside a
+/// TLS session keyed to the claimed peer's PSK). The server verifies against the
+/// PSK it stored at pairing and closes the connection on any mismatch.
+public enum LANPeerProof {
+    /// The HMAC'd message for a peer id. Version-prefixed so a future scheme can
+    /// coexist without ambiguity.
+    private static func message(forPeerID id: UUID) -> Data {
+        Data("openwhisp-peer-binding:\(id.uuidString)".utf8)
+    }
+
+    /// Compute the proof the CLIENT sends in `bridge.hello.peerProof` (base64).
+    public static func proof(psk: Data, peerID: UUID) -> String {
+        let mac = HMAC<SHA256>.authenticationCode(
+            for: message(forPeerID: peerID), using: SymmetricKey(data: psk))
+        return Data(mac).base64EncodedString()
+    }
+
+    /// Constant-time server-side verification of a claimed identity.
+    public static func verify(proofBase64: String, psk: Data, peerID: UUID) -> Bool {
+        guard let provided = Data(base64Encoded: proofBase64) else { return false }
+        return HMAC<SHA256>.isValidAuthenticationCode(
+            provided, authenticating: message(forPeerID: peerID),
+            using: SymmetricKey(data: psk))
+    }
 }

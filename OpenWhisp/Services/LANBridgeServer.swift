@@ -42,6 +42,11 @@ final class LANBridgeServer {
     private let pskProvider: () -> [UUID: Data]
     /// The Mac's display name for the Bonjour TXT record.
     private let deviceName: () -> String
+    /// The Bonjour service INSTANCE name — the same string the QR carries as
+    /// `serviceInstanceName`, so the phone can browse for this specific Mac.
+    /// Advertising under the OS default machine name (the old behavior) broke
+    /// that contract: the phone would never find the instance the QR named.
+    private let instanceName: () -> String
     /// Called (main actor) when a peer completes a PSK-authenticated hello, with the
     /// peer UUID and the client name it announced — so the PairingStore can record
     /// the phone's display name.
@@ -72,13 +77,20 @@ final class LANBridgeServer {
         host: AgentBridgeHost,
         pskProvider: @escaping () -> [UUID: Data],
         deviceName: @escaping () -> String,
+        instanceName: @escaping () -> String,
         onPeerHandshake: @escaping (UUID, String) -> Void
     ) {
         self.host = host
         self.pskProvider = pskProvider
         self.deviceName = deviceName
+        self.instanceName = instanceName
         self.onPeerHandshake = onPeerHandshake
     }
+
+    /// Hard cap on concurrently-accepted connections. Anything valid needs 1–2
+    /// (one phone syncing); the cap exists so a LAN host opening TCP connections
+    /// that stall mid-handshake can't accumulate unbounded half-open sessions.
+    private nonisolated static let maxConcurrentConnections = 8
 
     // MARK: - Lifecycle
 
@@ -106,7 +118,11 @@ final class LANBridgeServer {
     func start(forcedPort: UInt16? = nil) {
         guard listener == nil else { return }
         do {
-            let params = makeTLSParameters()
+            // One PSK snapshot per listener lifetime, shared by the TLS layer
+            // (handshake) and every connection (hello-proof verification) — both
+            // must see the same set or a peer could pass one gate and fail the other.
+            let pskSnapshot = pskProvider()
+            let params = makeTLSParameters(psks: pskSnapshot)
             let listener: NWListener
             if let forcedPort, let port = NWEndpoint.Port(rawValue: forcedPort) {
                 listener = try NWListener(using: params, on: port)
@@ -114,15 +130,17 @@ final class LANBridgeServer {
                 listener = try NWListener(using: params) // ephemeral
             }
 
-            // Advertise over Bonjour with a TXT record (device name + wire version +
-            // peer id). The service instance name is left to the OS unless a peer id
-            // is meaningful; the TXT carries the identity the phone matches on.
+            // Advertise over Bonjour under the INSTANCE NAME the QR carries
+            // (`serviceInstanceName`) — the phone browses for exactly this name to
+            // find the Mac it paired with, so leaving the name to the OS default
+            // (the machine name) made the QR's promise dead on arrival. The TXT
+            // record carries the display name + wire version for the browse UI.
             let txt = NWTXTRecord([
                 LANBridgeService.txtKeyDeviceName: deviceName(),
                 LANBridgeService.txtKeyWireVersion: BridgeWire.wireVersionLabel,
             ])
             listener.service = NWListener.Service(
-                type: LANBridgeService.bonjourType, txtRecord: txt)
+                name: instanceName(), type: LANBridgeService.bonjourType, txtRecord: txt)
 
             listener.stateUpdateHandler = { [weak self] state in
                 guard let self else { return }
@@ -151,16 +169,23 @@ final class LANBridgeServer {
             // `connections` is only ever touched on `queue` (newConnectionHandler
             // and onClosed both run there), so this box needs no extra lock.
             listener.newConnectionHandler = { [weak self] conn in
+                // Pre-auth flood guard: refuse connections beyond the cap outright.
+                guard let self, self.connections.count < Self.maxConcurrentConnections else {
+                    log.notice("LAN bridge: connection cap reached; refusing")
+                    conn.cancel()
+                    return
+                }
                 let session = LANConnection(
                     connection: conn, queue: queue, host: host, log: log,
+                    psks: pskSnapshot,
                     onPeerHandshake: { peerID, clientName in
                         Task { @MainActor in onHandshake(peerID, clientName) }
                     },
-                    onClosed: { closed in
+                    onClosed: { [weak self] closed in
                         // Runs on `queue`. Drop our retain so the session deallocates.
                         self?.connections.removeValue(forKey: ObjectIdentifier(closed))
                     })
-                self?.connections[ObjectIdentifier(session)] = session
+                self.connections[ObjectIdentifier(session)] = session
                 session.start()
             }
             listener.start(queue: queue)
@@ -193,9 +218,11 @@ final class LANBridgeServer {
     /// peer's PSK (each labeled with that peer's UUID as the TLS identity) via
     /// `sec_protocol_options_add_pre_shared_key`; TLS negotiates whichever PSK the
     /// connecting client offers. A client that offers a PSK/identity we never added
-    /// cannot complete the handshake, so no unpaired device yields a byte. The
-    /// connection recovers WHICH peer authenticated post-handshake from the
-    /// negotiated PSK identity, binding consent to the paired device.
+    /// cannot complete the handshake, so no unpaired device yields a byte. WHICH
+    /// paired peer connected is NOT taken from the TLS layer — the metadata API
+    /// enumerates the locally-configured PSKs, not the negotiated one — but from
+    /// the `bridge.hello` peerID + HMAC proof (see `LANPeerProof`), verified
+    /// against the same PSK snapshot.
     ///
     /// **TLS version (cross-repo BINDING contract):** we request the range TLS
     /// 1.2…1.3 and pin the PSK ciphersuite `TLS_PSK_WITH_AES_128_GCM_SHA256`. The
@@ -212,7 +239,7 @@ final class LANBridgeServer {
     /// listener is up gets picked up on the next `refresh()` restart (pairing-mode
     /// keeps the listener running and the store restarts it), so a fresh pairing's
     /// first connect always finds its PSK.
-    private func makeTLSParameters() -> NWParameters {
+    private func makeTLSParameters(psks: [UUID: Data]) -> NWParameters {
         let tls = NWProtocolTLS.Options()
         let sec = tls.securityProtocolOptions
 
@@ -227,7 +254,7 @@ final class LANBridgeServer {
         // Add one PSK per paired peer, identity = the peer UUID string. Both sides
         // must add the SAME (key, identity) pair; the phone adds its own peer id +
         // PSK from the QR, so the identities match and TLS derives a shared key.
-        for (peerID, pskBytes) in pskProvider() {
+        for (peerID, pskBytes) in psks {
             let keyDD = pskBytes.withUnsafeBytes { DispatchData(bytes: $0) }
             let identityData = Data(peerID.uuidString.utf8)
             let identityDD = identityData.withUnsafeBytes { DispatchData(bytes: $0) }
@@ -242,26 +269,21 @@ final class LANBridgeServer {
 
 }
 
-/// Convert a `DispatchData` (the negotiated TLS-PSK identity) into `Foundation.Data`.
-private func dispatchDataToData(_ dd: DispatchData) -> Data {
-    var out = Data(count: dd.count)
-    out.withUnsafeMutableBytes { (raw: UnsafeMutableRawBufferPointer) in
-        _ = dd.copyBytes(to: raw)
-    }
-    return out
-}
-
 /// One accepted LAN connection: reads NDJSON frames, routes them through the shared
 /// `BridgeRouter`, and executes intents against the `AgentBridgeHost` on the main
-/// thread — the same contract the UNIX server honors. The peer's identity comes
-/// from the TLS handshake (recorded when the metadata verifies), so `clientName` is
-/// bound to the paired peer, not to anything the client claims in `bridge.hello`.
+/// thread — the same contract the UNIX server honors, RESTRICTED to the sync verbs
+/// (see `execute`). The peer's identity is the `bridge.hello` peerID claim verified
+/// by an HMAC proof under that peer's PSK (`LANPeerProof`) — TLS proves the client
+/// held SOME registered PSK; the proof pins WHICH one, so consent can never
+/// cross-bind between two paired devices.
 private final class LANConnection {
 
     private let connection: NWConnection
     private let queue: DispatchQueue
     private weak var host: AgentBridgeHost?
     private let log: Logger
+    /// The listener's PSK snapshot (peerID → key), for hello-proof verification.
+    private let psks: [UUID: Data]
     private let onPeerHandshake: (UUID, String) -> Void
     /// Called (on `queue`) exactly once when this connection closes, so the server
     /// can drop its retain. Guarded by `closedFired` so a failed+cancelled sequence
@@ -271,8 +293,8 @@ private final class LANConnection {
 
     private var buffer = Data()
     private var handshaken = false
-    /// The paired peer's UUID, learned from the TLS identity once the handshake
-    /// completes. nil until then. This — NOT the client-claimed name — keys consent.
+    /// The paired peer's UUID, PROVEN by the hello HMAC proof (`LANPeerProof`).
+    /// nil until then. This — NOT the client-claimed display name — keys consent.
     private var peerID: UUID?
     /// A stable, human-readable client name derived from the peer, used for consent
     /// records + the settings pane. Set at handshake.
@@ -281,6 +303,7 @@ private final class LANConnection {
     init(
         connection: NWConnection, queue: DispatchQueue,
         host: AgentBridgeHost?, log: Logger,
+        psks: [UUID: Data],
         onPeerHandshake: @escaping (UUID, String) -> Void,
         onClosed: @escaping (LANConnection) -> Void
     ) {
@@ -288,19 +311,23 @@ private final class LANConnection {
         self.queue = queue
         self.host = host
         self.log = log
+        self.psks = psks
         self.onPeerHandshake = onPeerHandshake
         self.onClosed = onClosed
     }
+
+    /// A connection that hasn't completed `bridge.hello` within this window is
+    /// dropped — stalled/half-open TLS handshakes must not linger retained.
+    private static let handshakeTimeout: TimeInterval = 15
 
     func start() {
         connection.stateUpdateHandler = { [weak self] state in
             guard let self else { return }
             switch state {
             case .ready:
-                // The TLS handshake has completed with a valid PSK (an invalid one
-                // never reaches .ready). Recover the peer identity from the
-                // negotiated PSK identity so consent is bound to the paired device.
-                self.capturePeerIdentity()
+                // The TLS handshake completed with a valid PSK (an invalid one
+                // never reaches .ready) — but WHICH peer holds it is only proven
+                // by the upcoming hello's HMAC proof. Start reading frames.
                 self.receive()
             case .failed, .cancelled:
                 self.close()
@@ -309,6 +336,13 @@ private final class LANConnection {
             }
         }
         connection.start(queue: queue)
+        // Handshake timeout: a connection that stalls before completing hello
+        // (mid-TLS or silent post-TLS) is torn down instead of lingering.
+        queue.asyncAfter(deadline: .now() + Self.handshakeTimeout) { [weak self] in
+            guard let self, !self.handshaken else { return }
+            self.log.notice("LAN bridge: handshake timeout; closing")
+            self.close()
+        }
     }
 
     /// Cancel the connection and notify the server once (so it drops its retain).
@@ -326,30 +360,6 @@ private final class LANConnection {
     func forceClose() {
         closedFired = true // suppress the onClosed callback from the cancel path
         connection.cancel()
-    }
-
-    /// Read the peer UUID from the completed TLS handshake's PSK identity. The
-    /// identity we returned in the selection block is the peer UUID string, so a
-    /// ready connection always has a recoverable identity; we fall back to a generic
-    /// name if the metadata is somehow unavailable (the connection still can't have
-    /// reached .ready without a valid PSK).
-    private func capturePeerIdentity() {
-        guard peerID == nil else { return }
-        guard let metadata = connection.metadata(definition: NWProtocolTLS.definition) as? NWProtocolTLS.Metadata else { return }
-        let secMeta = metadata.securityProtocolMetadata
-        // Iterate the negotiated PSKs; the identity we added is the peer UUID string.
-        var recovered: UUID?
-        sec_protocol_metadata_access_pre_shared_keys(secMeta) { _, identityDD in
-            let idData = dispatchDataToData(identityDD as DispatchData)
-            if let idString = String(data: idData, encoding: .utf8),
-               let id = UUID(uuidString: idString) {
-                recovered = id
-            }
-        }
-        if let id = recovered {
-            peerID = id
-            clientName = "iPhone (\(id.uuidString.prefix(8)))"
-        }
     }
 
     private func receive() {
@@ -400,13 +410,28 @@ private final class LANConnection {
     private func execute(_ intent: BridgeRouter.Intent) -> Bool {
         switch intent {
         case .hello(let id, let params):
+            // Identity FIRST: the hello must carry a peerID claim + the HMAC proof
+            // computed under that peer's PSK (LANPeerProof). TLS proved the client
+            // holds SOME PSK from the snapshot; the proof pins WHICH peer it is,
+            // so a second paired device can never inherit another's consent. Any
+            // missing/unknown/unverifiable claim closes the connection.
+            guard let claimed = params.peerID.flatMap(UUID.init(uuidString:)),
+                  let psk = psks[claimed],
+                  let proof = params.peerProof,
+                  LANPeerProof.verify(proofBase64: proof, psk: psk, peerID: claimed) else {
+                log.notice("LAN bridge: hello identity proof failed; closing")
+                sendError(id: id, error: .domain(
+                    .consentDenied,
+                    message: "peer identity proof missing or invalid — re-pair this device"))
+                return false
+            }
             do {
                 let negotiated = try BridgeWire.negotiatedProtocolVersion(clientProtocolVersion: params.protocolVersion)
-                // Bind the peer's display name to its pairing record now that we
-                // know the client name it announced.
-                if let peerID {
-                    onPeerHandshake(peerID, params.clientName)
-                }
+                peerID = claimed
+                clientName = LANBridgeService.clientName(forPeerID: claimed)
+                // Bind the peer's display name to its pairing record now that the
+                // claim is proven (this is what confirms a pending pairing).
+                onPeerHandshake(claimed, params.clientName)
                 let (caps, appVersion, consent) = onMain { [clientName] in
                     (self.host?.bridgeCapabilities() ?? [],
                      self.host?.bridgeStatus().appVersion ?? "",
@@ -415,7 +440,7 @@ private final class LANConnection {
                 }
                 let result = BridgeWire.HelloResult(
                     protocolVersion: negotiated, appVersion: appVersion,
-                    capabilities: caps, clientId: (peerID ?? UUID()).uuidString,
+                    capabilities: caps, clientId: claimed.uuidString,
                     consent: consent.summary, consentScopes: consent.scopes)
                 send(id: id, result: result)
                 handshaken = true
@@ -460,56 +485,19 @@ private final class LANConnection {
             } else { sendError(id: id, error: .domain(.internalError, message: "sync push unavailable")) }
             return true
 
-        // Dictate/refine/history over the LAN reuse the same host + consent path.
-        case .historyList(let id, let params):
-            guard consentGranted(.history, id: id) else { return true }
-            let limit = BridgeRouter.resolvedHistoryLimit(params.limit)
-            let entries = onMain { self.host?.bridgeHistory(limit: limit) ?? [] }
-            onMain { self.host?.bridgeDidCall(clientName: self.clientName, tool: AgentScope.history.rawValue) }
-            send(id: id, result: BridgeWire.HistoryListResult(entries: entries))
-            return true
-
-        case .dictate(let id, let params):
-            guard consentGranted(.dictate, id: id) else { return true }
-            let timeout = BridgeRouter.resolvedTimeoutSeconds(params.timeoutSeconds)
-            let result: Result<BridgeWire.DictateResult, BridgeWire.ErrorObject> =
-                blockOnHost(noHost: .failure(.domain(.internalError, message: "no host"))) { [clientName] host, done in
-                    host.bridgeStartDictation(
-                        clientName: clientName, prompt: params.prompt,
-                        timeoutSeconds: timeout, language: params.language, completion: done)
-                }
-            switch result {
-            case .success(let r):
-                onMain { self.host?.bridgeDidCall(clientName: self.clientName, tool: AgentScope.dictate.rawValue) }
-                send(id: id, result: r)
-            case .failure(let err):
-                sendError(id: id, error: err)
-            }
-            return true
-
-        case .dictateStop(let id):
-            let stopped = onMain { self.host?.bridgeStopAgentDictation() ?? false }
-            send(id: id, result: BridgeWire.DictateStopResult(stopped: stopped))
-            return true
-
-        case .dictateCancel(let id):
-            let cancelled = onMain { self.host?.bridgeCancelAgentDictation() ?? false }
-            send(id: id, result: BridgeWire.DictateCancelResult(cancelled: cancelled))
-            return true
-
-        case .refine(let id, let params):
-            guard consentGranted(.refine, id: id) else { return true }
-            let result: Result<String, BridgeWire.ErrorObject> =
-                blockOnHost(noHost: .failure(.domain(.internalError, message: "no host"))) { [clientName] host, done in
-                    host.bridgeRefine(clientName: clientName, text: params.text, instruction: params.instruction, completion: done)
-                }
-            switch result {
-            case .success(let text):
-                onMain { self.host?.bridgeDidCall(clientName: self.clientName, tool: AgentScope.refine.rawValue) }
-                send(id: id, result: BridgeWire.RefineResult(text: text))
-            case .failure(let err):
-                sendError(id: id, error: err)
-            }
+        // The LAN link is the SYNC transport, full stop. The pairing UX promises
+        // "sync vocabulary, profiles, modes, and history"; letting the same TLS
+        // session drive dictation (the mic), refine (the LLM), or the redacted
+        // history DTO would turn a sync pairing into remote agent control — and
+        // dictateStop/Cancel had no consent gate at all. Agents get those verbs
+        // on the UNIX socket, where the code-signing identity authenticates.
+        // These also can't block the shared transport queue for tens of seconds
+        // the way a LAN bridge.dictate would.
+        case .historyList(let id, _), .dictate(let id, _), .refine(let id, _),
+             .dictateStop(let id), .dictateCancel(let id):
+            sendError(id: id, error: BridgeWire.ErrorObject(
+                code: BridgeWire.ErrorObject.methodNotFound,
+                message: "this verb isn't available over the LAN sync link — only sync.* and bridge.status are"))
             return true
         }
     }

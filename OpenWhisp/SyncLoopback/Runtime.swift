@@ -147,7 +147,12 @@ private func bootLoopback() {
         host: host,
         pskProvider: { [peerID: pskBytes] },
         deviceName: { "OpenWhisp Loopback" },
-        onPeerHandshake: { _, _ in })
+        instanceName: { "OpenWhisp-Loopback" },
+        onPeerHandshake: { id, name in
+            // Visible in the harness log so the iOS integration test can assert
+            // the identity binding fired (peer proof verified).
+            FileHandle.standardError.write(Data("sync-loopback: peer \(id) hello as \"\(name)\"\n".utf8))
+        })
     loopbackServer = server
     server.start(forcedPort: port)
 

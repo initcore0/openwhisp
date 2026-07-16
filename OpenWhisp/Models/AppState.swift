@@ -863,8 +863,13 @@ class AppState: ObservableObject {
             host: self,
             pskProvider: { [weak self] in self?.pairingStore.pskLookup() ?? [:] },
             deviceName: { Host.current().localizedName ?? "Mac" },
+            instanceName: { [weak self] in self?.syncServiceInstanceName ?? "OpenWhisp" },
             onPeerHandshake: { [weak self] peerID, clientName in
-                self?.pairingStore.confirmPairing(peerID: peerID, phoneDisplayName: clientName)
+                guard let self else { return }
+                self.pairingStore.confirmPairing(peerID: peerID, phoneDisplayName: clientName)
+                // The pane reads pairingStore.pairedPeers directly — publish so
+                // the placeholder row updates to the phone's real name live.
+                self.objectWillChange.send()
             })
     }()
 

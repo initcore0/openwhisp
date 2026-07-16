@@ -52,7 +52,16 @@ final class PairingStore {
     // MARK: - Paired peers
 
     var pairedPeers: [PairedPeer] { index.peers }
+    /// CONFIRMED peers only — a minted-but-unscanned pairing must not count, or
+    /// abandoning the pairing sheet would leave the LAN listener running forever.
     var hasPairedPeers: Bool { !index.isEmpty }
+
+    /// A pairing minted for the open sheet but not yet proven by a handshake.
+    /// Held in MEMORY ONLY: nothing touches the Keychain or the index until the
+    /// phone actually connects and proves the PSK (`confirmPairing`), so an
+    /// abandoned QR leaves no ghost peer, no lingering live key, and no
+    /// permanently-running listener. Discarded by `discardPendingPairing()`.
+    private(set) var pendingPairing: (peer: PairedPeer, pskBase64: String)?
 
     /// The PSK bytes for a paired peer, or nil if none/malformed. Read from Keychain.
     func psk(for peerID: UUID) -> Data? {
@@ -62,12 +71,19 @@ final class PairingStore {
         return data
     }
 
-    /// A snapshot map of peerID → PSK bytes for every paired peer, for the transport
-    /// to authenticate incoming TLS handshakes without calling back onto the actor.
+    /// A snapshot map of peerID → PSK bytes for every paired peer — plus the
+    /// pending (sheet-open) pairing, so the scanning phone's very first connection
+    /// authenticates — for the transport to verify incoming TLS handshakes and
+    /// hello proofs without calling back onto the actor.
     func pskLookup() -> [UUID: Data] {
         var out: [UUID: Data] = [:]
         for peer in index.peers {
             if let psk = psk(for: peer.id) { out[peer.id] = psk }
+        }
+        if let pending = pendingPairing,
+           let pskData = Data(base64Encoded: pending.pskBase64),
+           pskData.count == LANPairingPayload.pskByteCount {
+            out[pending.peer.id] = pskData
         }
         return out
     }
@@ -79,9 +95,11 @@ final class PairingStore {
     /// the settings pane renders. The phone completes pairing by scanning it and
     /// connecting with the PSK.
     ///
-    /// `displayName` is this MAC's name (shown on the phone). The phone's own name
-    /// isn't known until it connects; the index entry is created with a placeholder
-    /// and updated on first successful handshake (`confirmPairing`).
+    /// `displayName` is this MAC's name (shown on the phone). NOTHING persists
+    /// here: the pairing is staged in memory and only becomes a real peer
+    /// (Keychain PSK + index entry) when the phone proves the PSK
+    /// (`confirmPairing`). Minting again (sheet re-opened) replaces the stage —
+    /// the previous unscanned QR's PSK dies with it.
     @discardableResult
     func mintPairing(
         macDisplayName: String,
@@ -90,15 +108,13 @@ final class PairingStore {
     ) -> LANPairingPayload {
         let peerID = UUID()
         let psk = LANPairingMint.newPSK(using: rng)
-        secrets.save(psk, key: Self.pskAccountPrefix + peerID.uuidString)
-
-        var idx = index
-        idx.upsert(PairedPeer(
-            id: peerID,
-            displayName: "iPhone (pairing…)",
-            createdAt: Date(),
-            localPeerID: localPeerID))
-        commit(idx)
+        pendingPairing = (
+            peer: PairedPeer(
+                id: peerID,
+                displayName: "iPhone (pairing…)",
+                createdAt: Date(),
+                localPeerID: localPeerID),
+            pskBase64: psk)
 
         return LANPairingPayload(
             peerID: peerID,
@@ -107,10 +123,27 @@ final class PairingStore {
             serviceInstanceName: serviceInstanceName)
     }
 
-    /// Record the phone's real display name once it has successfully handshaken
-    /// (the listener calls this after a PSK-authenticated hello). No-op if the peer
-    /// was unpaired in the meantime.
+    /// Discard a staged pairing that was never proven (sheet closed / abandoned).
+    /// Nothing was persisted, so this is purely dropping the in-memory PSK.
+    func discardPendingPairing() {
+        pendingPairing = nil
+    }
+
+    /// The listener proved a peer's identity (PSK-authenticated hello + HMAC
+    /// proof). If it's the staged pairing, PERSIST it now — Keychain PSK + index
+    /// entry with the phone's real name; if it's an already-paired peer, refresh
+    /// its display name. No-op for an unknown peer (unpaired mid-flight).
     func confirmPairing(peerID: UUID, phoneDisplayName: String) {
+        if let pending = pendingPairing, pending.peer.id == peerID {
+            secrets.save(pending.pskBase64, key: Self.pskAccountPrefix + peerID.uuidString)
+            var peer = pending.peer
+            peer.displayName = phoneDisplayName.isEmpty ? peer.displayName : phoneDisplayName
+            var idx = index
+            idx.upsert(peer)
+            commit(idx)
+            pendingPairing = nil
+            return
+        }
         guard var peer = index.peer(id: peerID) else { return }
         peer.displayName = phoneDisplayName.isEmpty ? peer.displayName : phoneDisplayName
         var idx = index

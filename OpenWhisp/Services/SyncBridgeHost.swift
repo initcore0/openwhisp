@@ -29,6 +29,15 @@ protocol SyncStore: AnyObject {
     /// The pack bundles this device would OFFER on a pull (its bundled config packs
     /// as ConfigBundles), so a peer can import them. Empty when none.
     func syncPackBundles() -> [ConfigBundle]
+    /// The receiver's history retention cap (entries), or nil for uncapped. A push
+    /// merge counts/persists only entries that survive this cap — otherwise
+    /// over-cap entries were reported as merged, trimmed by the store, and
+    /// re-reported on every identical re-push (idempotency break).
+    var syncHistoryRetentionLimit: Int? { get }
+}
+
+extension SyncStore {
+    var syncHistoryRetentionLimit: Int? { nil }
 }
 
 /// The real implementations of the three sync verbs (`sync.manifest` / `sync.pull`
@@ -68,9 +77,12 @@ struct SyncVerbHandlers {
 
         return BridgeWire.SyncManifestResult(
             schemaVersion: ConfigBundle.currentSchemaVersion,
-            vocabHash: SyncMerge.contentHash(vocab),
-            profilesHash: SyncMerge.contentHash(profiles),
-            modesHash: SyncMerge.contentHash(modes),
+            // Canonical (order-independent) hashes: the merge preserves each
+            // side's local order, so raw-array hashes would never converge after
+            // a bidirectional sync even when the content has (see SyncMerge).
+            vocabHash: SyncMerge.vocabularyHash(vocab),
+            profilesHash: SyncMerge.profilesHash(profiles),
+            modesHash: SyncMerge.modesHash(modes),
             packsHash: store.syncPacksHash(),
             historyHead: SyncMerge.historyHead(history),
             updatedAt: updatedAt)
@@ -78,11 +90,14 @@ struct SyncVerbHandlers {
 
     // MARK: sync.pull
 
-    /// Assemble a ConfigBundle carrying ONLY the requested sections (absent/empty
-    /// `want` → every section) plus the history delta since the cursor.
+    /// Assemble a ConfigBundle carrying ONLY the requested sections (an ABSENT
+    /// `want` → every section; a present-but-empty `want` → none) plus the history
+    /// delta since the cursor. The absent/empty distinction matters for version
+    /// skew: a newer peer asking only for a section this build doesn't know
+    /// decodes to `want: []` and must get NOTHING, not everything.
     func pull(_ params: BridgeWire.SyncPullParams) -> BridgeWire.SyncBundleResult {
         let want: Set<BridgeWire.SyncSection>
-        if let w = params.want, !w.isEmpty {
+        if let w = params.want {
             want = Set(w)
         } else {
             want = Set(BridgeWire.SyncSection.allCases)
@@ -138,7 +153,8 @@ struct SyncVerbHandlers {
             localModes: store.syncModes,
             localHistory: store.syncHistory,
             incomingBundle: params.bundle,
-            incomingHistory: params.historyEntries)
+            incomingHistory: params.historyEntries,
+            historyRetentionLimit: store.syncHistoryRetentionLimit)
 
         // Write back only changed sections so a no-op push doesn't churn stores.
         if outcome.counts.vocabulary > 0 { store.syncVocabulary = outcome.vocabulary }

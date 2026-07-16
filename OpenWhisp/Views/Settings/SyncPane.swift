@@ -24,6 +24,11 @@ struct SyncPane: View {
         .sheet(isPresented: $showingPairSheet, onDismiss: { appState.endPairing() }) {
             PairSheet(appState: appState, isPresented: $showingPairSheet)
         }
+        // Belt-and-braces exit: closing the Settings WINDOW while the sheet is up
+        // doesn't reliably fire the sheet's onDismiss on macOS, which would leave
+        // pairing mode (and the LAN listener + staged PSK) stuck on until app
+        // restart. endPairing is idempotent, so the doubled call is harmless.
+        .onDisappear { appState.endPairing() }
     }
 
     // MARK: Intro

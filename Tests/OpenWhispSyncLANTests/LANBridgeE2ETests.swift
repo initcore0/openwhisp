@@ -27,15 +27,22 @@ final class LANBridgeE2ETests: XCTestCase {
 
     /// Boot a server on an ephemeral-but-fixed local port with a fixed PSK, returning
     /// the running server, its host/store, the PSK, and the bound port.
+    /// Peer handshakes the server reported (peerID, announced client name) — the
+    /// wiring-lesson assertion: identity binding must be OBSERVED, not assumed.
+    final class HandshakeLog: @unchecked Sendable { var events: [(UUID, String)] = [] }
+    private let handshakes = HandshakeLog()
+
     @MainActor
     private func startServer(port: UInt16, store: MemStore) throws -> (LANBridgeServer, Data) {
         let psk = Data((0..<32).map { UInt8($0) })
         let host = LoopbackHost(store: store)
+        let handshakes = self.handshakes
         let server = LANBridgeServer(
             host: host,
             pskProvider: { [self.peerID: psk] },
             deviceName: { "E2E Mac" },
-            onPeerHandshake: { _, _ in })
+            instanceName: { "OpenWhisp-E2E" },
+            onPeerHandshake: { id, name in handshakes.events.append((id, name)) })
         server.start(forcedPort: port)
         // Wait for the listener to bind.
         let deadline = Date().addingTimeInterval(5)
@@ -81,12 +88,19 @@ final class LANBridgeE2ETests: XCTestCase {
                 try client.connect()
                 defer { client.cancel() }
 
-                // 1) hello — establishes the handshake + advertises `sync`.
+                // 1) hello — establishes the handshake + advertises `sync`. The
+                // peerID claim MUST carry the HMAC proof under this peer's PSK
+                // (LANPeerProof) or the server closes the connection.
                 let hello: BridgeWire.HelloResult = try client.call(
                     method: "bridge.hello",
-                    params: BridgeWire.HelloParams(protocolVersion: 1, clientName: "iPhone E2E", clientVersion: "1.0"),
+                    params: BridgeWire.HelloParams(
+                        protocolVersion: 1, clientName: "iPhone E2E", clientVersion: "1.0",
+                        peerID: self.peerID.uuidString,
+                        peerProof: LANPeerProof.proof(psk: psk, peerID: self.peerID)),
                     resultType: BridgeWire.HelloResult.self)
                 XCTAssertTrue(hello.capabilities.contains(BridgeWire.Capability.sync))
+                XCTAssertEqual(hello.clientId, self.peerID.uuidString,
+                    "the session must be bound to the PROVEN peer identity")
 
                 // 2) sync.manifest — the server reports its live sections.
                 let manifest: BridgeWire.SyncManifestResult = try client.call(
@@ -140,6 +154,11 @@ final class LANBridgeE2ETests: XCTestCase {
         wait(for: [done], timeout: 20)
         if let flowError { XCTFail("client flow failed: \(flowError)") }
 
+        // Identity binding was OBSERVED: the server reported exactly this peer's
+        // proven handshake with the name it announced (drives confirmPairing).
+        XCTAssertEqual(handshakes.events.map(\.0), [peerID])
+        XCTAssertEqual(handshakes.events.map(\.1), ["iPhone E2E"])
+
         // The server writes the merged store on its MAIN-thread hop; flush the main
         // queue so those writes are visible before we assert (a barrier, not a poll).
         let flushed = expectation(description: "main flushed")
@@ -173,7 +192,8 @@ final class LANBridgeE2ETests: XCTestCase {
         let server = try MainActor.assumeIsolated { () -> LANBridgeServer in
             let host = LoopbackHost(store: store)
             let s = LANBridgeServer(
-                host: host, pskProvider: { box.map }, deviceName: { "M" }, onPeerHandshake: { _, _ in })
+                host: host, pskProvider: { box.map }, deviceName: { "M" },
+                instanceName: { "OpenWhisp-E2E" }, onPeerHandshake: { _, _ in })
             s.start(forcedPort: port)
             let deadline = Date().addingTimeInterval(5)
             while s.boundPort == nil && Date() < deadline { RunLoop.current.run(until: Date().addingTimeInterval(0.02)) }
@@ -209,6 +229,50 @@ final class LANBridgeE2ETests: XCTestCase {
         wait(for: [revoked], timeout: 10)
     }
 
+    /// A TLS-authenticated client whose hello claims a peer identity WITHOUT a
+    /// valid HMAC proof must be rejected before any verb runs — this is what stops
+    /// one paired device from riding another's consent (the TLS metadata API
+    /// cannot say which of N registered PSKs was negotiated).
+    func testHelloWithoutValidProofIsRejected() throws {
+        let store = MemStore()
+        let port = testPort()
+        let (server, psk) = try MainActor.assumeIsolated { try startServer(port: port, store: store) }
+        defer { MainActor.assumeIsolated { server.stop() } }
+
+        let done = expectation(description: "rejections observed")
+        DispatchQueue.global().async {
+            // No proof at all.
+            do {
+                let c = try TLSPSKClient(port: port, psk: psk, identity: self.peerID.uuidString)
+                try c.connect()
+                defer { c.cancel() }
+                _ = try c.call(
+                    method: "bridge.hello",
+                    params: BridgeWire.HelloParams(protocolVersion: 1, clientName: "sneaky", clientVersion: "1.0"),
+                    resultType: BridgeWire.HelloResult.self)
+                XCTFail("hello without a proof must be rejected")
+            } catch { /* expected: error response and/or closed connection */ }
+
+            // Proof computed under the WRONG key (another device's PSK).
+            do {
+                let c = try TLSPSKClient(port: port, psk: psk, identity: self.peerID.uuidString)
+                try c.connect()
+                defer { c.cancel() }
+                let wrongKeyProof = LANPeerProof.proof(psk: Data(repeating: 0xEE, count: 32), peerID: self.peerID)
+                _ = try c.call(
+                    method: "bridge.hello",
+                    params: BridgeWire.HelloParams(
+                        protocolVersion: 1, clientName: "sneaky", clientVersion: "1.0",
+                        peerID: self.peerID.uuidString, peerProof: wrongKeyProof),
+                    resultType: BridgeWire.HelloResult.self)
+                XCTFail("hello with a wrong-key proof must be rejected")
+            } catch { /* expected */ }
+            done.fulfill()
+        }
+        wait(for: [done], timeout: 20)
+        XCTAssertTrue(handshakes.events.isEmpty, "no unproven hello may reach onPeerHandshake")
+    }
+
     /// A client that presents an UNKNOWN identity / wrong PSK cannot complete the
     /// TLS handshake, so it never gets to send a request.
     func testWrongPSKFailsHandshake() throws {
@@ -222,5 +286,101 @@ final class LANBridgeE2ETests: XCTestCase {
         let client = try TLSPSKClient(port: port, psk: wrongPSK, identity: peerID.uuidString)
         XCTAssertThrowsError(try client.connect(timeout: 3)) { _ in }
         client.cancel()
+    }
+}
+
+
+/// Handler-level (no TLS) tests of `SyncVerbHandlers` — the paging/want/cap wiring
+/// the pure-function tests can't see (the repo's wiring lesson).
+final class SyncVerbHandlersTests: XCTestCase {
+
+    final class MemStore: SyncStore {
+        var syncVocabulary: Vocabulary = .empty
+        var syncProfiles: [AppProfile] = []
+        var syncModes: [Mode] = []
+        var syncHistory: [TranscriptionEntry] = []
+        var syncHistoryRetentionLimit: Int?
+        func syncPacksHash() -> String { "" }
+        func syncPackBundles() -> [ConfigBundle] { [] }
+    }
+
+    private func entry(_ seconds: TimeInterval, text: String = "e") -> TranscriptionEntry {
+        TranscriptionEntry(id: UUID(), text: text, date: Date(timeIntervalSince1970: seconds), appBundleID: nil, appName: nil)
+    }
+
+    /// Walk `pull` page by page exactly as the documented client contract says
+    /// (nextHistoryCursor → pageCursor): every entry arrives exactly once, config
+    /// sections ride the first page only, and pagination terminates.
+    func testPullPagesWalkEveryEntryOnceAndTerminate() {
+        let store = MemStore()
+        store.syncVocabulary = Vocabulary(terms: ["term"], substitutions: [])
+        store.syncHistory = (0..<25).map { entry(Double(1_000 + $0)) }
+        let handlers = SyncVerbHandlers(store: store)
+
+        var seen: [UUID] = []
+        var cursor: String?
+        var pages = 0
+        repeat {
+            let result = handlers.pull(BridgeWire.SyncPullParams(pageCursor: cursor, historyLimit: 10))
+            seen += result.historyEntries.map(\.id)
+            if pages == 0 {
+                XCTAssertNotNil(result.bundle.vocabulary, "config rides the FIRST page")
+            } else {
+                XCTAssertNil(result.bundle.vocabulary, "continuation pages carry history only")
+            }
+            pages += 1
+            cursor = result.nextHistoryCursor
+            if result.hasMoreHistory != true { break }
+        } while pages < 10
+        XCTAssertEqual(pages, 3)
+        XCTAssertEqual(Set(seen), Set(store.syncHistory.map(\.id)))
+        XCTAssertEqual(seen.count, 25, "no entry may repeat across pages")
+    }
+
+    /// ABSENT want → everything; present-but-EMPTY want (a newer peer asked only
+    /// for sections this build doesn't know) → nothing.
+    func testPullWantAbsentMeansAllEmptyMeansNone() {
+        let store = MemStore()
+        store.syncVocabulary = Vocabulary(terms: ["t"], substitutions: [])
+        store.syncProfiles = []
+        store.syncHistory = [entry(1)]
+        let handlers = SyncVerbHandlers(store: store)
+
+        let all = handlers.pull(BridgeWire.SyncPullParams(want: nil))
+        XCTAssertNotNil(all.bundle.vocabulary)
+        XCTAssertEqual(all.historyEntries.count, 1)
+
+        let none = handlers.pull(BridgeWire.SyncPullParams(want: []))
+        XCTAssertNil(none.bundle.vocabulary)
+        XCTAssertNil(none.bundle.profiles)
+        XCTAssertNil(none.bundle.modes)
+        XCTAssertTrue(none.historyEntries.isEmpty)
+    }
+
+    /// Push idempotency must survive the receiver's retention cap: entries older
+    /// than the cap window are NOT counted as merged (they'd be trimmed), so an
+    /// identical re-push reports zero instead of re-"merging" them forever.
+    func testPushRespectsRetentionCapAndStaysIdempotent() {
+        let store = MemStore()
+        store.syncHistoryRetentionLimit = 3
+        store.syncHistory = [entry(300), entry(200), entry(100)] // full at cap
+        let handlers = SyncVerbHandlers(store: store)
+
+        // One genuinely-new (newest) + one too-old-to-survive entry.
+        let fresh = entry(400, text: "fresh")
+        let ancient = entry(50, text: "ancient")
+        let payload = BridgeWire.SyncBundleResult(
+            bundle: ConfigBundle(profiles: nil, modes: nil, vocabulary: nil),
+            historyEntries: [fresh, ancient])
+
+        let first = handlers.push(payload)
+        XCTAssertTrue(first.accepted)
+        XCTAssertEqual(first.mergedCounts.history, 1, "only the surviving entry counts")
+        XCTAssertTrue(store.syncHistory.contains { $0.id == fresh.id })
+        XCTAssertFalse(store.syncHistory.contains { $0.id == ancient.id })
+        XCTAssertEqual(store.syncHistory.count, 3)
+
+        let second = handlers.push(payload)
+        XCTAssertEqual(second.mergedCounts.history, 0, "identical re-push must merge nothing")
     }
 }

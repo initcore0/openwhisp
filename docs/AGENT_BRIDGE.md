@@ -48,6 +48,11 @@ so any stamped v3 edit always wins over unstamped legacy data. Every merge is
 (`mergedCounts` all zero). The whole policy is the pure `SyncMerge` funnel in
 `OpenWhispCore` and is exhaustively unit-tested.
 
+**Clock skew is silently authoritative.** All `updatedAt` stamps are wall-clock
+`Date()` on the mutating device; a device with a fast clock wins every LWW
+conflict and a slow one can never overwrite. v1 accepts this (same-owner devices,
+NTP-synced in practice); there is no skew detection.
+
 **Two v1 scope limits, by design.** (1) **No tombstones:** a deleted vocabulary
 entry / profile / mode leaves no trace, so union-by-id resurrects it from the
 peer on the next sync — delete-then-sync brings it back. A tombstone model is
@@ -70,18 +75,33 @@ The paired iPhone reaches those verbs over the LAN, not the UNIX socket. A
 `LANBridgeServer` advertises `_openwhisp._tcp` over **Bonjour**, accepts a
 **TLS pre-shared-key** connection, and feeds each connection's NDJSON frames into
 the *same* `BridgeRouter` → host pipeline the UNIX socket uses — routing, consent,
-and rate-limit are reused verbatim. The only substitution is authentication: with
-no cross-device code-signing identity, a peer is authenticated by "the TLS
-handshake completed with a PSK we minted at pairing" (each paired device = one
-PSK; the client presents its peer UUID as the TLS identity, and the connection
-recovers *which* peer authenticated from the negotiated PSK identity, binding
-consent to that device).
+and rate-limit are reused verbatim, but the LAN link is **scoped to the sync
+verbs** (`sync.*` + `bridge.hello`/`bridge.status`): dictate/refine/history are
+answered with `methodNotFound` over the LAN, because a sync pairing must never
+quietly become remote mic/LLM control. Authentication replaces code-signing with
+two layers:
+
+1. **TLS-PSK**: each paired device has one 32-byte PSK; a client whose PSK isn't
+   registered can't complete the handshake, so no unpaired device yields a byte.
+2. **Hello identity proof** (BINDING contract, see `LANPeerProof`): TLS proves
+   the client held *some* registered PSK, but not *which* (the metadata API
+   enumerates the locally-configured PSKs, not the negotiated one) — so the
+   client's `bridge.hello` must carry `peerID` plus
+   `peerProof = base64(HMAC-SHA256(key: psk, msg: "openwhisp-peer-binding:" + peerID))`.
+   The server verifies the proof against the PSK it stored for that peer and
+   closes the connection on any mismatch. This is what binds consent to a
+   specific paired device and stops one paired phone from riding another's
+   grants.
 
 - **Pairing** is out-of-band: **Settings → Sync → Pair iPhone…** shows a QR the
   phone scans. The QR JSON is
   `{ version, peerID, displayName, psk (base64 of 32 random bytes), serviceInstanceName }`.
-  The PSK lives in the Mac **Keychain** (keyed by the peer UUID); **Unpair**
-  destroys it and drops the connection, so that device can no longer authenticate.
+  A freshly-minted pairing is staged **in memory only** — the PSK enters the Mac
+  **Keychain** (keyed by the peer UUID) and the peer joins the device list only
+  once the phone connects and proves it (an abandoned QR leaves nothing behind,
+  and closing the sheet discards the staged PSK). **Unpair** destroys the
+  Keychain PSK, drops the connection, and revokes the device's consent record,
+  so that device can no longer authenticate.
 - **TLS.** We request the version range **TLS 1.2…1.3** with the PSK AEAD
   ciphersuite `TLS_PSK_WITH_AES_128_GCM_SHA256`. The intent is TLS 1.3, but
   Network.framework's `NWListener` does not accept an external TLS-1.3 PSK on the

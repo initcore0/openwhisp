@@ -50,6 +50,30 @@ public enum SyncMerge {
         return digest.map { String(format: "%02x", $0) }.joined()
     }
 
+    // MARK: - Canonical section hashes (order-independent)
+
+    /// Manifest hashes must be ORDER-INDEPENDENT: the merge preserves each side's
+    /// local order ("local first, net-new appended"), so after a bidirectional
+    /// sync the two devices hold set-equal sections in DIFFERENT orders. Hashing
+    /// the raw arrays would make a hash-driven planner conclude the devices are
+    /// never in sync (and any "synced" indicator could never settle). These
+    /// canonicalize — sort by id (terms lexicographically) — before hashing, so
+    /// converged content always yields converged hashes.
+    public static func vocabularyHash(_ vocab: Vocabulary) -> String {
+        var canon = vocab
+        canon.terms = vocab.terms.sorted()
+        canon.substitutions = vocab.substitutions.sorted { $0.id.uuidString < $1.id.uuidString }
+        return contentHash(canon)
+    }
+
+    public static func profilesHash(_ profiles: [AppProfile]) -> String {
+        contentHash(profiles.sorted { $0.id.uuidString < $1.id.uuidString })
+    }
+
+    public static func modesHash(_ modes: [Mode]) -> String {
+        contentHash(modes.sorted { $0.id.uuidString < $1.id.uuidString })
+    }
+
     // MARK: - Vocabulary
 
     /// Union two vocabularies by the boring v1 policy: substitutions unioned by
@@ -67,9 +91,8 @@ public enum SyncMerge {
 
         for sub in incoming.substitutions {
             if let existing = byID[sub.id] {
-                // Newer updatedAt wins. Ties keep the LOCAL entry (stable — a tie is
-                // not a real edit, and keeping local makes the merge idempotent).
-                if sub.updatedAt > existing.updatedAt {
+                if lwwReplaces(incoming: sub, existing: existing,
+                               updatedAt: { $0.updatedAt }) {
                     byID[sub.id] = sub
                 }
             } else {
@@ -99,7 +122,8 @@ public enum SyncMerge {
         var changed = 0
         for sub in incoming.substitutions {
             if let existing = localByID[sub.id] {
-                if sub.updatedAt > existing.updatedAt { changed += 1 }
+                if lwwReplaces(incoming: sub, existing: existing,
+                               updatedAt: { $0.updatedAt }) { changed += 1 }
             } else {
                 changed += 1
             }
@@ -134,10 +158,28 @@ public enum SyncMerge {
         lwwChangeCount(local: local, incoming: incoming, id: { $0.id }, updatedAt: { $0.updatedAt })
     }
 
+    /// The single LWW replacement rule: strictly-newer `updatedAt` wins; an EXACT
+    /// tie with different content breaks deterministically on the larger content
+    /// hash, so BOTH devices converge on the same winner. (Keeping local on ties —
+    /// the old rule — meant a tie with different content diverged forever, each
+    /// side reporting 0 changes while their hashes never matched. Reachable via
+    /// epoch-stamped legacy data edited on both sides pre-v3, or two imports
+    /// restamped with one shared `now`.) Same-content ties never replace, so the
+    /// merge stays idempotent.
+    private static func lwwReplaces<Element: Encodable>(
+        incoming: Element, existing: Element, updatedAt: (Element) -> Date
+    ) -> Bool {
+        let ni = updatedAt(incoming), ne = updatedAt(existing)
+        if ni != ne { return ni > ne }
+        let hi = contentHash(incoming), he = contentHash(existing)
+        return hi > he
+    }
+
     // Shared last-writer-wins list merge. `local` order is preserved; a conflict
     // replaces the local element IN PLACE (so order is stable across applies);
-    // net-new incoming elements are appended in incoming order. Ties keep local.
-    private static func mergeLWW<Element, ID: Hashable>(
+    // net-new incoming elements are appended in incoming order. Ties resolve via
+    // `lwwReplaces` (deterministic content tie-break, convergent on both sides).
+    private static func mergeLWW<Element: Encodable, ID: Hashable>(
         local: [Element], incoming: [Element],
         id: (Element) -> ID, updatedAt: (Element) -> Date
     ) -> [Element] {
@@ -148,7 +190,7 @@ public enum SyncMerge {
         for e in incoming {
             let key = id(e)
             if let i = indexByID[key] {
-                if updatedAt(e) > updatedAt(result[i]) {
+                if lwwReplaces(incoming: e, existing: result[i], updatedAt: updatedAt) {
                     result[i] = e
                 }
             } else {
@@ -159,16 +201,16 @@ public enum SyncMerge {
         return result
     }
 
-    private static func lwwChangeCount<Element, ID: Hashable>(
+    private static func lwwChangeCount<Element: Encodable, ID: Hashable>(
         local: [Element], incoming: [Element],
         id: (Element) -> ID, updatedAt: (Element) -> Date
     ) -> Int {
-        var current: [ID: Date] = [:]
-        for e in local { current[id(e)] = updatedAt(e) }
+        var current: [ID: Element] = [:]
+        for e in local { current[id(e)] = e }
         var changed = 0
         for e in incoming {
             if let existing = current[id(e)] {
-                if updatedAt(e) > existing { changed += 1 }
+                if lwwReplaces(incoming: e, existing: existing, updatedAt: updatedAt) { changed += 1 }
             } else {
                 changed += 1
             }
@@ -246,7 +288,8 @@ public enum SyncMerge {
         localModes: [Mode],
         localHistory: [TranscriptionEntry],
         incomingBundle: ConfigBundle,
-        incomingHistory: [TranscriptionEntry]
+        incomingHistory: [TranscriptionEntry],
+        historyRetentionLimit: Int? = nil
     ) -> Outcome {
         var counts = BridgeWire.SyncMergedCounts()
 
@@ -268,8 +311,22 @@ public enum SyncMerge {
             mergedModes = mergeModes(local: localModes, incoming: inModes)
         }
 
-        counts.history = historyChangeCount(local: localHistory, incoming: incomingHistory)
-        let mergedHistory = mergeHistory(local: localHistory, incoming: incomingHistory)
+        // History: union, then project through the receiver's retention cap BEFORE
+        // counting. Counting the raw union broke push idempotency at the store
+        // level: entries older than the cap were "merged" (nonzero count, store
+        // write) and then trimmed away, so every identical re-push reported them
+        // as new again while silently discarding them.
+        let mergedAll = mergeHistory(local: localHistory, incoming: incomingHistory)
+        let mergedHistory: [TranscriptionEntry]
+        if let cap = historyRetentionLimit, mergedAll.count > cap {
+            let surviving = Set(
+                mergedAll.sorted { $0.date > $1.date }.prefix(cap).map(\.id))
+            mergedHistory = mergedAll.filter { surviving.contains($0.id) }
+        } else {
+            mergedHistory = mergedAll
+        }
+        let localIDs = Set(localHistory.map(\.id))
+        counts.history = mergedHistory.filter { !localIDs.contains($0.id) }.count
 
         return Outcome(
             vocabulary: mergedVocab, profiles: mergedProfiles, modes: mergedModes,
@@ -294,10 +351,14 @@ public enum SyncMerge {
 
     // MARK: - Paged history (frame-cap safe)
 
-    /// One page of the FULL history log, keyed by a total order (date, then id) so
-    /// no entry is ever skipped by an equal-timestamp tie — the puller keeps
-    /// re-pulling until `hasMore` is false, so it always sees every entry the
-    /// server has, including older-but-unseen ones. This is the frame-cap-safe
+    /// One page of a history list, keyed by a total order (millisecond-ISO date,
+    /// then id) so no entry is ever skipped by an equal-timestamp tie — the puller
+    /// keeps re-pulling until `hasMore` is false and then holds every entry of the
+    /// list it was given. NOTE: when the caller pre-filters with `historyDelta`
+    /// (a `sinceHistoryCursor` pull), entries merged into the server later with
+    /// OLDER dates are outside that filter and never reach a delta-pulling peer —
+    /// detectable only via a `historyHead.count` mismatch, at which point the
+    /// peer should do a full (cursor-less) pull. This is the frame-cap-safe
     /// replacement for shipping the whole log in one NDJSON frame.
     ///
     /// - `afterCursor`: the previous page's `nextCursor` (nil → first page).
@@ -316,10 +377,13 @@ public enum SyncMerge {
         BridgeWire.iso8601String(from: e.date) + "|" + e.id.uuidString
     }
 
+    /// Sort by the SAME string key the cursor compares on. Sorting by raw `Date`
+    /// (sub-millisecond) while resuming by the millisecond-truncated ISO string
+    /// let two entries inside the same millisecond disagree about their order vs.
+    /// the cursor — a page boundary between them silently skipped one forever.
+    /// One key for both means sort order and cursor comparison can never diverge.
     private static func orderedAscending(_ all: [TranscriptionEntry]) -> [TranscriptionEntry] {
-        all.sorted {
-            $0.date != $1.date ? $0.date < $1.date : $0.id.uuidString < $1.id.uuidString
-        }
+        all.sorted { pageCursor($0) < pageCursor($1) }
     }
 
     public static func historyPage(

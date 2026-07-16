@@ -41,13 +41,45 @@ final class SyncMergeTests: XCTestCase {
         XCTAssertEqual(SyncMerge.vocabularyChangeCount(local: local, incoming: incoming), 0)
     }
 
-    func testVocabTieKeepsLocal() {
+    func testVocabTieBreaksDeterministicallyAndConverges() {
+        // An exact updatedAt tie with DIFFERENT content must not "keep local" on
+        // both sides — that diverged forever with both devices reporting 0
+        // changes. The tie-break is deterministic (larger content hash wins), so
+        // A merging B and B merging A pick the SAME winner.
         let id = UUID()
-        let local = Vocabulary(terms: [], substitutions: [.init(id: id, from: "a", to: "LOCAL", updatedAt: t1)])
-        let incoming = Vocabulary(terms: [], substitutions: [.init(id: id, from: "a", to: "REMOTE", updatedAt: t1)])
-        let merged = SyncMerge.mergeVocabulary(local: local, incoming: incoming)
-        XCTAssertEqual(merged.substitutions.first?.to, "LOCAL")
-        XCTAssertEqual(SyncMerge.vocabularyChangeCount(local: local, incoming: incoming), 0)
+        let a = Vocabulary(terms: [], substitutions: [.init(id: id, from: "a", to: "LOCAL", updatedAt: t1)])
+        let b = Vocabulary(terms: [], substitutions: [.init(id: id, from: "a", to: "REMOTE", updatedAt: t1)])
+        let aMergesB = SyncMerge.mergeVocabulary(local: a, incoming: b)
+        let bMergesA = SyncMerge.mergeVocabulary(local: b, incoming: a)
+        XCTAssertEqual(aMergesB.substitutions.first?.to, bMergesA.substitutions.first?.to,
+            "both sides must converge on the same tie winner")
+        // Idempotent: re-applying the same incoming changes nothing further.
+        XCTAssertEqual(SyncMerge.mergeVocabulary(local: aMergesB, incoming: b), aMergesB)
+        // A SAME-content tie is a no-op and reports zero changes.
+        let same = Vocabulary(terms: [], substitutions: [.init(id: id, from: "a", to: "LOCAL", updatedAt: t1)])
+        XCTAssertEqual(SyncMerge.vocabularyChangeCount(local: a, incoming: same), 0)
+        XCTAssertEqual(SyncMerge.mergeVocabulary(local: a, incoming: same), a)
+    }
+
+    func testTwoWayMergeConvergesToEqualCanonicalHashes() {
+        // The convergence property a hash-driven sync planner depends on: after A
+        // merges B and B merges A, the two devices' MANIFEST hashes must be equal
+        // even though each preserves its own local ordering.
+        let shared = UUID(), t = t1
+        let a = Vocabulary(terms: ["zeta", "alpha"], substitutions: [
+            .init(id: shared, from: "x", to: "X", updatedAt: t),
+            .init(id: UUID(uuidString: "AAAAAAAA-0000-0000-0000-000000000001")!, from: "a", to: "A", updatedAt: t),
+        ])
+        let b = Vocabulary(terms: ["alpha", "midway"], substitutions: [
+            .init(id: shared, from: "x", to: "X", updatedAt: t),
+            .init(id: UUID(uuidString: "BBBBBBBB-0000-0000-0000-000000000002")!, from: "b", to: "B", updatedAt: t),
+        ])
+        let aSide = SyncMerge.mergeVocabulary(local: a, incoming: b)
+        let bSide = SyncMerge.mergeVocabulary(local: b, incoming: a)
+        // Different in-memory order (local-first)…
+        XCTAssertNotEqual(aSide.substitutions.map(\.id), bSide.substitutions.map(\.id))
+        // …but identical canonical hashes: the devices read as in-sync.
+        XCTAssertEqual(SyncMerge.vocabularyHash(aSide), SyncMerge.vocabularyHash(bSide))
     }
 
     func testVocabIncomingAbsentEntryPreserved() {
@@ -363,6 +395,33 @@ final class SyncMergeTests: XCTestCase {
             cursor = page.nextCursor
         }
         XCTAssertEqual(seen, ids, "every entry, once, in date order")
+    }
+
+    func testHistoryPagingNeverSkipsSubMillisecondNeighbors() {
+        // Two entries INSIDE the same millisecond whose raw-Date order disagrees
+        // with their uuid order: sorting by raw Date while resuming by the
+        // ms-truncated cursor string used to skip the second one forever when a
+        // page boundary fell between them. Sort key == cursor key now.
+        let base = Date(timeIntervalSince1970: 1_000)
+        let earlierDateBiggerUUID = TranscriptionEntry(
+            id: UUID(uuidString: "FFFFFFFF-0000-0000-0000-000000000001")!,
+            text: "first-by-date", date: base.addingTimeInterval(0.0001), appBundleID: nil, appName: nil)
+        let laterDateSmallerUUID = TranscriptionEntry(
+            id: UUID(uuidString: "00000000-0000-0000-0000-000000000002")!,
+            text: "second-by-date", date: base.addingTimeInterval(0.0009), appBundleID: nil, appName: nil)
+        let all = [earlierDateBiggerUUID, laterDateSmallerUUID]
+
+        var seen: [UUID] = []
+        var cursor: String?
+        for _ in 0..<4 {
+            let page = SyncMerge.historyPage(all, afterCursor: cursor, limit: 1)
+            seen += page.entries.map(\.id)
+            cursor = page.nextCursor
+            if !page.hasMore { break }
+        }
+        XCTAssertEqual(Set(seen), Set(all.map(\.id)),
+            "an entry must never be silently skipped at a page boundary")
+        XCTAssertEqual(seen.count, 2)
     }
 
     func testHistoryPagingNeverSkipsEqualTimestampTies() {

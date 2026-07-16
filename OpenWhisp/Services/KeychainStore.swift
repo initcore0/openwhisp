@@ -46,6 +46,10 @@ final class KeychainStore: SecretStore {
         if status == errSecItemNotFound {
             var newItem = query
             newItem[kSecValueData as String] = data
+            // Device-bound + unlocked-only: these are secrets (sync PSKs, API
+            // keys) that should neither ride a backup/migration to another
+            // machine nor be readable before first unlock.
+            newItem[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
             let addStatus = SecItemAdd(newItem as CFDictionary, nil)
             if addStatus != errSecSuccess {
                 print("[KeychainStore] add failed for \(key): OSStatus \(addStatus)")
