@@ -106,7 +106,7 @@ struct ModesPane: View {
             Button {
                 let n = appState.modes.count + 1
                 let mode = Mode(key: "mode-\(n)", name: "Mode \(n)", tone: .casual)
-                appState.modes.append(mode)
+                appState.modes = appState.modes.addingMode(mode)
                 selectedModeID = mode.id
             } label: {
                 Image(systemName: "plus").frame(width: 24, height: 20)
@@ -118,7 +118,7 @@ struct ModesPane: View {
 
             Button {
                 if let id = selectedModeID {
-                    appState.modes.removeAll { $0.id == id }
+                    appState.modes = appState.modes.removingMode(id)
                     selectedModeID = nil
                 }
             } label: {
@@ -200,7 +200,11 @@ struct ModesPane: View {
     /// out-of-range index.
     private func setMode(_ idx: Int, _ mutate: (inout Mode) -> Void) {
         guard appState.modes.indices.contains(idx) else { return }
-        mutate(&appState.modes[idx])
+        // Route through the stamping helper so every field edit advances the
+        // Mode's updatedAt (a stamp that never moves makes sync's LWW silently
+        // wrong). editingMode keys by id, which the bounds-safe idx maps to.
+        let id = appState.modes[idx].id
+        appState.modes = appState.modes.editingMode(id, mutate)
     }
 
     private func nameBinding(_ idx: Int) -> Binding<String> {

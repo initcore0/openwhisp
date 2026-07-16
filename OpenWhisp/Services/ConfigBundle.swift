@@ -26,10 +26,15 @@ public struct ConfigBundle: Codable, Equatable {
     /// Custom vocabulary (terms + substitutions).
     public var vocabulary: Vocabulary?
 
-    /// Bumped 1 → 2 for the `modes` section (MAK-39). The decode path stays
-    /// tolerant (all sections optional), so the bump only stops a v1 app from
-    /// silently dropping Modes it can't represent.
-    public static let currentSchemaVersion = 2
+    /// Bumped 1 → 2 for the `modes` section (MAK-39); 2 → 3 for the `updatedAt`
+    /// stamps on `Vocabulary.Substitution`, `AppProfile`, and `Mode` (MAK-51 WP0b,
+    /// the P2P-sync last-writer-wins keys). The decode path stays tolerant: every
+    /// section is optional, and each stamped type decodes a MISSING `updatedAt`
+    /// from a v2 file as `Date(timeIntervalSince1970: 0)` — so a v2 bundle
+    /// round-trips through a v3 app, and any stamped v3 edit always wins the merge
+    /// over unstamped legacy data. A v3 bundle is still REJECTED by a v2 app (the
+    /// `> currentSchemaVersion` guard below), and a v4 bundle is rejected here.
+    public static let currentSchemaVersion = 3
 
     public init(
         schemaVersion: Int = ConfigBundle.currentSchemaVersion,

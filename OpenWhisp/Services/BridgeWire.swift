@@ -16,10 +16,24 @@ import Foundation
 /// that rejects a client claiming a *newer* protocol than this build understands.
 public enum BridgeWire {
 
-    /// Current wire protocol version. Bump on any breaking change to the shapes
-    /// below. The server advertises this in `bridge.hello`; the negotiated version
-    /// for a connection is `min(client, server)`.
+    /// Current wire protocol MAJOR version. Bump only on a BREAKING change to the
+    /// shapes below. The server advertises this in `bridge.hello`; the negotiated
+    /// version for a connection is `min(client, server)`, and a client claiming a
+    /// higher major than this build is rejected (reject-from-the-future).
+    ///
+    /// ADDITIVE changes — new methods, new result fields, new capabilities — do
+    /// NOT bump this: they are gated by the capabilities handshake so an older
+    /// peer simply never sees them (the `transcribeFile` precedent, and the
+    /// `sync` verbs added in MAK-51 WP0b). We track those additive milestones as a
+    /// human-readable label (``wireVersionLabel``) rather than a wire field.
     public static let protocolVersion = 1
+
+    /// Human-readable additive-milestone label for logs / docs / the settings
+    /// pane. NOT sent on the wire and NEVER used for authorization or negotiation
+    /// (that is ``protocolVersion`` + ``Capability``). Bumped on each additive
+    /// milestone: v1.0 base verbs, v1.1 reserved `transcribe.file`, v1.2 the
+    /// `sync.*` verbs (MAK-51 WP0b).
+    public static let wireVersionLabel = "1.2"
 
     /// The one JSON-RPC frame cap the transport enforces (1 MiB). A line longer
     /// than this closes the connection — a broken/hostile client can't force the
@@ -61,6 +75,15 @@ public enum BridgeWire {
         /// Deferred to v1.1; reserved so the name is designed once and gated by
         /// the capabilities handshake.
         case transcribeFile = "transcribe.file"
+        /// P2P sync (MAK-51 WP0b, wire v1.2). Gated by the `sync` capability so a
+        /// v1 client that never learns the verb exists is untouched.
+        /// `sync.manifest` returns section hashes + a history head so a peer can
+        /// decide what to pull/push without shipping the whole bundle.
+        case syncManifest = "sync.manifest"
+        /// Fetch a (full or delta) ConfigBundle + history entries since a cursor.
+        case syncPull = "sync.pull"
+        /// Mirror shape, phone→Mac: offer a bundle + history delta to merge.
+        case syncPush = "sync.push"
     }
 
     /// Server→client notification method names (no `id`, no response).
@@ -78,6 +101,10 @@ public enum BridgeWire {
         public static let refine = "refine"
         public static let history = "history"
         public static let transcribeFile = "transcribeFile" // reserved for v1.1
+        /// P2P config/history sync (MAK-51 WP0b, wire v1.2). A build that offers
+        /// `sync.manifest`/`sync.pull`/`sync.push` advertises this; a v1 client
+        /// that never sees it is untouched.
+        public static let sync = "sync"
     }
 
     // MARK: - Error codes
@@ -545,6 +572,149 @@ extension BridgeWire {
     public struct HistoryListResult: Codable, Sendable, Equatable {
         public var entries: [HistoryEntryDTO]
         public init(entries: [HistoryEntryDTO]) { self.entries = entries }
+    }
+
+    // MARK: - sync (MAK-51 WP0b, wire v1.2)
+
+    /// The syncable sections a `sync.pull`/`sync.push` may carry. String raw
+    /// values are the on-the-wire tokens in `want`. Tolerant: an unknown token
+    /// from a newer peer is dropped on decode rather than failing the request.
+    public enum SyncSection: String, Codable, Sendable, Equatable, CaseIterable {
+        case vocabulary
+        case profiles
+        case modes
+        case history
+        case packs
+    }
+
+    /// A cheap summary of one peer's history log, so the other side can decide
+    /// whether (and from where) to pull without shipping the whole list. The merge
+    /// is append-only union by entry `id`; `newestDate` is the pull cursor.
+    public struct SyncHistoryHead: Codable, Sendable, Equatable {
+        public var count: Int
+        /// The id of the newest entry, or nil when history is empty.
+        public var newestID: UUID?
+        /// ISO-8601 timestamp of the newest entry (the delta cursor), or nil when
+        /// empty. A puller passes this back as `sinceHistoryCursor` to fetch only
+        /// entries strictly newer.
+        public var newestDate: String?
+
+        public init(count: Int, newestID: UUID?, newestDate: String?) {
+            self.count = count
+            self.newestID = newestID
+            self.newestDate = newestDate
+        }
+    }
+
+    /// Result of `sync.manifest`: section content-hashes + a history head + a
+    /// per-section `updatedAt` map, enough for the peer's pure `SyncEngine.plan`
+    /// to decide what to pull/push. Hashes are opaque content digests (identity
+    /// only — never reversed); a section absent locally is reported as an empty
+    /// string so "no section" and "empty section" stay distinguishable in the map.
+    public struct SyncManifestResult: Codable, Sendable, Equatable {
+        /// The ConfigBundle schema version this peer speaks (``ConfigBundle/currentSchemaVersion``).
+        public var schemaVersion: Int
+        public var vocabHash: String
+        public var profilesHash: String
+        public var modesHash: String
+        public var packsHash: String
+        public var historyHead: SyncHistoryHead
+        /// Per-section newest-`updatedAt` (ISO-8601), keyed by ``SyncSection``
+        /// raw value — the coarse LWW signal for whole-section short-circuits.
+        /// Additive/tolerant: unknown keys are ignored by a reader.
+        public var updatedAt: [String: String]
+
+        public init(
+            schemaVersion: Int, vocabHash: String, profilesHash: String,
+            modesHash: String, packsHash: String, historyHead: SyncHistoryHead,
+            updatedAt: [String: String]
+        ) {
+            self.schemaVersion = schemaVersion
+            self.vocabHash = vocabHash
+            self.profilesHash = profilesHash
+            self.modesHash = modesHash
+            self.packsHash = packsHash
+            self.historyHead = historyHead
+            self.updatedAt = updatedAt
+        }
+    }
+
+    /// Params for `sync.pull`: which sections to fetch, and (for history) an
+    /// optional cursor so only entries strictly newer than it come back.
+    public struct SyncPullParams: Codable, Sendable, Equatable {
+        /// ISO-8601 cursor; nil = full history. Entries with `date` > cursor return.
+        public var sinceHistoryCursor: String?
+        /// Sections to fetch. Absent/empty → the server returns every section it
+        /// has (a convenience for a first full sync).
+        public var want: [SyncSection]?
+
+        public init(sinceHistoryCursor: String? = nil, want: [SyncSection]? = nil) {
+            self.sinceHistoryCursor = sinceHistoryCursor
+            self.want = want
+        }
+
+        // Tolerant: drop unknown section tokens rather than fail the whole request.
+        public init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            self.sinceHistoryCursor = try c.decodeIfPresent(String.self, forKey: .sinceHistoryCursor)
+            if let raw = try c.decodeIfPresent([String].self, forKey: .want) {
+                self.want = raw.compactMap(SyncSection.init(rawValue:))
+            } else {
+                self.want = nil
+            }
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case sinceHistoryCursor, want
+        }
+    }
+
+    /// Result of `sync.pull` (and the payload of `sync.push`): a ConfigBundle
+    /// (schema v3, carrying only the requested sections) plus the history delta.
+    /// History rides as full ``TranscriptionEntry`` values — this is a fidelity
+    /// replication between the user's OWN devices (both link OpenWhispCore), not
+    /// the redacted human-facing `history.list` DTO, so rawText/audio metadata
+    /// survive. The append-only union keys on `TranscriptionEntry.id`.
+    public struct SyncBundleResult: Codable, Sendable, Equatable {
+        public var bundle: ConfigBundle
+        public var historyEntries: [TranscriptionEntry]
+
+        public init(bundle: ConfigBundle, historyEntries: [TranscriptionEntry] = []) {
+            self.bundle = bundle
+            self.historyEntries = historyEntries
+        }
+    }
+
+    /// Per-section counts of what a `sync.push` actually merged into the receiver,
+    /// so the pusher can report "3 vocab, 12 history" and tests can assert exactly.
+    public struct SyncMergedCounts: Codable, Sendable, Equatable {
+        public var vocabulary: Int
+        public var profiles: Int
+        public var modes: Int
+        public var history: Int
+        public var packs: Int
+
+        public init(vocabulary: Int = 0, profiles: Int = 0, modes: Int = 0,
+                    history: Int = 0, packs: Int = 0) {
+            self.vocabulary = vocabulary
+            self.profiles = profiles
+            self.modes = modes
+            self.history = history
+            self.packs = packs
+        }
+    }
+
+    /// Result of `sync.push`: whether the offer was accepted and, if so, what
+    /// merged. `accepted == false` (with an untouched receiver) is how a server
+    /// refuses a schema it can't take without erroring the whole call.
+    public struct SyncPushResult: Codable, Sendable, Equatable {
+        public var accepted: Bool
+        public var mergedCounts: SyncMergedCounts
+
+        public init(accepted: Bool, mergedCounts: SyncMergedCounts = SyncMergedCounts()) {
+            self.accepted = accepted
+            self.mergedCounts = mergedCounts
+        }
     }
 
     // MARK: - Date coding

@@ -160,7 +160,7 @@ final class ModeTests: XCTestCase {
             Mode(key: "chat", name: "Chat", tone: .chat)
         ]
         let bundle = ConfigBundle(modes: modes)
-        XCTAssertEqual(bundle.schemaVersion, 2)
+        XCTAssertEqual(bundle.schemaVersion, ConfigBundle.currentSchemaVersion)
         let decoded = try ConfigBundle.decode(from: bundle.jsonData())
         XCTAssertEqual(decoded.modes, modes)
         XCTAssertNil(decoded.profiles)
@@ -183,7 +183,7 @@ final class ModeTests: XCTestCase {
                 return XCTFail("wrong error \(error)")
             }
             XCTAssertEqual(found, 99)
-            XCTAssertEqual(supported, 2)
+            XCTAssertEqual(supported, ConfigBundle.currentSchemaVersion)
         }
     }
 

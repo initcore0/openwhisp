@@ -17,6 +17,34 @@ Three tools, exposed over the [Model Context Protocol](https://modelcontextproto
 | `openwhisp_refine` | Rewrites text per a natural-language instruction using your configured on-device LLM (same model/prompt as the refine hotkey). |
 | `openwhisp_history` | Returns recent dictations (text, timestamp, target app), newest first. |
 
+### P2P sync verbs (wire v1.2, capability `sync`)
+
+For the paired iPhone companion (MAK-51), three additional verbs move your
+**vocabulary, per-app profiles/modes, config packs, and dictation history**
+between your Mac and phone over your own LAN — nothing leaves your devices. They
+are **additive and capability-gated**: a build that implements them advertises
+the `sync` capability in `bridge.hello`, so a client that never sees it is
+untouched (the on-the-wire protocol major stays `1`; this is milestone `1.2`).
+
+| Verb | Shape |
+|---|---|
+| `sync.manifest` | → `{ schemaVersion, vocabHash, profilesHash, modesHash, packsHash, historyHead { count, newestID, newestDate }, updatedAt: {section → ISO-8601} }` — cheap section digests so a peer can plan what to pull/push without shipping the whole bundle. |
+| `sync.pull` | `{ sinceHistoryCursor?, want?: [vocabulary\|profiles\|modes\|history\|packs] }` → `{ bundle: ConfigBundle(v3), historyEntries: [TranscriptionEntry] }`. Absent `want` returns every section; absent cursor returns full history. |
+| `sync.push` | `{ bundle: ConfigBundle(v3), historyEntries: [TranscriptionEntry] }` (phone→Mac) → `{ accepted, mergedCounts { vocabulary, profiles, modes, history, packs } }`. |
+
+**Consent.** Sync is its own per-capability scope (`sync`), granted separately
+from dictate/history/refine — pairing a phone to sync your setup never lets it
+drive your mic or your LLM. A consent file written before this scope existed
+simply has no `sync` decision recorded, so the first sync prompts.
+
+**Merge policy (v1, deliberately boring).** vocabulary = union by
+`Substitution.id`, newer `updatedAt` wins per entry, terms = set union; history =
+append-only union by entry `id`; profiles/modes/settings = last-writer-wins per
+object by `updatedAt`; packs = content-hash identity. This needs the `updatedAt`
+stamps added to `Vocabulary.Substitution`, `AppProfile`, and `Mode` in
+**ConfigBundle schema v3** — a v2 file decodes its missing stamps as the epoch,
+so any stamped v3 edit always wins over unstamped legacy data.
+
 ## Setup
 
 The bundled `openwhisp` command lives at
@@ -75,9 +103,11 @@ secure field · `64` usage · `65` version mismatch.
 
 ## Security & privacy
 
-- **Local only.** The transport is a UNIX-domain socket under
+- **Local only.** The transport for agent clients is a UNIX-domain socket under
   `~/Library/Application Support/OpenWhisp/` (perms `0600`), not a TCP port —
-  other local users and browser pages can't reach it.
+  other local users and browser pages can't reach it. (The paired-iPhone sync
+  link reuses the same wire over TLS 1.3 with a QR-provisioned pre-shared key on
+  the LAN — see MAK-51; that transport is separate from this socket.)
 - **Signed clients only.** By default only OpenWhisp's own code-signed CLI and
   adapter may connect (verified by the peer's audit token — no PID-reuse race).
   Enable *Allow unsigned / third-party clients* to write your own.

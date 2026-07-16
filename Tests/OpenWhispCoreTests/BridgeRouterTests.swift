@@ -115,6 +115,63 @@ final class BridgeRouterTests: XCTestCase {
         XCTAssertEqual(err.data?.reason, .unknownMethod)
     }
 
+    // MARK: Sync verbs (MAK-51 WP0b, wire v1.2)
+
+    func testSyncManifestNeedsNoParams() {
+        let routed = BridgeRouter.route(line: line(#"{"id":"m","method":"sync.manifest"}"#), hasHandshaken: true)
+        guard case .intent(.syncManifest(.string("m"))) = routed else {
+            return XCTFail("expected syncManifest intent, got \(routed)")
+        }
+    }
+
+    func testSyncPullDefaultsWhenParamsAbsent() {
+        let routed = BridgeRouter.route(line: line(#"{"id":1,"method":"sync.pull"}"#), hasHandshaken: true)
+        guard case let .intent(.syncPull(_, params)) = routed else {
+            return XCTFail("expected syncPull intent, got \(routed)")
+        }
+        XCTAssertNil(params.sinceHistoryCursor)
+        XCTAssertNil(params.want)
+    }
+
+    func testSyncPullWithParams() {
+        let routed = BridgeRouter.route(
+            line: line(#"{"id":1,"method":"sync.pull","params":{"sinceHistoryCursor":"2026-01-01T00:00:00.000Z","want":["vocabulary","history"]}}"#),
+            hasHandshaken: true
+        )
+        guard case let .intent(.syncPull(_, params)) = routed else {
+            return XCTFail("expected syncPull intent, got \(routed)")
+        }
+        XCTAssertEqual(params.sinceHistoryCursor, "2026-01-01T00:00:00.000Z")
+        XCTAssertEqual(params.want, [.vocabulary, .history])
+    }
+
+    func testSyncPushRequiresBundle() {
+        let routed = BridgeRouter.route(line: line(#"{"id":2,"method":"sync.push"}"#), hasHandshaken: true)
+        guard case let .error(_, err) = routed else { return XCTFail("expected error, got \(routed)") }
+        XCTAssertEqual(err.code, BridgeWire.ErrorObject.invalidParams)
+    }
+
+    func testSyncPushWithBundle() {
+        let routed = BridgeRouter.route(
+            line: line(#"{"id":2,"method":"sync.push","params":{"bundle":{"schemaVersion":3},"historyEntries":[]}}"#),
+            hasHandshaken: true
+        )
+        guard case let .intent(.syncPush(_, params)) = routed else {
+            return XCTFail("expected syncPush intent, got \(routed)")
+        }
+        XCTAssertEqual(params.bundle.schemaVersion, 3)
+        XCTAssertTrue(params.historyEntries.isEmpty)
+    }
+
+    func testSyncVerbsRequireHandshakeFirst() {
+        for method in ["sync.manifest", "sync.pull", "sync.push"] {
+            let routed = BridgeRouter.route(line: line(#"{"id":1,"method":"\#(method)"}"#), hasHandshaken: false)
+            guard case .close = routed else {
+                return XCTFail("expected close before handshake for \(method), got \(routed)")
+            }
+        }
+    }
+
     // MARK: Clamping
 
     func testTimeoutClamping() {

@@ -60,6 +60,13 @@ public struct Mode: Codable, Identifiable, Equatable {
     /// activates; it's invoked explicitly by key instead.
     public var appBundleID: String?
 
+    /// When this Mode was last edited by the user (ConfigBundle schema v3,
+    /// MAK-51 WP0b). The sync merge does last-writer-wins per object by this stamp.
+    /// A v2 file written before the field existed decodes to
+    /// `Date(timeIntervalSince1970: 0)` so any stamped v3 edit always wins over
+    /// unstamped legacy data — see ``ConfigBundle`` for the schema note.
+    public var updatedAt: Date
+
     public init(
         id: UUID = UUID(),
         key: String,
@@ -72,7 +79,8 @@ public struct Mode: Codable, Identifiable, Equatable {
         language: String? = nil,
         outputMode: String? = nil,
         aiCleanupEnabled: Bool? = nil,
-        appBundleID: String? = nil
+        appBundleID: String? = nil,
+        updatedAt: Date = Date()
     ) {
         self.id = id
         self.key = Mode.normalizeKey(key)
@@ -86,6 +94,37 @@ public struct Mode: Codable, Identifiable, Equatable {
         self.outputMode = outputMode
         self.aiCleanupEnabled = aiCleanupEnabled
         self.appBundleID = appBundleID
+        self.updatedAt = updatedAt
+    }
+
+    // Custom decoding so a modes.json written before `updatedAt` existed still
+    // decodes: the field is optional and falls back to the EPOCH (not "now") so
+    // unstamped v2 data always loses the last-writer-wins race to a stamped v3
+    // edit. `key` is re-normalized on load, matching the memberwise init.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = try c.decode(UUID.self, forKey: .id)
+        self.key = Mode.normalizeKey(try c.decode(String.self, forKey: .key))
+        self.name = try c.decode(String.self, forKey: .name)
+        self.iconSymbol = try c.decodeIfPresent(String.self, forKey: .iconSymbol)
+        self.transcriptionModel = try c.decodeIfPresent(String.self, forKey: .transcriptionModel)
+        self.llmModel = try c.decodeIfPresent(String.self, forKey: .llmModel)
+        self.instruction = try c.decodeIfPresent(String.self, forKey: .instruction)
+        self.tone = try c.decodeIfPresent(Tone.self, forKey: .tone)
+        self.language = try c.decodeIfPresent(String.self, forKey: .language)
+        self.outputMode = try c.decodeIfPresent(String.self, forKey: .outputMode)
+        self.aiCleanupEnabled = try c.decodeIfPresent(Bool.self, forKey: .aiCleanupEnabled)
+        self.appBundleID = try c.decodeIfPresent(String.self, forKey: .appBundleID)
+        self.updatedAt = try c.decodeIfPresent(Date.self, forKey: .updatedAt)
+            ?? Date(timeIntervalSince1970: 0)
+    }
+
+    /// Return a copy stamped as edited `now`. Pure — the ``Mode`` editing helpers
+    /// call this so every user edit advances the stamp.
+    public func stamped(_ now: Date = Date()) -> Mode {
+        var copy = self
+        copy.updatedAt = now
+        return copy
     }
 
     /// Normalize a key for stable equality/lookup: trim, lowercase, and collapse
@@ -113,7 +152,11 @@ public struct Mode: Codable, Identifiable, Equatable {
             language: profile.language,
             outputMode: profile.outputMode,
             aiCleanupEnabled: profile.aiCleanupEnabled,
-            appBundleID: profile.appBundleID
+            appBundleID: profile.appBundleID,
+            // Carry the profile's edit stamp through the bridge so the migration
+            // doesn't reset every profile's updatedAt to "now" (which would make a
+            // freshly-migrated install win every sync merge). See ConfigBundle v3.
+            updatedAt: profile.updatedAt
         )
     }
 
@@ -128,8 +171,40 @@ public struct Mode: Codable, Identifiable, Equatable {
             displayName: name,
             language: language,
             outputMode: outputMode,
-            aiCleanupEnabled: aiCleanupEnabled
+            aiCleanupEnabled: aiCleanupEnabled,
+            // Preserve the edit stamp across the bridge (see init(fromProfile:)).
+            updatedAt: updatedAt
         )
+    }
+}
+
+// MARK: - Stamped edits (MAK-51 WP0b)
+//
+// Every USER edit of a Mode must advance its `updatedAt` so the sync merge's
+// last-writer-wins keeps the newer object. These pure array helpers are the
+// funnel the ModesPane editor routes through so the stamp can't be forgotten.
+public extension Array where Element == Mode {
+    /// Append a Mode, stamped `now`.
+    func addingMode(_ mode: Mode, now: Date = Date()) -> [Mode] {
+        self + [mode.stamped(now)]
+    }
+
+    /// Remove the Mode with `id`.
+    func removingMode(_ id: Mode.ID) -> [Mode] {
+        filter { $0.id != id }
+    }
+
+    /// Apply `mutate` to the Mode with `id`, then stamp it `now`. No-op if no Mode
+    /// matches. The one funnel every field edit goes through.
+    func editingMode(
+        _ id: Mode.ID, now: Date = Date(),
+        _ mutate: (inout Mode) -> Void
+    ) -> [Mode] {
+        guard let idx = firstIndex(where: { $0.id == id }) else { return self }
+        var copy = self
+        mutate(&copy[idx])
+        copy[idx].updatedAt = now
+        return copy
     }
 }
 

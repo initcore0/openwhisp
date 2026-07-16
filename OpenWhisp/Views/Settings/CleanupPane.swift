@@ -287,7 +287,7 @@ struct CleanupPane: View {
             HStack(spacing: 0) {
                 Button {
                     let new = Vocabulary.Substitution(from: "", to: "")
-                    appState.vocabulary.substitutions.append(new)
+                    appState.vocabulary = appState.vocabulary.addingSubstitution(new)
                     // Show the new row now, at the end (next to +), without re-sorting
                     // the rest — it's blank so a frequency slot would hide it mid-list.
                     displayedOrder.append(new.id)
@@ -302,7 +302,7 @@ struct CleanupPane: View {
 
                 Button {
                     if let id = selectedSubstitutionID {
-                        appState.vocabulary.substitutions.removeAll { $0.id == id }
+                        appState.vocabulary = appState.vocabulary.removingSubstitution(id)
                         displayedOrder.removeAll { $0 == id }
                         selectedSubstitutionID = nil
                     }
@@ -336,8 +336,9 @@ struct CleanupPane: View {
 
     /// Flip the starred flag on the substitution with `id` (persists via didSet).
     private func toggleStar(_ id: UUID) {
-        guard let idx = appState.vocabulary.substitutions.firstIndex(where: { $0.id == id }) else { return }
-        appState.vocabulary.substitutions[idx].starred.toggle()
+        appState.vocabulary = appState.vocabulary.editingSubstitution(id) {
+            $0.starred.toggle()
+        }
     }
 
     /// A compact "used N×" label, or an em-dash when never used yet.
@@ -354,8 +355,9 @@ struct CleanupPane: View {
                 appState.vocabulary.substitutions.first(where: { $0.id == id })?[keyPath: keyPath] ?? ""
             },
             set: { newValue in
-                guard let idx = appState.vocabulary.substitutions.firstIndex(where: { $0.id == id }) else { return }
-                appState.vocabulary.substitutions[idx][keyPath: keyPath] = newValue
+                appState.vocabulary = appState.vocabulary.editingSubstitution(id) {
+                    $0[keyPath: keyPath] = newValue
+                }
             }
         )
     }

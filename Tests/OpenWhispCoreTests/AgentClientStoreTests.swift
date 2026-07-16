@@ -127,20 +127,31 @@ final class AgentClientStoreTests: XCTestCase {
 
     // MARK: Migration from the v1 single-`policy` shape
 
-    func testMigratesEveryLegacyPolicyToAllScopes() throws {
-        // A v1 record had one `policy` for everything. Decoding must apply it to
-        // every scope so an existing grant stays byte-identical (no regression, no
-        // accidental widening) — for EVERY policy value, not just always/denied.
+    func testMigratesEveryLegacyPolicyToV1ScopesOnly() throws {
+        // A v1 record had one `policy` covering everything that existed at v1.
+        // Decoding must apply it to exactly those scopes (dictate/history/refine)
+        // and to NOTHING newer: mapping onto allCases would silently widen every
+        // legacy "always allow" into a standing grant for scopes the user never
+        // saw a prompt for — with `sync`, that's full-fidelity history to any old
+        // always-allowed client, no prompt ever shown.
         for policy in [AgentConsentPolicy.always, .denied, .askEveryTime, .whileRunning] {
             let legacyJSON = """
             { "clientName": "claude-code", "policy": "\(policy.rawValue)", "firstSeen": 1, "signingID": "TEAMID" }
             """.data(using: .utf8)!
             let r = try JSONDecoder().decode(AgentClientRecord.self, from: legacyJSON)
-            for scope in AgentScope.allCases {
+            for scope in AgentScope.legacyV1Scopes {
                 XCTAssertEqual(r.policy(for: scope), policy, "\(scope) should inherit legacy \(policy)")
             }
+            XCTAssertNil(r.policy(for: .sync),
+                "a legacy record must have NO sync decision — first sync prompts")
             XCTAssertEqual(r.signingID, "TEAMID")
         }
+    }
+
+    func testLegacyV1ScopesIsFrozen() {
+        // The migration target set must never grow: adding a new case to
+        // legacyV1Scopes retroactively grants it to every migrated client.
+        XCTAssertEqual(AgentScope.legacyV1Scopes, [.dictate, .history, .refine])
     }
 
     func testLegacyStoreMigratesThroughFullDecode() throws {
@@ -162,9 +173,10 @@ final class AgentClientStoreTests: XCTestCase {
         """.data(using: .utf8)!
         var store = try JSONDecoder().decode(AgentClientStore.self, from: legacyStoreJSON)
         store.demoteRunScopedGrants()
-        for scope in AgentScope.allCases {
+        for scope in AgentScope.legacyV1Scopes {
             XCTAssertEqual(store.record(for: "a")?.policy(for: scope), .askEveryTime)
         }
+        XCTAssertNil(store.record(for: "a")?.policy(for: .sync))
     }
 
     // MARK: Version skew (newer builds' scopes/policies)
@@ -238,5 +250,41 @@ final class AgentClientStoreTests: XCTestCase {
         XCTAssertEqual(AgentScope.dictate.rawValue, BridgeWire.Capability.dictate)
         XCTAssertEqual(AgentScope.history.rawValue, BridgeWire.Capability.history)
         XCTAssertEqual(AgentScope.refine.rawValue, BridgeWire.Capability.refine)
+        XCTAssertEqual(AgentScope.sync.rawValue, BridgeWire.Capability.sync)  // MAK-51 WP0b
+    }
+
+    // MARK: .sync scope (MAK-51 WP0b)
+
+    func testSyncScopeExistsWithConsentCopy() {
+        // A new scope must ship its disclosure copy (the switch-in-detail contract).
+        XCTAssertTrue(AgentScope.allCases.contains(.sync))
+        XCTAssertFalse(AgentScope.sync.title.isEmpty)
+        XCTAssertFalse(AgentScope.sync.detail.isEmpty)
+        XCTAssertFalse(AgentScope.sync.noun.isEmpty)
+        XCTAssertFalse(AgentScope.sync.icon.isEmpty)
+    }
+
+    func testOldRecordWithoutSyncScopeDecodesAndPromptsForSync() throws {
+        // A consent file written before .sync existed: it lists dictate/history/
+        // refine only. The sync scope must decode as "no decision yet" (→ prompt),
+        // never crash the load, and never leak a grant from another scope.
+        let json = """
+        {"records":[{
+          "clientName":"claude-code",
+          "scopePolicies":{"dictate":"always","history":"always","refine":"always"},
+          "firstSeen":0
+        }]}
+        """
+        let store = try JSONDecoder().decode(AgentClientStore.self, from: Data(json.utf8))
+        let record = store.record(for: "claude-code")
+        XCTAssertNotNil(record)
+        XCTAssertEqual(record?.policy(for: .dictate), .always)
+        XCTAssertNil(record?.policy(for: .sync))  // no standing grant → prompt on first sync
+        XCTAssertEqual(record?.policy(for: .sync)?.decision(grantedThisRun: false) ?? .prompt, .prompt)
+    }
+
+    func testAllScopesInitCoversSync() {
+        let r = AgentClientRecord(clientName: "phone", allScopes: .always, firstSeen: now)
+        XCTAssertEqual(r.policy(for: .sync), .always)
     }
 }

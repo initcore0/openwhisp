@@ -20,6 +20,19 @@ public enum AgentScope: String, Codable, Equatable, Sendable, CaseIterable {
     case dictate
     case history
     case refine
+    /// P2P config/history sync (MAK-51 WP0b): the paired iPhone reading and merging
+    /// your vocabulary, profiles/modes, packs, and history over the LAN link. A
+    /// per-scope grant so pairing a phone for sync never implies letting it drive
+    /// your mic (`dictate`) or your LLM (`refine`). An old consent file that
+    /// predates this scope simply has no decision recorded → first sync prompts.
+    case sync
+
+    /// The scopes that existed when consent was a single `policy` value (v1).
+    /// FROZEN: the legacy-record migration maps the old blanket policy onto
+    /// exactly this set, so every scope added later starts with NO decision and
+    /// prompts. Never add a new case here — that would retroactively grant it
+    /// to every migrated "always allow" client.
+    public static let legacyV1Scopes: [AgentScope] = [.dictate, .history, .refine]
 
     /// A short human label for the consent window / settings pane.
     public var title: String {
@@ -27,6 +40,7 @@ public enum AgentScope: String, Codable, Equatable, Sendable, CaseIterable {
         case .dictate: return "ask you to dictate"
         case .history: return "read your dictation history"
         case .refine:  return "rewrite text with your on-device AI"
+        case .sync:    return "sync your vocabulary, modes, and history"
         }
     }
 
@@ -36,6 +50,7 @@ public enum AgentScope: String, Codable, Equatable, Sendable, CaseIterable {
         case .dictate: return "Dictate"
         case .history: return "History"
         case .refine:  return "Refine"
+        case .sync:    return "Sync"
         }
     }
 
@@ -45,6 +60,7 @@ public enum AgentScope: String, Codable, Equatable, Sendable, CaseIterable {
         case .dictate: return "mic.badge.plus"
         case .history: return "clock.arrow.circlepath"
         case .refine:  return "wand.and.stars"
+        case .sync:    return "arrow.triangle.2.circlepath"
         }
     }
 
@@ -56,6 +72,7 @@ public enum AgentScope: String, Codable, Equatable, Sendable, CaseIterable {
         case .dictate: return "It opens your voice overlay so you can speak an answer; the transcript goes back to the agent."
         case .history: return "It can read the text of your recent dictations and which apps they went to."
         case .refine:  return "It can send text to your configured AI model to rewrite it."
+        case .sync:    return "It can read and merge your vocabulary, profiles, modes, packs, and dictation history with this paired device over your local network."
         }
     }
 }
@@ -171,12 +188,15 @@ public struct AgentClientRecord: Codable, Equatable, Sendable {
             self.scopePolicies = typed
             self.unknownScopeEntries = unknown
         } else if let legacy = try c.decodeIfPresent(AgentConsentPolicy.self, forKey: .policy) {
-            // MIGRATION: a v1 record carried a single `policy` covering everything.
-            // Apply it to ALL scopes so an existing grant stays byte-identical —
-            // a client that was "always allowed" remains allowed for every scope,
-            // a "denied" stays denied everywhere. (No security regression: nothing
-            // widens, and the user can now narrow a scope in Settings.)
-            self.scopePolicies = Dictionary(uniqueKeysWithValues: AgentScope.allCases.map { ($0, legacy) })
+            // MIGRATION: a v1 record carried a single `policy` covering everything
+            // THAT EXISTED AT v1. Apply it to exactly those scopes — never to
+            // `allCases` — so a scope added later (e.g. `sync`) has no decision
+            // recorded and prompts on first use. Mapping onto allCases would
+            // silently widen every legacy "always allow" into a standing grant
+            // for capabilities the user never saw a prompt for (with `sync`,
+            // that's full-fidelity history to any old always-allowed client).
+            self.scopePolicies = Dictionary(
+                uniqueKeysWithValues: AgentScope.legacyV1Scopes.map { ($0, legacy) })
         } else {
             self.scopePolicies = [:]
         }

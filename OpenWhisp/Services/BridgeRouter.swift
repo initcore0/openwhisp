@@ -17,6 +17,11 @@ public enum BridgeRouter {
         case dictateCancel(id: BridgeWire.RPCID?)
         case refine(id: BridgeWire.RPCID?, params: BridgeWire.RefineParams)
         case historyList(id: BridgeWire.RPCID?, params: BridgeWire.HistoryListParams)
+        // P2P sync (MAK-51 WP0b, wire v1.2). Handlers live behind AgentBridgeHost;
+        // the mac-side real handlers are WP6-mac.
+        case syncManifest(id: BridgeWire.RPCID?)
+        case syncPull(id: BridgeWire.RPCID?, params: BridgeWire.SyncPullParams)
+        case syncPush(id: BridgeWire.RPCID?, params: BridgeWire.SyncBundleResult)
     }
 
     /// The outcome of routing one line.
@@ -108,6 +113,24 @@ public enum BridgeRouter {
                     .unknownMethod, message: "transcribe.file is not available in this version"
                 )
             )
+
+        case .syncManifest:
+            // No params; the host answers with the local manifest.
+            return .intent(.syncManifest(id: id))
+
+        case .syncPull:
+            // All params optional (absent cursor → full; absent `want` → all
+            // sections), so a bare `sync.pull` is a valid first-full-sync request.
+            let params = decodeParams(BridgeWire.SyncPullParams.self, from: line) ?? BridgeWire.SyncPullParams()
+            return .intent(.syncPull(id: id, params: params))
+
+        case .syncPush:
+            // A push MUST carry a bundle to merge — an absent/mistyped payload is
+            // invalidParams, mirroring refine's required-params contract.
+            guard let params = decodeParams(BridgeWire.SyncBundleResult.self, from: line) else {
+                return invalidParams(id, "sync.push requires a bundle (and optional historyEntries)")
+            }
+            return .intent(.syncPush(id: id, params: params))
         }
     }
 
