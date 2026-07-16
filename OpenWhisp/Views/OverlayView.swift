@@ -45,6 +45,11 @@ final class OverlayWindowController {
             panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
             panel.backgroundColor = .clear
             panel.isOpaque = false
+            // The overlay is a dark HUD by design — every text/stroke/accent color
+            // in OverlayView is hand-tuned for dark glass. Pin the panel to dark so
+            // the NSVisualEffectView material doesn't flip light with the system
+            // theme (which made the white text unreadable on the light appearance).
+            panel.appearance = NSAppearance(named: .vibrantDark)
             panel.hasShadow = false
             panel.hidesOnDeactivate = false
             panel.alphaValue = 0   // a fresh panel fades in from 0
