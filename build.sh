@@ -59,6 +59,15 @@ resolve_fluidaudio_args
 # shellcheck source=scripts/sparkle-link-args.sh
 source "$PROJECT_DIR/scripts/sparkle-link-args.sh"
 resolve_sparkle_args
+# Dev-only extra rpath: the shared args carry just the in-bundle rpath
+# (@executable_path/../Frameworks), which only resolves once package.sh copies
+# the framework into an .app — leaving the bare build/OpenWhisp binary unable
+# to launch (dyld: Library not loaded: @rpath/Sparkle.framework). Point a second
+# rpath at the extracted framework so the dev binary runs in place. build-dmg.sh
+# deliberately does NOT get this: shipped binaries carry no local paths.
+if [ -n "${SPARKLE_FRAMEWORK:-}" ]; then
+    SPARKLE_ARGS+=( -Xlinker -rpath -Xlinker "$(dirname "$SPARKLE_FRAMEWORK")" )
+fi
 
 # Developer instrumentation (timing signposts + console logs). OFF by default;
 # INSTRUMENTATION=1 ./build.sh defines OPENWHISP_INSTRUMENTATION. Shared with build-dmg.sh.

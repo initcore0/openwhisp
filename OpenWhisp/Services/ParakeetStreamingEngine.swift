@@ -78,20 +78,42 @@ final class ParakeetStreamingEngine: StreamingTranscriptionEngine {
     /// before the next start installs its tap (see SerialTaskChain).
     @MainActor private let lifecycle = SerialTaskChain()
 
+    /// The session-bound callbacks a `runStart` fires, snapshotted at ENQUEUE
+    /// time. `runStart` can sit awaiting a model load while a cancel+restart
+    /// rebinds the engine's callback properties to the NEXT session — reading
+    /// them at fire time would deliver this (superseded) start's signals with
+    /// the successor's sessionID, sailing through AppState's session fence and
+    /// flipping the new session to "Listening" while its own teardown+start are
+    /// still queued behind this one (words spoken then are dropped — the exact
+    /// bug the capture-started signal exists to close). The snapshot keeps the
+    /// old session's identity, so the fence drops the stray signal.
+    private struct SessionCallbacks {
+        let started: (() -> Void)?
+        let partial: ((String) -> Void)?
+        let eou: (() -> Void)?
+        let error: ((String) -> Void)?
+    }
+
     func start(language: String) throws {
         // All callers are @MainActor (AppState); synchronous enqueue preserves
         // call order (a stop() immediately followed by start() must serialize).
         MainActor.assumeIsolated {
+            // Snapshot BEFORE the enqueue: these are still this session's own
+            // bindings here; by the time runStart runs (or resumes from an
+            // await) they may belong to a successor session.
+            let callbacks = SessionCallbacks(
+                started: self.onStarted, partial: self.onPartial,
+                eou: self.onEouDetected, error: self.onError)
             // Strong capture on purpose: the chain must keep the engine alive
             // until its lifecycle work completes (see WhisperKitStreamingEngine).
             self.lifecycle.enqueue {
-                await self.runStart(language: language)
+                await self.runStart(language: language, callbacks: callbacks)
             }
         }
     }
 
     @MainActor
-    private func runStart(language: String) async {
+    private func runStart(language: String, callbacks: SessionCallbacks) async {
         // Reset per-session flags ON the serialized chain, not at enqueue time:
         // a fast stop→start enqueues runStop BEFORE this runStart, and its
         // didStop=true must not poison the new session (an enqueue-time reset
@@ -106,7 +128,7 @@ final class ParakeetStreamingEngine: StreamingTranscriptionEngine {
                 languageSetting: language,
                 multilingual: ParakeetCatalog.isMultilingual(variantID)
             ) {
-                onError?(message)
+                callbacks.error?(message)
                 return
             }
 
@@ -125,11 +147,11 @@ final class ParakeetStreamingEngine: StreamingTranscriptionEngine {
             case .useDevice(let uid):
                 guard let device = AudioInputRouter.resolve(uid: uid),
                       AudioInputRouter.apply(device, to: engine) else {
-                    onError?(AudioInputRoutingPolicy.unresolvedMessage(uid: uid))
+                    callbacks.error?(AudioInputRoutingPolicy.unresolvedMessage(uid: uid))
                     return
                 }
             case .unresolved(let uid):
-                onError?(AudioInputRoutingPolicy.unresolvedMessage(uid: uid))
+                callbacks.error?(AudioInputRoutingPolicy.unresolvedMessage(uid: uid))
                 return
             }
 
@@ -137,7 +159,7 @@ final class ParakeetStreamingEngine: StreamingTranscriptionEngine {
             // 0 Hz / 0 ch (no input device) would make installTap raise an ObjC
             // NSException that Swift can't catch — guard it out.
             guard format.sampleRate > 0, format.channelCount > 0 else {
-                onError?("No audio input device available.")
+                callbacks.error?("No audio input device available.")
                 return
             }
 
@@ -158,7 +180,7 @@ final class ParakeetStreamingEngine: StreamingTranscriptionEngine {
                         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
                         guard !trimmed.isEmpty, trimmed != self.lastPartial else { return }
                         self.lastPartial = trimmed
-                        self.onPartial?(trimmed)
+                        callbacks.partial?(trimmed)
                     }
                 }
             }
@@ -196,7 +218,7 @@ final class ParakeetStreamingEngine: StreamingTranscriptionEngine {
                                 lastEouCount = count
                                 await MainActor.run { [weak self] in
                                     guard let self, self.generation == myGeneration, !self.didStop else { return }
-                                    self.onEouDetected?()
+                                    callbacks.eou?()
                                 }
                             }
                         }
@@ -218,7 +240,7 @@ final class ParakeetStreamingEngine: StreamingTranscriptionEngine {
                         self.audioEngine = nil
                         self.feedContinuation?.finish()
                         self.feedContinuation = nil
-                        self.onError?("Parakeet streaming failed: \(error.localizedDescription)")
+                        callbacks.error?("Parakeet streaming failed: \(error.localizedDescription)")
                     }
                 }
             }
@@ -238,11 +260,11 @@ final class ParakeetStreamingEngine: StreamingTranscriptionEngine {
             // Tap installed + AVAudioEngine running: audio is flowing into the
             // feed stream. Everything above (model load/first-run download,
             // reset, callback wiring) was the arming gap this signal closes.
-            onStarted?()
+            callbacks.started?()
         } catch {
             NSLog("[Parakeet] start error: %@", error.localizedDescription)
             guard !didStop else { return }
-            onError?("Parakeet streaming failed: \(error.localizedDescription)")
+            callbacks.error?("Parakeet streaming failed: \(error.localizedDescription)")
         }
     }
 

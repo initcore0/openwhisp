@@ -50,6 +50,11 @@ public enum OnboardingModelStatus {
     ///   - whisperKitStaged: whether the selected WhisperKit CoreML model is on disk.
     ///   - whisperKitDownloading: a WhisperKit model download is in flight.
     ///   - whisperKitProgress: the WhisperKit download fraction (0…1).
+    ///   - whisperKitFailed: the last WhisperKit download failed and the model
+    ///     isn't staged (`AppState.whisperKitDownloadFailed`) — surfaces the
+    ///     retryable failure card. Without it an offline first run on a
+    ///     WhisperKit-default (lean) build was a spinner that never ended, the
+    ///     exact bug the `parakeetFailed` input fixed for the default engine.
     public static func state(
         engine: String,
         parakeetInstalled: Bool,
@@ -60,7 +65,8 @@ public enum OnboardingModelStatus {
         whisperCppFailed: Bool,
         whisperKitStaged: Bool,
         whisperKitDownloading: Bool,
-        whisperKitProgress: Double?
+        whisperKitProgress: Double?,
+        whisperKitFailed: Bool = false
     ) -> State {
         switch engine {
         case "parakeet":
@@ -78,6 +84,9 @@ public enum OnboardingModelStatus {
             if whisperKitDownloading {
                 return .downloading(progress: normalizedProgress(whisperKitProgress))
             }
+            // Finished-but-failed download with no model staged: the retryable
+            // failure card, not a spinner that never ends (mirrors Parakeet).
+            if whisperKitFailed { return .failed }
             return .downloading(progress: nil)
         case "appleSpeech":
             // Built into macOS — nothing to download, always ready.

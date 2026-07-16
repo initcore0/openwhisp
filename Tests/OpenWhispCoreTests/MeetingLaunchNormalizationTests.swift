@@ -50,4 +50,17 @@ final class MeetingLaunchNormalizationTests: XCTestCase {
         XCTAssertEqual(after.first { $0.id == stuck.id }?.status, .recorded)
         XCTAssertEqual(after.first { $0.id == doneMeeting.id }?.status, .done)
     }
+
+    /// The transcription-queue drain keys on this: every resting stage must be
+    /// queueable (re-transcribe of transcribed/done, retry of failed — not just
+    /// the first transcription of recorded), and mid-work stages must not be.
+    /// Gating the drain on `== .recorded` silently dropped queued re-transcribes.
+    func testEveryRestingStageCanStartTranscription() {
+        XCTAssertTrue(MeetingStatus.recorded.canStartTranscription)
+        XCTAssertTrue(MeetingStatus.transcribed.canStartTranscription)
+        XCTAssertTrue(MeetingStatus.done.canStartTranscription)
+        XCTAssertTrue(MeetingStatus.failed(reason: "x").canStartTranscription)
+        XCTAssertFalse(MeetingStatus.transcribing.canStartTranscription)
+        XCTAssertFalse(MeetingStatus.summarizing.canStartTranscription)
+    }
 }

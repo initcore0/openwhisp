@@ -270,13 +270,18 @@ final class MeetingPipelineCoordinator: ObservableObject {
     }
 
     /// Start the next queued transcription, if any (skipping ids that were deleted
-    /// or are no longer in the `recorded` resting state). Called whenever the
-    /// active transcription slot frees up.
+    /// or are mid-work). Called whenever the active transcription slot frees up.
+    ///
+    /// The guard is `canStartTranscription`, NOT `== .recorded`: the queue also
+    /// holds re-transcribes of `.transcribed`/`.done` meetings and retries of
+    /// `.failed` ones (`transcribe()` itself has no status precondition), and
+    /// those were being silently discarded after the UI said "queued and will
+    /// start automatically".
     private func kickPendingTranscription() {
         guard activeTranscribeID == nil else { return }
         while !pendingTranscribeIDs.isEmpty {
             let next = pendingTranscribeIDs.removeFirst()
-            guard let m = meetings.first(where: { $0.id == next }), m.status == .recorded else { continue }
+            guard let m = meetings.first(where: { $0.id == next }), m.status.canStartTranscription else { continue }
             transcribe(next)
             return
         }
@@ -451,6 +456,12 @@ final class MeetingPipelineCoordinator: ObservableObject {
             return
         }
         meeting.transcript = transcript
+        // The mixed path produces no attribution, so drop any attributed
+        // transcript from a PREVIOUS run: the detail view, export, and the
+        // summarizer all prefer the attributed text when present, and a stale
+        // one (e.g. a re-transcribe that degraded to the mixed fallback) would
+        // silently shadow the transcript we just produced.
+        meeting.attributedTranscript = nil
         meeting.status = .transcribed
         persist(meeting)
         activeTranscribeID = nil

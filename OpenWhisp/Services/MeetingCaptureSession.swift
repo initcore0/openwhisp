@@ -176,10 +176,30 @@ final class MeetingCaptureSession {
             guard let self else { return }
             do {
                 try await system.start()
-                DispatchQueue.main.async { self.setState(.recording) }
+                DispatchQueue.main.async {
+                    // A stop arrived while SCK was still starting (`stop()` can't
+                    // act before `.recording`). Abort instead of transitioning:
+                    // going `.recording` here would leave a capture the user
+                    // already dismissed running with no UI attached to it.
+                    if self.stopRequestedBeforeRecording {
+                        self.queue.async {
+                            self.teardownLegs()
+                            self.discardWriter()
+                        }
+                        self.setState(.failed("Meeting stopped before recording began."))
+                        return
+                    }
+                    self.setState(.recording)
+                }
             } catch {
-                self.teardownLegs()
-                self.discardWriter()
+                // Teardown on `queue`, like every other writer mutation — the mic
+                // leg is already live and delivering into ingest() on that queue,
+                // so tearing down from this executor would race an in-flight append
+                // (and delete the file underneath it).
+                self.queue.async {
+                    self.teardownLegs()
+                    self.discardWriter()
+                }
                 DispatchQueue.main.async {
                     self.fail("System-audio capture failed: \(error.localizedDescription)")
                 }
@@ -187,9 +207,22 @@ final class MeetingCaptureSession {
         }
     }
 
+    /// Set when `stop()` arrives while the async SCK start is still in flight
+    /// (state still `.idle`): the `.recording` transition checks it and aborts
+    /// instead. Main-thread confined, like `state`'s writers.
+    private var stopRequestedBeforeRecording = false
+
     /// Stop both legs, drain the mixer, finalize the WAV, and deliver the finished
     /// `MeetingRecording` exactly once via `onFinished` (set here or at `start`).
     func stop(onFinished: ((MeetingRecording) -> Void)? = nil) {
+        // Stop during the multi-second SCK startup window: nothing is recording
+        // yet, but a start IS in flight — remember the stop so the `.recording`
+        // transition aborts. Silently ignoring it left the capture running,
+        // invisible and unstoppable (the mic leg is already live by now).
+        if state == .idle {
+            stopRequestedBeforeRecording = true
+            return
+        }
         guard state == .recording else { return }
         if let onFinished { self.onFinished = onFinished }
 

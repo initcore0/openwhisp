@@ -129,12 +129,13 @@ struct CleanupPane: View {
             Toggle("Use custom vocabulary", isOn: $appState.customVocabularyEnabled)
 
             // Bias terms steer the transcription engine itself, so they only
-            // exist on engines that take a prompt — today, whisper.cpp alone
-            // (MAK-70). Offering the field on an engine that discards it is the
-            // #175 bug again: the user types terms, nothing happens, nothing
-            // says why. Show it disabled with the reason rather than hiding it,
-            // so the capability stays discoverable. Substitutions below are a
-            // local post-pass and keep working on every engine.
+            // exist on engines that can act on them — whisper.cpp (all paths)
+            // and Parakeet (batch paths, MAK-71). Offering the field on an
+            // engine that discards it is the #175 bug again: the user types
+            // terms, nothing happens, nothing says why. Show it disabled with
+            // the reason rather than hiding it, so the capability stays
+            // discoverable. Substitutions below are a local post-pass and keep
+            // working on every engine.
             if EngineCapabilities.supportsVocabularyBiasing(transcriptionEngine: appState.transcriptionEngine) {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Bias terms")
@@ -159,7 +160,7 @@ struct CleanupPane: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Bias terms")
                         .foregroundStyle(.secondary)
-                    SettingsFootnote("Bias terms don't apply to \(EngineCapabilities.displayName(transcriptionEngine: appState.transcriptionEngine)) yet — only whisper.cpp steers recognition toward specific words today. Switch to whisper.cpp in Models to use them, or use Substitutions below, which work on every engine.")
+                    SettingsFootnote("Bias terms don't apply to \(EngineCapabilities.displayName(transcriptionEngine: appState.transcriptionEngine)) yet — whisper.cpp (everywhere) and Parakeet (files and meetings) steer recognition toward specific words today. Switch engine in Models to use them, or use Substitutions below, which work on every engine.")
                 }
                 .padding(.vertical, 2)
             }

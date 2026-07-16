@@ -56,6 +56,31 @@ final class LanguageResolverTests: XCTestCase {
                 language: "de", translateToEnglish: true, transcriptionEngine: "appleSpeech"),
             "de")
     }
+
+    /// The refine layer (cleanup prompts, RefineOutputGuard's expected script)
+    /// must key on the EFFECTIVE translate intent. On every no-translate engine a
+    /// stale stored `true` must read as false — otherwise the language guard
+    /// expects Latin output and accepts a cleanup pass that translated the
+    /// dictation away (the exact bug the guard exists to prevent).
+    func testEffectiveTranslateIsFalseOnNoTranslateEngines() {
+        for engine in LanguageResolver.noTranslateEngines {
+            XCTAssertFalse(
+                LanguageResolver.effectiveTranslateToEnglish(
+                    translateToEnglish: true, transcriptionEngine: engine),
+                "\(engine) cannot translate — the stored flag must not leak into the refine layer")
+        }
+    }
+
+    func testEffectiveTranslatePassesThroughOnTranslatingEngines() {
+        for engine in ["whisper", "whisperKit"] {
+            XCTAssertTrue(
+                LanguageResolver.effectiveTranslateToEnglish(
+                    translateToEnglish: true, transcriptionEngine: engine))
+            XCTAssertFalse(
+                LanguageResolver.effectiveTranslateToEnglish(
+                    translateToEnglish: false, transcriptionEngine: engine))
+        }
+    }
 }
 
 final class ProfileResolverTests: XCTestCase {

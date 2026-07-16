@@ -160,7 +160,8 @@ struct OnboardingView: View {
             whisperCppFailed: appState.modelDownloadFailed,
             whisperKitStaged: WhisperKitModelCatalog.isStaged(appState.whisperKitModel),
             whisperKitDownloading: appState.whisperKitDownloadingModel != nil,
-            whisperKitProgress: appState.whisperKitDownloadProgress
+            whisperKitProgress: appState.whisperKitDownloadProgress,
+            whisperKitFailed: appState.whisperKitDownloadFailed
         )
     }
 
@@ -222,21 +223,29 @@ struct OnboardingView: View {
         return "Downloading the speech model…"
     }
 
-    /// Failure caption. whisper.cpp carries a specific status string; the
-    /// streaming engines (Parakeet) don't, so fall back to a plain one-liner.
+    /// Failure caption. whisper.cpp and WhisperKit carry specific status strings;
+    /// the streaming engines (Parakeet) don't, so fall back to a plain one-liner.
     private var modelFailureDetail: String {
         if appState.transcriptionEngine == "whisper", !appState.modelDownloadStatus.isEmpty {
             return appState.modelDownloadStatus
+        }
+        if appState.transcriptionEngine == "whisperKit", !appState.whisperKitDownloadStatus.isEmpty {
+            return appState.whisperKitDownloadStatus
         }
         return "Couldn't reach the model server. Check your connection and retry."
     }
 
     /// Engine-aware retry: whisper.cpp re-runs its GGML download; Parakeet
-    /// re-kicks its FluidAudio prefetch (which also clears the failure flag).
+    /// re-kicks its FluidAudio prefetch (which also clears the failure flag);
+    /// WhisperKit re-runs the model-manager download for the selected model
+    /// (its start clears `whisperKitDownloadFailed`).
     private func retryModelDownload() {
-        if appState.transcriptionEngine == "parakeet" {
+        switch appState.transcriptionEngine {
+        case "parakeet":
             appState.prefetchParakeetVariant()
-        } else {
+        case "whisperKit":
+            appState.downloadWhisperKitModel(appState.whisperKitModel)
+        default:
             appState.retryModelDownload()
         }
     }
