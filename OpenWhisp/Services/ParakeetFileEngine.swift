@@ -74,7 +74,8 @@ final class ParakeetFileEngine: FileTranscriptionEngine {
                 let text = try await ParakeetBridge.transcribeBatch(
                     handle: handle,
                     wavURL: URL(fileURLWithPath: wavPath),
-                    languageCode: languageCode
+                    languageCode: languageCode,
+                    biasTerms: ParakeetVocabularyPrompt.terms(from: prompt)
                 )
                 if deleteWhenDone { try? FileManager.default.removeItem(atPath: wavPath) }
                 await MainActor.run { self.onTranscriptionComplete?(requestID, text) }

@@ -138,7 +138,16 @@ struct CleanupPane: View {
             if EngineCapabilities.supportsVocabularyBiasing(transcriptionEngine: appState.transcriptionEngine) {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Bias terms")
-                    SettingsFootnote("Names, jargon, and acronyms the engine usually gets wrong. Press Return to add each term.")
+                    // Say which paths actually honor the terms. Parakeet biases
+                    // finished audio (files/meetings) but not live dictation, and
+                    // a user typing names in deserves to know that up front rather
+                    // than infer it from terms that "sometimes work".
+                    if EngineCapabilities.vocabularySupport(
+                        transcriptionEngine: appState.transcriptionEngine) == .batchOnly {
+                        SettingsFootnote("Names, jargon, and acronyms the engine usually gets wrong. Applied to files, meetings, and re-transcribes — not to live dictation on this engine. Press Return to add each term.")
+                    } else {
+                        SettingsFootnote("Names, jargon, and acronyms the engine usually gets wrong. Press Return to add each term.")
+                    }
                     TokenField(
                         tokens: $appState.vocabulary.terms,
                         placeholder: "e.g. Claude, Anthropic, kubectl, OpenWhisp",
