@@ -40,7 +40,10 @@ mkdir -p "$BUILD_DIR" "$DIST_DIR"
 
 echo ""
 echo "Step 1: Compiling Swift app..."
-SWIFT_FILES=$(find "$PROJECT_DIR/OpenWhisp" -name "*.swift" | tr '\n' ' ')
+SWIFT_FILES=$(find "$PROJECT_DIR/OpenWhisp" -name "*.swift" -not -path "*/SyncLoopback/*" | tr '\n' ' ')
+# SyncLoopback/ is a standalone SwiftPM executable target (sync loopback harness);
+# its main.swift collides with the app's main.swift if folded into this glob.
+# Keep in sync with build.sh.
 
 # Stamp the build with its git commit (shown in Settings › Advanced). Shared
 # with build.sh. (This script's SWIFT_FILES is word-split; build paths have no
