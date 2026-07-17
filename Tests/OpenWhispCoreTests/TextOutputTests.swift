@@ -149,6 +149,35 @@ final class TextOutputTests: XCTestCase {
         XCTAssertNil(InsertVerifier.axInsertReflected(expected: "   ", before: "", current: "anything"))
     }
 
+    // MARK: - InsertThreadPolicy (self-process AX mutation must hop to main thread)
+
+    func testInsertRequiresMainThreadWhenElementIsSelfProcess() {
+        // Dictating into OpenWhisp's OWN text field (e.g. a Settings Substitutions
+        // "Heard" cell): the AX set is serviced in-process by AppKit/TSM, which
+        // asserts the main queue and SIGTRAPs if run on the background insert queue.
+        // The regression this guards: that crash. Same pid → must run on main.
+        XCTAssertTrue(
+            InsertThreadPolicy.requiresMainThread(elementPID: 4242, selfPID: 4242)
+        )
+    }
+
+    func testInsertStaysOffMainThreadForCrossAppTarget() {
+        // The normal path — dictating into ANOTHER app. The set goes over XPC and
+        // is serviced on the target's main thread, so we keep it on the insert
+        // queue (off our main thread) as before.
+        XCTAssertFalse(
+            InsertThreadPolicy.requiresMainThread(elementPID: 99, selfPID: 4242)
+        )
+    }
+
+    func testInsertStaysOffMainThreadWhenPIDUnknown() {
+        // AX couldn't report a pid → treat as out-of-process (safe default: the
+        // cross-app path never trips the TSM assertion).
+        XCTAssertFalse(
+            InsertThreadPolicy.requiresMainThread(elementPID: nil, selfPID: 4242)
+        )
+    }
+
     // MARK: - InsertionMode (MAK-42 adds .appleScript)
 
     func testInsertionModeFromIdRoundTrip() {

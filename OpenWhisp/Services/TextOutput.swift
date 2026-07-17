@@ -109,6 +109,31 @@ public enum InsertVerifier {
     }
 }
 
+/// Pure decision for WHERE an Accessibility mutation must run.
+///
+/// An AX set on a UI element in ANOTHER process is delivered over XPC — the target
+/// app services it on its own main thread, so we can (and do, to keep dictation off
+/// our main thread) run it from the background insert queue. But an AX set on an
+/// element in OUR OWN process is serviced in-process by AppKit, which routes through
+/// NSTextView → TSM; TSM `dispatch_assert_queue`s the MAIN queue and SIGTRAPs the app
+/// if we're on a background queue. That's the reported crash: dictating into a text
+/// field in OpenWhisp's own Settings window (e.g. a Substitutions "Heard" cell).
+///
+/// This kernel — "given the focused element's pid and our pid, must the mutation hop
+/// to the main thread?" — is Foundation-only so it lives in core and is unit-tested
+/// without AX. `TextInserter` reads the pids from AX and applies the verdict.
+public enum InsertThreadPolicy {
+    /// True when an AX mutation targeting `elementPID` must run on the MAIN thread —
+    /// i.e. the element is in our own process (`elementPID == selfPID`). `elementPID`
+    /// is nil when AX can't report a pid; treat that as out-of-process (the safe
+    /// default: the cross-app path already runs on the insert queue and never trips
+    /// the TSM assertion).
+    public static func requiresMainThread(elementPID: pid_t?, selfPID: pid_t) -> Bool {
+        guard let elementPID else { return false }
+        return elementPID == selfPID
+    }
+}
+
 /// Platform-agnostic text-insertion seam (Phase 2.5 core extraction).
 ///
 /// AppState depends on this protocol instead of the concrete macOS `TextInserter`
