@@ -42,6 +42,49 @@ jobs:
       - name: Run appcast generator self-test
         run: ./scripts/test-gen-appcast.sh
 
+  build-app:
+    # Compiles the REAL mac app target — AppState, the 41 IO services, and every
+    # SwiftUI view — which `swift test` (OpenWhispCore only) never touches. This
+    # catches type errors in the AppKit/SwiftUI layer before they reach a release
+    # build (MAK-63).
+    #
+    # Runs in the LEAN configuration (WHISPERKIT=0 PARAKEET=0): this is the ONE
+    # sanctioned use of WHISPERKIT=0 — CI only. Lean mode swaps WhisperKit /
+    # FluidAudio for stub engines, so it skips the WhisperKit fork checkout and
+    # the long CoreML/native builds while STILL type-checking all the app source
+    # (the engine protocol seam is identical). Sparkle stays ON (default) so its
+    # updater service compiles too — it's just a cached prebuilt download, not a
+    # native build. No git submodules are needed in lean mode (whisper.cpp /
+    # llama.cpp are only pulled in by the full-fat engine builds), so checkout
+    # stays shallow and fast.
+    name: build mac app (lean)
+    runs-on: macos-14
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Xcode
+        # Third-party action pinned by commit SHA (v1.6.0) so a moved tag can't
+        # run unreviewed code in CI. latest-stable (not a hard version) on
+        # purpose: runner images rotate Xcode versions, and the manifest's
+        # swift-tools-version 6.0 already enforces the real floor (Xcode >= 16).
+        uses: maxim-lobanov/setup-xcode@60606e260d2fc5762a71e64e74b2174e8ea3c8bd # v1.6.0
+        with:
+          xcode-version: latest-stable
+      - name: Show Swift version
+        run: swift --version
+      - name: Cache Sparkle framework
+        # fetch-sparkle.sh downloads a PINNED, checksum-verified prebuilt Sparkle
+        # into build/sparkle/<version>/. Cache it keyed on the workflow file so a
+        # version bump (which edits fetch-sparkle.sh -> not the key) still
+        # re-verifies via the script's own checksum gate, and the cache is reused
+        # across runs to avoid the network round-trip.
+        uses: actions/cache@v4
+        with:
+          path: build/sparkle
+          key: sparkle-${{ runner.os }}-${{ hashFiles('scripts/fetch-sparkle.sh') }}
+      - name: Build mac app (lean, WHISPERKIT=0 PARAKEET=0)
+        run: WHISPERKIT=0 PARAKEET=0 ./build.sh
+
   ios-libraries:
     # Guards the iOS consumability of the library products (MAK-51): a
     # visibility or platform regression in core must not break the iPhone

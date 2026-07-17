@@ -35,3 +35,31 @@ jobs:
         run: swift --version
       - name: Run real-engine E2E over fixtures (tiny.en)
         run: ./scripts/e2e-whisperkit.sh openai_whisper-tiny.en
+
+  full-build:
+    # Full-fat compile of the mac app with EVERY backend on (WhisperKit +
+    # Parakeet + Sparkle, the release default) plus ./package.sh, which bundles
+    # the runtimes and CLI and runs the binary-verify guards
+    # (verify-whisperkit-binary.sh / verify-parakeet-binary.sh) that assert the
+    # real engines actually linked. ci.yml's build-app job proves the app
+    # type-checks in LEAN mode fast on every PR; this nightly job proves the
+    # full-fat link + package path the release DMG actually uses still works.
+    # Advisory (non-blocking) like the rest of this workflow; no signing secrets
+    # (package.sh does ad-hoc --deep codesign only — build-dmg.sh handles
+    # notarized release signing).
+    name: full-fat app build + package
+    runs-on: macos-14
+    continue-on-error: true
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive   # whisper.cpp / llama.cpp + WhisperKit dep
+      - name: Select Xcode
+        uses: maxim-lobanov/setup-xcode@60606e260d2fc5762a71e64e74b2174e8ea3c8bd # v1.6.0
+        with:
+          xcode-version: latest-stable
+      - name: Show Swift version
+        run: swift --version
+      - name: Build + package full-fat app (all backends on)
+        run: ./package.sh
