@@ -7,6 +7,12 @@ Mac. It's **off by default**; nothing listens until you turn it on.
 
 Enable it in **Settings → Agent Bridge**.
 
+> **New here?** Start with a 5-minute setup guide:
+> [Claude Code](guides/claude-code.md) · [Cursor](guides/cursor.md) ·
+> [any MCP client](guides/generic-mcp.md). See how OpenWhisp compares to the
+> alternatives in [guides/comparison.md](guides/comparison.md). This page is the
+> full protocol/security reference behind those guides.
+
 ## What agents get
 
 Three tools, exposed over the [Model Context Protocol](https://modelcontextprotocol.io):
