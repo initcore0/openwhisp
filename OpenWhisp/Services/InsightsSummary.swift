@@ -262,6 +262,7 @@ struct InsightsSummary: Equatable {
         case "whisperKit":  return "WhisperKit"
         case "whisper":     return "whisper.cpp"
         case "appleSpeech": return "Apple Speech"
+        case "speechAnalyzer": return "Apple SpeechAnalyzer"
         default:            return engine
         }
     }

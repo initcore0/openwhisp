@@ -108,6 +108,14 @@ final class OnboardingModelStatusTests: XCTestCase {
         XCTAssertEqual(status(engine: "appleSpeech"), .ready)
     }
 
+    // MARK: - Apple SpeechAnalyzer (MAK-59)
+
+    func testSpeechAnalyzerIsAlwaysReady() {
+        // The locale model auto-installs on first use — onboarding must never
+        // show a whisper.cpp download card for it.
+        XCTAssertEqual(status(engine: "speechAnalyzer"), .ready)
+    }
+
     // MARK: - whisper.cpp (real percentage + discrete failure)
 
     func testWhisperCppReadyWhenIdle() {

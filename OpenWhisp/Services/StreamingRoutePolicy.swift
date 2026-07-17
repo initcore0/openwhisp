@@ -16,9 +16,11 @@ public enum StreamingRoutePolicy {
     ///   - liveMode: the user wants live output (outputMode is liveChunks/preview).
     public static func usesStreamingSession(engine: String, liveMode: Bool) -> Bool {
         if streamingOnlyEngines.contains(engine) { return true }
-        // WhisperKit streams only when a live preview is wanted; otherwise its
-        // file engine transcribes the recorded WAV.
-        return engine == "whisperKit" && liveMode
+        // WhisperKit and SpeechAnalyzer stream only when a live preview is wanted;
+        // otherwise their file engines transcribe the recorded WAV. Routing the
+        // file/meeting path to SpeechAnalyzer's batch engine is the biggest,
+        // lowest-risk win (MAK-59) — live dictation is opt-in via output mode.
+        return (engine == "whisperKit" || engine == "speechAnalyzer") && liveMode
     }
 
     /// Whether the engine needs Apple Speech-framework authorization in addition
@@ -127,12 +129,18 @@ public enum FileEngineChoice: Equatable {
     case whisperKit
     /// Parakeet TDT v3 batch CoreML (MAK-46) — multilingual file/meeting path.
     case parakeet
+    /// Apple SpeechAnalyzer batch file transcription (macOS 26, MAK-59) — the
+    /// on-device Speech-framework analyzer over a recorded WAV. This is the
+    /// primary path SpeechAnalyzer takes (meetings, queue, watch folders,
+    /// re-transcribe): auto-punctuating and ~2× faster than Whisper.
+    case speechAnalyzer
 
     public static func choice(for engine: String) -> FileEngineChoice {
         switch engine {
-        case "whisperKit": return .whisperKit
-        case "parakeet":   return .parakeet
-        default:           return .whisperCpp
+        case "whisperKit":     return .whisperKit
+        case "parakeet":       return .parakeet
+        case "speechAnalyzer": return .speechAnalyzer
+        default:               return .whisperCpp
         }
     }
 }

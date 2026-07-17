@@ -22,6 +22,12 @@ public enum EngineCapabilities {
     public static let whisperKit = "whisperKit"
     public static let parakeet = "parakeet"
     public static let appleSpeech = "appleSpeech"
+    /// Apple SpeechAnalyzer / SpeechTranscriber — the macOS 26 on-device engine
+    /// (MAK-59). ASR-only (no translate), auto-punctuating, ~2× faster than
+    /// Whisper on the file path. Distinct from `appleSpeech` (the legacy
+    /// SFSpeechRecognizer engine): SpeechAnalyzer is a separate framework API,
+    /// hidden entirely on macOS 14/15 where the symbols don't exist.
+    public static let speechAnalyzer = "speechAnalyzer"
 
     /// Which paths an engine can bias toward user-supplied vocabulary terms.
     ///
@@ -61,6 +67,8 @@ public enum EngineCapabilities {
     ///     tokenizer. A known pilot limitation, not a dead end (MAK-69).
     ///   - **appleSpeech** — `.none` for now. Apple offers
     ///     `SFSpeechAudioBufferRecognitionRequest.contextualStrings`, unwired (MAK-69).
+    ///   - **speechAnalyzer** — `.none` for now. SpeechAnalyzer exposes
+    ///     `AnalysisContext.contextualStrings`, unwired (MAK-59/69).
     ///
     /// Note this covers **bias terms only**. Vocabulary *substitutions* are a local
     /// regex pass applied after transcription (`VocabularySubstitutor`), so they
@@ -89,6 +97,7 @@ public enum EngineCapabilities {
         case whisperKit:   return "WhisperKit"
         case parakeet:     return "Parakeet"
         case appleSpeech:  return "Apple Speech"
+        case speechAnalyzer: return "Apple SpeechAnalyzer"
         default:           return transcriptionEngine
         }
     }
