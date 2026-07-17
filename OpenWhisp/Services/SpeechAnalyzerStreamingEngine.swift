@@ -60,6 +60,10 @@ final class SpeechAnalyzerStreamingEngine: StreamingTranscriptionEngine {
         lastPartial = ""
         let myGeneration = generation
 
+        // Compile gate: the analyzer code below needs the macOS 26 SDK. On older
+        // toolchains isSupportedOS above is always false, so this is unreachable —
+        // the #else keeps the compiler satisfied about the throwing path.
+        #if compiler(>=6.2)
         guard #available(macOS 26, *) else {
             throw SpeechAnalyzerBridge.BridgeError.unavailableOS
         }
@@ -148,6 +152,9 @@ final class SpeechAnalyzerStreamingEngine: StreamingTranscriptionEngine {
         // Model load can lag the tap install; onStarted signals genuine capture.
         // The tap is installed and the engine is running, so fire it now.
         onStarted?()
+        #else
+        throw SpeechAnalyzerBridge.BridgeError.unavailableOS
+        #endif
     }
 
     /// Append a finalized segment to the running transcript and return the whole.

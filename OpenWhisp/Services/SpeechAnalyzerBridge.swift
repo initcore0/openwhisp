@@ -33,6 +33,13 @@ enum SpeechAnalyzerBridge {
         }
     }
 
+    // The SpeechAnalyzer / SpeechTranscriber symbols only exist in the macOS 26
+    // SDK (Xcode 26 / Swift 6.2 toolchain). Older toolchains compile the enum and
+    // BridgeError (always referenced by the engines) but not these entry points —
+    // callers are gated on the same `#if compiler(>=6.2)` plus
+    // `SpeechAnalyzerAvailability.isSupportedOS`, which is false there.
+    #if compiler(>=6.2)
+
     /// Resolve the user's language setting ("auto" = current locale) to a Locale
     /// SpeechAnalyzer supports, installing its assets on demand. Pure enough to
     /// share between paths; the caller is already gated on the OS.
@@ -88,4 +95,6 @@ enum SpeechAnalyzerBridge {
         let text = try await collector.value
         return text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
+
+    #endif
 }
