@@ -8,6 +8,14 @@ Realtime dictation that runs entirely on your device — free, open source, no a
 
 **[openwhisp.app](https://openwhisp.app)** · macOS 14+ · Apple Silicon · signed & notarized
 
+<!-- HERO GIF PLACEHOLDER (MAK-26): streaming demo — words appearing ~0.3s behind
+     the voice, punctuated, on-device. Drop the recorded GIF in docs/assets/ and
+     replace this comment with the image, e.g.:
+     ![OpenWhisp streaming dictation](docs/assets/hero-streaming.gif) -->
+
+> **Words appear ~0.3s behind your voice** — punctuated, on-device, free.
+> **And it's voice for your coding agent, fully local:** works where Claude Code's `/voice` doesn't — API keys, Bedrock, over SSH, HIPAA, Cursor, any MCP client.
+
 ---
 
 ## Hold a key. Speak. Your words are there.
@@ -104,17 +112,23 @@ Everything below is on-device too, and off unless you want it.
 
 ## Why OpenWhisp
 
-Dictation apps ask you to pick two of: private, fast, free.
+Local, free, and open source is table stakes now — **Handy** and **VoiceInk** are both there. What sets OpenWhisp apart is the combination no one else ships: **Parakeet streaming that trails your voice by ~0.3s, and a local voice bridge your coding agent can actually use.**
 
-Wispr Flow and Aqua are polished but cloud-based and around $144/year. Superwhisper wants $250 for a lifetime license. MacWhisper is great for files. Apple's built-in dictation is free but stops at plain text.
+| | Latency | Agent bridge (MCP) | Price | License |
+|---|---|---|---|---|
+| **OpenWhisp** | **~0.3s streaming, punctuated** | **yes — Claude Code, Cursor, any MCP client** | **free** | **MIT** |
+| Wispr Flow / Aqua | cloud round-trip | no | ~$144/yr | closed |
+| Superwhisper | file-based | no | ~$250 lifetime | closed |
+| VoiceInk | file-based | no | free | open |
+| Handy | file-based | no | free | open |
 
-OpenWhisp is **all three, MIT-licensed, at zero dollars** — and the only one your coding agent can talk to.
+Wispr Flow and Aqua are polished but cloud-based. Superwhisper and MacWhisper are file-first. Apple's built-in dictation stops at plain text. None of them can hand your voice to an agent while keeping every word on your Mac.
 
 ---
 
 ## Docs
 
-[Agent Bridge & MCP](docs/AGENT_BRIDGE.md) · [Settings](docs/SETTINGS.md) · [Privacy & Security](SECURITY.md) · [Roadmap](docs/ROADMAP.md) · [Contributing](CONTRIBUTING.md)
+[Agent Bridge & MCP](docs/AGENT_BRIDGE.md) · [Architecture](docs/ARCHITECTURE.md) · [Settings](docs/SETTINGS.md) · [Privacy & Security](SECURITY.md) · [Roadmap](docs/ROADMAP.md) · [Contributing](CONTRIBUTING.md)
 
 Mirror for regions where the main site is blocked: [initcore0.github.io/openwhisp-mirror](https://initcore0.github.io/openwhisp-mirror/)
 
