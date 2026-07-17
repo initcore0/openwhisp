@@ -1,11 +1,17 @@
 name: Release
 
-# Every merge to main (PR merges land here) builds a DMG and publishes a
-# GitHub Release with an auto-incrementing build number.
+# Manual release cycle (MAK-58). A release is cut ONLY when a version tag is
+# pushed — merges to main no longer publish anything. Cut one with
+# `scripts/release.sh [major|minor|patch]`, which bumps the version and pushes a
+# tag of the form  v<version>+<build>  (e.g. v1.0.1+156):
+#   - <version>  the human short version (CFBundleShortVersionString)
+#   - <build>    the monotonic CFBundleVersion Sparkle orders updates by
+# The workflow_dispatch button is a manual fallback (re-run a build for the tag
+# currently checked out); the normal path is a tag push.
 on:
   push:
-    branches: [main]
-  workflow_dispatch:   # allow manual runs too
+    tags: ['v*']
+  workflow_dispatch:   # manual fallback / re-run
 
 permissions:
   contents: write       # needed to create releases + push tags
@@ -37,18 +43,34 @@ jobs:
       - name: Run unit tests
         run: swift test
 
+      # Version + build come from the TAG (v<version>+<build>), not the run
+      # number, so a manually-cut release is fully reproducible: re-running the
+      # workflow for the same tag rebuilds the same version + build. On a
+      # workflow_dispatch with no tag ref we fall back to Info.plist + run number
+      # so the manual button still produces a valid (if throwaway) build.
       - name: Compute version
         id: version
         run: |
-          BASE=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" OpenWhisp/Info.plist)
-          TAG="v${BASE}+${GITHUB_RUN_NUMBER}"
+          REF="${GITHUB_REF#refs/tags/}"
+          if [[ "$REF" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)\+([0-9]+)$ ]]; then
+            BASE="${BASH_REMATCH[1]}"
+            BUILD="${BASH_REMATCH[2]}"
+            TAG="v${BASE}+${BUILD}"
+          else
+            echo "::warning::Not a v<version>+<build> tag ('$GITHUB_REF') — falling back to Info.plist + run number (manual dispatch)."
+            BASE=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" OpenWhisp/Info.plist)
+            BUILD="${GITHUB_RUN_NUMBER}"
+            TAG="v${BASE}+${BUILD}"
+          fi
           echo "base=$BASE" >> "$GITHUB_OUTPUT"
+          echo "build=$BUILD" >> "$GITHUB_OUTPUT"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "Release tag: $TAG (commit ${GITHUB_SHA:0:7})"
 
-      - name: Stamp build number into Info.plist
+      - name: Stamp version + build number into Info.plist
         run: |
-          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${GITHUB_RUN_NUMBER}" OpenWhisp/Info.plist
+          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString ${{ steps.version.outputs.base }}" OpenWhisp/Info.plist
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${{ steps.version.outputs.build }}" OpenWhisp/Info.plist
 
       - name: Build whisper.cpp (submodule)
         run: ./scripts/build-whisper.sh
@@ -164,7 +186,7 @@ jobs:
           MIN_SYSTEM="$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' OpenWhisp/Info.plist)"
           ./scripts/gen-appcast.sh \
             --version "${{ steps.version.outputs.base }}" \
-            --build "${GITHUB_RUN_NUMBER}" \
+            --build "${{ steps.version.outputs.build }}" \
             --dmg dist/OpenWhisp.dmg \
             --url "$DMG_URL" \
             --notes-link "$NOTES_LINK" \
@@ -184,8 +206,35 @@ jobs:
         run: |
           TAG="${{ steps.version.outputs.tag }}"
           NOTES_FILE="$(mktemp)"
+
+          # Auto-generate the changelog from merged PRs / commits since the
+          # previous tag. GitHub's generate-notes endpoint builds the categorized
+          # "What's Changed" list and a full changelog compare link. It needs the
+          # tag to already exist as a ref, which it does — the tag push is what
+          # triggered this run. `previous_tag_name` is left unset so GitHub picks
+          # the last release automatically. Best-effort: if the API call fails
+          # (e.g. first-ever tag), fall back to a plain commit summary so a
+          # release still publishes with *some* changelog.
+          CHANGELOG="$(gh api \
+            --method POST \
+            "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
+            -f tag_name="$TAG" \
+            -f target_commitish="$GITHUB_SHA" \
+            --jq '.body' 2>/dev/null || true)"
+          if [ -z "$CHANGELOG" ]; then
+            echo "::warning::generate-notes returned nothing — using a plain commit list."
+            PREV_TAG="$(git tag --list 'v*' | grep -v -F "$TAG" | sort -V | tail -1 || true)"
+            if [ -n "$PREV_TAG" ]; then
+              CHANGELOG="$(printf '## What'\''s Changed\n\n'; git log --no-merges --pretty='* %s' "${PREV_TAG}..HEAD")"
+            else
+              CHANGELOG="$(printf '## What'\''s Changed\n\n'; git log --no-merges --pretty='* %s' -n 30)"
+            fi
+          fi
+
           {
-            echo "Automated build from commit ${GITHUB_SHA:0:7} on \`main\`."
+            echo "$CHANGELOG"
+            echo ""
+            echo "---"
             echo ""
             echo "**Install:** download \`OpenWhisp.dmg\`, open it, drag **OpenWhisp** to Applications."
             echo ""
