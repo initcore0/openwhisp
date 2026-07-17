@@ -55,7 +55,9 @@ V="$DEST/Versions/Current"
 
 # Innermost-first. XPC services and the Updater.app are self-contained bundles;
 # sign their inner Mach-O then the bundle, then Autoupdate, then the framework.
-sign() { codesign --force "${HARDENED_ARGS[@]+"${HARDENED_ARGS[@]}"}" --sign "$SIGN_IDENTITY" "$@"; }
+# codesign-retry.sh survives Apple timestamp-service flakes (release killer).
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+sign() { "$SCRIPT_DIR/codesign-retry.sh" --force "${HARDENED_ARGS[@]+"${HARDENED_ARGS[@]}"}" --sign "$SIGN_IDENTITY" "$@"; }
 
 # XPC services (each is a bundle with a single Mach-O executable inside).
 for xpc in "$V/XPCServices/"*.xpc; do

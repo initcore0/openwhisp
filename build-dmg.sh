@@ -214,11 +214,11 @@ while IFS= read -r f; do NESTED+=("$f"); done < <(
 if [ "${#NESTED[@]}" -gt 0 ]; then
     echo "  Signing ${#NESTED[@]} nested libraries/executables..."
     for f in "${NESTED[@]}"; do
-        codesign --force "${HARDENED_ARGS[@]+"${HARDENED_ARGS[@]}"}" --sign "$SIGN_IDENTITY" "$f"
+        "$PROJECT_DIR/scripts/codesign-retry.sh" --force "${HARDENED_ARGS[@]+"${HARDENED_ARGS[@]}"}" --sign "$SIGN_IDENTITY" "$f"
     done
 fi
 
-codesign --force "${HARDENED_ARGS[@]+"${HARDENED_ARGS[@]}"}" --sign "$SIGN_IDENTITY" "${ENTITLEMENTS_ARGS[@]+"${ENTITLEMENTS_ARGS[@]}"}" "$APP_DIR"
+"$PROJECT_DIR/scripts/codesign-retry.sh" --force "${HARDENED_ARGS[@]+"${HARDENED_ARGS[@]}"}" --sign "$SIGN_IDENTITY" "${ENTITLEMENTS_ARGS[@]+"${ENTITLEMENTS_ARGS[@]}"}" "$APP_DIR"
 codesign --verify --deep --strict --verbose=2 "$APP_DIR"
 
 echo ""
@@ -284,7 +284,7 @@ if [ "${NOTARIZE:-0}" = "1" ]; then
     fi
 
     # The DMG itself must be signed with the same Developer ID before submission.
-    codesign --force --timestamp --sign "$SIGN_IDENTITY" "$DMG_PATH"
+    "$PROJECT_DIR/scripts/codesign-retry.sh" --force --timestamp --sign "$SIGN_IDENTITY" "$DMG_PATH"
 
     # Submit and block until Apple returns a verdict. We capture the JSON and assert
     # status == "Accepted" BEFORE stapling, rather than trusting the exit code alone.
