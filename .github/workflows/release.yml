@@ -77,6 +77,20 @@ jobs:
 
       # The built-in AI provider (bundled llama.cpp) is the app default, so the
       # release DMG must include its runtime — build-dmg.sh release fails without it.
+      #
+      # This build takes ~65 min cold on the runner, so cache the cmake build tree
+      # keyed on the pinned submodule SHA + the build script (flags live there).
+      # On a hit, `cmake --build` below is an incremental no-op (~seconds).
+      - name: Compute llama.cpp cache key
+        id: llama-key
+        run: echo "sha=$(git submodule status third_party/llama.cpp | awk '{print $1}' | tr -d '+-')" >> "$GITHUB_OUTPUT"
+
+      - name: Cache llama.cpp build
+        uses: actions/cache@v4
+        with:
+          path: third_party/llama.cpp/build
+          key: llama-build-${{ runner.os }}-${{ steps.llama-key.outputs.sha }}-${{ hashFiles('scripts/build-llama.sh') }}
+
       - name: Build llama.cpp (submodule)
         run: ./scripts/build-llama.sh
 
