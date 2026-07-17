@@ -102,6 +102,9 @@ final class TextInserter: TextOutput {
     private static func replaceViaAccessibility(inserted: String, raw: String) -> Bool {
         guard AXIsProcessTrusted(), let element = focusedElement() else { return false }
 
+        // Same in-process/TSM main-queue hazard as insertViaAccessibility: run the
+        // whole AX mutate-and-verify on the main thread when the field is ours.
+        return onCorrectThread(for: element) {
         // We rewrite the whole field, so both the value AND selected-text must be
         // settable (selecting the range then replacing the selection).
         guard isAttributeSettable(element, kAXValueAttribute),
@@ -141,6 +144,7 @@ final class TextInserter: TextOutput {
         case .some(false): return false   // contradicted → clipboard fallback
         default:           return true    // verified, or unverifiable (trust setErr)
         }
+        }
     }
 
     /// True when `attribute` is settable on `element` (AX success + settable flag).
@@ -163,6 +167,31 @@ final class TextInserter: TextOutput {
         return (focusedRef as! AXUIElement)
     }
 
+    /// True when `element` belongs to OUR OWN process (e.g. dictating into a text
+    /// field in OpenWhisp's own Settings window). This matters because an AX set on
+    /// a self-process element is serviced IN-PROCESS by AppKit — it synchronously
+    /// runs `NSTextView.replaceCharacters…` → TSM, which `dispatch_assert_queue`s the
+    /// MAIN queue and SIGTRAPs if we're on the background insert queue (the reported
+    /// Settings-field crash). Out-of-process targets route the set over XPC, so their
+    /// main-thread requirement is satisfied in the other process, not ours. Returns
+    /// false when the pid can't be read (treated as out-of-process — the safe default,
+    /// since running on the insert queue is what the normal path already does).
+    private static func isSelfProcessElement(_ element: AXUIElement) -> Bool {
+        var pid: pid_t = 0
+        let elementPID: pid_t? = (AXUIElementGetPid(element, &pid) == .success) ? pid : nil
+        return InsertThreadPolicy.requiresMainThread(elementPID: elementPID, selfPID: getpid())
+    }
+
+    /// Run `work` on the main thread when `element` is in our own process (required
+    /// so the in-process AX write doesn't trip TSM's main-queue assertion), and on
+    /// the current (insert) queue otherwise — keeping cross-app dictation off the main
+    /// thread as before. `Thread.isMainThread` guards the self-process case so a call
+    /// that already happens to be on main doesn't deadlock on `DispatchQueue.main.sync`.
+    private static func onCorrectThread<T>(for element: AXUIElement, _ work: () -> T) -> T {
+        guard isSelfProcessElement(element), !Thread.isMainThread else { return work() }
+        return DispatchQueue.main.sync(execute: work)
+    }
+
     // MARK: - Accessibility insertion
 
     /// Attempt to insert `text` at the caret of the focused element via AX, and
@@ -173,33 +202,39 @@ final class TextInserter: TextOutput {
     private static func insertViaAccessibility(_ text: String) -> Bool {
         guard AXIsProcessTrusted(), let element = focusedElement() else { return false }
 
-        // The element must expose a settable selected-text attribute for this to
-        // work as an "insert at caret / replace selection" operation.
-        guard isAttributeSettable(element, kAXSelectedTextAttribute) else { return false }
+        // When the target is a field in our OWN process, AppKit services this set
+        // in-process through TSM, which asserts the main queue — run the whole AX
+        // sequence on the main thread there (crash fix). Cross-app inserts stay on
+        // the insert queue.
+        return onCorrectThread(for: element) {
+            // The element must expose a settable selected-text attribute for this to
+            // work as an "insert at caret / replace selection" operation.
+            guard isAttributeSettable(element, kAXSelectedTextAttribute) else { return false }
 
-        // Snapshot the element's value BEFORE the set so verification can tell
-        // "the set changed the field" apart from "our text was already there"
-        // (see InsertVerifier.axInsertReflected).
-        let before = copyStringAttribute(element, kAXValueAttribute)
+            // Snapshot the element's value BEFORE the set so verification can tell
+            // "the set changed the field" apart from "our text was already there"
+            // (see InsertVerifier.axInsertReflected).
+            let before = copyStringAttribute(element, kAXValueAttribute)
 
-        // Setting selected text replaces the current selection with `text`; with
-        // an empty selection it inserts at the caret. This is exactly the paste
-        // semantics, minus the clipboard.
-        let setErr = AXUIElementSetAttributeValue(
-            element,
-            kAXSelectedTextAttribute as CFString,
-            text as CFString
-        )
-        guard setErr == .success else { return false }
+            // Setting selected text replaces the current selection with `text`; with
+            // an empty selection it inserts at the caret. This is exactly the paste
+            // semantics, minus the clipboard.
+            let setErr = AXUIElementSetAttributeValue(
+                element,
+                kAXSelectedTextAttribute as CFString,
+                text as CFString
+            )
+            guard setErr == .success else { return false }
 
-        // Best-effort verification: re-read the element's whole value (if exposed)
-        // and compare against the pre-set snapshot. If the value is readable but
-        // unchanged and doesn't reflect the insert, AX lied → report failure so we
-        // fall back to paste. If it can't be decided, trust the status code.
-        let readBack = copyStringAttribute(element, kAXValueAttribute)
-        switch InsertVerifier.axInsertReflected(expected: text, before: before, current: readBack) {
-        case .some(false): return false   // contradicted → fall back
-        default:           return true    // verified, or unverifiable (trust setErr)
+            // Best-effort verification: re-read the element's whole value (if exposed)
+            // and compare against the pre-set snapshot. If the value is readable but
+            // unchanged and doesn't reflect the insert, AX lied → report failure so we
+            // fall back to paste. If it can't be decided, trust the status code.
+            let readBack = copyStringAttribute(element, kAXValueAttribute)
+            switch InsertVerifier.axInsertReflected(expected: text, before: before, current: readBack) {
+            case .some(false): return false   // contradicted → fall back
+            default:           return true    // verified, or unverifiable (trust setErr)
+            }
         }
     }
 
