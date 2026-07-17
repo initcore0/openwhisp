@@ -17,14 +17,14 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.0.0</string>
+	<string>1.0.1</string>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>
-			<key>CFBundleURLName</key>
-			<string>com.openwhisp.app.url</string>
 			<key>CFBundleTypeRole</key>
 			<string>Viewer</string>
+			<key>CFBundleURLName</key>
+			<string>com.openwhisp.app.url</string>
 			<key>CFBundleURLSchemes</key>
 			<array>
 				<string>openwhisp</string>
@@ -37,40 +37,29 @@
 	<string>14.0</string>
 	<key>LSUIElement</key>
 	<true/>
-	<key>NSMainStoryboardFile</key>
-	<string></string>
-	<key>NSMicrophoneUsageDescription</key>
-	<string>OpenWhisp needs microphone access to record your voice for local transcription.</string>
-	<key>NSScreenCaptureUsageDescription</key>
-	<string>OpenWhisp captures system audio to record and transcribe meetings locally.</string>
-	<key>NSPrincipalClass</key>
-	<string>NSApplication</string>
-	<key>NSSpeechRecognitionUsageDescription</key>
-	<string>OpenWhisp uses Apple Speech Recognition for optional native streaming dictation.</string>
-	<key>NSUserNotificationsUsageDescription</key>
-	<string>OpenWhisp uses notifications to show transcription results.</string>
-	<!-- P2P sync (MAK-51 WP6): discover + connect to a paired iPhone on the LAN
-	     over Bonjour + TLS-PSK. macOS 15+ requires the local-network usage string
-	     and the advertised/browsed Bonjour service type to be declared here; the
-	     LAN listener only runs while a device is paired or the pairing pane is open. -->
-	<key>NSLocalNetworkUsageDescription</key>
-	<string>OpenWhisp syncs your vocabulary, profiles, modes, and history with a paired iPhone over your local network. Nothing leaves your devices.</string>
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_openwhisp._tcp</string>
 	</array>
-	<!-- Sparkle auto-update (MAK-56). The appcast is published as a GitHub
-	     Release asset; the stable "latest/download" redirect always resolves to
-	     the newest release's appcast. Updates are EdDSA-signed with SUPublicEDKey
-	     and (in signed releases) Developer ID + notarized. Automatic checks are
-	     ON by default; the ONLY network call the app makes without user opt-in.
-	     System profiling is deliberately NOT enabled (no SUEnableSystemProfiling),
-	     so update checks send only app + OS version, nothing more. -->
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>OpenWhisp syncs your vocabulary, profiles, modes, and history with a paired iPhone over your local network. Nothing leaves your devices.</string>
+	<key>NSMainStoryboardFile</key>
+	<string></string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>OpenWhisp needs microphone access to record your voice for local transcription.</string>
+	<key>NSPrincipalClass</key>
+	<string>NSApplication</string>
+	<key>NSScreenCaptureUsageDescription</key>
+	<string>OpenWhisp captures system audio to record and transcribe meetings locally.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>OpenWhisp uses Apple Speech Recognition for optional native streaming dictation.</string>
+	<key>NSUserNotificationsUsageDescription</key>
+	<string>OpenWhisp uses notifications to show transcription results.</string>
+	<key>SUEnableAutomaticChecks</key>
+	<true/>
 	<key>SUFeedURL</key>
 	<string>https://github.com/initcore0/openwhisp/releases/latest/download/appcast.xml</string>
 	<key>SUPublicEDKey</key>
 	<string>KwxG/3YPhd4ox1WSRpimTa+6vfzvapYE1XmjP3T/ZKE=</string>
-	<key>SUEnableAutomaticChecks</key>
-	<true/>
 </dict>
 </plist>
