@@ -36,6 +36,7 @@ final class SpeechAnalyzerFileEngine: FileTranscriptionEngine {
             onWorkerStatus?("Apple SpeechAnalyzer needs macOS 26")
             return
         }
+        #if compiler(>=6.2)
         if #available(macOS 26, *) {
             let status = onWorkerStatus
             Task {
@@ -48,6 +49,7 @@ final class SpeechAnalyzerFileEngine: FileTranscriptionEngine {
                 }
             }
         }
+        #endif
     }
 
     func stopServer() {
@@ -73,6 +75,7 @@ final class SpeechAnalyzerFileEngine: FileTranscriptionEngine {
             return
         }
 
+        #if compiler(>=6.2)
         if #available(macOS 26, *) {
             Task { [weak self] in
                 guard let self else { return }
@@ -93,5 +96,6 @@ final class SpeechAnalyzerFileEngine: FileTranscriptionEngine {
                 }
             }
         }
+        #endif
     }
 }

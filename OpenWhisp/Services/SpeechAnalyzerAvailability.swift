@@ -21,9 +21,14 @@ public enum SpeechAnalyzerAvailability {
     /// macOS 26; always false on 14/15 (and non-macOS). The settings picker
     /// hides the row when this is false, and `startDictation` never selects it.
     public static var isSupportedOS: Bool {
+        // Compile gate first: building against a pre-macOS-26 SDK (Xcode < 26,
+        // i.e. Swift < 6.2) leaves the SpeechAnalyzer symbols out of the binary
+        // entirely, so the engine must report unavailable even on a macOS 26 host.
+        #if compiler(>=6.2)
         if #available(macOS 26, *) {
             return true
         }
+        #endif
         return false
     }
 
