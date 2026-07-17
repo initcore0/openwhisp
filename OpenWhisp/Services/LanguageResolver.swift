@@ -17,9 +17,14 @@ public enum LanguageResolver {
     /// recognizer). Kept for call sites that name it directly.
     public static let appleSpeechEngine = "appleSpeech"
 
+    /// Apple SpeechAnalyzer (macOS 26, MAK-59). Like the other Apple recognizer,
+    /// it is ASR-only — it transcribes in the given locale and has no
+    /// speech→English translate task.
+    public static let speechAnalyzerEngine = "speechAnalyzer"
+
     /// Engines with no speech→English translation path; the single source of
     /// truth for the suppression rule (and the settings UI's translate gate).
-    public static let noTranslateEngines: Set<String> = [appleSpeechEngine, "parakeet"]
+    public static let noTranslateEngines: Set<String> = [appleSpeechEngine, "parakeet", speechAnalyzerEngine]
 
     public static func supportsTranslation(transcriptionEngine: String) -> Bool {
         !noTranslateEngines.contains(transcriptionEngine)

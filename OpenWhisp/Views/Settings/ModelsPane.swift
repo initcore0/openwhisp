@@ -22,6 +22,11 @@ struct ModelsPane: View {
     private var isWhisperKit: Bool { appState.transcriptionEngine == "whisperKit" }
     private var isAppleSpeech: Bool { appState.transcriptionEngine == "appleSpeech" }
     private var isParakeet: Bool { appState.transcriptionEngine == "parakeet" }
+    private var isSpeechAnalyzer: Bool { appState.transcriptionEngine == "speechAnalyzer" }
+
+    /// SpeechAnalyzer (macOS 26, MAK-59) is offered only when the OS exposes the
+    /// API — hidden entirely on macOS 14/15 so nothing regresses there.
+    private var speechAnalyzerAvailable: Bool { SpeechAnalyzerAvailability.isSupportedOS }
 
     /// True when Parakeet is compiled into this build (the default engine). When
     /// it isn't (a lean `PARAKEET=0` build), WhisperKit reclaims the "Recommended"
@@ -125,6 +130,17 @@ struct ModelsPane: View {
                 isSelected: isAppleSpeech
             ) { appState.transcriptionEngine = "appleSpeech" }
 
+            // MAK-59: Apple SpeechAnalyzer (macOS 26). On-device, auto-punctuating,
+            // ~2× faster than Whisper on files. Hidden on macOS 14/15 where the
+            // API doesn't exist.
+            if speechAnalyzerAvailable {
+                SelectableRow(
+                    title: "Apple SpeechAnalyzer",
+                    subtitle: "macOS 26 on-device engine. Auto-punctuating, fast file transcription. No downloads.",
+                    isSelected: isSpeechAnalyzer
+                ) { appState.transcriptionEngine = "speechAnalyzer" }
+            }
+
             // Never change state silently: switching to WhisperKit while "Type
             // live" was on snaps the output mode, and this says so.
             if let notice = appState.engineSwitchNotice {
@@ -154,7 +170,9 @@ struct ModelsPane: View {
                 HStack(spacing: 10) {
                     Image(systemName: "checkmark.seal")
                         .foregroundColor(.secondary)
-                    Text("Apple Speech uses the macOS speech engine for the selected language. Nothing to download or configure.")
+                    Text(isSpeechAnalyzer
+                        ? "Apple SpeechAnalyzer uses the built-in macOS 26 speech models. The model for your language installs automatically on first use."
+                        : "Apple Speech uses the macOS speech engine for the selected language. Nothing to download or configure.")
                         .font(.callout)
                         .foregroundColor(.secondary)
                 }

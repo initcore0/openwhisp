@@ -91,6 +91,11 @@ public enum OnboardingModelStatus {
         case "appleSpeech":
             // Built into macOS — nothing to download, always ready.
             return .ready
+        case "speechAnalyzer":
+            // macOS 26 on-device engine (MAK-59). The locale model installs
+            // automatically on first use (AssetInventory) — treat as ready so
+            // onboarding doesn't show a whisper.cpp download card for it.
+            return .ready
         default:
             // whisper.cpp — the only path with a discrete failure + real percentage.
             if whisperCppFailed && !whisperCppDownloading { return .failed }

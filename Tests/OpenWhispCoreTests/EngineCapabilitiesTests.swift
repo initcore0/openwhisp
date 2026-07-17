@@ -15,6 +15,7 @@ final class EngineCapabilitiesTests: XCTestCase {
         EngineCapabilities.whisperKit,
         EngineCapabilities.parakeet,
         EngineCapabilities.appleSpeech,
+        EngineCapabilities.speechAnalyzer,
     ]
 
     func testVocabularySupportPerEngine() {
@@ -31,7 +32,7 @@ final class EngineCapabilitiesTests: XCTestCase {
 
         // Both have real but unwired seams (MAK-69): WhisperKit's promptTokens
         // needs the tokenizer; Apple Speech has contextualStrings.
-        for engine in [EngineCapabilities.whisperKit, EngineCapabilities.appleSpeech] {
+        for engine in [EngineCapabilities.whisperKit, EngineCapabilities.appleSpeech, EngineCapabilities.speechAnalyzer] {
             XCTAssertEqual(
                 EngineCapabilities.vocabularySupport(transcriptionEngine: engine), .none,
                 "\(engine) discards the prompt — the bias-terms UI must not be offered for it")
@@ -50,6 +51,8 @@ final class EngineCapabilitiesTests: XCTestCase {
             transcriptionEngine: EngineCapabilities.whisperKit))
         XCTAssertFalse(EngineCapabilities.supportsVocabularyBiasing(
             transcriptionEngine: EngineCapabilities.appleSpeech))
+        XCTAssertFalse(EngineCapabilities.supportsVocabularyBiasing(
+            transcriptionEngine: EngineCapabilities.speechAnalyzer))
     }
 
     /// `.batchOnly` must never quietly read as "fully supported". This is the
@@ -76,6 +79,7 @@ final class EngineCapabilitiesTests: XCTestCase {
         XCTAssertEqual(EngineCapabilities.displayName(transcriptionEngine: EngineCapabilities.whisperKit), "WhisperKit")
         XCTAssertEqual(EngineCapabilities.displayName(transcriptionEngine: EngineCapabilities.whisperCpp), "whisper.cpp")
         XCTAssertEqual(EngineCapabilities.displayName(transcriptionEngine: EngineCapabilities.appleSpeech), "Apple Speech")
+        XCTAssertEqual(EngineCapabilities.displayName(transcriptionEngine: EngineCapabilities.speechAnalyzer), "Apple SpeechAnalyzer")
 
         for engine in allEngines {
             XCTAssertFalse(
@@ -94,5 +98,9 @@ final class EngineCapabilitiesTests: XCTestCase {
                 "\(engine) is named in the translate rule but unknown to EngineCapabilities — the two rules have drifted apart")
         }
         XCTAssertEqual(EngineCapabilities.appleSpeech, LanguageResolver.appleSpeechEngine)
+        // MAK-59: the SpeechAnalyzer id must be identical across all three
+        // sources of truth, or a switch keyed on one would silently miss it.
+        XCTAssertEqual(EngineCapabilities.speechAnalyzer, LanguageResolver.speechAnalyzerEngine)
+        XCTAssertEqual(EngineCapabilities.speechAnalyzer, SpeechAnalyzerAvailability.engineID)
     }
 }

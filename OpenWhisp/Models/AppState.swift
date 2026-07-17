@@ -337,6 +337,9 @@ class AppState: ObservableObject {
         // FILE path (meetings, queue, watch folders, history re-transcribe) uses
         // the batch TDT v3 engine here — multilingual, on-device CoreML.
         case .parakeet:   return ParakeetFileEngine()
+        // SpeechAnalyzer (macOS 26, MAK-59): the on-device Speech-framework
+        // analyzer over the recorded WAV — the primary SpeechAnalyzer path.
+        case .speechAnalyzer: return SpeechAnalyzerFileEngine()
         case .whisperCpp: return WhisperEngine()
         }
     }
@@ -1175,6 +1178,10 @@ class AppState: ObservableObject {
     /// Concrete type (not the protocol) so `prefetch()` — the model download
     /// kick — is callable; sessions still go through `activeStreamingEngine`.
     var parakeetStreamEngine: ParakeetStreamingEngine!
+    /// Apple SpeechAnalyzer live-dictation engine (macOS 26, MAK-59). Shares the
+    /// streaming session machinery with the other streamers; only constructed and
+    /// selected when the OS supports it (SpeechAnalyzerAvailability).
+    var speechAnalyzerStreamEngine: StreamingTranscriptionEngine!
     /// Variant ids with a Parakeet model prefetch/warm in flight — drives the
     /// coarse "Downloading…" badge in the Models pane (FluidAudio has no progress
     /// callback, so this is presence-of-folder + this in-flight flag). Cleared
@@ -1356,9 +1363,10 @@ class AppState: ObservableObject {
     /// same protocol and route through the same session handlers.
     private var activeStreamingEngine: StreamingTranscriptionEngine {
         switch transcriptionEngine {
-        case "whisperKit": return whisperKitStreamEngine
-        case "parakeet":   return parakeetStreamEngine
-        default:           return appleSpeechEngine
+        case "whisperKit":     return whisperKitStreamEngine
+        case "parakeet":       return parakeetStreamEngine
+        case "speechAnalyzer": return speechAnalyzerStreamEngine
+        default:               return appleSpeechEngine
         }
     }
     /// Model paths with a download currently in flight. Per-path (not a single
@@ -1978,11 +1986,13 @@ class AppState: ObservableObject {
         appleSpeechEngine = AppleSpeechEngine()
         whisperKitStreamEngine = WhisperKitStreamingEngine(modelName: whisperKitModel)
         parakeetStreamEngine = ParakeetStreamingEngine(variantID: parakeetVariant)
+        speechAnalyzerStreamEngine = SpeechAnalyzerStreamingEngine()
         translationService = OpenAITranslationService()
 
         wireFileEngineCallbacks()
         wireStreamingEngineCallbacks(whisperKitStreamEngine)
         wireStreamingEngineCallbacks(parakeetStreamEngine)
+        wireStreamingEngineCallbacks(speechAnalyzerStreamEngine)
         wireParakeetEouCallback()
 
         audioRecorder = injectedAudioCapture ?? AudioRecorder()
@@ -2362,6 +2372,11 @@ class AppState: ObservableObject {
         parakeetStreamEngine = ParakeetStreamingEngine(variantID: parakeetVariant)
         wireStreamingEngineCallbacks(parakeetStreamEngine)
         wireParakeetEouCallback()
+        // SpeechAnalyzer streaming engine holds no cached model of its own, but
+        // rebuild it too so a torn-down session never leaks into the next.
+        speechAnalyzerStreamEngine?.stop(cancel: true)
+        speechAnalyzerStreamEngine = SpeechAnalyzerStreamingEngine()
+        wireStreamingEngineCallbacks(speechAnalyzerStreamEngine)
         whisperWorkerStatus = "Not started"
         // `warmWhisperServerIfPossible()` is engine-aware: it warms WhisperKit's
         // CoreML model up front, warms whisper.cpp's server only for the serverAPI
@@ -3186,6 +3201,12 @@ class AppState: ObservableObject {
             whisperEngine?.warmServer(binaryPath: whisperBinaryPath, modelPath: modelPath)
         case "appleSpeech":
             // Apple Speech is a streaming engine; nothing to warm here.
+            return
+        case "speechAnalyzer":
+            // SpeechAnalyzer (macOS 26): warm = provision the on-device locale
+            // model so the first file/meeting job doesn't pay the asset install.
+            // The file engine owns that; no-ops on older OSes.
+            whisperEngine?.warmServer(binaryPath: whisperBinaryPath, modelPath: modelPath)
             return
         case "parakeet":
             // Parakeet has two model families: the streaming variant (live
@@ -5852,6 +5873,7 @@ class AppState: ObservableObject {
         case "whisperKit":  whisperKitModel
         case "parakeet":    parakeetVariant
         case "appleSpeech": nil
+        case "speechAnalyzer": nil
         default:            modelName
         }
         let latency = transcriptionStartedAt.map { now.timeIntervalSince($0) }
@@ -6135,6 +6157,13 @@ class AppState: ObservableObject {
             downloadWhisperKitModel(whisperKitModel)
         case "appleSpeech":
             // Uses the built-in macOS dictation model — nothing to download.
+            return
+        case "speechAnalyzer":
+            // SpeechAnalyzer provisions its locale model via AssetInventory on
+            // first use; warm it now (via the file engine) so the asset install
+            // happens at engine-select time, not mid-first-dictation. No-op on
+            // macOS < 26.
+            warmWhisperServerIfPossible()
             return
         case "parakeet":
             // FluidAudio stages models itself (HuggingFace → Application
