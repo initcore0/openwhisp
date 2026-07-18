@@ -193,6 +193,46 @@ final class SettingsMigrationTests: XCTestCase {
         XCTAssertEqual(store.values["refineKey"] as? String, "rightControl")
     }
 
+    // MARK: - MAK-62 (settings-surface consolidation)
+    //
+    // P2 moved three power-user controls (mouse-button trigger, quiet-dictation
+    // mode, code-editor file tagging) from the everyday panes into Advanced ›
+    // Dictation Extras. The controls kept their exact UserDefaults keys, so an
+    // existing user's stored values must survive untouched — the migration must
+    // NOT reset, drop, or rewrite them. These guards fail loudly if a future key
+    // retirement ever tries to.
+
+    func testMovedControlsKeepTheirCustomizedValues() {
+        let store = MemoryStore()
+        store.values["didCompleteOnboarding"] = true
+        // A user who deliberately turned these on before the move.
+        store.values["mouseTrigger"] = "middle"
+        store.values["quietDictationEnabled"] = true
+        store.values["fileTaggingEnabled"] = true
+
+        SettingsMigration.migrate(store)
+
+        // The relocated controls read the same keys the pipeline reads; the move
+        // is view-layer only, so every value is preserved verbatim.
+        XCTAssertEqual(store.values["mouseTrigger"] as? String, "middle")
+        XCTAssertEqual(store.values["quietDictationEnabled"] as? Bool, true)
+        XCTAssertEqual(store.values["fileTaggingEnabled"] as? Bool, true)
+    }
+
+    func testMovedControlsAreNotSyntheticallyCreated() {
+        let store = MemoryStore()
+        store.values["didCompleteOnboarding"] = true   // existing install, keys never set
+
+        SettingsMigration.migrate(store)
+
+        // The move introduces no new keys and writes no defaults for them — an
+        // install that never touched these keeps reading AppState's own
+        // (unchanged) read fallbacks, exactly as before.
+        XCTAssertNil(store.values["mouseTrigger"])
+        XCTAssertNil(store.values["quietDictationEnabled"])
+        XCTAssertNil(store.values["fileTaggingEnabled"])
+    }
+
     func testMigrationRunsOnlyOnce() {
         let store = MemoryStore()
         store.values["didCompleteOnboarding"] = true
