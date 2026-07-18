@@ -41,7 +41,13 @@ final class SpeechAnalyzerStreamingEngine: StreamingTranscriptionEngine {
         MainActor.assumeIsolated { selectedDeviceID = deviceID }
     }
 
-    func start(language: String) throws {
+    func start(language: String, prompt: String) throws {
+        // `prompt` (vocabulary bias terms) is intentionally ignored: SpeechAnalyzer
+        // exposes `AnalysisContext.contextualStrings`, but that seam isn't wired
+        // through the current bridge (it's only reachable behind the macOS 26 /
+        // #if compiler(>=6.2) gates), so this is a DECLARED no-op —
+        // EngineCapabilities.vocabularySupport(speechAnalyzer) == .none, and the UI
+        // never offers bias terms for it. See TranscriptionEngine.start's contract.
         try MainActor.assumeIsolated {
             try runStart(language: language)
         }

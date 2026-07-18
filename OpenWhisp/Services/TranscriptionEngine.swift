@@ -129,7 +129,30 @@ public protocol StreamingTranscriptionEngine: AnyObject {
     func selectDevice(_ deviceID: String)
 
     /// Begin streaming recognition for `language` ("auto" = current locale).
-    func start(language: String) throws
+    ///
+    /// `prompt` carries the session's vocabulary/bias context (the same
+    /// comma-joined term string the file path uses — custom vocabulary + screen
+    /// bias terms). It exists so live-dictation biasing is *expressible*; before
+    /// MAK-69 the streaming seam had no channel for it, which meant the setting
+    /// could be offered and then silently dropped on the live path.
+    ///
+    /// Contract: an engine that cannot honor `prompt` on its streaming path MUST
+    /// declare that via `EngineCapabilities.honorsStreamingVocabulary` (which is
+    /// `false` for it), and callers gate on that — AppState passes a non-empty
+    /// `prompt` here ONLY when the active engine honors streaming vocabulary. So a
+    /// discarded `prompt` is never a silent surprise: it's a declared no-op the UI
+    /// already told the user about. Engines free to ignore `prompt` on that basis:
+    /// Parakeet (batch-only biasing) and SpeechAnalyzer (unwired).
+    func start(language: String, prompt: String) throws
     /// Stop streaming. `cancel` discards any pending final result.
     func stop(cancel: Bool)
+}
+
+extension StreamingTranscriptionEngine {
+    /// Convenience for call sites (and the test fake) that carry no bias context.
+    /// Not a way to smuggle a prompt past the capability gate — it forwards the
+    /// empty string, which every engine honors trivially (it's a no-op).
+    public func start(language: String) throws {
+        try start(language: language, prompt: "")
+    }
 }

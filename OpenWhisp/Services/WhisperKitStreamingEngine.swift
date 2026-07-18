@@ -74,7 +74,7 @@ final class WhisperKitStreamingEngine: StreamingTranscriptionEngine {
     /// re-press). See `SerialTaskChain`.
     @MainActor private let lifecycle = SerialTaskChain()
 
-    func start(language: String) throws {
+    func start(language: String, prompt: String) throws {
         let task = WhisperKitTaskMapper.map(languageSetting: language)
         // Enqueue SYNCHRONOUSLY on the main actor so call order == enqueue order
         // (a stop() immediately followed by start() must serialize in that order).
@@ -98,7 +98,7 @@ final class WhisperKitStreamingEngine: StreamingTranscriptionEngine {
             // runs — leaving the mic streaming forever. The Task releases the
             // closure when it finishes, so this is not a retain cycle.
             self.lifecycle.enqueue {
-                await self.runStart(task: task, callbacks: callbacks)
+                await self.runStart(task: task, prompt: prompt, callbacks: callbacks)
             }
         }
     }
@@ -117,7 +117,7 @@ final class WhisperKitStreamingEngine: StreamingTranscriptionEngine {
     /// The start pipeline, run inside the serialized lifecycle chain (so any prior
     /// stop's teardown has already completed — no installTap race, no sleep needed).
     @MainActor
-    private func runStart(task: WhisperKitTaskMapper.Resolved, callbacks: SessionCallbacks) async {
+    private func runStart(task: WhisperKitTaskMapper.Resolved, prompt: String, callbacks: SessionCallbacks) async {
         do {
             // Resolve the selected input device. It's passed straight into
             // AudioStreamTranscriber(inputDeviceID:) (our WhisperKit fork backports
@@ -153,7 +153,8 @@ final class WhisperKitStreamingEngine: StreamingTranscriptionEngine {
                 kit: kit,
                 task: task,
                 languageOverride: nil,
-                inputDeviceID: inputDeviceID
+                inputDeviceID: inputDeviceID,
+                prompt: prompt
             ) { [weak self] newState in
                 Task { @MainActor in
                     guard let self, self.generation == myGeneration else { return }

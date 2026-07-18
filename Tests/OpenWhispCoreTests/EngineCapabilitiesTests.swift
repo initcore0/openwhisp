@@ -7,16 +7,81 @@ import XCTest
 /// pin the *rule* across every engine rather than spot-checking one.
 final class EngineCapabilitiesTests: XCTestCase {
 
-    /// Every engine the app can be set to. If you add an engine (e.g. MAK-59's
-    /// Apple SpeechAnalyzer), add it here — the tests below then force you to
-    /// decide its capabilities rather than letting it default to a silent no-op.
-    private let allEngines = [
-        EngineCapabilities.whisperCpp,
-        EngineCapabilities.whisperKit,
-        EngineCapabilities.parakeet,
-        EngineCapabilities.appleSpeech,
-        EngineCapabilities.speechAnalyzer,
-    ]
+    /// Every engine the app can be set to. Sourced from `allEngineIDs` (the same
+    /// list the pipeline iterates), so adding an engine there is what makes the
+    /// contract test below force a decision for it.
+    private let allEngines = EngineCapabilities.allEngineIDs
+
+    /// THE CONTRACT (MAK-69 acceptance centerpiece): for every engine × capability,
+    /// a setting is offered iff it is honored. This iterates ALL engines, so adding
+    /// engine #6 to `allEngineIDs` fails here until its `Capabilities` record is
+    /// declared with a deliberate value for each field. The per-engine expectations
+    /// are the honest matrix; the loop asserts the *reader* answers agree with the
+    /// declared record (the bug this prevents is a call site asking a reader that
+    /// silently diverged from the declaration).
+    func testEveryEngineDeclaresEveryCapability() {
+        // The shipped matrix, engine → (translate, vocab, streamPartials, wordTS).
+        // Kept explicit (not derived) so a wrong declaration is caught by a human-
+        // readable expectation, not by re-deriving the same possibly-wrong rule.
+        let expected: [String: (translate: Bool,
+                                vocab: EngineCapabilities.VocabularySupport,
+                                partials: Bool,
+                                wordTS: Bool)] = [
+            EngineCapabilities.whisperCpp:     (true,  .all,       false, true),
+            EngineCapabilities.whisperKit:     (true,  .all,       true,  true),
+            EngineCapabilities.parakeet:       (false, .batchOnly, true,  true),
+            EngineCapabilities.appleSpeech:    (false, .all,       true,  false),
+            EngineCapabilities.speechAnalyzer: (false, .none,      true,  false),
+        ]
+
+        for engine in allEngines {
+            guard let want = expected[engine] else {
+                XCTFail("Engine '\(engine)' is in allEngineIDs but has no expected capability row — declare it (translate/vocab/partials/timestamps) so it can't ship as a silent no-op")
+                continue
+            }
+            let cap = EngineCapabilities.capabilities(for: engine)
+
+            // The record is internally consistent (id round-trips, has a name).
+            XCTAssertEqual(cap.id, engine)
+            XCTAssertFalse(cap.displayName.isEmpty, "\(engine) needs a display name")
+
+            // Offered-iff-honored, field by field, via BOTH the record and the
+            // free-function readers the call sites actually use.
+            XCTAssertEqual(cap.translation, want.translate, "\(engine) translation")
+            XCTAssertEqual(
+                LanguageResolver.supportsTranslation(transcriptionEngine: engine),
+                want.translate, "\(engine) translate rule must match the capability record")
+
+            XCTAssertEqual(cap.vocabulary, want.vocab, "\(engine) vocabulary")
+            XCTAssertEqual(
+                EngineCapabilities.vocabularySupport(transcriptionEngine: engine),
+                want.vocab, "\(engine) vocabularySupport reader")
+            XCTAssertEqual(
+                EngineCapabilities.supportsVocabularyBiasing(transcriptionEngine: engine),
+                want.vocab.isSupportedAnywhere, "\(engine) bias-terms UI gate")
+            XCTAssertEqual(
+                EngineCapabilities.honorsStreamingVocabulary(transcriptionEngine: engine),
+                want.vocab.honorsStreaming,
+                "\(engine): AppState hands the streaming engine a prompt iff this is true — it must equal .honorsStreaming")
+
+            XCTAssertEqual(cap.streamingPartials, want.partials, "\(engine) streaming partials")
+            XCTAssertEqual(cap.wordTimestamps, want.wordTS, "\(engine) word timestamps")
+        }
+    }
+
+    /// The streaming-vocabulary gate (which decides whether AppState hands the
+    /// live engine a bias prompt) must NEVER be true for an engine whose vocab is
+    /// batch-only — that would re-arm the silent-no-op bug on the live path.
+    func testStreamingVocabularyGateNeverExceedsBatch() {
+        for engine in allEngines {
+            let v = EngineCapabilities.vocabularySupport(transcriptionEngine: engine)
+            if v == .batchOnly || v == .none {
+                XCTAssertFalse(
+                    EngineCapabilities.honorsStreamingVocabulary(transcriptionEngine: engine),
+                    "\(engine) is \(v) — it must not claim to honor streaming vocabulary")
+            }
+        }
+    }
 
     func testVocabularySupportPerEngine() {
         // whisper.cpp takes a free-text initial_prompt on both paths.
@@ -30,13 +95,16 @@ final class EngineCapabilitiesTests: XCTestCase {
             EngineCapabilities.vocabularySupport(transcriptionEngine: EngineCapabilities.parakeet),
             .batchOnly)
 
-        // Both have real but unwired seams (MAK-69): WhisperKit's promptTokens
-        // needs the tokenizer; Apple Speech has contextualStrings.
-        for engine in [EngineCapabilities.whisperKit, EngineCapabilities.appleSpeech, EngineCapabilities.speechAnalyzer] {
-            XCTAssertEqual(
-                EngineCapabilities.vocabularySupport(transcriptionEngine: engine), .none,
-                "\(engine) discards the prompt — the bias-terms UI must not be offered for it")
-        }
+        // MAK-69 wired the previously-unwired seams: WhisperKit's promptTokens
+        // (tokenizer) and Apple Speech's contextualStrings both now bias, so both
+        // are .all. SpeechAnalyzer's contextualStrings stays unwired → .none.
+        XCTAssertEqual(
+            EngineCapabilities.vocabularySupport(transcriptionEngine: EngineCapabilities.whisperKit), .all)
+        XCTAssertEqual(
+            EngineCapabilities.vocabularySupport(transcriptionEngine: EngineCapabilities.appleSpeech), .all)
+        XCTAssertEqual(
+            EngineCapabilities.vocabularySupport(transcriptionEngine: EngineCapabilities.speechAnalyzer), .none,
+            "SpeechAnalyzer discards the prompt (unwired) — the bias-terms UI must not be offered for it")
     }
 
     /// The bias-terms field is offered iff terms reach the engine *somewhere*.
@@ -47,9 +115,10 @@ final class EngineCapabilitiesTests: XCTestCase {
             transcriptionEngine: EngineCapabilities.parakeet))
         XCTAssertTrue(EngineCapabilities.supportsVocabularyBiasing(
             transcriptionEngine: EngineCapabilities.whisperCpp))
-        XCTAssertFalse(EngineCapabilities.supportsVocabularyBiasing(
+        // MAK-69 wired these two, so the bias-terms UI is now offered for them.
+        XCTAssertTrue(EngineCapabilities.supportsVocabularyBiasing(
             transcriptionEngine: EngineCapabilities.whisperKit))
-        XCTAssertFalse(EngineCapabilities.supportsVocabularyBiasing(
+        XCTAssertTrue(EngineCapabilities.supportsVocabularyBiasing(
             transcriptionEngine: EngineCapabilities.appleSpeech))
         XCTAssertFalse(EngineCapabilities.supportsVocabularyBiasing(
             transcriptionEngine: EngineCapabilities.speechAnalyzer))

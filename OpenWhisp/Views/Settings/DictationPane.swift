@@ -123,8 +123,25 @@ struct DictationPane: View {
                     Text("Arabic").tag("ar")
                 }
 
+                // Pick-time language gate (MAK-69): if the chosen engine can't
+                // produce output in the fixed language the user picked, say so HERE
+                // rather than at speak-time. Today only an English-only engine
+                // trips this (the coarse capability table declares the shipping
+                // multilingual/locale engines permissive; Parakeet's English-only
+                // streaming variants are refused at start-time by
+                // ParakeetLanguageGate, which knows the variant). The gate is
+                // capability-driven — no engine name is hardcoded here — so a
+                // future engine that narrows its coverage surfaces automatically.
+                if !EngineCapabilities.allowsLanguagePick(
+                    languageCode: appState.language,
+                    transcriptionEngine: appState.transcriptionEngine
+                ) {
+                    SettingsFootnote("\(EngineCapabilities.displayName(transcriptionEngine: appState.transcriptionEngine)) only recognizes English. Choose English or Auto here, or switch engine in Models.")
+                        .foregroundStyle(.orange)
+                }
+
                 // Whisper engines only — Apple Speech, SpeechAnalyzer and Parakeet
-                // are ASR-only and don't translate (LanguageResolver gates this).
+                // are ASR-only and don't translate (capability-gated).
                 if LanguageResolver.supportsTranslation(transcriptionEngine: appState.transcriptionEngine) {
                     SubtitledToggle(
                         "Translate to English",

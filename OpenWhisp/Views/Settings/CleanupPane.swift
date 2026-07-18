@@ -151,7 +151,7 @@ struct CleanupPane: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Bias terms")
                         .foregroundStyle(.secondary)
-                    SettingsFootnote("Bias terms don't apply to \(EngineCapabilities.displayName(transcriptionEngine: appState.transcriptionEngine)) yet — whisper.cpp (everywhere) and Parakeet (files and meetings) steer recognition toward specific words today. Switch engine in Models to use them, or use Substitutions below, which work on every engine.")
+                    SettingsFootnote("Bias terms don't apply to \(EngineCapabilities.displayName(transcriptionEngine: appState.transcriptionEngine)) yet — whisper.cpp, WhisperKit, and Apple Speech steer recognition toward specific words everywhere, and Parakeet on files and meetings. Switch engine in Models to use them, or use Substitutions below, which work on every engine.")
                 }
                 .padding(.vertical, 2)
             }
