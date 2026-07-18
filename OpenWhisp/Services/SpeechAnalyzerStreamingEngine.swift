@@ -102,12 +102,18 @@ final class SpeechAnalyzerStreamingEngine: StreamingTranscriptionEngine {
             throw SpeechAnalyzerBridge.BridgeError.unsupportedLocale("no audio input device")
         }
 
-        // The AnalyzerInput stream: the mic tap pushes buffers into `continuation`,
-        // the analyzer consumes them on its own actor.
-        let (inputStream, continuation) = AsyncStream.makeStream(of: AnalyzerInput.self)
+        // RAW mic-buffer stream: the tap pushes untouched mic-format buffers; the
+        // recognition task converts each to the ANALYZER'S required format before
+        // wrapping it in AnalyzerInput. SpeechAnalyzer traps (EXC_BREAKPOINT in
+        // SpeechRecognizerWorker.preRunRecognition) when fed audio that isn't in
+        // its `bestAvailableAudioFormat` — the mic's native format almost never
+        // is — so conversion is a correctness requirement, not an optimization.
+        // (The file path is immune: `analyzeSequence(from: AVAudioFile)` converts
+        // internally.)
+        let (rawStream, continuation) = AsyncStream.makeStream(of: AVAudioPCMBuffer.self)
 
         input.installTap(onBus: 0, bufferSize: 4096, format: micFormat) { [weak self] buffer, _ in
-            continuation.yield(AnalyzerInput(buffer: buffer))
+            continuation.yield(buffer)
             self?.publishLevel(from: buffer)
         }
 
@@ -119,6 +125,32 @@ final class SpeechAnalyzerStreamingEngine: StreamingTranscriptionEngine {
                 let (transcriber, _) = try await SpeechAnalyzerBridge.prepareTranscriber(
                     languageSetting: language)
                 let analyzer = SpeechAnalyzer(modules: [transcriber])
+
+                // Resolve the analyzer's required input format and build the
+                // converter OFF the tap thread. A nil format means no module can
+                // take audio at all — fail fast with a readable error instead of
+                // letting the framework trap later.
+                guard let analyzerFormat = await SpeechAnalyzer.bestAvailableAudioFormat(
+                    compatibleWith: [transcriber])
+                else {
+                    throw SpeechAnalyzerBridge.BridgeError.noResult
+                }
+                let converter: AVAudioConverter?
+                if analyzerFormat == micFormat {
+                    converter = nil // already compatible; feed as-is
+                } else {
+                    guard let c = AVAudioConverter(from: micFormat, to: analyzerFormat) else {
+                        throw SpeechAnalyzerBridge.BridgeError.unsupportedLocale(
+                            "mic format \(micFormat) can't convert to the analyzer format")
+                    }
+                    converter = c
+                }
+                let inputStream = rawStream.compactMap { buffer -> AnalyzerInput? in
+                    guard let converter else { return AnalyzerInput(buffer: buffer) }
+                    guard let converted = Self.convert(buffer, with: converter, to: analyzerFormat)
+                    else { return nil } // drop an unconvertible buffer, never trap
+                    return AnalyzerInput(buffer: converted)
+                }
                 try await analyzer.start(inputSequence: inputStream)
 
                 for try await result in transcriber.results {
@@ -162,6 +194,33 @@ final class SpeechAnalyzerStreamingEngine: StreamingTranscriptionEngine {
         throw SpeechAnalyzerBridge.BridgeError.unavailableOS
         #endif
     }
+
+    #if compiler(>=6.2)
+    /// Convert one mic-format buffer to the analyzer's required format. Returns
+    /// nil (caller drops the buffer) on any conversion failure — a dropped chunk
+    /// degrades the transcript; an unconverted chunk traps the Speech framework.
+    private static func convert(
+        _ buffer: AVAudioPCMBuffer, with converter: AVAudioConverter, to format: AVAudioFormat
+    ) -> AVAudioPCMBuffer? {
+        let ratio = format.sampleRate / buffer.format.sampleRate
+        let capacity = AVAudioFrameCount((Double(buffer.frameLength) * ratio).rounded(.up)) + 16
+        guard capacity > 0, let out = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: capacity)
+        else { return nil }
+        var fed = false
+        var conversionError: NSError?
+        converter.convert(to: out, error: &conversionError) { _, status in
+            if fed {
+                status.pointee = .noDataNow
+                return nil
+            }
+            fed = true
+            status.pointee = .haveData
+            return buffer
+        }
+        guard conversionError == nil, out.frameLength > 0 else { return nil }
+        return out
+    }
+    #endif
 
     /// Append a finalized segment to the running transcript and return the whole.
     @MainActor
