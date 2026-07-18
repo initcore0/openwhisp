@@ -87,6 +87,7 @@ let package = Package(
                 "URLScheme.swift",
                 "Scratchpad.swift",
                 "DictationSession.swift",
+                "AgentSessionFinish.swift",
                 "SilenceAutoStop.swift",
                 "QuietDictationMode.swift",
                 "AgentSetup.swift",

@@ -467,15 +467,28 @@ extension BridgeWire {
         /// Defaulted server-side to 60, hard-capped at 300.
         public var timeoutSeconds: Int?
         public var language: String?
+        /// MAK-76: whether an auto-stop (silence / EOU) returns the transcript
+        /// immediately. `nil` (the wire default for older clients) is treated as
+        /// `true` — the legacy behavior. When the client passes `false`, an
+        /// auto-stop instead opens a brief confirm/append window in the overlay
+        /// before the transcript is returned; a deliberate hotkey tap always
+        /// submits now regardless. Additive + backward-compatible: an old server
+        /// that ignores the field just keeps auto-submitting.
+        public var autoSubmit: Bool?
 
-        public init(prompt: String? = nil, timeoutSeconds: Int? = nil, language: String? = nil) {
+        public init(prompt: String? = nil, timeoutSeconds: Int? = nil, language: String? = nil,
+                    autoSubmit: Bool? = nil) {
             self.prompt = prompt
             self.timeoutSeconds = timeoutSeconds
             self.language = language
+            self.autoSubmit = autoSubmit
         }
 
         public static let defaultTimeoutSeconds = 60
         public static let maxTimeoutSeconds = 300
+        /// The effective autoSubmit when the field is absent: legacy immediate
+        /// return.
+        public static let defaultAutoSubmit = true
     }
 
     /// How an agent-initiated dictation ended. `cancel` is absent by design: a
