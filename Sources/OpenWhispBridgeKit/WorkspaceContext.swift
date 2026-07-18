@@ -75,6 +75,11 @@ public enum WorkspaceContext {
     /// detached HEAD → "HEAD"). Never throws; a missing branch just means no
     /// branch-derived bias terms.
     public static func gitBranch(inDirectory directory: String) -> String? {
+        // `Process` doesn't exist on iOS — and neither does the MCP stdio server
+        // this derivation serves. BridgeKit ships to the iOS companion as a
+        // library (CLAUDE.md contract), so the subprocess path is macOS-only;
+        // iOS callers just get "no branch".
+        #if os(macOS)
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         process.arguments = ["git", "-C", directory, "rev-parse", "--abbrev-ref", "HEAD"]
@@ -94,5 +99,8 @@ public enum WorkspaceContext {
         // A detached HEAD reports the literal "HEAD" — no branch name to bias with.
         guard !branch.isEmpty, branch != "HEAD" else { return nil }
         return branch
+        #else
+        return nil
+        #endif
     }
 }
