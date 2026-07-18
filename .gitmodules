@@ -1,3 +1,12 @@
+# Native runtime submodules. Both are pinned by exact commit that must sit on an
+# UPSTREAM RELEASE TAG (a bare, untagged master commit is a supply-chain smell —
+# nothing upstream guarantees it stays fetchable). scripts/check-third-party-pins.sh
+# enforces this. To bump: check out a newer tag, re-run the matching build script,
+# then commit the moved submodule SHA.
+#
+#   whisper.cpp -> tag v1.9.1  (build-whisper.sh)
+#   llama.cpp   -> tag b9851   (build-llama.sh; upstream tags EVERY merge as bNNNN,
+#                               so this tag IS the pinned commit)
 [submodule "third_party/whisper.cpp"]
 	path = third_party/whisper.cpp
 	url = https://github.com/ggerganov/whisper.cpp.git
