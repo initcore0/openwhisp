@@ -12,6 +12,14 @@ whisper.cpp), optional LLM refine, agent bridge + MCP.
   `build/OpenWhisp.app` → `/Applications/`.
 - The GUI app is a raw-`swiftc` glob (no `.xcodeproj`). `OpenWhispCore` is a
   Foundation-only SwiftPM package (the subset that `swift test` compiles).
+- **Fast dev loop (MAK-65):** `scripts/dev-app.sh` builds the app incrementally
+  (~2–5s/edit vs ~70s for `./build.sh`) via the dev-only `AppPackage/Package.swift`
+  manifest, which also gives Xcode/SourceKit-LSP full index on AppState + all app
+  services (`open AppPackage/Package.swift`). It's LEAN-only (stub engines) and is
+  NOT a release path — `./build.sh` / `./package.sh` stay the sole release/CI
+  builders. The app's `@main` entry lives in `OpenWhisp/AppMain.swift` (renamed
+  from `main.swift` so SwiftPM's executable target accepts `@main`); build.sh
+  globs `*.swift` so the name is irrelevant to it.
 - **Toolchain floor: Xcode 16 / Swift 6 tools.** `Package.swift` is
   `swift-tools-version:6.0` (needed for the `.iOS(.v18)` platform); older
   toolchains fail `swift test` with a manifest error. The language mode stays

@@ -26,3 +26,7 @@ a.out
 
 # Claude Code local working directory (worktrees, local settings)
 .claude/
+
+# MAK-65 dev app package (SwiftPM incremental / LSP for the app target)
+AppPackage/.build/
+AppPackage/Sources/OpenWhispApp/BuildInfo.swift
