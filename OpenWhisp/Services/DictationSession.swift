@@ -13,7 +13,12 @@ import Foundation
 /// `DictationCoordinator` (M8 step 9) will own it.
 public enum SessionInitiator: Equatable {
     case user
-    case agent(client: String, prompt: String?)
+    /// `biasTerms`: session-scoped workspace-context bias terms (MAK-75), derived
+    /// from the client's cwd/branch/file names via `AgentContextVocabulary`.
+    /// Carried ON the initiator so their lifecycle is exactly the agent session's
+    /// — they exist only while the initiator is `.agent`, vanish when it resets to
+    /// `.user`, and are never persisted anywhere.
+    case agent(client: String, prompt: String?, biasTerms: [String] = [])
 
     public var isAgent: Bool {
         if case .agent = self { return true }
@@ -23,14 +28,21 @@ public enum SessionInitiator: Equatable {
     /// The claimed client name for an agent session (display-only; never trusted
     /// for authorization — the socket peer's code signature is what authorizes).
     public var clientName: String? {
-        if case let .agent(client, _) = self { return client }
+        if case let .agent(client, _, _) = self { return client }
         return nil
     }
 
     /// The agent's prompt to show in the overlay, if any.
     public var prompt: String? {
-        if case let .agent(_, prompt) = self { return prompt }
+        if case let .agent(_, prompt, _) = self { return prompt }
         return nil
+    }
+
+    /// Workspace-context bias terms for an agent session (MAK-75); empty for a
+    /// user session or an agent session that passed no context.
+    public var agentBiasTerms: [String] {
+        if case let .agent(_, _, terms) = self { return terms }
+        return []
     }
 }
 

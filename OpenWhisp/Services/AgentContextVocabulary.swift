@@ -98,6 +98,47 @@ public enum AgentContextVocabulary {
         return out
     }
 
+    /// The session bias terms for an agent dictation's wire `context`, in one
+    /// call: derives from cwd/branch/terms and excludes `userTerms` (already
+    /// biased). Empty for a nil/empty context. This is the single seam AppState
+    /// calls at `bridgeStartDictation`, keeping the derivation out of the
+    /// god-object (MAK-32 ratchet).
+    public static func sessionTerms(
+        context: BridgeWire.DictateContext?, userTerms: [String]
+    ) -> [String] {
+        guard let context, !context.isEmpty else { return [] }
+        return derivedTerms(
+            cwd: context.cwd, gitBranch: context.gitBranch,
+            terms: context.terms ?? [], existingTerms: userTerms)
+    }
+
+    /// Assemble the whisper initial-prompt string for a session: the user's
+    /// vocabulary prompt (`base`) plus screen-context and agent-context bias
+    /// terms, case-insensitively deduped (user terms lead — the finite prompt
+    /// budget favors the user's own words; a project name already in the user's
+    /// vocabulary must not also arrive from the cwd). The body of
+    /// `AppState.effectiveWhisperPrompt`, kept pure here so it's testable.
+    public static func effectivePrompt(
+        base: String, screenTerms: [String], agentTerms: [String]
+    ) -> String {
+        let extra = merged(base: [], with: screenTerms + agentTerms)
+            .joined(separator: ", ")
+        guard !extra.isEmpty else { return base }
+        return base.isEmpty ? extra : "\(base), \(extra)"
+    }
+
+    /// Append the workspace-terms correction block to a cleanup `instruction`
+    /// (nil-safe passthrough): the instruction unchanged when nil or when `terms`
+    /// is empty. The caller gates on the LOCAL provider — same posture as the
+    /// screen-context augmentation. The terms are Latin identifiers, so
+    /// `RefineOutputGuard` (which judges input<->output script) is unaffected.
+    public static func augmented(instruction: String?, terms: [String]) -> String? {
+        guard let instruction, let block = correctionContextBlock(terms: terms) else {
+            return instruction
+        }
+        return instruction + block
+    }
+
     /// A fenced, reference-only correction-context block naming the workspace bias
     /// terms, appended to the LOCAL cleanup instruction so the on-device LLM keeps
     /// spoken file/branch/project names spelled as the workspace has them (MAK-75).
