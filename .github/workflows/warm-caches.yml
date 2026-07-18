@@ -46,6 +46,24 @@ jobs:
         id: llama-key
         run: echo "sha=$(git submodule status third_party/llama.cpp | awk '{print $1}' | tr -d '+-')" >> "$GITHUB_OUTPUT"
 
+      # ccache is the cache that actually works across runs: the build-dir cache
+      # restores object files, but a fresh checkout gives sources NEWER mtimes,
+      # so make recompiles everything anyway (observed in v1.0.6: 60min llama
+      # build on a successful build-dir restore). ccache hashes content, so the
+      # recompiles become sub-second lookups. This job ALWAYS builds (cheap once
+      # ccache is warm) so the main-ref ccache stays fresh for tag runs, which
+      # can't see caches saved by other tags.
+      - name: Install ccache
+        run: brew install ccache 2>/dev/null || true
+
+      - name: Restore ccache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/Library/Caches/ccache
+          key: ccache-${{ runner.os }}-${{ steps.llama-key.outputs.sha }}
+          restore-keys: |
+            ccache-${{ runner.os }}-
+
       # Key MUST stay identical to release.yml's — that's the whole point.
       - name: Restore llama.cpp build cache
         id: llama-cache
@@ -55,7 +73,6 @@ jobs:
           key: llama-build-${{ runner.os }}-${{ steps.llama-key.outputs.sha }}-${{ hashFiles('scripts/build-llama.sh') }}
 
       - name: Build llama.cpp (submodule)
-        if: steps.llama-cache.outputs.cache-hit != 'true'
         run: ./scripts/build-llama.sh
 
       - name: Save llama.cpp build cache
@@ -65,10 +82,11 @@ jobs:
           path: third_party/llama.cpp/build
           key: llama-build-${{ runner.os }}-${{ steps.llama-key.outputs.sha }}-${{ hashFiles('scripts/build-llama.sh') }}
 
-      - name: Report
-        run: |
-          if [ "${{ steps.llama-cache.outputs.cache-hit }}" = "true" ]; then
-            echo "Cache already warm — nothing to do."
-          else
-            echo "Cache built and saved from main; visible to all future release (tag) runs."
-          fi
+      - name: Save ccache
+        uses: actions/cache/save@v4
+        with:
+          path: ~/Library/Caches/ccache
+          key: ccache-${{ runner.os }}-${{ steps.llama-key.outputs.sha }}-${{ github.run_id }}
+
+      - name: Report ccache stats
+        run: ccache -s || true
