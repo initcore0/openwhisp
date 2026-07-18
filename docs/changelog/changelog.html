@@ -246,14 +246,14 @@
 <div class="wrap">
   <header>
     <p class="eyebrow">Shipped · July 2026</p>
-    <h1>Forty-six ways OpenWhisp got<br><span class="accent">sharper, faster, and more yours.</span></h1>
-    <p class="lede">The headline: Parakeet — our fast, on-device realtime streaming engine — is now the default on a fresh install. Alongside it, a big batch of new features, fixes, and under-the-hood hardening, all landed on main, all covered by tests, all on your machine. New this release also includes built-in auto-update and a 28-fix stability sweep. Among the features: meeting mode that records a call and gives you an on-device transcript plus a local Markdown summary — now with Me/Them speaker attribution and a live talking indicator, and with a separate, optionally larger summarization model you can point at your own server — a floating Scratchpad to dictate into with no target app, quiet-dictation mode for whispering into your mic, opt-in on-device audio retention with one-click re-transcription and an auto-cleanup policy, a fully-remappable dictation trigger with a record-a-shortcut field, an AppleScript keystroke insert method and mouse-button dictation triggers, a local Usage Insights dashboard, opt-in screen-context awareness that biases transcription toward the names already on screen, batch file transcription with watch folders, hands-free (tap-to-lock) dictation, adjustable AI cleanup, voice editing, a self-learning dictionary, rich local formatting, spoken-filename @-mentions for code editors, agent-CLI cleanup, output targets that route a dictation to a file/Shortcut/webhook, first-class Modes you can invoke by name, a Rules engine that runs your own actions when a dictation finishes, and an openwhisp:// URL scheme so Raycast, Alfred, or any launcher can drive dictation.</p>
+    <h1>Fifty-three ways OpenWhisp got<br><span class="accent">sharper, faster, and more yours.</span></h1>
+    <p class="lede">The headline: Parakeet — our fast, on-device realtime streaming engine — is now the default on a fresh install. Alongside it, a big batch of new features, fixes, and under-the-hood hardening, all landed on main, all covered by tests, all on your machine. New this release also includes built-in auto-update and a 28-fix stability sweep. The latest additions: per-app refine tone (casual in Slack, formal in Mail, verbatim in your terminal), a fifth transcription engine — Apple's SpeechAnalyzer on macOS 26 — and agent dictation that now knows your project's branch and file names and lets you tap to finish. Among the features: meeting mode that records a call and gives you an on-device transcript plus a local Markdown summary — now with Me/Them speaker attribution and a live talking indicator, and with a separate, optionally larger summarization model you can point at your own server — a floating Scratchpad to dictate into with no target app, quiet-dictation mode for whispering into your mic, opt-in on-device audio retention with one-click re-transcription and an auto-cleanup policy, a fully-remappable dictation trigger with a record-a-shortcut field, an AppleScript keystroke insert method and mouse-button dictation triggers, a local Usage Insights dashboard, opt-in screen-context awareness that biases transcription toward the names already on screen, batch file transcription with watch folders, hands-free (tap-to-lock) dictation, adjustable AI cleanup, voice editing, a self-learning dictionary, rich local formatting, spoken-filename @-mentions for code editors, agent-CLI cleanup, output targets that route a dictation to a file/Shortcut/webhook, first-class Modes you can invoke by name, a Rules engine that runs your own actions when a dictation finishes, and an openwhisp:// URL scheme so Raycast, Alfred, or any launcher can drive dictation.</p>
   </header>
 
   <div class="stats">
-    <div class="stat"><div class="n">46</div><div class="k">changes shipped</div></div>
-    <div class="stat"><div class="n">28<small> live</small></div><div class="k">new features</div></div>
-    <div class="stat"><div class="n">1539</div><div class="k">tests passing</div></div>
+    <div class="stat"><div class="n">53</div><div class="k">changes shipped</div></div>
+    <div class="stat"><div class="n">32<small> live</small></div><div class="k">new features</div></div>
+    <div class="stat"><div class="n">1713</div><div class="k">tests passing</div></div>
     <div class="stat"><div class="n">100<small>%</small></div><div class="k">on-device</div></div>
   </div>
 
@@ -262,9 +262,107 @@
     <div class="sec-head">
       <span class="dot feature"></span>
       <h2>New features</h2>
-      <span class="count">28 live</span>
+      <span class="count">32 live</span>
     </div>
     <ul class="entries">
+      <li>
+        <details class="entry">
+          <summary>
+            <div class="sum-left">
+              <h3>Per-app refine tone — casual in Slack, formal in Mail, verbatim in your terminal</h3>
+              <p>Set how the AI cleans up your words per app, so a message in Slack comes out casual, an email in Mail comes out formal, and dictation into a terminal or code editor is left verbatim — no AI rewrite at all. It's Wispr Flow's most-praised feature, done entirely on-device: pick a preset (verbatim, minimal, casual, formal, or a custom prompt) for any app in Settings. Code editors and terminals default to verbatim automatically so a spoken command is never reshaped.</p>
+            </div>
+            <div class="sum-right">
+              <span class="try">How to use<svg class="howto-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span>
+              <div class="receipts"><span class="tag ticket">MAK-77</span><span class="tag pr">#203</span></div>
+            </div>
+          </summary>
+          <div class="guide">
+            <span class="avail live">Available now</span>
+            <p class="g-sum">Give each app its own refine tone in Settings › Profiles.</p>
+            <ol>
+              <li>Open Settings › Profiles and turn on “Apply per-app profiles”.</li>
+              <li>Add an app (or pick an existing profile) and choose a Refine preset in its column: Verbatim, Minimal cleanup, Casual, Formal, or Custom.</li>
+              <li>For Custom, a prompt editor appears below the table — write a one-line tone instruction (it still runs behind the same safety guard, so it can't translate your words).</li>
+              <li>Terminals and code editors (Terminal, iTerm2, Warp, VS Code, Xcode, JetBrains, Cursor, Zed, and more) default to verbatim automatically — an explicit preset overrides that.</li>
+              <li>Precedence when more than one applies: an active Mode wins, then the per-app preset, then your global cleanup dial.</li>
+            </ol>
+          </div>
+        </details>
+      </li>
+      <li>
+        <details class="entry">
+          <summary>
+            <div class="sum-left">
+              <h3>A fifth engine: Apple's SpeechAnalyzer (macOS 26) — fast, on-device file transcription</h3>
+              <p>On macOS 26, OpenWhisp can use Apple's new SpeechAnalyzer / SpeechTranscriber as an on-device transcription engine — fully local, auto-punctuating, and about 2× faster than Whisper on file transcription. It backs the file queue, meetings, watch folders, and history re-transcribe, with a live-dictation variant too. It sits alongside Parakeet (the default), WhisperKit, whisper.cpp, and Apple Speech; pick it in Settings › Models.</p>
+            </div>
+            <div class="sum-right">
+              <span class="try">How to use<svg class="howto-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span>
+              <div class="receipts"><span class="tag ticket">MAK-59</span><span class="tag pr">#188</span></div>
+            </div>
+          </summary>
+          <div class="guide">
+            <span class="avail live">Available now</span>
+            <p class="g-sum">On macOS 26, choose Apple SpeechAnalyzer in Settings › Models.</p>
+            <ol>
+              <li>Requires macOS 26 — the engine only appears there.</li>
+              <li>Open Settings › Models and select Apple SpeechAnalyzer.</li>
+              <li>It runs on-device and auto-punctuates. The file-transcription path (files, meetings, watch folders, history re-transcribe) is the primary, fastest win — roughly 2× Whisper's speed on files.</li>
+              <li>Custom-vocabulary biasing isn't wired for this engine yet; use Parakeet, WhisperKit, or whisper.cpp when you need it.</li>
+            </ol>
+          </div>
+        </details>
+      </li>
+      <li>
+        <details class="entry">
+          <summary>
+            <div class="sum-left">
+              <h3>Agent dictation gets your project's vocabulary — branch, folder, and file names land right</h3>
+              <p>When a coding agent hands you the mic, OpenWhisp now feeds it your workspace context — the project folder name, the current git branch, and file/symbol names — so spoken dev terms come out spelled correctly (your branch feature/agent-eou, a file called getUserProfile). It's OpenWhisp's local answer to Claude Code's /voice project hints, and it works exactly where /voice can't: API-key, Bedrock, SSH, and privacy-locked setups. The context is derived on your Mac, used only for that session, never saved, and API-key-shaped tokens are filtered out so nothing secret leaks into a transcript.</p>
+            </div>
+            <div class="sum-right">
+              <span class="try">How to use<svg class="howto-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span>
+              <div class="receipts"><span class="tag ticket">MAK-75</span><span class="tag pr">#202</span></div>
+            </div>
+          </summary>
+          <div class="guide">
+            <span class="avail live">Available now</span>
+            <p class="g-sum">Automatic for MCP agents — the cwd and git branch are derived on each dictate call.</p>
+            <ol>
+              <li>No setup for MCP clients: openwhisp mcp runs in the client's working directory and self-derives the folder name + git branch on each openwhisp_dictate call.</li>
+              <li>A client can also pass explicit context (e.g. recent file names) — explicit values win and merge with the derived ones.</li>
+              <li>Opt out with the OPENWHISP_MCP_WORKSPACE_CONTEXT environment variable (0/false/off/no).</li>
+              <li>From the CLI, pass --cwd, --git-branch, or --terms "a,b,c".</li>
+              <li>Terms bias whichever engine honors it (whisper.cpp, WhisperKit, Apple Speech) and are session-scoped only — never written to your vocabulary file.</li>
+            </ol>
+          </div>
+        </details>
+      </li>
+      <li>
+        <details class="entry">
+          <summary>
+            <div class="sum-left">
+              <h3>Tap to finish an agent dictation — a deliberate “done”, like Claude Code /voice</h3>
+              <p>When an agent asks you a question by voice, you can now end the answer yourself with a tap of your dictation key — a deliberate finish, instead of waiting out the silence/end-of-utterance detector or a timeout. A new autoSubmit option on the openwhisp_dictate tool matches Claude Code /voice's behavior (hold or tap, submit automatically or wait for confirm). Your own hotkey dictations are unaffected.</p>
+            </div>
+            <div class="sum-right">
+              <span class="try">How to use<svg class="howto-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span>
+              <div class="receipts"><span class="tag ticket">MAK-76</span><span class="tag pr">#200</span></div>
+            </div>
+          </summary>
+          <div class="guide">
+            <span class="avail live">Available now</span>
+            <p class="g-sum">During an agent dictation, tap your dictation key to finish and return the transcript now.</p>
+            <ol>
+              <li>When a coding agent opens a dictation, speak your answer.</li>
+              <li>Tap your dictation hotkey to end the session immediately and return the transcript — overriding any pending silence/EOU settle wait.</li>
+              <li>A tap during the confirm window re-opens the session so you can append more.</li>
+              <li>Agents can set autoSubmit on the openwhisp_dictate tool to choose submit-immediately vs. wait-for-confirm.</li>
+            </ol>
+          </div>
+        </details>
+      </li>
       <li>
         <details class="entry">
           <summary>
@@ -1002,9 +1100,14 @@
     <div class="sec-head">
       <span class="dot fix"></span>
       <h2>Fixes</h2>
-      <span class="count">11 shipped</span>
+      <span class="count">12 shipped</span>
     </div>
     <ul class="entries">
+      <li class="entry">
+        <h3>Custom vocabulary now works on Parakeet (files, meetings, and re-transcribes)</h3>
+        <p>Custom vocabulary was silently doing nothing on Parakeet — the default engine. It now biases Parakeet's transcription of files, meetings, and history re-transcribes toward your terms (via FluidAudio's built-in keyword spotting). It's batch-only on this engine, so it doesn't apply to live dictation — the Settings footnote says so plainly — and it always fails open: if biasing can't run, you still get your transcript.</p>
+        <div class="receipts"><span class="tag ticket">MAK-71</span><span class="tag ticket">MAK-70</span><span class="tag pr">#178</span></div>
+      </li>
       <li class="entry">
         <h3>A 28-fix stability sweep — Scratchpad layout, Settings reset, and a snappier app</h3>
         <p>A broad bug-hunt across the recent releases fixed 28 verified issues. Highlights: the Scratchpad's note list no longer dwarfs the editor (and the panel remembers its size), “Reset all settings” now actually resets everything it promised, and the app feels faster — the Parakeet audio path was moved off the main thread, removing a source of UI lag during dictation.</p>
@@ -1068,9 +1171,19 @@
     <div class="sec-head">
       <span class="dot improve"></span>
       <h2>Under the hood</h2>
-      <span class="count">7 shipped</span>
+      <span class="count">9 shipped</span>
     </div>
     <ul class="entries">
+      <li class="entry">
+        <h3>A calmer Settings — a short everyday list, power-user panes tucked away</h3>
+        <p>The Settings sidebar had grown to a wall of 15 rows. It's now a short Setup section with the panes you actually touch, plus a collapsible “More features” group for the rest (it auto-opens if you deep-link into one). A few power-user controls moved out of the first-run flow too — so a fresh install can be productive without changing a single setting. Nothing was removed or renamed; your existing settings are untouched.</p>
+        <div class="receipts"><span class="tag ticket">MAK-62</span><span class="tag pr">#194</span></div>
+      </li>
+      <li class="entry">
+        <h3>Five-minute “voice for your agent” setup guides</h3>
+        <p>New setup guides walk you through giving your coding agent a voice in about five minutes — one page each for Claude Code, Cursor, and any generic MCP client, plus an honest comparison of OpenWhisp against Claude Code /voice, VoiceMode, and Spokenly. The Claude Code guide has dedicated sections for API-key / Amazon Bedrock users, SSH / remote sessions, and HIPAA / privacy-locked orgs — exactly the setups where a cloud voice feature can't go.</p>
+        <div class="receipts"><span class="tag ticket">MAK-60</span><span class="tag pr">#187</span></div>
+      </li>
       <li>
         <details class="entry">
           <summary>
