@@ -52,6 +52,7 @@ let package = Package(
                 "FileTagTransform.swift",
                 "PostProcessor.swift",
                 "AppProfile.swift",
+                "RefinePreset.swift",
                 "AppleScriptInsert.swift",
                 "MouseTrigger.swift",
                 "TranscriptionHistory.swift",
