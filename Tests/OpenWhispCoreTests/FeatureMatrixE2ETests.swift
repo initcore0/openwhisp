@@ -1014,6 +1014,81 @@ final class FeatureMatrixE2ETests: XCTestCase {
     ) else { return XCTFail("expected .dictateCancel") }
     }
 
+    // MARK: - Agent Bridge: agent-context vocabulary (MAK-75)
+
+    /// Reproduces AppState's streaming-prompt assembly for the routed context so
+    /// the test keys on the SAME public API the app calls (the wiring-review
+    /// lesson): derive terms from the wire context, merge with user vocab, then
+    /// gate on the engine's streaming vocabulary capability exactly as
+    /// AppState.swift does at the streaming-start site.
+    private func streamingPromptForRoutedContext(
+        _ context: BridgeWire.DictateContext?,
+        engine: String,
+        userVocabulary: Vocabulary
+    ) -> String {
+        let agentTerms = AgentContextVocabulary.derivedTerms(
+            cwd: context?.cwd, gitBranch: context?.gitBranch,
+            terms: context?.terms ?? [],
+            existingTerms: userVocabulary.terms)
+        // effectiveWhisperPrompt: user vocab prompt + agent terms (deduped).
+        let base = userVocabulary.whisperPrompt
+        let extra = AgentContextVocabulary.merged(base: [], with: agentTerms)
+            .joined(separator: ", ")
+        let effective = base.isEmpty ? extra : (extra.isEmpty ? base : "\(base), \(extra)")
+        // The capability gate AppState applies before handing the engine a prompt.
+        return EngineCapabilities.honorsStreamingVocabulary(transcriptionEngine: engine)
+            ? effective : ""
+    }
+
+    func testAgentContextBranchNameBiasesStreamingPromptWhereHonored() {
+        // A real dictate frame carrying workspace context, routed through the SAME
+        // BridgeRouter path the server uses.
+        let frame = bridgeFrame(#"""
+        {"jsonrpc":"2.0","id":"cc-1","method":"dictate","params":{"prompt":"which file?","context":{"cwd":"/Users/me/projects/OpenWhisp","gitBranch":"mak-75-agent-context","terms":["RefineFlow"]}}}
+        """#)
+        guard case let .intent(.dictate(_, params)) = BridgeRouter.route(line: frame, hasHandshaken: true) else {
+            return XCTFail("expected .dictate intent")
+        }
+        // The context survived the wire round-trip through the real router.
+        XCTAssertEqual(params.context?.gitBranch, "mak-75-agent-context")
+
+        let userVocab = Vocabulary(terms: ["Anthropic"], substitutions: [])
+
+        // whisper.cpp HONORS streaming vocabulary (.all): the branch, project, and
+        // file identifiers reach the engine prompt alongside the user's vocab.
+        let honored = streamingPromptForRoutedContext(
+            params.context, engine: EngineCapabilities.whisperCpp, userVocabulary: userVocab)
+        XCTAssertTrue(honored.contains("Anthropic"), "user vocab preserved: \(honored)")
+        XCTAssertTrue(honored.contains("mak-75-agent-context"), "branch biased: \(honored)")
+        XCTAssertTrue(honored.contains("OpenWhisp"), "project name biased: \(honored)")
+        XCTAssertTrue(honored.contains("RefineFlow"), "file identifier biased: \(honored)")
+
+        // Parakeet does NOT honor streaming vocabulary (.batchOnly): the gate hands
+        // it "" — a declared no-op, never a silent partial bias.
+        let notHonored = streamingPromptForRoutedContext(
+            params.context, engine: EngineCapabilities.parakeet, userVocabulary: userVocab)
+        XCTAssertEqual(notHonored, "", "batch-only engine gets no streaming prompt")
+    }
+
+    func testAgentContextDropsUserVocabDuplicatesAndSecrets() {
+        // Context whose branch carries an API-key-shaped token and whose cwd
+        // repeats a user vocab term, routed for real.
+        let frame = bridgeFrame(#"""
+        {"jsonrpc":"2.0","id":"cc-2","method":"dictate","params":{"context":{"cwd":"/tmp/OpenWhisp","gitBranch":"tmp/sk-Ab12Cd34Ef56Gh78Ij90"}}}
+        """#)
+        guard case let .intent(.dictate(_, params)) = BridgeRouter.route(line: frame, hasHandshaken: true) else {
+            return XCTFail("expected .dictate intent")
+        }
+        let userVocab = Vocabulary(terms: ["OpenWhisp"], substitutions: [])
+        let prompt = streamingPromptForRoutedContext(
+            params.context, engine: EngineCapabilities.whisperCpp, userVocabulary: userVocab)
+        // "OpenWhisp" appears once (user vocab), not duplicated from the cwd.
+        let occurrences = prompt.components(separatedBy: "OpenWhisp").count - 1
+        XCTAssertEqual(occurrences, 1, "user vocab term not double-biased: \(prompt)")
+        // The secret-shaped token never reaches the prompt (secret guard).
+        XCTAssertFalse(prompt.contains("sk-Ab12"), "secret-shaped token biased: \(prompt)")
+    }
+
     // MARK: - Agent Bridge: per-client dictate rate limiting
 
     /// Convert an injected `now` (as a TimeInterval offset) into the `Date` the real

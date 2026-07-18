@@ -157,10 +157,17 @@ public final class MCPServer {
         do {
             switch name {
             case "openwhisp_dictate":
+                // MAK-75: merge any explicit `context` the client passed with
+                // self-derived cwd + git branch (the stdio child runs in the
+                // client's working dir). Gated by an env opt-out. nil when there's
+                // nothing to send, keeping the wire field absent for old servers.
+                let explicitContext = Self.dictateContext(from: arguments["context"])
+                let resolvedContext = WorkspaceContext.resolved(explicit: explicitContext)
                 let params = BridgeWire.DictateParams(
                     prompt: arguments["prompt"]?.stringValue,
                     timeoutSeconds: arguments["timeoutSeconds"]?.intValue,
                     language: arguments["language"]?.stringValue,
+                    context: resolvedContext,
                     autoSubmit: arguments["autoSubmit"]?.boolValue
                 )
                 // dictate blocks until the user finishes (or the timeout). When the
@@ -270,6 +277,19 @@ public final class MCPServer {
     explicitly enabled a cloud AI provider).
     """
 
+    /// Parse the optional `context` tool argument into a ``BridgeWire.DictateContext``
+    /// (MAK-75). Returns nil when absent or carrying nothing usable, so the caller
+    /// falls back to pure self-derivation.
+    static func dictateContext(from value: MCPWire.JSONValue?) -> BridgeWire.DictateContext? {
+        guard let value else { return nil }
+        let ctx = BridgeWire.DictateContext(
+            cwd: value["cwd"]?.stringValue,
+            gitBranch: value["gitBranch"]?.stringValue,
+            terms: value["terms"]?.stringArrayValue
+        )
+        return ctx.isEmpty ? nil : ctx
+    }
+
     /// The MCP `tools/list` payload, as typed ``MCPWire.JSONValue`` so it encodes
     /// through the same path as every other frame.
     static let toolDefinitions: MCPWire.JSONValue = .array([
@@ -291,6 +311,25 @@ public final class MCPServer {
                                                "description": .string("Max seconds to wait (default 60, max 300).")]),
                     "language": .object(["type": .string("string"),
                                          "description": .string("Optional BCP-47 language hint.")]),
+                    "context": .object([
+                        "type": .string("object"),
+                        "description": .string("""
+                        Optional workspace context to bias recognition toward dev terms the user \
+                        might speak — a branch name, a file name, the project name. Used locally \
+                        only. The server auto-derives cwd + git branch from its own working \
+                        directory, so you rarely need to pass this; supply `terms` (e.g. recently \
+                        edited file names or symbols) to add more.
+                        """),
+                        "properties": .object([
+                            "cwd": .object(["type": .string("string"),
+                                            "description": .string("Working directory (path or basename).")]),
+                            "gitBranch": .object(["type": .string("string"),
+                                                  "description": .string("Checked-out git branch.")]),
+                            "terms": .object(["type": .string("array"),
+                                              "items": .object(["type": .string("string")]),
+                                              "description": .string("Extra identifiers: file names, symbols, jargon.")]),
+                        ]),
+                    ]),
                     "autoSubmit": .object(["type": .string("boolean"),
                                            "description": .string("Whether the user's answer is returned immediately when they stop speaking (default true). Set false to give the user a brief window to add more before the answer is submitted.")]),
                 ]),

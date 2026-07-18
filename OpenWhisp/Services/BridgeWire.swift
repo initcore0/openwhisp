@@ -460,6 +460,38 @@ extension BridgeWire {
 
     // MARK: - dictate
 
+    /// Workspace context ABOUT the client's own working environment, injected into
+    /// the on-device engine's bias path and the local cleanup prompt so spoken dev
+    /// terms — a branch name, a file name, the project name — transcribe correctly
+    /// in an agent dictation (MAK-75). Purely local: it primes recognition and (for
+    /// a local LLM) cleanup, never leaves the machine, and is never persisted.
+    ///
+    /// Additive + fully optional (every field nil-able), so an old client that
+    /// omits `context` decodes unchanged. The MCP adapter can also SELF-DERIVE
+    /// `cwd`/`gitBranch` from the working dir it inherits, so the MCP path needs
+    /// zero client changes.
+    public struct DictateContext: Codable, Sendable, Equatable {
+        /// The client's working directory (full path or basename). Only its path
+        /// components are mined for terms.
+        public var cwd: String?
+        /// The checked-out git branch (e.g. `feat/mak-75-agent-context`).
+        public var gitBranch: String?
+        /// Extra client-supplied identifiers: recent file names, symbols, jargon.
+        public var terms: [String]?
+
+        public init(cwd: String? = nil, gitBranch: String? = nil, terms: [String]? = nil) {
+            self.cwd = cwd
+            self.gitBranch = gitBranch
+            self.terms = terms
+        }
+
+        /// True when there's nothing to derive terms from (so the server can skip
+        /// the whole context path).
+        public var isEmpty: Bool {
+            (cwd?.isEmpty ?? true) && (gitBranch?.isEmpty ?? true) && (terms?.isEmpty ?? true)
+        }
+    }
+
     public struct DictateParams: Codable, Sendable, Equatable {
         /// The agent's question, shown in the overlay (sanitized + client-name
         /// prefixed by the server before display).
@@ -467,6 +499,9 @@ extension BridgeWire {
         /// Defaulted server-side to 60, hard-capped at 300.
         public var timeoutSeconds: Int?
         public var language: String?
+        /// Optional workspace context for bias/cleanup (MAK-75). Additive; older
+        /// clients omit it. See ``DictateContext``.
+        public var context: DictateContext?
         /// MAK-76: whether an auto-stop (silence / EOU) returns the transcript
         /// immediately. `nil` (the wire default for older clients) is treated as
         /// `true` — the legacy behavior. When the client passes `false`, an
@@ -477,10 +512,11 @@ extension BridgeWire {
         public var autoSubmit: Bool?
 
         public init(prompt: String? = nil, timeoutSeconds: Int? = nil, language: String? = nil,
-                    autoSubmit: Bool? = nil) {
+                    context: DictateContext? = nil, autoSubmit: Bool? = nil) {
             self.prompt = prompt
             self.timeoutSeconds = timeoutSeconds
             self.language = language
+            self.context = context
             self.autoSubmit = autoSubmit
         }
 

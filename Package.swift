@@ -40,6 +40,7 @@ let package = Package(
                 "ParakeetLanguageGate.swift",
                 "ParakeetLanguageHint.swift",
                 "ParakeetVocabularyPrompt.swift",
+                "AgentContextVocabulary.swift",
                 "ParakeetDownloadState.swift",
                 "AgentEouAutoStop.swift",
                 "StreamingRoutePolicy.swift",

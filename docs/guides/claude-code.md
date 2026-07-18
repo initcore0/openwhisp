@@ -104,6 +104,24 @@ openwhisp dictate --cancel   # discard — return no transcript (like Esc)
 Pressing your own dictation **hotkey** during an agent session *cancels* it (you
 reclaim the mic) — it does not finish it.
 
+### Dev terms transcribe correctly (workspace context)
+
+Claude Code's native `/voice` recognizes your project name and current git branch
+as dictation hints. OpenWhisp does the local equivalent for the agent path — with
+**no configuration**. Because `openwhisp mcp` runs inside your project directory,
+it automatically derives your **working directory** and **git branch** on each
+voice question and uses them to bias recognition, so when you speak a branch name,
+a file name, or the project name, it transcribes correctly instead of as
+gibberish. These terms are used **locally only** (on-device recognition plus, if
+your provider is local, the cleanup model), are merged with your custom
+vocabulary for that one session, and are never saved or sent to the cloud;
+API-key-shaped tokens are rejected before they can bias.
+
+To add more terms (recently-edited file names, symbols) Claude can pass a
+`context.terms` list on the `openwhisp_dictate` call. To turn off the automatic
+cwd/branch derivation, set `OPENWHISP_MCP_WORKSPACE_CONTEXT=0` in the MCP server's
+environment.
+
 ### First-call consent
 
 The first time Claude uses each capability (dictate, history, refine), OpenWhisp

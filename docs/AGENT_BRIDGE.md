@@ -168,6 +168,7 @@ Result-only on stdout (composes in shell pipelines); diagnostics on stderr.
 ```sh
 openwhisp status                         # liveness probe
 openwhisp dictate --prompt "Which branch?"
+openwhisp dictate --prompt "Which file?" --terms "AppState.swift,RefineFlow"  # extra bias terms
 openwhisp dictate --stop                 # finish a running dictation now (from another shell)
 openwhisp dictate --cancel               # discard a running dictation (returns no transcript)
 pbpaste | openwhisp refine -i "make it formal" | pbcopy
@@ -180,6 +181,39 @@ default — see below); a client calls `dictate.stop` (or you run `openwhisp
 dictate --stop` from another shell), which returns whatever was captured; or the
 timeout elapses. Pressing your dictation **hotkey** *cancels* an agent dictation
 (the human reclaiming the mic) — it does not finish it.
+
+**Workspace context (agent-context vocabulary).** So that spoken dev terms — a
+branch name, a file name, the project name — transcribe correctly, a dictation
+that originates from an agent can carry **workspace context**: the working
+directory, the git branch, and file/symbol names. OpenWhisp splits these into
+speakable bias terms (camelCase / snake_case / kebab / dotted), merges them with
+your custom vocabulary **for that one session only** (never written to your
+vocabulary store), and feeds them into whichever engine bias path the current
+engine honors (whisper.cpp / WhisperKit prompt tokens, Apple Speech
+`contextualStrings`; Parakeet's batch-only and SpeechAnalyzer's unwired paths
+get nothing, per the capability model) *and* — for a local LLM — into the
+cleanup prompt as reference-only spelling context. It's OpenWhisp's local
+equivalent of Claude Code's `/voice` project-name + branch hints.
+
+This is data **about the client's own workspace**, used **locally only** to prime
+recognition and (for a local model) cleanup — it never leaves the machine and is
+never persisted, so it needs no new consent scope. API-key-shaped tokens in a
+path or branch are rejected before they can bias (and so can't be echoed into a
+transcript).
+
+- **MCP path — zero client changes.** The `openwhisp mcp` server runs as a stdio
+  child in the MCP client's working directory, so it **self-derives** `cwd` + git
+  branch on each `openwhisp_dictate` call. Set
+  `OPENWHISP_MCP_WORKSPACE_CONTEXT=0` (or `false`/`off`/`no`) in the server's
+  environment to disable that auto-derivation. A client may also pass an explicit
+  `context` object (`{cwd, gitBranch, terms}`) on the tool call — for example to
+  add recently-edited file names as `terms`; an explicit value wins over, and
+  merges with, the self-derived ones (and is honored even when auto-derivation is
+  opted out).
+- **CLI path.** `openwhisp dictate` self-derives `cwd` + branch from its own
+  shell the same way; `--cwd`, `--git-branch`, and `--terms "a,b,c"` override.
+- **Wire.** `dictate` params carry an optional `context: {cwd?, gitBranch?,
+  terms?}` (additive — older clients omit it).
 
 Exit codes: `0` ok · `1` internal · `2` app unreachable / bridge off · `3`
 consent denied · `4` busy · `5` cancelled · `6` timeout · `7` permission /
@@ -208,6 +242,13 @@ secure field · `64` usage · `65` version mismatch.
   refinement is **blocked** unless you turn on *Allow agents to use cloud AI* —
   so a prompt-injected agent can't exfiltrate text through your key. Local
   providers are unaffected.
+- **Workspace context is local-only.** The cwd / git-branch / file-name terms an
+  agent dictation carries (see *Workspace context* above) are used solely to
+  prime on-device recognition and a **local** cleanup model — they're never sent
+  to a cloud provider, never written to your vocabulary store, and dropped at
+  session end. They describe the client's own workspace, so they add no new
+  consent scope; secret-shaped tokens are rejected before they can bias.
+  Disable server-side auto-derivation with `OPENWHISP_MCP_WORKSPACE_CONTEXT=0`.
 - **The human wins the mic.** Pressing your dictation hotkey during an agent
   session cancels it (the agent gets nothing) and starts your own. Agent
   microphone use always shows the overlay. Password fields are never dictated

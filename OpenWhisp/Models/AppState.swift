@@ -1567,13 +1567,15 @@ class AppState: ObservableObject {
         // local-only rule is re-checked HERE, at use time, against the provider the
         // request will actually hit: a non-local provider never sees the context,
         // even when it was legitimately captured under a local one.
-        let customInstruction: String?
-        if let base = baseInstruction, let ctx = sessionScreenContext?.llmContext,
-           ScreenContextGate.localRefineProviders.contains(llmProvider) {
+        let isLocalRefine = ScreenContextGate.localRefineProviders.contains(llmProvider)
+        var customInstruction: String?
+        if let base = baseInstruction, let ctx = sessionScreenContext?.llmContext, isLocalRefine {
             customInstruction = ScreenContextTruncator.augmentedInstruction(base, withContext: ctx)
         } else {
             customInstruction = baseInstruction
         }
+        customInstruction = AgentContextVocabulary.augmented(instruction: customInstruction, // MAK-75
+            terms: isLocalRefine ? sessionInitiator.agentBiasTerms : [])
         return OpenAIRefiner(
             service: translationService,
             mode: refinementMode(openAIEnhancementMode),
@@ -4945,11 +4947,8 @@ class AppState: ObservableObject {
     /// session. Empty when neither applies. Bias terms never leave the machine —
     /// they only prime the on-device transcription engine.
     private var effectiveWhisperPrompt: String {
-        let base = customVocabularyEnabled ? vocabulary.whisperPrompt : ""
-        let extra = sessionScreenContext?.biasTerms ?? []
-        guard !extra.isEmpty else { return base }
-        let extraJoined = extra.joined(separator: ", ")
-        return base.isEmpty ? extraJoined : "\(base), \(extraJoined)"
+        AgentContextVocabulary.effectivePrompt(base: customVocabularyEnabled ? vocabulary.whisperPrompt : "",
+            screenTerms: sessionScreenContext?.biasTerms ?? [], agentTerms: sessionInitiator.agentBiasTerms)
     }
 
     /// Local transcript cleanup. Delegates to TranscriptCleaner (in OpenWhispCore)
@@ -6707,7 +6706,7 @@ extension AppState: AgentBridgeHost {
     /// the timeout. Called on the main thread; `completion` fires on the main thread.
     func bridgeStartDictation(
         clientName: String, prompt: String?, timeoutSeconds: Int, language: String?,
-        autoSubmit: Bool = BridgeWire.DictateParams.defaultAutoSubmit,
+        context: BridgeWire.DictateContext?, autoSubmit: Bool = BridgeWire.DictateParams.defaultAutoSubmit,
         completion: @escaping (Result<BridgeWire.DictateResult, BridgeWire.ErrorObject>) -> Void
     ) {
         // Busy: the human (or another agent session) always wins the mic.
@@ -6746,7 +6745,8 @@ extension AppState: AgentBridgeHost {
         agentDictatePrompt = presentation.banner
         agentDictateClientLabel = presentation.clientLabel
         agentDictateQuestion = presentation.question
-        sessionInitiator = .agent(client: clientName, prompt: prompt)
+        sessionInitiator = .agent(client: clientName, prompt: prompt, biasTerms: AgentContextVocabulary
+            .sessionTerms(context: context, userTerms: customVocabularyEnabled ? vocabulary.terms : []))
         onSessionEnd = { [weak self] outcome in
             guard let self else { return }
             self.agentDictateTimeoutTask?.cancel()

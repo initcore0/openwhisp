@@ -74,7 +74,8 @@ struct Args {
     private let raw: [String]
     private let valueFlags: Set<String>
     init(_ raw: [String],
-         valueFlags: Set<String> = ["--instruction", "-i", "--prompt", "--timeout", "--language", "--limit"]) {
+         valueFlags: Set<String> = ["--instruction", "-i", "--prompt", "--timeout", "--language", "--limit",
+                                    "--cwd", "--git-branch", "--terms"]) {
         self.raw = raw
         self.valueFlags = valueFlags
     }
@@ -169,10 +170,25 @@ func runDictate(_ args: Args) -> Never {
     if args.hasFlag("--cancel") { runDictateCancel(args) }
 
     let client = connectedClient()
+    // MAK-75: workspace context. Explicit flags (--cwd/--git-branch/--terms) merge
+    // with server-side self-derivation from the CLI's own working directory + git
+    // branch (env-gated, see WorkspaceContext). `--terms` is a comma-separated
+    // list. nil when there's nothing to send (old-server compatible).
+    let explicitTerms = args.value("--terms")?
+        .split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+    let explicitContext = BridgeWire.DictateContext(
+        cwd: args.value("--cwd"),
+        gitBranch: args.value("--git-branch"),
+        terms: (explicitTerms?.isEmpty ?? true) ? nil : explicitTerms
+    )
+    let resolvedContext = WorkspaceContext.resolved(
+        explicit: explicitContext.isEmpty ? nil : explicitContext
+    )
     let params = BridgeWire.DictateParams(
         prompt: args.value("--prompt"),
         timeoutSeconds: args.value("--timeout").flatMap(Int.init),
-        language: args.value("--language")
+        language: args.value("--language"),
+        context: resolvedContext
     )
     do {
         let result = try client.call(method: BridgeWire.Method.dictate.rawValue,

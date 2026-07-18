@@ -68,6 +68,39 @@ final class BridgeWireTests: XCTestCase {
         XCTAssertEqual(req.params?.timeoutSeconds, 45)
     }
 
+    // MARK: - MAK-75: DictateParams.context (additive, backward compatible)
+
+    func testDictateContextRoundTrips() throws {
+        let params = BridgeWire.DictateParams(
+            prompt: "what next?",
+            timeoutSeconds: 30,
+            language: "en",
+            context: BridgeWire.DictateContext(
+                cwd: "/Users/me/projects/OpenWhisp",
+                gitBranch: "mak-75-agent-context",
+                terms: ["AppState.swift", "RefineFlow"]))
+        let decoded = try roundTrip(params)
+        XCTAssertEqual(decoded.context?.cwd, "/Users/me/projects/OpenWhisp")
+        XCTAssertEqual(decoded.context?.gitBranch, "mak-75-agent-context")
+        XCTAssertEqual(decoded.context?.terms, ["AppState.swift", "RefineFlow"])
+    }
+
+    func testDictateParamsDecodesWithoutContext() throws {
+        // An OLD client that omits `context` must still decode (additive field).
+        let line = Data(#"{"prompt":"hi","timeoutSeconds":45}"#.utf8)
+        let params = try JSONDecoder().decode(BridgeWire.DictateParams.self, from: line)
+        XCTAssertEqual(params.prompt, "hi")
+        XCTAssertEqual(params.timeoutSeconds, 45)
+        XCTAssertNil(params.context)
+    }
+
+    func testDictateContextIsEmpty() {
+        XCTAssertTrue(BridgeWire.DictateContext().isEmpty)
+        XCTAssertTrue(BridgeWire.DictateContext(cwd: "", gitBranch: "", terms: []).isEmpty)
+        XCTAssertFalse(BridgeWire.DictateContext(cwd: "/x").isEmpty)
+        XCTAssertFalse(BridgeWire.DictateContext(terms: ["a"]).isEmpty)
+    }
+
     func testRequestEnvelopeToleratesUnknownFields() throws {
         // Forward-compat: a field a newer client adds must not break decoding.
         let line = Data(#"{"jsonrpc":"2.0","id":"x","method":"status","futureField":true}"#.utf8)
