@@ -96,6 +96,23 @@ jobs:
           path: third_party/llama.cpp/build
           key: llama-build-${{ runner.os }}-${{ steps.llama-key.outputs.sha }}-${{ hashFiles('scripts/build-llama.sh') }}
 
+      # ccache is what actually makes the cached-rebuild fast: the build-dir
+      # cache above restores object files, but a fresh checkout stamps sources
+      # with NEWER mtimes, so make recompiles everything anyway (observed: 60min
+      # llama rebuild on a successful cache restore, v1.0.6). ccache hashes
+      # CONTENT, not mtimes, so those recompiles become cache lookups. ggml's
+      # cmake auto-detects ccache (GGML_CCACHE defaults ON — the build log
+      # warns when it's missing).
+      - name: Install ccache
+        run: brew install ccache 2>/dev/null || true
+      - name: Restore ccache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/Library/Caches/ccache
+          key: ccache-${{ runner.os }}-${{ steps.llama-key.outputs.sha }}
+          restore-keys: |
+            ccache-${{ runner.os }}-
+
       - name: Build llama.cpp (submodule)
         run: ./scripts/build-llama.sh
 
@@ -105,6 +122,14 @@ jobs:
         with:
           path: third_party/llama.cpp/build
           key: llama-build-${{ runner.os }}-${{ steps.llama-key.outputs.sha }}-${{ hashFiles('scripts/build-llama.sh') }}
+
+      - name: Save ccache
+        # Save even on later-step failure would need if: always() on a job level;
+        # here the step runs right after the build, so a signing flake can't lose it.
+        uses: actions/cache/save@v4
+        with:
+          path: ~/Library/Caches/ccache
+          key: ccache-${{ runner.os }}-${{ steps.llama-key.outputs.sha }}-${{ github.run_id }}
 
       # Signing is enabled only when the Developer ID secret is present. Forks and
       # setups without the secret still get an ad-hoc DMG (unchanged behavior).
