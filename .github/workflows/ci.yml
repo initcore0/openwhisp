@@ -106,3 +106,23 @@ jobs:
         run: xcodebuild -scheme OpenWhispCore -destination 'generic/platform=iOS' build
       - name: Build OpenWhispBridgeKit for iOS
         run: xcodebuild -scheme OpenWhispBridgeKit -destination 'generic/platform=iOS' build
+
+  third-party-pins:
+    # Supply-chain hygiene gate (MAK-64): every third_party/ submodule must be
+    # pinned to an upstream release tag (or be allowlisted with a reason), and
+    # any personal-fork dependency (initcore0/*) must carry a third_party/PATCHES.md
+    # entry documenting its delta. Fast + network-free — it only inspects
+    # .gitmodules, the checked-out submodule git state, and the *-dep manifests.
+    name: third_party pin hygiene
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Need submodules + their tags so `git describe --tags` can prove each
+          # pin is tag-reachable, entirely offline (no clones at check time).
+          submodules: true
+          fetch-depth: 0
+      - name: Fetch submodule tags
+        run: git submodule foreach 'git fetch --tags --quiet origin || true'
+      - name: Check third_party pins
+        run: ./scripts/check-third-party-pins.sh
