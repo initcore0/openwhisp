@@ -53,11 +53,15 @@ final class FakeStreamingTranscriptionEngine: StreamingTranscriptionEngine {
     var onStarted: (() -> Void)?
 
     private(set) var startedLanguages: [String] = []
+    private(set) var startedPrompts: [String] = []
     private(set) var stops: [Bool] = []
     private(set) var selectedDevices: [String] = []
 
     func selectDevice(_ deviceID: String) { selectedDevices.append(deviceID) }
-    func start(language: String) throws { startedLanguages.append(language) }
+    func start(language: String, prompt: String) throws {
+        startedLanguages.append(language)
+        startedPrompts.append(prompt)
+    }
     func stop(cancel: Bool) { stops.append(cancel) }
 }
 

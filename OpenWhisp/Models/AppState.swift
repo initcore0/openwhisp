@@ -3428,7 +3428,16 @@ class AppState: ObservableObject {
             }
             do {
                 engine.selectDevice(micID)
-                try engine.start(language: self.engineLanguageSetting)
+                // Hand the engine its live-dictation bias terms ONLY when this
+                // engine honors vocabulary on the streaming path (offered-iff-
+                // honored, MAK-69). whisper.cpp/WhisperKit/Apple Speech honor it;
+                // Parakeet (batch-only) and SpeechAnalyzer (unwired) declare .none/
+                // .batchOnly for streaming, so they get "" — a declared no-op the
+                // vocabulary UI already told the user about, never a silent drop.
+                let streamingPrompt = EngineCapabilities.honorsStreamingVocabulary(
+                    transcriptionEngine: self.transcriptionEngine
+                ) ? self.effectiveWhisperPrompt : ""
+                try engine.start(language: self.engineLanguageSetting, prompt: streamingPrompt)
                 // Do NOT flip to Listening here: for WhisperKit/Parakeet,
                 // start() only ENQUEUED the real start on the engine's serial
                 // lifecycle chain — the model load (or first-run download)

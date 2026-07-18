@@ -35,6 +35,7 @@ let package = Package(
                 "EditDiff.swift",
                 "LanguageResolver.swift",
                 "EngineCapabilities.swift",
+                "EnginePurposeRouter.swift",
                 "ParakeetCatalog.swift",
                 "ParakeetLanguageGate.swift",
                 "ParakeetLanguageHint.swift",

@@ -65,18 +65,18 @@ final class AppleSpeechEngine: StreamingTranscriptionEngine {
         SFSpeechRecognizer.authorizationStatus()
     }
 
-    func start(language: String) throws {
+    func start(language: String, prompt: String) throws {
         // All callers are @MainActor (AppState). assumeIsolated documents and enforces
         // that invariant so the @MainActor session state below can be touched without
         // an async hop (which would let two rapid start/stop calls reorder). The same
         // pattern is used by WhisperKitStreamingEngine.
         try MainActor.assumeIsolated {
-            try runStart(language: language)
+            try runStart(language: language, prompt: prompt)
         }
     }
 
     @MainActor
-    private func runStart(language: String) throws {
+    private func runStart(language: String, prompt: String) throws {
         stop(cancel: true)
 
         generation += 1
@@ -95,6 +95,19 @@ final class AppleSpeechEngine: StreamingTranscriptionEngine {
 
         let request = SFSpeechAudioBufferRecognitionRequest()
         request.shouldReportPartialResults = true
+
+        // Vocabulary biasing (MAK-69): Apple's live recognizer takes a list of
+        // discrete phrases to weight toward, which is exactly the shape of our
+        // bias terms. The `prompt` arrives whisper-shaped (comma-joined) because
+        // the protocol is whisper.cpp-shaped, so split it back into terms — the
+        // same round-trip the Parakeet batch path does (ParakeetVocabularyPrompt).
+        // Empty prompt → no contextual strings (the plain path). This is the
+        // `.all` vocabulary declaration for appleSpeech in EngineCapabilities;
+        // the field is offered iff it's honored here.
+        let contextualStrings = ParakeetVocabularyPrompt.terms(from: prompt)
+        if !contextualStrings.isEmpty {
+            request.contextualStrings = contextualStrings
+        }
 
         let engine = AVAudioEngine()
         let input = engine.inputNode

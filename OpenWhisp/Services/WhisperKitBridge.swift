@@ -184,13 +184,26 @@ enum WhisperKitBridge {
         return language
     }
 
+    /// Turn a whisper-shaped `prompt` (comma-joined bias terms) into WhisperKit
+    /// `promptTokens` (MAK-69). WhisperKit biases the decoder with token IDs, not a
+    /// string, so we tokenize with special tokens OFF — the decoder prepends its
+    /// own prefill tokens and filters anything `>= specialTokenBegin` out of the
+    /// prompt (see TextDecoder), so a bare content-token list is exactly what it
+    /// wants. Empty/blank prompt → nil (the plain, unbiased path).
+    static func promptTokens(from prompt: String, tokenizer: WhisperTokenizer) -> [Int]? {
+        let trimmed = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        let tokens = tokenizer.encode(text: " " + trimmed).filter {
+            $0 < tokenizer.specialTokens.specialTokenBegin
+        }
+        return tokens.isEmpty ? nil : tokens
+    }
+
     /// Transcribe a WAV file to plain text, honoring the language/translate task.
     /// `languageOverride`, when non-nil, forces the source language (used to pin the
     /// detected language across an "auto" session); otherwise `task.language` is used.
-    /// NOTE: WhisperKit's `DecodingOptions` biases recognition via `promptTokens:
-    /// [Int]?` (token IDs), not a plain string, so the vocabulary `prompt` is NOT
-    /// wired in this pilot (it would need the WhisperKit tokenizer). The whisper.cpp
-    /// backend still honors custom vocabulary; this is a known pilot limitation.
+    /// `prompt` (comma-joined bias terms) steers recognition via WhisperKit's
+    /// `promptTokens` (MAK-69) — the `.all` vocabulary declaration for whisperKit.
     static func transcribe(
         kit: WhisperKit,
         wavPath: String,
@@ -200,7 +213,9 @@ enum WhisperKitBridge {
     ) async throws -> String {
         let options = DecodingOptions(
             task: task.translate ? .translate : .transcribe,
-            language: languageOverride ?? task.language
+            language: languageOverride ?? task.language,
+            usePrefillPrompt: true,
+            promptTokens: kit.tokenizer.flatMap { promptTokens(from: prompt, tokenizer: $0) }
         )
         // transcribe(audioPath:decodeOptions:) -> [TranscriptionResult]; one entry
         // per processed window. Concatenate their `.text`.
@@ -228,11 +243,16 @@ enum WhisperKitBridge {
         task: WhisperKitTaskMapper.Resolved,
         languageOverride: String?,
         inputDeviceID: AudioDeviceHandle? = nil,
+        prompt: String = "",
         onState: @escaping (WhisperKitStreamState) -> Void
     ) throws -> WhisperKitStreamHandle {
         guard let tokenizer = kit.tokenizer else {
             throw WhisperKitBridgeError.tokenizerUnavailable
         }
+        // Vocabulary biasing on the live path (MAK-69): tokenize the bias terms to
+        // WhisperKit's `promptTokens`. Empty prompt → nil (plain path). This is the
+        // streaming half of whisperKit's `.all` vocabulary declaration.
+        let streamPromptTokens = promptTokens(from: prompt, tokenizer: tokenizer)
         let resolvedLanguage = languageOverride ?? task.language
         // "auto" (no explicit language, not translating): WhisperKit's prefill
         // otherwise FORCES a default language token (English), so Russian speech comes
@@ -243,13 +263,16 @@ enum WhisperKitBridge {
         let options = DecodingOptions(
             task: task.translate ? .translate : .transcribe,
             language: resolvedLanguage,
+            usePrefillPrompt: true,
             detectLanguage: autoDetect,
             // Streaming segment text is the RAW token stream unless we ask for clean
             // output: strip the special tokens (<|startoftranscript|>, <|en|>, …) and
             // the per-segment timestamp markers. Without this the preview shows token
             // soup instead of words.
             skipSpecialTokens: true,
-            withoutTimestamps: true
+            withoutTimestamps: true,
+            // Vocabulary bias terms (MAK-69), nil when none.
+            promptTokens: streamPromptTokens
         )
         let handle = WhisperKitStreamHandle(kit: kit, decodingOptions: options)
         let transcriber = AudioStreamTranscriber(

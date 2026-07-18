@@ -94,7 +94,15 @@ final class ParakeetStreamingEngine: StreamingTranscriptionEngine {
         let error: ((String) -> Void)?
     }
 
-    func start(language: String) throws {
+    func start(language: String, prompt: String) throws {
+        // `prompt` (vocabulary bias terms) is intentionally ignored here: Parakeet
+        // biases only on the batch path via FluidAudio's CTC-WS spotter (MAK-71),
+        // which needs the full log-prob matrix over complete audio — the live
+        // stream has no such pass. This is a DECLARED no-op, not a silent drop:
+        // EngineCapabilities.vocabularySupport(parakeet) == .batchOnly, so
+        // honorsStreamingVocabulary is false and AppState never hands us a
+        // non-empty prompt on this path. See TranscriptionEngine.start's contract.
+        //
         // All callers are @MainActor (AppState); synchronous enqueue preserves
         // call order (a stop() immediately followed by start() must serialize).
         MainActor.assumeIsolated {
@@ -405,7 +413,7 @@ final class ParakeetStreamingEngine: StreamingTranscriptionEngine {
 
 #else
 
-    func start(language: String) throws {
+    func start(language: String, prompt: String) throws {
         onError?("The Parakeet engine isn't available in this build. Rebuild with PARAKEET=1 (see docs/PARAKEET.md).")
     }
 
