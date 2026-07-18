@@ -73,6 +73,12 @@ Filler words disappear. "New paragraph" becomes one. Your jargon and names are s
 
 ## Install
 
+```sh
+brew install --cask initcore0/openwhisp/openwhisp
+```
+
+> **Coming soon** — available once the Homebrew tap is published. Until then, use the direct download below.
+
 **[⬇ Download OpenWhisp.dmg](../../releases/latest)** — drag to Applications, open. That's it.
 
 Signed and notarized by Apple: no scary warnings, no Terminal gymnastics. Updates arrive in-app automatically.

@@ -296,3 +296,23 @@ jobs:
             --title "OpenWhisp $TAG" \
             --notes-file "$NOTES_FILE" \
             --target "$GITHUB_SHA"
+
+      # Homebrew cask bump (MAK-55). After the release is published, recompute the
+      # DMG sha256, rewrite packaging/homebrew/Casks/openwhisp.rb, and push it to
+      # the self-hosted tap (initcore0/homebrew-openwhisp) so `brew upgrade` sees
+      # the new build.
+      #
+      # Only meaningful for a real notarized DMG — an ad-hoc/unsigned build (no
+      # signing secret) must never become a `brew install --cask` target. And the
+      # push is GUARDED: bump-cask.sh no-ops with a clear log when TAP_PUSH_TOKEN
+      # is absent (the tap repo isn't published yet), so releases never fail before
+      # the tap exists.
+      - name: Bump Homebrew cask + push to tap
+        if: steps.signing.outputs.enabled == 'true'
+        env:
+          TAP_PUSH_TOKEN: ${{ secrets.TAP_PUSH_TOKEN }}
+        run: |
+          ./scripts/bump-cask.sh \
+            --version "${{ steps.version.outputs.base }}" \
+            --build "${{ steps.version.outputs.build }}" \
+            --dmg dist/OpenWhisp.dmg
