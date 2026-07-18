@@ -346,7 +346,30 @@ if [ "${NOTARIZE:-0}" = "1" ]; then
         exit 1
     fi
 
-    xcrun stapler validate "$DMG_PATH"
+    # `stapler validate` ALSO does an online CloudKit lookup and can fail on a
+    # transient network blip (NSURLErrorDomain -1009, exit 68) even though the
+    # staple above already embedded a valid ticket — the v1.0.3 run died exactly
+    # here. Same treatment as the staple: retry with backoff.
+    validated=0
+    attempt=1
+    while [ "$attempt" -le "$STAPLE_ATTEMPTS" ]; do
+        if xcrun stapler validate "$DMG_PATH"; then
+            validated=1
+            break
+        fi
+        if [ "$attempt" -lt "$STAPLE_ATTEMPTS" ]; then
+            wait_s=$(( STAPLE_DELAY * attempt ))
+            echo "  Validate attempt $attempt/$STAPLE_ATTEMPTS failed (transient network?); retrying in ${wait_s}s..."
+            sleep "$wait_s"
+        fi
+        attempt=$(( attempt + 1 ))
+    done
+    if [ "$validated" -ne 1 ]; then
+        echo "ERROR: stapler validate failed after $STAPLE_ATTEMPTS attempts." >&2
+        echo "       The staple step above succeeded, so the ticket IS embedded;" >&2
+        echo "       re-run 'xcrun stapler validate \"$DMG_PATH\"' to confirm." >&2
+        exit 1
+    fi
     spctl --assess --type open --context context:primary-signature -v "$DMG_PATH" || true
 
     echo "✓ Notarized + stapled."
