@@ -249,6 +249,27 @@ struct OverlayView: View {
         appState.agentDictateReadingQuestion ? "Reading question — please wait" : nil
     }
 
+    /// MAK-76: during an agent-initiated session the dictation hotkey is a manual
+    /// finish control. Tell the human they can tap to end the answer now (or wait
+    /// for the auto-stop). Shown only while genuinely capturing an agent answer,
+    /// and never during the reading window (that has its own cue) or the confirm
+    /// window (which has its own caption).
+    private var agentFinishCaption: String? {
+        guard appState.agentDictatePrompt != nil,
+              !appState.agentDictateReadingQuestion,
+              !appState.agentDictateConfirming else { return nil }
+        switch phase {
+        case .listening, .speaking: return "Tap key to finish"
+        case .arming, .finalizing, .error: return nil
+        }
+    }
+
+    /// MAK-76: the post-auto-stop confirm/append window (autoSubmit off). Invite
+    /// the user to add more or wait for the answer to submit.
+    private var agentConfirmCaption: String? {
+        appState.agentDictateConfirming ? "Tap key to add more, or wait to submit" : nil
+    }
+
     /// While arming, tell the user capture isn't live yet so they don't speak into
     /// the startup gap (which would lose the first word). Shown as a small pill
     /// label since there's no transcript yet.
@@ -379,6 +400,28 @@ struct OverlayView: View {
                         .font(.system(size: 11, weight: .semibold, design: .rounded))
                 }
                 .foregroundColor(Self.lockAccent.opacity(0.95))
+                .transition(.opacity)
+            }
+
+            if let agentFinishCaption {
+                HStack(spacing: 5) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 10, weight: .bold))
+                    Text(agentFinishCaption)
+                        .font(.system(size: 11, weight: .semibold, design: .rounded))
+                }
+                .foregroundColor(Self.agentWaitAccent.opacity(0.95))
+                .transition(.opacity)
+            }
+
+            if let agentConfirmCaption {
+                HStack(spacing: 5) {
+                    Image(systemName: "plus.circle.fill")
+                        .font(.system(size: 10, weight: .bold))
+                    Text(agentConfirmCaption)
+                        .font(.system(size: 11, weight: .semibold, design: .rounded))
+                }
+                .foregroundColor(Self.agentWaitAccent.opacity(0.95))
                 .transition(.opacity)
             }
 

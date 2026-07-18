@@ -160,7 +160,8 @@ public final class MCPServer {
                 let params = BridgeWire.DictateParams(
                     prompt: arguments["prompt"]?.stringValue,
                     timeoutSeconds: arguments["timeoutSeconds"]?.intValue,
-                    language: arguments["language"]?.stringValue
+                    language: arguments["language"]?.stringValue,
+                    autoSubmit: arguments["autoSubmit"]?.boolValue
                 )
                 // dictate blocks until the user finishes (or the timeout). When the
                 // client passed a progressToken, emit keep-alive progress against
@@ -290,6 +291,8 @@ public final class MCPServer {
                                                "description": .string("Max seconds to wait (default 60, max 300).")]),
                     "language": .object(["type": .string("string"),
                                          "description": .string("Optional BCP-47 language hint.")]),
+                    "autoSubmit": .object(["type": .string("boolean"),
+                                           "description": .string("Whether the user's answer is returned immediately when they stop speaking (default true). Set false to give the user a brief window to add more before the answer is submitted.")]),
                 ]),
             ]),
         ]),

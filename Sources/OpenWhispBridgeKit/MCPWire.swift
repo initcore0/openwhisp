@@ -85,6 +85,11 @@ enum MCPWire {
             default: return nil
             }
         }
+
+        var boolValue: Bool? {
+            if case .bool(let b) = self { return b }
+            return nil
+        }
     }
 
     /// One incoming MCP frame, decoded from a stdio line. `id` absent ⇒ it's a

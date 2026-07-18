@@ -50,6 +50,19 @@ final class MCPServerDispatchTests: XCTestCase {
         XCTAssertEqual(Set(names), ["openwhisp_dictate", "openwhisp_refine", "openwhisp_history"])
     }
 
+    func testDictateToolAdvertisesAutoSubmit() throws {
+        // MAK-76: the dictate tool schema exposes the optional autoSubmit boolean so
+        // clients (Claude Code /voice) can turn off immediate return.
+        let m = try message(#"{"id":1,"method":"tools/list"}"#)
+        guard case .result(_, let value) = MCPServer().controlResponse(for: m),
+              case .array(let tools)? = value["tools"] else {
+            return XCTFail("expected tools array")
+        }
+        let dictate = tools.first { $0["name"]?.stringValue == "openwhisp_dictate" }
+        let props = dictate?["inputSchema"]?["properties"]
+        XCTAssertEqual(props?["autoSubmit"]?["type"]?.stringValue, "boolean")
+    }
+
     func testNotificationYieldsNoReply() throws {
         let m = try message(#"{"method":"notifications/initialized"}"#)
         XCTAssertEqual(MCPServer().controlResponse(for: m), .none)
