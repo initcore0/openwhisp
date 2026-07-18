@@ -1394,6 +1394,10 @@ class AppState: ObservableObject {
     /// style actually reaches the LLM.
     private var modeRefineInstructionOverride: String?
 
+    /// Per-app refine-preset prompt (MAK-77); same lifecycle as the Mode override
+    /// above, loses to it in the composer, never exempts the RefineOutputGuard.
+    private var presetRefineInstructionOverride: String?
+
     /// A per-app profile's text-insert method for the CURRENT session (MAK-42), or
     /// nil when no profile overrides it. Kept separate from the persisted global
     /// `insertionMode` (unlike the other overrides it isn't a published setting the
@@ -1544,24 +1548,13 @@ class AppState: ObservableObject {
             // its system prompt, so this path is unchanged.
             return AgentCLIRefiner(config: activeAgentCLIConfig)
         }
-        // MAK-35: the intensity dial drives the whole-text cleanup prompt for every
-        // HTTP provider (bundled / OpenAI / local). Feed the selected tier's system
-        // prompt as `customInstruction` so low/medium/high map to their preset
-        // prompts; it overrides the mode-derived one in OpenAITranslationService.
-        // EXCEPTION: the "Improve English translation" mode must still reach the
-        // translation-polish branch, so `wholeTextCustomInstruction` returns nil for
-        // it (see that resolver). `.none` never reaches here (the enhance guard in
-        // completeFinalText skips the whole pass).
-        // MAK-39: an active Mode's composed tone/instruction wins over the
-        // intensity-dial prompt so the Mode's STYLE actually reaches the LLM. With
-        // no active Mode this falls through to the dial prompt as before (which is
-        // nil only for the translation-polish carve-out).
-        let baseInstruction = modeRefineInstructionOverride
-            ?? CleanupIntensity.wholeTextCustomInstruction(
-                intensity: cleanupIntensity,
-                mode: openAIEnhancementMode,
-                translateToEnglish: effectiveTranslateToEnglish
-            )
+        // MAK-35/39/77: precedence Mode > per-app preset > intensity dial, via the
+        // ONE composer funnel (improveTranslation carve-out + `.none` live there).
+        let baseInstruction = RefineInstructionComposer.sessionInstruction(
+            modeOverride: modeRefineInstructionOverride,
+            presetOverride: presetRefineInstructionOverride,
+            intensity: cleanupIntensity, mode: openAIEnhancementMode,
+            translateToEnglish: effectiveTranslateToEnglish)
         // MAK-34: when the gate captured surrounding text this session (only ever
         // for a LOCAL provider — see ScreenContextGate), append it to the cleanup
         // system prompt as reference-only material so the local model matches the
@@ -4104,18 +4097,15 @@ class AppState: ObservableObject {
                 targetLanguage: self.translationTargetLanguage,
                 endpoint: self.llmEndpoint,
                 model: self.llmModel,
-                // MAK-35: apply the same intensity-tier prompt to live chunks that
-                // the whole-text final uses, so the dial is authoritative in the
-                // liveChunks output mode too (not just preview/finalOnly). `.none`
-                // never reaches here — shouldEnhanceLiveChunks gates it out. Uses the
-                // same translation-mode carve-out resolver for consistency, though in
-                // practice shouldEnhanceLiveChunks already restricts this path to the
-                // "rephrase" mode, so improveTranslation can't reach it anyway.
-                customInstruction: CleanupIntensity.wholeTextCustomInstruction(
-                    intensity: self.cleanupIntensity,
-                    mode: self.openAIEnhancementMode,
-                    translateToEnglish: self.effectiveTranslateToEnglish
-                )
+                // MAK-35/77: the same composer funnel as the whole-text refiner, so
+                // the dial + per-app preset are authoritative for live chunks too
+                // (`.none` never reaches here — shouldEnhanceLiveChunks gates it out;
+                // Modes never steered live chunks, so modeOverride stays nil).
+                customInstruction: RefineInstructionComposer.sessionInstruction(
+                    modeOverride: nil,
+                    presetOverride: self.presetRefineInstructionOverride,
+                    intensity: self.cleanupIntensity, mode: self.openAIEnhancementMode,
+                    translateToEnglish: self.effectiveTranslateToEnglish)
             ) { [weak self] result in
                 Task { @MainActor in
                     // Close the engine's in-flight bracket on EVERY completion path
@@ -4353,7 +4343,8 @@ class AppState: ObservableObject {
                     if RefineOutputGuard.shouldLanguageGuard(
                         isSpokenInstructionRefine: false,
                         isAgentBridgeRefine: false,
-                        // A Mode's own instruction may legitimately translate (MAK-39).
+                        // A Mode's own instruction may legitimately translate (MAK-39);
+                        // per-app presets (MAK-77) never exempt the guard.
                         hasCustomModeInstruction: self.modeRefineInstructionOverride != nil
                     ), RefineOutputGuard.outputTranslatedAway(
                         input: finalText, output: cleaned, expectedOutputScript: expectedScript
@@ -5627,54 +5618,63 @@ class AppState: ObservableObject {
             if pendingModeKey != nil { pendingModeKey = nil }
         }
 
-        guard let mode = ModeResolver.resolveActive(
+        let mode = ModeResolver.resolveActive(
             explicitKey: explicitKey,
             frontmostBundleID: frontmost?.bundleIdentifier,
             perAppModesEnabled: perAppModesEnabled,
             modes: modes
-        ) else { return }
+        )
+
+        // MAK-77: per-app refine preset (Profiles rows + terminal/IDE verbatim default).
+        let presetOutcome = RefinePresetResolver.resolve(
+            profile: AppProfileStore.profile(for: frontmost?.bundleIdentifier, in: profiles),
+            frontmostBundleID: frontmost?.bundleIdentifier,
+            perAppProfilesEnabled: perAppModesEnabled,
+            globalIntensity: cleanupIntensity
+        )
+
+        guard mode != nil || presetOutcome != .inherit else { return }
 
         // Back up the overridable globals.
         profileOverrideBackup = (language: language, translateToEnglish: translateToEnglish,
                                  outputMode: outputMode, aiCleanup: openAIEnhancementEnabled)
-
-        // A Mode shares the session-overridable fields with AppProfile; resolve them
-        // through the SAME pure resolver (single source of truth for the "en" →
-        // translate remap + inherit-vs-override matrix). Bridge the Mode into an
-        // AppProfile shape for that call (its app binding is irrelevant here).
         suppressSettingsPersistence = true
-        let bridged = AppProfile(
-            appBundleID: mode.appBundleID ?? "",
-            displayName: mode.name,
-            language: mode.language,
-            outputMode: mode.outputMode,
-            aiCleanupEnabled: mode.aiCleanupEnabled
-        )
-        let resolved = ProfileResolver.resolve(profile: bridged, over: .init(
-            language: language, translateToEnglish: translateToEnglish,
-            outputMode: outputMode, aiCleanupEnabled: openAIEnhancementEnabled,
-            insertionMode: insertionMode
-        ))
-        language = resolved.language
-        translateToEnglish = resolved.translateToEnglish
-        outputMode = resolved.outputMode
-        openAIEnhancementEnabled = resolved.aiCleanupEnabled
 
-        // The tone + free-form instruction the Mode contributes to the refine pass,
-        // plus an optional LLM-model override.
-        modeRefineInstructionOverride = ModeResolver.refineInstruction(for: mode)
-        activeModeLLMModel = mode.llmModel
+        if let mode {
+            // Same pure resolver as per-app profiles (see ModeResolver.resolveSession).
+            let resolved = ModeResolver.resolveSession(mode: mode, over: .init(
+                language: language, translateToEnglish: translateToEnglish,
+                outputMode: outputMode, aiCleanupEnabled: openAIEnhancementEnabled,
+                insertionMode: insertionMode
+            ))
+            language = resolved.language
+            translateToEnglish = resolved.translateToEnglish
+            outputMode = resolved.outputMode
+            openAIEnhancementEnabled = resolved.aiCleanupEnabled
 
-        // The insert method is session-scoped, not a persisted published setting —
-        // stash it for currentInsertionMode; only when the profile actually changes
-        // it from the global (else stay nil so nothing to restore).
-        let resolvedInsert = InsertionMode.from(id: resolved.insertionMode)
-        sessionInsertionModeOverride = resolvedInsert.rawValue == insertionMode ? nil : resolvedInsert
+            // The tone + free-form instruction the Mode contributes to the refine pass,
+            // plus an optional LLM-model override.
+            modeRefineInstructionOverride = ModeResolver.refineInstruction(for: mode)
+            activeModeLLMModel = mode.llmModel
+
+            // The insert method is session-scoped, not a persisted published setting —
+            // stash it for currentInsertionMode; only when the profile actually changes
+            // it from the global (else stay nil so nothing to restore).
+            let resolvedInsert = InsertionMode.from(id: resolved.insertionMode)
+            sessionInsertionModeOverride = resolvedInsert.rawValue == insertionMode ? nil : resolvedInsert
+        }
+
+        // Preset applies after the Mode; the pure helper encodes the tie-breaks.
+        let presetApply = RefinePresetResolver.application(
+            outcome: presetOutcome, modePinsCleanupOn: mode?.aiCleanupEnabled == true)
+        if presetApply.disableRefine { openAIEnhancementEnabled = false }
+        presetRefineInstructionOverride = presetApply.presetPrompt
     }
 
     /// Restore any settings a profile overrode for the just-finished session.
     private func restoreProfileOverridesIfNeeded() {
         modeRefineInstructionOverride = nil
+        presetRefineInstructionOverride = nil
         activeModeLLMModel = nil
         sessionInsertionModeOverride = nil
         guard let backup = profileOverrideBackup else { return }

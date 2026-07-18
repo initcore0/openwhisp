@@ -22,6 +22,16 @@ public struct AppProfile: Codable, Identifiable, Equatable {
     /// user force AppleScript keystroke for an Electron/VNC app that mangles the
     /// global paste/AX method, while everything else keeps the global default.
     public var insertionMode: String?
+    /// Per-app refine tone/formatting preset (MAK-77): a `RefinePreset` raw value
+    /// ("verbatim","minimalCleanup","casual","formal","custom"). nil = inherit the
+    /// global cleanup intensity/prompt. ADDITIVE field — profiles.json is a
+    /// versioned contract with the iOS companion, so a missing key decodes as nil
+    /// and old files round-trip unchanged. Stored as a string (mirroring
+    /// `insertionMode`) so an unknown future value degrades to inherit, not a
+    /// decode failure.
+    public var refinePreset: String?
+    /// Custom refine system prompt, used only when `refinePreset == "custom"`.
+    public var refineCustomPrompt: String?
 
     /// When this profile was last edited by the user (ConfigBundle schema v3,
     /// MAK-51 WP0b). The sync merge does last-writer-wins per object by this stamp.
@@ -41,6 +51,8 @@ public struct AppProfile: Codable, Identifiable, Equatable {
         outputMode: String? = nil,
         aiCleanupEnabled: Bool? = nil,
         insertionMode: String? = nil,
+        refinePreset: String? = nil,
+        refineCustomPrompt: String? = nil,
         updatedAt: Date = Date()
     ) {
         self.id = id
@@ -50,6 +62,8 @@ public struct AppProfile: Codable, Identifiable, Equatable {
         self.outputMode = outputMode
         self.aiCleanupEnabled = aiCleanupEnabled
         self.insertionMode = insertionMode
+        self.refinePreset = refinePreset
+        self.refineCustomPrompt = refineCustomPrompt
         self.updatedAt = updatedAt
     }
 
@@ -66,6 +80,9 @@ public struct AppProfile: Codable, Identifiable, Equatable {
         self.outputMode = try c.decodeIfPresent(String.self, forKey: .outputMode)
         self.aiCleanupEnabled = try c.decodeIfPresent(Bool.self, forKey: .aiCleanupEnabled)
         self.insertionMode = try c.decodeIfPresent(String.self, forKey: .insertionMode)
+        // MAK-77 additive fields: absent in pre-existing files → nil (inherit).
+        self.refinePreset = try c.decodeIfPresent(String.self, forKey: .refinePreset)
+        self.refineCustomPrompt = try c.decodeIfPresent(String.self, forKey: .refineCustomPrompt)
         self.updatedAt = try c.decodeIfPresent(Date.self, forKey: .updatedAt)
             ?? Date(timeIntervalSince1970: 0)
     }

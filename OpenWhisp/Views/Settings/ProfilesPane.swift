@@ -14,7 +14,7 @@ struct ProfilesPane: View {
             Section {
                 SubtitledToggle(
                     "Apply per-app profiles",
-                    subtitle: "Override language, output, AI cleanup, and the text-insert method for specific apps when you start dictating into them.",
+                    subtitle: "Override language, output, AI cleanup, refine tone, and the text-insert method for specific apps when you start dictating into them.",
                     isOn: $appState.perAppModesEnabled
                 )
 
@@ -29,6 +29,18 @@ struct ProfilesPane: View {
                 }
 
                 addFooter
+
+                // Custom refine prompt editor — shown only for a selected row whose
+                // Refine preset is Custom (kept off-table so rows stay one control).
+                if let selected = appState.profiles.first(where: { $0.id == selectedProfileID }),
+                   selected.refinePreset == RefinePreset.custom.rawValue {
+                    TextField(
+                        "Custom refine prompt for \(selected.displayName.isEmpty ? selected.appBundleID : selected.displayName)",
+                        text: customPromptBinding(selected.id),
+                        axis: .vertical
+                    )
+                    .lineLimit(2...4)
+                }
 
                 if !profileAddMessage.isEmpty {
                     SettingsFootnote(profileAddMessage)
@@ -75,6 +87,19 @@ struct ProfilesPane: View {
                     Text("Inherit").tag("__inherit__")
                     Text("On").tag("on")
                     Text("Off").tag("off")
+                }
+                .labelsHidden()
+            }
+            TableColumn("Refine") { profile in
+                // MAK-77: per-app refine tone preset. ONE control — the custom
+                // prompt editor appears below the table only when a selected row
+                // uses Custom, so the settings surface doesn't sprawl (MAK-62).
+                Picker("", selection: refineBinding(profile.id)) {
+                    Label("Inherit", systemImage: "arrow.turn.down.right").tag("__inherit__")
+                    ForEach(RefinePreset.allCases, id: \.rawValue) { preset in
+                        Label(preset.displayLabel, systemImage: preset.sfSymbol)
+                            .tag(preset.rawValue)
+                    }
                 }
                 .labelsHidden()
             }
@@ -159,6 +184,29 @@ struct ProfilesPane: View {
                     case "off": $0.aiCleanupEnabled = false
                     default:    $0.aiCleanupEnabled = nil
                     }
+                }
+            }
+        )
+    }
+
+    private func refineBinding(_ id: UUID) -> Binding<String> {
+        Binding(
+            get: { appState.profiles.first(where: { $0.id == id })?.refinePreset ?? "__inherit__" },
+            set: { newValue in
+                appState.profiles = appState.profiles.editingProfile(id) {
+                    $0.refinePreset = newValue == "__inherit__" ? nil : newValue
+                }
+            }
+        )
+    }
+
+    private func customPromptBinding(_ id: UUID) -> Binding<String> {
+        Binding(
+            get: { appState.profiles.first(where: { $0.id == id })?.refineCustomPrompt ?? "" },
+            set: { newValue in
+                appState.profiles = appState.profiles.editingProfile(id) {
+                    let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                    $0.refineCustomPrompt = trimmed.isEmpty ? nil : newValue
                 }
             }
         )

@@ -391,6 +391,67 @@ final class FeatureMatrixE2ETests: XCTestCase {
         XCTAssertFalse(out.contains("2026"), "numbers should be untouched when off: \(out)")
     }
 
+    // MARK: - (MAK-77) Per-app refine presets, driven from fixture audio
+
+    /// Same fixture, same transcript, two per-app profiles: a CASUAL preset
+    /// session must construct a DIFFERENT refine input than a VERBATIM one.
+    /// With the stub pipeline we assert on the CONSTRUCTED prompt (the exact
+    /// composition AppState feeds the refiner via RefineInstructionComposer),
+    /// not on LLM output: casual yields the casual system prompt over the real
+    /// transcribed text; verbatim never runs the LLM at all.
+    func testCasualVsVerbatimPresetChangesConstructedRefineInputForSameFixture() throws {
+        let transcript = "um hey can you send me the report when you get a chance"
+        let text = try driveCleaned(
+            fixture: "plain_speech.wav", transcript: transcript,
+            config: .plain)
+        XCTAssertFalse(text.isEmpty, "fixture must yield a transcript")
+
+        let globalIntensity = CleanupIntensity.medium
+        let dialPrompt = CleanupIntensity.wholeTextCustomInstruction(
+            intensity: globalIntensity, mode: "rephrase", translateToEnglish: false)
+
+        func sessionRefineInput(preset: RefinePreset) -> (runsLLM: Bool, instruction: String?) {
+            // Exactly AppState.applyProfileForFrontmostApp's decision for a
+            // profile-only session (no Mode): resolve the preset outcome, then
+            // compose the base instruction through the shared funnel.
+            let profile = AppProfile(
+                appBundleID: "com.tinyspeck.slackmacgap", displayName: "Slack",
+                refinePreset: preset.rawValue)
+            let outcome = RefinePresetResolver.resolve(
+                profile: profile, frontmostBundleID: profile.appBundleID,
+                perAppProfilesEnabled: true, globalIntensity: globalIntensity)
+            switch outcome {
+            case .verbatim:
+                return (false, nil)
+            case .prompt(let p):
+                return (true, RefineInstructionComposer.baseInstruction(
+                    modeOverride: nil, presetOverride: p, dialInstruction: dialPrompt))
+            case .inherit:
+                return (true, RefineInstructionComposer.baseInstruction(
+                    modeOverride: nil, presetOverride: nil, dialInstruction: dialPrompt))
+            }
+        }
+
+        let casual = sessionRefineInput(preset: .casual)
+        let verbatim = sessionRefineInput(preset: .verbatim)
+
+        // Verbatim: the LLM must not run at all — the transcript IS the output.
+        XCTAssertFalse(verbatim.runsLLM)
+        XCTAssertNil(verbatim.instruction)
+
+        // Casual: the LLM runs with the casual preset prompt over the SAME text.
+        XCTAssertTrue(casual.runsLLM)
+        let casualInstruction = try XCTUnwrap(casual.instruction)
+        XCTAssertTrue(casualInstruction.contains("conversational"),
+                      "casual session must carry the casual tone prompt")
+        XCTAssertNotEqual(casualInstruction, dialPrompt,
+                          "preset must override the global dial prompt")
+        // The two sessions' constructed refine inputs differ.
+        XCTAssertNotEqual(casual.instruction, verbatim.instruction)
+        // And the preset prompt stays conservative — same-language contract intact.
+        XCTAssertTrue(casualInstruction.contains("SAME language"))
+    }
+
     // MARK: - Helper (local to this suite; not one of the shared doubles)
 
     /// Drive one fixture through the real FileAudioCapture → LiveChunkPipeline →
