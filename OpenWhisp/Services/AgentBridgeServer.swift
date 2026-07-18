@@ -288,7 +288,8 @@ final class AgentBridgeServer {
             let clientName = state.clientName
             guard consentGranted(clientName, scope: .dictate, fd: fd, id: id) else { return true }
             let timeout = BridgeRouter.resolvedTimeoutSeconds(params.timeoutSeconds)
-            switch blockingDictate(clientName: clientName, prompt: params.prompt, timeout: timeout, language: params.language, context: params.context) {
+            let autoSubmit = params.autoSubmit ?? BridgeWire.DictateParams.defaultAutoSubmit
+            switch blockingDictate(clientName: clientName, prompt: params.prompt, timeout: timeout, language: params.language, context: params.context, autoSubmit: autoSubmit) {
             case .success(let result):
                 onMain { self.host?.bridgeDidCall(clientName: clientName, tool: AgentScope.dictate.rawValue) }
                 send(fd, id: id, result: result)
@@ -391,13 +392,12 @@ final class AgentBridgeServer {
     /// is active.
     private func blockingDictate(
         clientName: String, prompt: String?, timeout: Int, language: String?,
-        context: BridgeWire.DictateContext?
+        context: BridgeWire.DictateContext?, autoSubmit: Bool
     ) -> Result<BridgeWire.DictateResult, BridgeWire.ErrorObject> {
         blockOnHost(noHost: .failure(.domain(.internalError, message: "no host"))) { host, done in
             host.bridgeStartDictation(
                 clientName: clientName, prompt: prompt, timeoutSeconds: timeout, language: language,
-                context: context,
-                completion: done
+                context: context, autoSubmit: autoSubmit, completion: done
             )
         }
     }

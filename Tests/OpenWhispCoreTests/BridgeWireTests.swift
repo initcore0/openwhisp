@@ -215,9 +215,34 @@ final class BridgeWireTests: XCTestCase {
     func testDefaultsAndCaps() {
         XCTAssertEqual(BridgeWire.DictateParams.defaultTimeoutSeconds, 60)
         XCTAssertEqual(BridgeWire.DictateParams.maxTimeoutSeconds, 300)
+        XCTAssertEqual(BridgeWire.DictateParams.defaultAutoSubmit, true)
         XCTAssertEqual(BridgeWire.HistoryListParams.defaultLimit, 20)
         XCTAssertEqual(BridgeWire.HistoryListParams.maxLimit, 200)
         XCTAssertEqual(BridgeWire.maxFrameBytes, 1 << 20)
+    }
+
+    // MARK: autoSubmit (MAK-76) — additive + backward-compatible
+
+    func testDictateParamsAutoSubmitAbsentDecodesNil() throws {
+        // An OLD client omits autoSubmit entirely; the field decodes to nil and the
+        // server applies defaultAutoSubmit (true) — legacy immediate-return behavior.
+        let line = Data(#"{"jsonrpc":"2.0","id":1,"method":"dictate","params":{"prompt":"hi"}}"#.utf8)
+        let req = try JSONDecoder().decode(BridgeWire.Request<BridgeWire.DictateParams>.self, from: line)
+        XCTAssertNil(req.params?.autoSubmit)
+        XCTAssertEqual(req.params?.autoSubmit ?? BridgeWire.DictateParams.defaultAutoSubmit, true)
+    }
+
+    func testDictateParamsAutoSubmitFalseRoundTrips() throws {
+        let line = Data(#"{"jsonrpc":"2.0","id":2,"method":"dictate","params":{"prompt":"hi","autoSubmit":false}}"#.utf8)
+        let req = try JSONDecoder().decode(BridgeWire.Request<BridgeWire.DictateParams>.self, from: line)
+        XCTAssertEqual(req.params?.autoSubmit, false)
+
+        // Encode a params with autoSubmit and decode it back unchanged.
+        let params = BridgeWire.DictateParams(prompt: "q", timeoutSeconds: 30, autoSubmit: false)
+        let data = try JSONEncoder().encode(params)
+        let decoded = try JSONDecoder().decode(BridgeWire.DictateParams.self, from: data)
+        XCTAssertEqual(decoded, params)
+        XCTAssertEqual(decoded.autoSubmit, false)
     }
 
     // MARK: History date coding (ISO-8601 boundary)

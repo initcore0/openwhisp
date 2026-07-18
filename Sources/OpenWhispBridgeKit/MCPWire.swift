@@ -98,6 +98,11 @@ enum MCPWire {
             guard case .array(let a) = self else { return nil }
             return a.compactMap { $0.stringValue }
         }
+
+        var boolValue: Bool? {
+            if case .bool(let b) = self { return b }
+            return nil
+        }
     }
 
     /// One incoming MCP frame, decoded from a stdio line. `id` absent ⇒ it's a

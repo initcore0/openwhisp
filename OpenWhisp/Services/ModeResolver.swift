@@ -57,6 +57,23 @@ public enum ModeResolver {
         return autoActivation(forBundleID: frontmostBundleID, in: modes)
     }
 
+    /// Resolve the session-overridable settings a Mode pins, layered over the
+    /// current globals — the Mode is bridged into the `AppProfile` shape so the
+    /// SAME pure resolver (single source of truth for the "en" → translate remap
+    /// + inherit-vs-override matrix) decides the effective settings.
+    public static func resolveSession(
+        mode: Mode, over globals: ProfileResolver.Globals
+    ) -> ProfileResolver.Resolved {
+        let bridged = AppProfile(
+            appBundleID: mode.appBundleID ?? "",
+            displayName: mode.name,
+            language: mode.language,
+            outputMode: mode.outputMode,
+            aiCleanupEnabled: mode.aiCleanupEnabled
+        )
+        return ProfileResolver.resolve(profile: bridged, over: globals)
+    }
+
     /// Compose the refine instruction a Mode contributes, or nil when it steers
     /// nothing (no tone and no free-form instruction → inherit the global cleanup).
     ///

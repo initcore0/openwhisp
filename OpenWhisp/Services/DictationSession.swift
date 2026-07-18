@@ -75,6 +75,58 @@ public enum DictationSessionLifecycle {
 /// specific outcome (an abort before capture, or an error terminal that didn't
 /// set one) — so a waiter is never left hanging, and per the cancel invariant a
 /// cancelled session yields no transcript text.
+/// Maps a finished agent session's `SessionOutcome` (+ the timed-out / stopped
+/// flags recorded during the session) onto the wire result delivered to the
+/// blocked dictate caller. Pure — extracted from AppState's `onSessionEnd`
+/// closure so the endedBy / error precedence is unit-testable:
+///  - completed → success; endedBy = timeout > stop > user.
+///  - empty     → timeout error if timed out, else an empty success.
+///  - secureField / cancelled / error → the corresponding domain errors
+///    (a cancel NEVER yields a transcript, per the cancel invariant).
+public enum AgentDictateOutcome {
+    public static func resolve(
+        _ outcome: SessionOutcome, duration: Double, timedOut: Bool, stopped: Bool
+    ) -> Result<BridgeWire.DictateResult, BridgeWire.ErrorObject> {
+        let endedBy: BridgeWire.DictateEnd = timedOut ? .timeout : (stopped ? .stop : .user)
+        switch outcome {
+        case .completed(let text):
+            return .success(.init(text: text, durationSeconds: duration, timedOut: timedOut, endedBy: endedBy))
+        case .empty:
+            return timedOut
+                ? .failure(.domain(.timeout, message: "no speech within the time limit"))
+                : .success(.init(text: "", durationSeconds: duration, timedOut: false, endedBy: stopped ? .stop : .user))
+        case .secureField:
+            return .failure(.domain(.secureField, message: "a password field was focused; dictation refused"))
+        case .cancelled:
+            return .failure(.domain(.cancelled, message: "the user declined to answer — do not retry"))
+        case .error(let message):
+            return .failure(.domain(.audioUnavailable, message: message))
+        }
+    }
+}
+
+/// The overlay presentation of an agent's dictate request: the attribution line
+/// ("X asks: …"), the quiet client eyebrow, and the hero question. Sanitized
+/// (control/bidi stripped, capped) and always framed as the CLIENT asking —
+/// agent-controlled text must never read as OpenWhisp's own voice. `question` is
+/// nil (not empty) when the agent gave no prompt so the overlay falls back
+/// cleanly. Extracted from AppState so the framing rules are unit-testable.
+public struct AgentPromptPresentation: Equatable {
+    public let banner: String
+    public let clientLabel: String
+    public let question: String?
+
+    public init(clientName: String, prompt: String?) {
+        let displayClient = BridgeWire.sanitizedForDisplay(clientName, maxLength: 60)
+        clientLabel = displayClient.isEmpty ? "An agent" : displayClient
+        let displayQuestion = prompt.map { BridgeWire.sanitizedForDisplay($0, maxLength: 200) } ?? ""
+        question = displayQuestion.isEmpty ? nil : displayQuestion
+        banner = displayQuestion.isEmpty
+            ? "\(clientLabel) asked you to dictate"
+            : "\(clientLabel) asks: \(displayQuestion)"
+    }
+}
+
 public enum SessionOutcome: Equatable {
     /// Produced final text (which may itself be any non-nil string).
     case completed(text: String)

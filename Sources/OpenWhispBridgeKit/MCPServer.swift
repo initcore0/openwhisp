@@ -167,7 +167,8 @@ public final class MCPServer {
                     prompt: arguments["prompt"]?.stringValue,
                     timeoutSeconds: arguments["timeoutSeconds"]?.intValue,
                     language: arguments["language"]?.stringValue,
-                    context: resolvedContext
+                    context: resolvedContext,
+                    autoSubmit: arguments["autoSubmit"]?.boolValue
                 )
                 // dictate blocks until the user finishes (or the timeout). When the
                 // client passed a progressToken, emit keep-alive progress against
@@ -329,6 +330,8 @@ public final class MCPServer {
                                               "description": .string("Extra identifiers: file names, symbols, jargon.")]),
                         ]),
                     ]),
+                    "autoSubmit": .object(["type": .string("boolean"),
+                                           "description": .string("Whether the user's answer is returned immediately when they stop speaking (default true). Set false to give the user a brief window to add more before the answer is submitted.")]),
                 ]),
             ]),
         ]),

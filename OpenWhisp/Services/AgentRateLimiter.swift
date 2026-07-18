@@ -76,6 +76,17 @@ public struct AgentRateLimiter: Equatable, Sendable {
         case throttled(retryAfter: TimeInterval)
     }
 
+    /// `check` mapped onto the dictate wire error: nil when allowed, else the
+    /// `.rateLimited` error (message + whole-second retryAfter, min 1) delivered
+    /// to the blocked caller. Extracted from AppState so the mapping is testable.
+    public func throttleError(clientName: String, now: Date) -> BridgeWire.ErrorObject? {
+        guard case .throttled(let retryAfter) = check(clientName: clientName, now: now) else { return nil }
+        let secs = Int(retryAfter.rounded(.up))
+        return .domain(.rateLimited,
+                       message: "this client is dictating too frequently; retry in about \(secs)s",
+                       retryAfterSeconds: max(1, secs))
+    }
+
     /// Whether `clientName` may start a dictation at `now`, without recording it.
     /// Pure — call ``recordStart(clientName:now:)`` after a start is accepted.
     public func check(clientName: String, now: Date) -> Decision {

@@ -848,6 +848,12 @@ class AppState: ObservableObject {
     /// session only when `agentBridgeEouAutoStop` is on and the active engine emits
     /// EOU events (the Parakeet EOU variant). nil for every other session.
     private var agentEouDetector: AgentEouAutoStop?
+    /// MAK-76 finish machine (nil for user sessions) + its confirm-window timer;
+    /// semantics documented on `AgentSessionFinish`. Reset in `finishSessionUI`.
+    private var agentFinishMachine: AgentSessionFinish?
+    private var agentConfirmWindowTask: Task<Void, Never>?
+    /// True during the post-auto-stop confirm/append window (overlay hint).
+    @Published private(set) var agentDictateConfirming = false
     /// The control-plane socket server. Lazily constructed (no cost until the
     /// bridge is enabled); owns the socket, per-connection auth, and dispatch.
     private lazy var agentBridgeServer = AgentBridgeServer(host: self)
@@ -1388,6 +1394,10 @@ class AppState: ObservableObject {
     /// style actually reaches the LLM.
     private var modeRefineInstructionOverride: String?
 
+    /// Per-app refine-preset prompt (MAK-77); same lifecycle as the Mode override
+    /// above, loses to it in the composer, never exempts the RefineOutputGuard.
+    private var presetRefineInstructionOverride: String?
+
     /// A per-app profile's text-insert method for the CURRENT session (MAK-42), or
     /// nil when no profile overrides it. Kept separate from the persisted global
     /// `insertionMode` (unlike the other overrides it isn't a published setting the
@@ -1538,24 +1548,13 @@ class AppState: ObservableObject {
             // its system prompt, so this path is unchanged.
             return AgentCLIRefiner(config: activeAgentCLIConfig)
         }
-        // MAK-35: the intensity dial drives the whole-text cleanup prompt for every
-        // HTTP provider (bundled / OpenAI / local). Feed the selected tier's system
-        // prompt as `customInstruction` so low/medium/high map to their preset
-        // prompts; it overrides the mode-derived one in OpenAITranslationService.
-        // EXCEPTION: the "Improve English translation" mode must still reach the
-        // translation-polish branch, so `wholeTextCustomInstruction` returns nil for
-        // it (see that resolver). `.none` never reaches here (the enhance guard in
-        // completeFinalText skips the whole pass).
-        // MAK-39: an active Mode's composed tone/instruction wins over the
-        // intensity-dial prompt so the Mode's STYLE actually reaches the LLM. With
-        // no active Mode this falls through to the dial prompt as before (which is
-        // nil only for the translation-polish carve-out).
-        let baseInstruction = modeRefineInstructionOverride
-            ?? CleanupIntensity.wholeTextCustomInstruction(
-                intensity: cleanupIntensity,
-                mode: openAIEnhancementMode,
-                translateToEnglish: effectiveTranslateToEnglish
-            )
+        // MAK-35/39/77: precedence Mode > per-app preset > intensity dial, via the
+        // ONE composer funnel (improveTranslation carve-out + `.none` live there).
+        let baseInstruction = RefineInstructionComposer.sessionInstruction(
+            modeOverride: modeRefineInstructionOverride,
+            presetOverride: presetRefineInstructionOverride,
+            intensity: cleanupIntensity, mode: openAIEnhancementMode,
+            translateToEnglish: effectiveTranslateToEnglish)
         // MAK-34: when the gate captured surrounding text this session (only ever
         // for a LOCAL provider — see ScreenContextGate), append it to the cleanup
         // system prompt as reference-only material so the local model matches the
@@ -1575,8 +1574,8 @@ class AppState: ObservableObject {
         } else {
             customInstruction = baseInstruction
         }
-        customInstruction = AgentContextVocabulary.augmented( // MAK-75, local-only
-            instruction: customInstruction, terms: isLocalRefine ? sessionInitiator.agentBiasTerms : [])
+        customInstruction = AgentContextVocabulary.augmented(instruction: customInstruction, // MAK-75
+            terms: isLocalRefine ? sessionInitiator.agentBiasTerms : [])
         return OpenAIRefiner(
             service: translationService,
             mode: refinementMode(openAIEnhancementMode),
@@ -2248,16 +2247,12 @@ class AppState: ObservableObject {
         }
     }
 
-    /// An end-of-utterance event fired: arm the settle window. The actual stop
-    /// decision runs on the continuous audio-level tick (`updateAudioLevel`),
-    /// which re-checks `shouldStop` once the window has elapsed with no newer
-    /// partial — a fresh EOU can never satisfy the window at arming time.
+    /// An EOU event fired: arm the settle window (the stop decision runs on the
+    /// `updateAudioLevel` tick once the window elapses — see `AgentEouAutoStop`).
     @MainActor
     private func handleAgentEouEvent() {
-        guard agentEouDetector != nil,
-              agentBridgeEouAutoStop,
-              sessionActive, isRecording,
-              sessionInitiator.isAgent else { return }
+        guard agentEouDetector != nil, agentBridgeEouAutoStop,
+              sessionActive, isRecording, sessionInitiator.isAgent else { return }
         agentEouDetector?.noteEou(now: ProcessInfo.processInfo.systemUptime)
     }
 
@@ -2272,45 +2267,74 @@ class AppState: ObservableObject {
         audioLevel = level
         feedLockSafetyAutoStop(vadLevel: vadLevel)
         // EOU settle check (MAK-46 Phase 5): the level tick is a free continuous
-        // clock. If an EOU is pending and its settle window has elapsed with no new
-        // partial, finish the agent session. Cheap: detector is nil except for an
-        // armed agent EOU session.
+        // clock; cheap because the detector is nil except for an armed agent session.
         if agentEouDetector != nil, sessionActive, isRecording, sessionInitiator.isAgent,
            agentEouDetector?.shouldStop(now: ProcessInfo.processInfo.systemUptime) == true {
             agentEouDetector = nil
-            finishAgentDictationOnSilence()
+            handleAgentFinishEvent(.autoStopFired)
             return
         }
-        // Only agent sessions auto-stop on silence; a user's hotkey dictation ends
-        // on their own gesture and must be untouched. The detector-nil test comes
-        // first so the dominant case (user sessions, where it is always nil) pays
-        // one check per tick. Also require the session to be genuinely capturing
-        // (not still arming) so leading silence during engine spin-up can't feed
-        // the detector.
-        guard agentSilenceDetector != nil,
-              agentBridgeSilenceAutoStop,
-              sessionActive, isRecording,
-              sessionInitiator.isAgent else { return }
-        let now = ProcessInfo.processInfo.systemUptime
-        if agentSilenceDetector?.ingest(level: vadLevel, now: now) == true {
-            // The speaker fell silent after speaking — finish exactly as a user
-            // "done" tap would (endedBy: .user), returning whatever was captured.
+        // Only AGENT sessions auto-stop on silence, and only once genuinely
+        // capturing (leading spin-up silence must not feed the detector).
+        guard agentSilenceDetector != nil, agentBridgeSilenceAutoStop,
+              sessionActive, isRecording, sessionInitiator.isAgent else { return }
+        if agentSilenceDetector?.ingest(level: vadLevel, now: ProcessInfo.processInfo.systemUptime) == true {
+            // The speaker fell silent after speaking — the user's natural "done".
             agentSilenceDetector = nil
-            finishAgentDictationOnSilence()
+            handleAgentFinishEvent(.autoStopFired)
         }
     }
 
-    /// Finish the active agent session because silence was detected. Distinct from
-    /// `bridgeStopAgentDictation()` (which marks `endedBy: .stop` for an explicit
-    /// client stop): a silence finish is the user's natural "done", so it leaves
-    /// both the timeout and stop flags clear and resolves as `endedBy: .user`.
+    /// MAK-76: relay a finish event to the core machine and apply its command
+    /// (decision logic + effect rationale live on `AgentSessionFinish`). Returns
+    /// true when an agent session consumed the event.
+    @MainActor @discardableResult
+    private func handleAgentFinishEvent(_ event: AgentSessionFinish.Event) -> Bool {
+        guard sessionActive, sessionInitiator.isAgent, agentFinishMachine != nil else {
+            if event == .autoStopFired { finishAgentDictationOnSilence() }
+            return false
+        }
+        switch agentFinishMachine!.handle(event) {
+        case .finishNow:
+            agentConfirmWindowTask?.cancel()
+            agentConfirmWindowTask = nil
+            agentDictateConfirming = false
+            finishAgentDictationOnSilence()
+        case .beginConfirmWindow:
+            agentDictateConfirming = true
+            let window = agentFinishMachine?.confirmWindow ?? AgentSessionFinish.defaultConfirmWindow
+            let sid = activeSessionID
+            agentConfirmWindowTask?.cancel()
+            agentConfirmWindowTask = Task { [weak self] in
+                try? await Task.sleep(nanoseconds: UInt64(max(0.1, window) * 1_000_000_000))
+                guard !Task.isCancelled else { return }
+                await MainActor.run {
+                    guard let self, self.sessionActive, self.agentDictateConfirming,
+                          self.activeSessionID == sid else { return }
+                    self.agentConfirmWindowTask = nil
+                    self.handleAgentFinishEvent(.confirmWindowElapsed)
+                }
+            }
+        case .reopenForAppend:
+            agentConfirmWindowTask?.cancel()
+            agentConfirmWindowTask = nil
+            agentDictateConfirming = false
+            agentSilenceDetector = agentBridgeSilenceAutoStop
+                ? SilenceAutoStop(config: QuietDictationMode.silenceAutoStopConfig(quietEnabled: quietDictationEnabled))
+                : nil
+        case .none:
+            break
+        }
+        return true
+    }
+
+    /// Finish the active agent session as the user's natural "done" (endedBy:
+    /// .user — unlike `bridgeStopAgentDictation()`, which marks `.stop`).
     @MainActor
     private func finishAgentDictationOnSilence() {
         guard sessionActive, sessionInitiator.isAgent else { return }
-        // The finish is decided NOW; kill the timeout before finalization begins.
-        // Transcribing a long utterance can outlast the deadline, and a timeout
-        // firing in that window would flip the delivered endedBy to .timeout (or
-        // turn an empty capture into a timeout error).
+        // The finish is decided NOW; kill the timeout before finalization begins,
+        // or a long transcription could outlast it and flip endedBy to .timeout.
         agentDictateTimeoutTask?.cancel()
         agentDictateTimeoutTask = nil
         stopDictation()
@@ -2419,6 +2443,13 @@ class AppState: ObservableObject {
             statusMessage = "Stop the meeting before dictating"
             return
         }
+        // MAK-76 / TTS-gating: while the agent's question is being read the mic is
+        // not yet live but goLive is pending — a tap must not start a user session
+        // (it would strand the waiter and race the gated mic-open). Esc backs out.
+        if agentDictateReadingQuestion, !isRecording, !isTranscribing, !sessionActive {
+            hotkeyMonitor?.resetActivation()
+            return
+        }
         // The dictation key is now ONLY dictation — refine has its own dedicated
         // chord (see startRefine). So a plain press always starts a normal
         // dictation and pastes instantly (no re-press disambiguation, no deferral).
@@ -2428,11 +2459,16 @@ class AppState: ObservableObject {
             executeRefineEffects(refineFlow.handle(.abort))
         }
 
-        // The human always wins the mic: if the user presses the hotkey while an
-        // AGENT session is capturing, cancel that session (it gets no transcript,
-        // per the cancel invariant) and start the user's own dictation. Only fires
-        // for a genuine user press — beginAgentDictation() sets the initiator but
-        // has no active session yet, so it never trips this.
+        // MAK-76 tap-to-toggle: during an agent session the hotkey is a manual
+        // FINISH control (returns the transcript NOW, overriding a pending EOU /
+        // silence wait; during the confirm window it re-opens to append) — not a
+        // preempt. See AgentSessionFinish for the decision table.
+        if sessionActive, sessionInitiator.isAgent, handleAgentFinishEvent(.hotkeyTap) {
+            return
+        }
+
+        // Legacy preempt fallback (machine not armed — e.g. mid-teardown): the
+        // human wins the mic; cancel the agent session and start the user's own.
         if sessionActive, sessionInitiator.isAgent {
             // ORDERING INVARIANT: set the preempt flag BEFORE cancelling. The cancel
             // runs finishSessionUI, whose `if !pendingPreemptStart { resetActivation() }`
@@ -4063,18 +4099,15 @@ class AppState: ObservableObject {
                 targetLanguage: self.translationTargetLanguage,
                 endpoint: self.llmEndpoint,
                 model: self.llmModel,
-                // MAK-35: apply the same intensity-tier prompt to live chunks that
-                // the whole-text final uses, so the dial is authoritative in the
-                // liveChunks output mode too (not just preview/finalOnly). `.none`
-                // never reaches here — shouldEnhanceLiveChunks gates it out. Uses the
-                // same translation-mode carve-out resolver for consistency, though in
-                // practice shouldEnhanceLiveChunks already restricts this path to the
-                // "rephrase" mode, so improveTranslation can't reach it anyway.
-                customInstruction: CleanupIntensity.wholeTextCustomInstruction(
-                    intensity: self.cleanupIntensity,
-                    mode: self.openAIEnhancementMode,
-                    translateToEnglish: self.effectiveTranslateToEnglish
-                )
+                // MAK-35/77: the same composer funnel as the whole-text refiner, so
+                // the dial + per-app preset are authoritative for live chunks too
+                // (`.none` never reaches here — shouldEnhanceLiveChunks gates it out;
+                // Modes never steered live chunks, so modeOverride stays nil).
+                customInstruction: RefineInstructionComposer.sessionInstruction(
+                    modeOverride: nil,
+                    presetOverride: self.presetRefineInstructionOverride,
+                    intensity: self.cleanupIntensity, mode: self.openAIEnhancementMode,
+                    translateToEnglish: self.effectiveTranslateToEnglish)
             ) { [weak self] result in
                 Task { @MainActor in
                     // Close the engine's in-flight bracket on EVERY completion path
@@ -4312,7 +4345,8 @@ class AppState: ObservableObject {
                     if RefineOutputGuard.shouldLanguageGuard(
                         isSpokenInstructionRefine: false,
                         isAgentBridgeRefine: false,
-                        // A Mode's own instruction may legitimately translate (MAK-39).
+                        // A Mode's own instruction may legitimately translate (MAK-39);
+                        // per-app presets (MAK-77) never exempt the guard.
                         hasCustomModeInstruction: self.modeRefineInstructionOverride != nil
                     ), RefineOutputGuard.outputTranslatedAway(
                         input: finalText, output: cleaned, expectedOutputScript: expectedScript
@@ -4913,8 +4947,7 @@ class AppState: ObservableObject {
     /// session. Empty when neither applies. Bias terms never leave the machine —
     /// they only prime the on-device transcription engine.
     private var effectiveWhisperPrompt: String {
-        AgentContextVocabulary.effectivePrompt(
-            base: customVocabularyEnabled ? vocabulary.whisperPrompt : "",
+        AgentContextVocabulary.effectivePrompt(base: customVocabularyEnabled ? vocabulary.whisperPrompt : "",
             screenTerms: sessionScreenContext?.biasTerms ?? [], agentTerms: sessionInitiator.agentBiasTerms)
     }
 
@@ -5184,6 +5217,10 @@ class AppState: ObservableObject {
         agentDictateReadingQuestion = false
         agentSilenceDetector = nil
         agentEouDetector = nil
+        agentConfirmWindowTask?.cancel()
+        agentConfirmWindowTask = nil
+        agentFinishMachine = nil
+        agentDictateConfirming = false
         // Clear the hands-free lock state and its safety detector, and return the
         // interaction machine to idle — a session ending off-trigger (silence
         // safety, agent preempt, error) would otherwise leave the machine thinking
@@ -5580,54 +5617,63 @@ class AppState: ObservableObject {
             if pendingModeKey != nil { pendingModeKey = nil }
         }
 
-        guard let mode = ModeResolver.resolveActive(
+        let mode = ModeResolver.resolveActive(
             explicitKey: explicitKey,
             frontmostBundleID: frontmost?.bundleIdentifier,
             perAppModesEnabled: perAppModesEnabled,
             modes: modes
-        ) else { return }
+        )
+
+        // MAK-77: per-app refine preset (Profiles rows + terminal/IDE verbatim default).
+        let presetOutcome = RefinePresetResolver.resolve(
+            profile: AppProfileStore.profile(for: frontmost?.bundleIdentifier, in: profiles),
+            frontmostBundleID: frontmost?.bundleIdentifier,
+            perAppProfilesEnabled: perAppModesEnabled,
+            globalIntensity: cleanupIntensity
+        )
+
+        guard mode != nil || presetOutcome != .inherit else { return }
 
         // Back up the overridable globals.
         profileOverrideBackup = (language: language, translateToEnglish: translateToEnglish,
                                  outputMode: outputMode, aiCleanup: openAIEnhancementEnabled)
-
-        // A Mode shares the session-overridable fields with AppProfile; resolve them
-        // through the SAME pure resolver (single source of truth for the "en" →
-        // translate remap + inherit-vs-override matrix). Bridge the Mode into an
-        // AppProfile shape for that call (its app binding is irrelevant here).
         suppressSettingsPersistence = true
-        let bridged = AppProfile(
-            appBundleID: mode.appBundleID ?? "",
-            displayName: mode.name,
-            language: mode.language,
-            outputMode: mode.outputMode,
-            aiCleanupEnabled: mode.aiCleanupEnabled
-        )
-        let resolved = ProfileResolver.resolve(profile: bridged, over: .init(
-            language: language, translateToEnglish: translateToEnglish,
-            outputMode: outputMode, aiCleanupEnabled: openAIEnhancementEnabled,
-            insertionMode: insertionMode
-        ))
-        language = resolved.language
-        translateToEnglish = resolved.translateToEnglish
-        outputMode = resolved.outputMode
-        openAIEnhancementEnabled = resolved.aiCleanupEnabled
 
-        // The tone + free-form instruction the Mode contributes to the refine pass,
-        // plus an optional LLM-model override.
-        modeRefineInstructionOverride = ModeResolver.refineInstruction(for: mode)
-        activeModeLLMModel = mode.llmModel
+        if let mode {
+            // Same pure resolver as per-app profiles (see ModeResolver.resolveSession).
+            let resolved = ModeResolver.resolveSession(mode: mode, over: .init(
+                language: language, translateToEnglish: translateToEnglish,
+                outputMode: outputMode, aiCleanupEnabled: openAIEnhancementEnabled,
+                insertionMode: insertionMode
+            ))
+            language = resolved.language
+            translateToEnglish = resolved.translateToEnglish
+            outputMode = resolved.outputMode
+            openAIEnhancementEnabled = resolved.aiCleanupEnabled
 
-        // The insert method is session-scoped, not a persisted published setting —
-        // stash it for currentInsertionMode; only when the profile actually changes
-        // it from the global (else stay nil so nothing to restore).
-        let resolvedInsert = InsertionMode.from(id: resolved.insertionMode)
-        sessionInsertionModeOverride = resolvedInsert.rawValue == insertionMode ? nil : resolvedInsert
+            // The tone + free-form instruction the Mode contributes to the refine pass,
+            // plus an optional LLM-model override.
+            modeRefineInstructionOverride = ModeResolver.refineInstruction(for: mode)
+            activeModeLLMModel = mode.llmModel
+
+            // The insert method is session-scoped, not a persisted published setting —
+            // stash it for currentInsertionMode; only when the profile actually changes
+            // it from the global (else stay nil so nothing to restore).
+            let resolvedInsert = InsertionMode.from(id: resolved.insertionMode)
+            sessionInsertionModeOverride = resolvedInsert.rawValue == insertionMode ? nil : resolvedInsert
+        }
+
+        // Preset applies after the Mode; the pure helper encodes the tie-breaks.
+        let presetApply = RefinePresetResolver.application(
+            outcome: presetOutcome, modePinsCleanupOn: mode?.aiCleanupEnabled == true)
+        if presetApply.disableRefine { openAIEnhancementEnabled = false }
+        presetRefineInstructionOverride = presetApply.presetPrompt
     }
 
     /// Restore any settings a profile overrode for the just-finished session.
     private func restoreProfileOverridesIfNeeded() {
         modeRefineInstructionOverride = nil
+        presetRefineInstructionOverride = nil
         activeModeLLMModel = nil
         sessionInsertionModeOverride = nil
         guard let backup = profileOverrideBackup else { return }
@@ -6660,7 +6706,8 @@ extension AppState: AgentBridgeHost {
     /// the timeout. Called on the main thread; `completion` fires on the main thread.
     func bridgeStartDictation(
         clientName: String, prompt: String?, timeoutSeconds: Int, language: String?,
-        context: BridgeWire.DictateContext?, completion: @escaping (Result<BridgeWire.DictateResult, BridgeWire.ErrorObject>) -> Void
+        context: BridgeWire.DictateContext?, autoSubmit: Bool = BridgeWire.DictateParams.defaultAutoSubmit,
+        completion: @escaping (Result<BridgeWire.DictateResult, BridgeWire.ErrorObject>) -> Void
     ) {
         // Busy: the human (or another agent session) always wins the mic.
         guard !isRecording, !isTranscribing, !sessionActive else {
@@ -6684,13 +6731,8 @@ extension AppState: AgentBridgeHost {
         // once we're committed to starting (all synchronous guards passed), so the
         // recorded start matches a session that actually opens the mic.
         let now = Date()
-        if case .throttled(let retryAfter) = agentRateLimiter.check(clientName: clientName, now: now) {
-            let secs = Int(retryAfter.rounded(.up))
-            completion(.failure(.domain(
-                .rateLimited,
-                message: "this client is dictating too frequently; retry in about \(secs)s",
-                retryAfterSeconds: max(1, secs)
-            )))
+        if let err = agentRateLimiter.throttleError(clientName: clientName, now: now) {
+            completion(.failure(err))
             return
         }
         agentRateLimiter.recordStart(clientName: clientName, now: now)
@@ -6698,25 +6740,13 @@ extension AppState: AgentBridgeHost {
         let started = now
         agentDictateTimedOut = false
         agentDictateStopped = false
-        // The overlay attribution line. Sanitized (control/bidi chars stripped,
-        // capped) and always framed as the CLIENT asking — agent-controlled text
-        // must never read as OpenWhisp's own voice.
-        let displayClient = BridgeWire.sanitizedForDisplay(clientName, maxLength: 60)
-        let clientLabel = displayClient.isEmpty ? "An agent" : displayClient
-        let displayQuestion = prompt.map { BridgeWire.sanitizedForDisplay($0, maxLength: 200) } ?? ""
-        if !displayQuestion.isEmpty {
-            agentDictatePrompt = "\(clientLabel) asks: \(displayQuestion)"
-        } else {
-            agentDictatePrompt = "\(clientLabel) asked you to dictate"
-        }
-        // Split pieces for the hero overlay: the question is the content, the
-        // client the quiet attribution. `agentDictateQuestion` is nil (not empty)
-        // when the agent gave no prompt, so the overlay falls back cleanly.
-        agentDictateClientLabel = clientLabel
-        agentDictateQuestion = displayQuestion.isEmpty ? nil : displayQuestion
-        sessionInitiator = .agent(client: clientName, prompt: prompt,
-            biasTerms: AgentContextVocabulary.sessionTerms( // MAK-75 workspace bias
-                context: context, userTerms: customVocabularyEnabled ? vocabulary.terms : []))
+        // Overlay attribution + hero question (framing rules on the core type).
+        let presentation = AgentPromptPresentation(clientName: clientName, prompt: prompt)
+        agentDictatePrompt = presentation.banner
+        agentDictateClientLabel = presentation.clientLabel
+        agentDictateQuestion = presentation.question
+        sessionInitiator = .agent(client: clientName, prompt: prompt, biasTerms: AgentContextVocabulary
+            .sessionTerms(context: context, userTerms: customVocabularyEnabled ? vocabulary.terms : []))
         onSessionEnd = { [weak self] outcome in
             guard let self else { return }
             self.agentDictateTimeoutTask?.cancel()
@@ -6725,48 +6755,25 @@ extension AppState: AgentBridgeHost {
             // mic time, and the cooldown runs from the session's END (a gap
             // between sessions), not its start.
             self.agentRateLimiter.recordEnd(clientName: clientName, now: Date())
-            let duration = Date().timeIntervalSince(started)
-            let timedOut = self.agentDictateTimedOut
-            let stopped = self.agentDictateStopped
-            switch outcome {
-            case .completed(let text):
-                let endedBy: BridgeWire.DictateEnd = timedOut ? .timeout : (stopped ? .stop : .user)
-                completion(.success(.init(text: text, durationSeconds: duration, timedOut: timedOut, endedBy: endedBy)))
-            case .empty:
-                if timedOut {
-                    completion(.failure(.domain(.timeout, message: "no speech within the time limit")))
-                } else {
-                    completion(.success(.init(text: "", durationSeconds: duration, timedOut: false, endedBy: stopped ? .stop : .user)))
-                }
-            case .secureField:
-                completion(.failure(.domain(.secureField, message: "a password field was focused; dictation refused")))
-            case .cancelled:
-                // Per the cancel invariant: no transcript on a cancel.
-                completion(.failure(.domain(.cancelled, message: "the user declined to answer — do not retry")))
-            case .error(let message):
-                completion(.failure(.domain(.audioUnavailable, message: message)))
-            }
+            completion(AgentDictateOutcome.resolve(
+                outcome, duration: Date().timeIntervalSince(started),
+                timedOut: self.agentDictateTimedOut, stopped: self.agentDictateStopped
+            ))
         }
 
-        // "Go live": actually open the mic and arm the session guards. Deferred
-        // until AFTER any spoken question finishes — otherwise the mic captures the
-        // app's own TTS and returns it to the agent as the human's answer (an
-        // acoustic feedback loop). Runs exactly once; a `fired` latch dedups the
-        // TTS-completion callback against the watchdog fallback.
+        // "Go live": open the mic and arm the session guards. Deferred until AFTER
+        // any spoken question — otherwise the mic captures the app's own TTS as the
+        // answer. The `fired` latch dedups TTS-completion vs the watchdog fallback.
         var fired = false
         let goLive: () -> Void = { [weak self] in
             guard let self, !fired else { return }
             fired = true
             self.agentDictateReadingQuestion = false
-
-            // A cancel/decline can arrive while the question is still being read
-            // (the overlay's Esc, a superseding session). Don't open the mic on a
-            // session that's already been torn down.
+            // A cancel/decline can arrive while the question is still being read —
+            // don't open the mic on a session that's already been torn down.
             guard self.sessionInitiator.isAgent, self.onSessionEnd != nil else { return }
-
-            // Run the shared start path. Any pre-session bail (e.g. a secure field
-            // that became focused in the last instant) leaves sessionActive false;
-            // catch it so the agent is never left hanging.
+            // Shared start path; a pre-session bail (e.g. a just-focused secure
+            // field) leaves sessionActive false — never leave the agent hanging.
             self.startDictation()
             guard self.sessionActive else {
                 let done = self.onSessionEnd
@@ -6783,28 +6790,24 @@ extension AppState: AgentBridgeHost {
                 return
             }
 
-            // Arm silence auto-stop (default-on) so the answer ends when the speaker
-            // stops, not only on the timeout. Fed from `updateAudioLevel`. The
-            // timeout below remains the hard ceiling / no-speech fallback.
+            // Arm the auto-stop detectors (rationale on SilenceAutoStop /
+            // AgentEouAutoStop); the timeout below stays the hard ceiling.
             self.agentSilenceDetector = self.agentBridgeSilenceAutoStop
                 ? SilenceAutoStop(config: QuietDictationMode.silenceAutoStopConfig(quietEnabled: self.quietDictationEnabled))
                 : nil
-
-            // Arm the EOU auto-stop (MAK-46 Phase 5) alongside the silence detector,
-            // but only when the setting is on AND the active engine emits EOU events
-            // (the Parakeet EOU variant). Otherwise no EOU callback ever fires and
-            // the detector stays inert. Default-off + experimental.
             self.agentEouDetector = (self.agentBridgeEouAutoStop && self.activeEngineEmitsEou)
                 ? AgentEouAutoStop()
                 : nil
 
+            // MAK-76: hotkey tap = manual finish; autoSubmit=false holds a brief
+            // confirm/append window after an auto-stop (see AgentSessionFinish).
+            self.agentFinishMachine = AgentSessionFinish(autoSubmit: autoSubmit)
+
             let sid = self.activeSessionID
             self.agentDictateTimeoutTask = Task { [weak self] in
                 try? await Task.sleep(nanoseconds: UInt64(max(1, timeoutSeconds)) * 1_000_000_000)
-                // Cancellation makes Task.sleep THROW EARLY (and try? swallows it) —
-                // without this check, the cancel issued by a silence/stop finish
-                // would wake the task immediately, mid-finalization (sessionActive
-                // still true, same sid), and flip the very endedBy it tried to protect.
+                // Cancellation makes Task.sleep throw EARLY (try? swallows it); the
+                // isCancelled check keeps a silence/stop finish from flipping endedBy.
                 guard !Task.isCancelled else { return }
                 guard let self, self.sessionActive, self.activeSessionID == sid else { return }
                 self.agentDictateTimedOut = true
@@ -6812,30 +6815,23 @@ extension AppState: AgentBridgeHost {
             }
         }
 
-        // Audible "your turn" cues (both opt-out). The chime fires first as a
-        // distinct attention ping. If the question is read aloud, we hold capture
-        // until speech ends (via the completion callback) and show a "reading —
-        // wait" cue meanwhile. With no spoken question (TTS off, or nothing
-        // speakable, or chime-only), go live immediately.
+        // Audible "your turn" cues (both opt-out). A read-aloud question holds
+        // capture until speech ends; otherwise go live immediately.
         if agentBridgeChimeEnabled {
             agentAnnouncer.chime()
         }
         if agentBridgeSpeakQuestionEnabled, let prompt,
            !AgentAnnouncer.spokenForm(of: prompt).isEmpty {
             agentDictateReadingQuestion = true
-            // Show the overlay NOW (normally beginSession does this, but capture —
-            // and beginSession — is held until speech ends). It renders the
-            // "Reading question — wait" cue and the question hero, and gives the
-            // user an Esc target to back out before the mic ever opens.
+            // Show the overlay NOW (beginSession is held until speech ends): the
+            // "reading" cue, the question hero, and an Esc target to back out.
             if showOverlay || sessionInitiator.isAgent {
                 overlayController?.show()
                 overlayIsVisible = true
             }
             agentAnnouncer.speak(prompt, onFinish: goLive)
-            // Watchdog: if the speech-finished callback never arrives (engine
-            // stall, delegate never fires), open the mic anyway a few seconds past
-            // the longest realistic read of the 240-char cap so the agent is never
-            // left hanging in "reading" forever.
+            // Watchdog: if the speech-finished delegate never fires, open the mic
+            // anyway so the agent is never left hanging in "reading" forever.
             Task { [weak self] in
                 try? await Task.sleep(nanoseconds: 30 * 1_000_000_000)
                 guard let self, !fired else { return }

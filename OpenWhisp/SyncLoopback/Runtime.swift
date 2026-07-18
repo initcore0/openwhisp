@@ -94,7 +94,7 @@ final class LoopbackHost: AgentBridgeHost {
         completion(scope == .sync) // sync pre-consented; others denied in the harness
     }
     func bridgeDidCall(clientName: String, tool: String) {}
-    func bridgeStartDictation(clientName: String, prompt: String?, timeoutSeconds: Int, language: String?, context: BridgeWire.DictateContext?, completion: @escaping (Result<BridgeWire.DictateResult, BridgeWire.ErrorObject>) -> Void) {
+    func bridgeStartDictation(clientName: String, prompt: String?, timeoutSeconds: Int, language: String?, context: BridgeWire.DictateContext?, autoSubmit: Bool, completion: @escaping (Result<BridgeWire.DictateResult, BridgeWire.ErrorObject>) -> Void) {
         completion(.failure(.domain(.internalError, message: "dictate not supported in loopback")))
     }
     func bridgeStopAgentDictation() -> Bool { false }

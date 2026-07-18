@@ -41,7 +41,7 @@ protocol AgentBridgeHost: AnyObject {
     /// connection thread until then.
     func bridgeStartDictation(
         clientName: String, prompt: String?, timeoutSeconds: Int, language: String?,
-        context: BridgeWire.DictateContext?,
+        context: BridgeWire.DictateContext?, autoSubmit: Bool,
         completion: @escaping (Result<BridgeWire.DictateResult, BridgeWire.ErrorObject>) -> Void
     )
     /// Finalize the active agent dictation (agent said the user is done). No-op on
