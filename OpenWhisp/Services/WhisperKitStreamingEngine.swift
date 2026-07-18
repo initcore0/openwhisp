@@ -288,7 +288,7 @@ final class WhisperKitStreamingEngine: StreamingTranscriptionEngine {
 
 #else
 
-    func start(language: String) throws {
+    func start(language: String, prompt: String) throws {
         onError?("WhisperKit backend isn't available in this build. Rebuild with WHISPERKIT=1 (see docs/WHISPERKIT_PILOT.md).")
     }
 

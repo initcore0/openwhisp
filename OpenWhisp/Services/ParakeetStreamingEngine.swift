@@ -413,7 +413,7 @@ final class ParakeetStreamingEngine: StreamingTranscriptionEngine {
 
 #else
 
-    func start(language: String) throws {
+    func start(language: String, prompt: String) throws {
         onError?("The Parakeet engine isn't available in this build. Rebuild with PARAKEET=1 (see docs/PARAKEET.md).")
     }
 
