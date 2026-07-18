@@ -10,6 +10,8 @@ struct AdvancedPane: View {
 
     var body: some View {
         Form {
+            dictationExtrasSection
+
             if isWhisperCpp {
                 whisperRuntimeSection
                 liveTypingSection
@@ -32,6 +34,39 @@ struct AdvancedPane: View {
             #endif
         }
         .formStyle(.grouped)
+    }
+
+    // MARK: - Dictation extras
+    //
+    // MAK-62: three power-user controls that used to crowd the everyday panes —
+    // a mouse-button trigger, whisper-tuning for very soft speech, and code-
+    // editor file tagging — moved here. Keys are unchanged, so anyone who set
+    // them keeps their value; they're just no longer in the first-run surface.
+
+    private var dictationExtrasSection: some View {
+        Section {
+            Picker("Mouse-button trigger", selection: $appState.mouseTrigger) {
+                ForEach(MouseTrigger.allSelectable, id: \.id) { trigger in
+                    Text(trigger.label).tag(trigger.id)
+                }
+            }
+
+            SubtitledToggle(
+                "Quiet-dictation mode",
+                subtitle: "Tuned for whispering and very soft speech: applies a much stronger local boost and lowers the speech-detection threshold so quiet words still register. Speak close to the mic — a few inches away — and keep the room quiet for best results.",
+                isOn: $appState.quietDictationEnabled
+            )
+
+            SubtitledToggle(
+                "File tagging in code editors",
+                subtitle: "In Cursor and Windsurf only, turn spoken filenames into @-mentions: “main dot t s” → @main.ts, “at main” → @main. Off everywhere else, so it never touches ordinary dictation.",
+                isOn: $appState.fileTaggingEnabled
+            )
+        } header: {
+            Text("Dictation Extras")
+        } footer: {
+            SettingsFootnote("A mouse-button trigger binds a non-primary button (middle, or a side button) to start dictation, using the same activation style as the trigger key. Quiet mode and file tagging are on-device; nothing leaves your Mac.")
+        }
     }
 
     // MARK: - whisper.cpp runtime

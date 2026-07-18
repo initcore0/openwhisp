@@ -106,15 +106,6 @@ struct CleanupPane: View {
                 )
                 .padding(.leading, 16)
             }
-
-            // File-tagging is independent of smart formatting (it's a niche dev
-            // aid, not part of the baseline quality pass) — shown at the section
-            // level, on only in known code editors even when toggled on.
-            SubtitledToggle(
-                "Enable file tagging in code editors",
-                subtitle: "In Cursor and Windsurf only, turn spoken filenames into @-mentions: “main dot t s” → @main.ts, “at main” → @main. Off everywhere else, so it never touches ordinary dictation.",
-                isOn: $appState.fileTaggingEnabled
-            )
         } header: {
             Text("Formatting")
         } footer: {

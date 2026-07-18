@@ -3,31 +3,60 @@ import Cocoa
 
 // MARK: - Settings View
 //
-// Sidebar + detail layout (redesign spec §3): eight panes organized by the
-// dictation pipeline — you speak → it transcribes → it cleans up → it lands in
-// your app — instead of the old Basic/Advanced split by scariness. The pane set
-// never changes; only groups within a pane adapt to the selected engine.
+// Sidebar + detail layout (redesign spec §3): panes organized by the dictation
+// pipeline — you speak → it transcribes → it cleans up → it lands in your app —
+// instead of the old Basic/Advanced split by scariness. The pane set never
+// changes; only groups within a pane adapt to the selected engine.
+//
+// MAK-62: the sidebar is split into two sections so the everyday surface stays
+// small. "Setup" holds the panes a first-run user might touch (General,
+// Dictation, Models, Cleanup, Output) plus Privacy and Advanced; the optional
+// feature panes (Insights, Modes, Rules, File Transcription, Meetings, Per-App
+// Profiles, Agent Bridge, Sync) live under a collapsible "More features" group
+// so they stop crowding the frozen vertical list. Defaults are good enough that
+// a first run needs to touch none of them.
 
 /// The sidebar panes, in frequency-weighted order after the conventional
-/// General-first.
+/// General-first. Declaration order is also the sidebar order within each group.
 enum SettingsPane: String, CaseIterable, Identifiable {
+    // Setup group — the everyday surface.
     case general
-    case insights
     case dictation
     case models
     case cleanup
     case output
-    case rules
+    case privacy
+    case advanced
+    // More features group — optional panes, collapsed by default.
+    case insights
     case modes
+    case rules
     case files
     case meetings
     case profiles
     case agentBridge
     case sync
-    case privacy
-    case advanced
 
     var id: String { rawValue }
+
+    /// Which sidebar section a pane belongs to. "More features" is collapsed by
+    /// default so the everyday surface stays small (MAK-62).
+    enum Group {
+        case setup
+        case moreFeatures
+    }
+
+    var group: Group {
+        switch self {
+        case .general, .dictation, .models, .cleanup, .output, .privacy, .advanced:
+            return .setup
+        case .insights, .modes, .rules, .files, .meetings, .profiles, .agentBridge, .sync:
+            return .moreFeatures
+        }
+    }
+
+    static var setupPanes: [SettingsPane] { allCases.filter { $0.group == .setup } }
+    static var moreFeaturePanes: [SettingsPane] { allCases.filter { $0.group == .moreFeatures } }
 
     var title: String {
         switch self {
@@ -75,6 +104,10 @@ struct SettingsView: View {
     @ObservedObject var appState: AppState
 
     @State private var selectedPane: SettingsPane = .general
+    // Optional feature panes stay collapsed until the user asks for them, so the
+    // sidebar opens as a short everyday list (MAK-62). Auto-expands if a feature
+    // pane is somehow the current selection (e.g. deep-linked).
+    @State private var moreFeaturesExpanded = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -90,9 +123,26 @@ struct SettingsView: View {
             }
 
             NavigationSplitView {
-                List(SettingsPane.allCases, selection: $selectedPane) { pane in
-                    Label(pane.title, systemImage: pane.symbol)
-                        .tag(pane)
+                List(selection: $selectedPane) {
+                    Section {
+                        ForEach(SettingsPane.setupPanes) { pane in
+                            Label(pane.title, systemImage: pane.symbol)
+                                .tag(pane)
+                        }
+                    }
+
+                    // Everything the everyday user can ignore, folded away so the
+                    // frozen vertical list stops being 15 rows long (MAK-62).
+                    Section {
+                        DisclosureGroup(isExpanded: $moreFeaturesExpanded) {
+                            ForEach(SettingsPane.moreFeaturePanes) { pane in
+                                Label(pane.title, systemImage: pane.symbol)
+                                    .tag(pane)
+                            }
+                        } label: {
+                            Label("More features", systemImage: "ellipsis.circle")
+                        }
+                    }
                 }
                 .listStyle(.sidebar)
                 .navigationSplitViewColumnWidth(min: 180, ideal: 200, max: 240)
@@ -106,6 +156,11 @@ struct SettingsView: View {
             appState.refreshPermissionBanners()
             // Keeps the microphone list current without a manual refresh button.
             AudioDeviceMonitor.shared.start()
+            // Keep a deep-linked feature pane visible in the collapsed sidebar.
+            if selectedPane.group == .moreFeatures { moreFeaturesExpanded = true }
+        }
+        .onChange(of: selectedPane) { newValue in
+            if newValue.group == .moreFeatures { moreFeaturesExpanded = true }
         }
         .frame(minWidth: 760, minHeight: 540)
     }
