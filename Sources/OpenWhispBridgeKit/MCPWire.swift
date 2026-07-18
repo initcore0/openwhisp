@@ -85,6 +85,19 @@ enum MCPWire {
             default: return nil
             }
         }
+
+        /// The elements if this is an array; nil otherwise.
+        var arrayValue: [JSONValue]? {
+            if case .array(let a) = self { return a }
+            return nil
+        }
+
+        /// A `[String]` if this is an array of strings (non-string elements dropped);
+        /// nil when not an array.
+        var stringArrayValue: [String]? {
+            guard case .array(let a) = self else { return nil }
+            return a.compactMap { $0.stringValue }
+        }
     }
 
     /// One incoming MCP frame, decoded from a stdio line. `id` absent ⇒ it's a

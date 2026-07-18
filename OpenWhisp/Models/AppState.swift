@@ -927,6 +927,15 @@ class AppState: ObservableObject {
     /// finish. Never written to disk.
     private var sessionScreenContext: SessionScreenContext?
 
+    /// Bias terms derived from an AGENT session's workspace context (cwd basename,
+    /// git branch, file names) — MAK-75. Session-scoped exactly like
+    /// `sessionScreenContext`: held in memory for one agent dictation, merged into
+    /// the engine bias prompt + the local cleanup instruction, and NEVER written to
+    /// the vocabulary store (whose JSON is an iOS sync contract). Empty for user
+    /// sessions and for agent sessions that passed no context. Cleared on the next
+    /// start and on finish.
+    private var sessionAgentBiasTerms: [String] = []
+
     /// In-memory capture from `ScreenContextGate` + `ScreenContextReader` for one
     /// dictation session.
     struct SessionScreenContext {
@@ -1570,12 +1579,24 @@ class AppState: ObservableObject {
         // local-only rule is re-checked HERE, at use time, against the provider the
         // request will actually hit: a non-local provider never sees the context,
         // even when it was legitimately captured under a local one.
-        let customInstruction: String?
-        if let base = baseInstruction, let ctx = sessionScreenContext?.llmContext,
-           ScreenContextGate.localRefineProviders.contains(llmProvider) {
+        let isLocalRefine = ScreenContextGate.localRefineProviders.contains(llmProvider)
+        var customInstruction: String?
+        if let base = baseInstruction, let ctx = sessionScreenContext?.llmContext, isLocalRefine {
             customInstruction = ScreenContextTruncator.augmentedInstruction(base, withContext: ctx)
         } else {
             customInstruction = baseInstruction
+        }
+        // MAK-75: for an AGENT session on a LOCAL provider, append the workspace
+        // bias terms as reference-only correction context so the cleanup keeps
+        // file/branch/project names spelled as the workspace has them. Same
+        // local-only posture as screen context (re-checked here against the
+        // provider this call will actually hit). Only augments a non-nil base
+        // instruction (the translation-polish carve-out keeps its own branch).
+        // The terms are Latin identifiers, so `RefineOutputGuard` (which judges
+        // input<->output script) is unaffected.
+        if let base = customInstruction, isLocalRefine, !sessionAgentBiasTerms.isEmpty,
+           let block = AgentContextVocabulary.correctionContextBlock(terms: sessionAgentBiasTerms) {
+            customInstruction = base + block
         }
         return OpenAIRefiner(
             service: translationService,
@@ -2593,6 +2614,7 @@ class AppState: ObservableObject {
         // MAK-34: drop any captured screen context so a cancelled session can never
         // leak surrounding text into a later refine.
         sessionScreenContext = nil
+        sessionAgentBiasTerms = []
         statusMessage = "Cancelled"
         finishSessionUI()
     }
@@ -4878,6 +4900,7 @@ class AppState: ObservableObject {
     /// AFTER the secure-field refusal guard and target-app resolution.
     private func captureScreenContext() {
         sessionScreenContext = nil
+        sessionAgentBiasTerms = []
 
         // NEVER capture for an agent-initiated session: its transcript is returned
         // to the agent raw, and a whisper prompt can echo (hallucinate) prompt
@@ -4922,9 +4945,20 @@ class AppState: ObservableObject {
     /// they only prime the on-device transcription engine.
     private var effectiveWhisperPrompt: String {
         let base = customVocabularyEnabled ? vocabulary.whisperPrompt : ""
-        let extra = sessionScreenContext?.biasTerms ?? []
+        // Screen-context bias terms (MAK-34) plus agent workspace-context terms
+        // (MAK-75). Agent terms are NOT gated on `customVocabularyEnabled`: that
+        // toggle is the user's own custom vocabulary, whereas agent context is a
+        // separate, session-scoped signal about the client's workspace.
+        var extra = sessionScreenContext?.biasTerms ?? []
+        extra.append(contentsOf: sessionAgentBiasTerms)
         guard !extra.isEmpty else { return base }
-        let extraJoined = extra.joined(separator: ", ")
+        // Dedup the extra terms (user terms lead; keep the finite prompt budget
+        // clean) — a project name already in the user's vocabulary shouldn't also
+        // arrive from the cwd. `merged` preserves order and drops case-insensitive
+        // dupes.
+        let extraMerged = AgentContextVocabulary.merged(base: [], with: extra)
+        let extraJoined = extraMerged.joined(separator: ", ")
+        guard !extraJoined.isEmpty else { return base }
         return base.isEmpty ? extraJoined : "\(base), \(extraJoined)"
     }
 
@@ -5174,6 +5208,7 @@ class AppState: ObservableObject {
         // just cancel — stale context from app A must never survive into anything
         // that runs between sessions or into a later session in app B.
         sessionScreenContext = nil
+        sessionAgentBiasTerms = []
         voiceEditingActiveForSession = false
         voiceEditBuffer = VoiceEditBuffer()
         // Deliver the outcome to an agent-initiated waiter exactly once. This is
@@ -6671,6 +6706,7 @@ extension AppState: AgentBridgeHost {
     /// the timeout. Called on the main thread; `completion` fires on the main thread.
     func bridgeStartDictation(
         clientName: String, prompt: String?, timeoutSeconds: Int, language: String?,
+        context: BridgeWire.DictateContext?,
         completion: @escaping (Result<BridgeWire.DictateResult, BridgeWire.ErrorObject>) -> Void
     ) {
         // Busy: the human (or another agent session) always wins the mic.
@@ -6726,6 +6762,22 @@ extension AppState: AgentBridgeHost {
         agentDictateClientLabel = clientLabel
         agentDictateQuestion = displayQuestion.isEmpty ? nil : displayQuestion
         sessionInitiator = .agent(client: clientName, prompt: prompt)
+        // MAK-75: derive session-scoped bias terms from the client's workspace
+        // context (cwd basename, git branch, file names) so spoken dev/branch/file
+        // names transcribe correctly. Merged into the engine bias prompt
+        // (`effectiveWhisperPrompt`) and the LOCAL cleanup instruction. Never
+        // persisted — cleared on finish/next start with the rest of the session.
+        // Excludes the user's own vocabulary terms (already biased).
+        if let context, !context.isEmpty {
+            sessionAgentBiasTerms = AgentContextVocabulary.derivedTerms(
+                cwd: context.cwd,
+                gitBranch: context.gitBranch,
+                terms: context.terms ?? [],
+                existingTerms: customVocabularyEnabled ? vocabulary.terms : []
+            )
+        } else {
+            sessionAgentBiasTerms = []
+        }
         onSessionEnd = { [weak self] outcome in
             guard let self else { return }
             self.agentDictateTimeoutTask?.cancel()

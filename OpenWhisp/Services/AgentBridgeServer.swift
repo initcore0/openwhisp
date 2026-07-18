@@ -288,7 +288,7 @@ final class AgentBridgeServer {
             let clientName = state.clientName
             guard consentGranted(clientName, scope: .dictate, fd: fd, id: id) else { return true }
             let timeout = BridgeRouter.resolvedTimeoutSeconds(params.timeoutSeconds)
-            switch blockingDictate(clientName: clientName, prompt: params.prompt, timeout: timeout, language: params.language) {
+            switch blockingDictate(clientName: clientName, prompt: params.prompt, timeout: timeout, language: params.language, context: params.context) {
             case .success(let result):
                 onMain { self.host?.bridgeDidCall(clientName: clientName, tool: AgentScope.dictate.rawValue) }
                 send(fd, id: id, result: result)
@@ -390,11 +390,13 @@ final class AgentBridgeServer {
     /// out). The human always wins the mic — the host busy-rejects if a session
     /// is active.
     private func blockingDictate(
-        clientName: String, prompt: String?, timeout: Int, language: String?
+        clientName: String, prompt: String?, timeout: Int, language: String?,
+        context: BridgeWire.DictateContext?
     ) -> Result<BridgeWire.DictateResult, BridgeWire.ErrorObject> {
         blockOnHost(noHost: .failure(.domain(.internalError, message: "no host"))) { host, done in
             host.bridgeStartDictation(
                 clientName: clientName, prompt: prompt, timeoutSeconds: timeout, language: language,
+                context: context,
                 completion: done
             )
         }
