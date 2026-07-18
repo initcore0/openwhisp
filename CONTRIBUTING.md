@@ -16,6 +16,33 @@ swift test                   # run the unit tests
 See the [README](README.md#building) for full build/permissions details and
 [docs/ROADMAP.md](docs/ROADMAP.md) for direction and priorities.
 
+## Fast dev loop for the app (incremental builds + IDE)
+
+`./build.sh` compiles the whole app as one `swiftc` glob — every edit recompiles
+~59k LOC (~70s), and it gives editors no index for the app target (AppState + the
+41 app-only services are invisible to autocomplete). For iterating on app/UI code,
+use the dev-only SwiftPM package instead:
+
+```bash
+scripts/dev-app.sh              # incremental build — only the file you changed recompiles (~2–5s)
+open AppPackage/Package.swift   # or: full Xcode / SourceKit-LSP over the whole app module
+```
+
+- **`AppPackage/`** is a **dev-only** manifest (`AppPackage/Package.swift`) that
+  builds the same app sources (symlinked from `OpenWhisp/`) as one SwiftPM
+  executable target — so you get incremental compilation and full LSP/Xcode
+  support (autocomplete, jump-to-def, breakpoints) on **AppState and every app
+  service/view**, which the root `Package.swift`'s test target excludes.
+- It builds in the **lean** configuration (stub engines, no Sparkle — the same
+  seam CI uses): enough to type-check and iterate on app/UI code without the
+  WhisperKit/FluidAudio/Sparkle native deps. It is **not** the release path.
+- To run the real app with real engines, or to produce the signed `.app`, use
+  **`./build.sh`** / **`./package.sh`** as before — those remain the sole
+  release/CI paths and are unchanged.
+
+Point SourceKit-LSP (VS Code, Neovim, Zed, etc.) at `AppPackage/` — that's the
+manifest that indexes the app module. Xcode: `open AppPackage/Package.swift`.
+
 ## Before you open a PR
 
 - **Run `swift test` and `./build.sh`** — both must pass.
