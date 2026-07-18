@@ -234,6 +234,19 @@ public enum EngineCapabilities {
         vocabularySupport(transcriptionEngine: transcriptionEngine).honorsStreaming
     }
 
+    /// The bias prompt to hand a streaming engine's `start` — the user's
+    /// vocabulary prompt when this engine honors vocabulary on the STREAMING
+    /// path, else "" (offered-iff-honored, MAK-69): whisper.cpp/WhisperKit/
+    /// Apple Speech honor it; Parakeet (batch-only) and SpeechAnalyzer (unwired)
+    /// get "" — a declared no-op the vocabulary UI already told the user about,
+    /// never a silent drop.
+    public static func streamingPrompt(
+        transcriptionEngine: String, vocabularyPrompt: String
+    ) -> String {
+        honorsStreamingVocabulary(transcriptionEngine: transcriptionEngine)
+            ? vocabularyPrompt : ""
+    }
+
     /// Whether a fixed language `languageCode` may be PICKED for `engine`. Gates
     /// the language picker at pick-time (not speak-time): an English-only engine
     /// refuses a non-English fixed pick up front rather than emitting garbage.

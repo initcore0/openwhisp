@@ -607,7 +607,6 @@ class AppState: ObservableObject {
         didSet { settingsStore.set(voiceEditingEnabled, forKey: "voiceEditingEnabled") }
     }
 
-
     /// Opt-in custom **script** post-processor. When enabled with a valid
     /// executable path, the final transcript is piped through the script (stdin →
     /// stdout) just before insertion. Off by default; fail-open (any error/timeout
@@ -3428,16 +3427,8 @@ class AppState: ObservableObject {
             }
             do {
                 engine.selectDevice(micID)
-                // Hand the engine its live-dictation bias terms ONLY when this
-                // engine honors vocabulary on the streaming path (offered-iff-
-                // honored, MAK-69). whisper.cpp/WhisperKit/Apple Speech honor it;
-                // Parakeet (batch-only) and SpeechAnalyzer (unwired) declare .none/
-                // .batchOnly for streaming, so they get "" — a declared no-op the
-                // vocabulary UI already told the user about, never a silent drop.
-                let streamingPrompt = EngineCapabilities.honorsStreamingVocabulary(
-                    transcriptionEngine: self.transcriptionEngine
-                ) ? self.effectiveWhisperPrompt : ""
-                try engine.start(language: self.engineLanguageSetting, prompt: streamingPrompt)
+                try engine.start(language: self.engineLanguageSetting, prompt: EngineCapabilities.streamingPrompt(
+                    transcriptionEngine: self.transcriptionEngine, vocabularyPrompt: self.effectiveWhisperPrompt))
                 // Do NOT flip to Listening here: for WhisperKit/Parakeet,
                 // start() only ENQUEUED the real start on the engine's serial
                 // lifecycle chain — the model load (or first-run download)
