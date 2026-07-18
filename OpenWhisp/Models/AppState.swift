@@ -16,16 +16,16 @@ class AppState: ObservableObject {
     // MARK: - Settings (persisted)
 
     @Published var whisperBinaryPath: String {
-        didSet { UserDefaults.standard.set(whisperBinaryPath, forKey: "whisperBinaryPath") }
+        didSet { settingsStore.set(whisperBinaryPath, forKey: "whisperBinaryPath") }
     }
 
     @Published var modelPath: String {
-        didSet { UserDefaults.standard.set(modelPath, forKey: "modelPath") }
+        didSet { settingsStore.set(modelPath, forKey: "modelPath") }
     }
 
     @Published var modelName: String {
         didSet {
-            UserDefaults.standard.set(modelName, forKey: "modelName")
+            settingsStore.set(modelName, forKey: "modelName")
             modelPath = resolvedModelPath()
         }
     }
@@ -36,13 +36,13 @@ class AppState: ObservableObject {
     @Published var whisperKitModel: String {
         didSet {
             guard whisperKitModel != oldValue else { return }
-            UserDefaults.standard.set(whisperKitModel, forKey: "whisperKitModel")
+            settingsStore.set(whisperKitModel, forKey: "whisperKitModel")
             if transcriptionEngine == "whisperKit" { rebuildFileEngine() }
         }
     }
 
     @Published var microphoneID: String {
-        didSet { UserDefaults.standard.set(microphoneID, forKey: "microphoneID") }
+        didSet { settingsStore.set(microphoneID, forKey: "microphoneID") }
     }
 
     @Published var language: String {
@@ -59,7 +59,7 @@ class AppState: ObservableObject {
 
     @Published var triggerMode: String {
         didSet {
-            UserDefaults.standard.set(triggerMode, forKey: "triggerMode")
+            settingsStore.set(triggerMode, forKey: "triggerMode")
             hotkeyMonitor?.triggerMode = triggerMode
         }
     }
@@ -69,7 +69,7 @@ class AppState: ObservableObject {
     /// when `triggerMode == "custom"`. Persisted as an Int; -1 is the nil sentinel.
     @Published var customTriggerKeyCode: Int {
         didSet {
-            UserDefaults.standard.set(customTriggerKeyCode, forKey: "customTriggerKeyCode")
+            settingsStore.set(customTriggerKeyCode, forKey: "customTriggerKeyCode")
             pushCustomTriggerToMonitor()
         }
     }
@@ -77,7 +77,7 @@ class AppState: ObservableObject {
     /// The modifier bitmask (TriggerModifiers.rawValue) of the custom trigger.
     @Published var customTriggerModifiers: Int {
         didSet {
-            UserDefaults.standard.set(customTriggerModifiers, forKey: "customTriggerModifiers")
+            settingsStore.set(customTriggerModifiers, forKey: "customTriggerModifiers")
             pushCustomTriggerToMonitor()
         }
     }
@@ -110,7 +110,7 @@ class AppState: ObservableObject {
     /// it to the hotkey monitor (MAK-16).
     @Published var hotkeyMode: String {
         didSet {
-            UserDefaults.standard.set(hotkeyMode, forKey: "hotkeyMode")
+            settingsStore.set(hotkeyMode, forKey: "hotkeyMode")
             // Setting the monitor's mode rebuilds its interaction machine to idle,
             // so a hands-free session locked open under the OLD mode could no
             // longer be stopped by a tap (the tap would read as a fresh start).
@@ -139,7 +139,7 @@ class AppState: ObservableObject {
     /// Selected refine key (RefineKey id, e.g. "rightOption"; "off" disables it).
     @Published var refineKey: String {
         didSet {
-            UserDefaults.standard.set(refineKey, forKey: "refineKey")
+            settingsStore.set(refineKey, forKey: "refineKey")
             hotkeyMonitor?.refineKey = refineKey
         }
     }
@@ -149,7 +149,7 @@ class AppState: ObservableObject {
     /// (MAK-42).
     @Published var mouseTrigger: String {
         didSet {
-            UserDefaults.standard.set(mouseTrigger, forKey: "mouseTrigger")
+            settingsStore.set(mouseTrigger, forKey: "mouseTrigger")
             hotkeyMonitor?.mouseTrigger = mouseTrigger
         }
     }
@@ -159,12 +159,12 @@ class AppState: ObservableObject {
     }
 
     @Published var showOverlay: Bool {
-        didSet { UserDefaults.standard.set(showOverlay, forKey: "showOverlay") }
+        didSet { settingsStore.set(showOverlay, forKey: "showOverlay") }
     }
 
     /// Visual style of the overlay's voice indicator (Settings › General → Recording Overlay).
     @Published var voiceIndicatorStyle: VoiceIndicatorStyle {
-        didSet { UserDefaults.standard.set(voiceIndicatorStyle.rawValue, forKey: "voiceIndicatorStyle") }
+        didSet { settingsStore.set(voiceIndicatorStyle.rawValue, forKey: "voiceIndicatorStyle") }
     }
 
     /// Launch the app automatically after login/reboot. Source of truth is the
@@ -192,7 +192,7 @@ class AppState: ObservableObject {
     }
 
     @Published var restoreClipboard: Bool {
-        didSet { UserDefaults.standard.set(restoreClipboard, forKey: "restoreClipboard") }
+        didSet { settingsStore.set(restoreClipboard, forKey: "restoreClipboard") }
     }
 
     /// How transcribed text is inserted into the focused app:
@@ -200,11 +200,11 @@ class AppState: ObservableObject {
     /// "directAX" (Accessibility only), or "paste" (Cmd+V only).
     /// Direct-insert preserves the user's clipboard entirely.
     @Published var insertionMode: String {
-        didSet { UserDefaults.standard.set(insertionMode, forKey: "insertionMode") }
+        didSet { settingsStore.set(insertionMode, forKey: "insertionMode") }
     }
 
     @Published var addTrailingSpace: Bool {
-        didSet { UserDefaults.standard.set(addTrailingSpace, forKey: "addTrailingSpace") }
+        didSet { settingsStore.set(addTrailingSpace, forKey: "addTrailingSpace") }
     }
 
     /// Auto-gain: boost a quiet microphone toward a healthy level before sending
@@ -212,7 +212,7 @@ class AppState: ObservableObject {
     /// Default-on; runs locally with a no-clip safety cap.
     @Published var autoGainEnabled: Bool {
         didSet {
-            UserDefaults.standard.set(autoGainEnabled, forKey: "autoGainEnabled")
+            settingsStore.set(autoGainEnabled, forKey: "autoGainEnabled")
             audioRecorder?.autoGainEnabled = autoGainEnabled
         }
     }
@@ -226,7 +226,7 @@ class AppState: ObservableObject {
     /// exactly as before. Best paired with getting close to the mic (UI copy).
     @Published var quietDictationEnabled: Bool {
         didSet {
-            UserDefaults.standard.set(quietDictationEnabled, forKey: "quietDictationEnabled")
+            settingsStore.set(quietDictationEnabled, forKey: "quietDictationEnabled")
             audioRecorder?.quietModeEnabled = quietDictationEnabled
         }
     }
@@ -235,17 +235,17 @@ class AppState: ObservableObject {
     /// filler removal). Default-on — this is the baseline quality pass and runs
     /// entirely locally, no network.
     @Published var smartFormattingEnabled: Bool {
-        didSet { UserDefaults.standard.set(smartFormattingEnabled, forKey: "smartFormattingEnabled") }
+        didSet { settingsStore.set(smartFormattingEnabled, forKey: "smartFormattingEnabled") }
     }
 
     /// Apply spoken-punctuation commands ("new line", "comma", "period", ...).
     @Published var spokenPunctuationEnabled: Bool {
-        didSet { UserDefaults.standard.set(spokenPunctuationEnabled, forKey: "spokenPunctuationEnabled") }
+        didSet { settingsStore.set(spokenPunctuationEnabled, forKey: "spokenPunctuationEnabled") }
     }
 
     /// Remove filler words ("um", "uh", ...) from dictated text.
     @Published var fillerRemovalEnabled: Bool {
-        didSet { UserDefaults.standard.set(fillerRemovalEnabled, forKey: "fillerRemovalEnabled") }
+        didSet { settingsStore.set(fillerRemovalEnabled, forKey: "fillerRemovalEnabled") }
     }
 
     /// Rewrite spoken filenames to editor `@`-mentions (MAK-48), but ONLY when
@@ -253,7 +253,7 @@ class AppState: ObservableObject {
     /// OFF: a niche developer aid that would be wrong to run in a chat or doc, so
     /// it's opt-in and gated to editors even when enabled.
     @Published var fileTaggingEnabled: Bool {
-        didSet { UserDefaults.standard.set(fileTaggingEnabled, forKey: "fileTaggingEnabled") }
+        didSet { settingsStore.set(fileTaggingEnabled, forKey: "fileTaggingEnabled") }
     }
 
     // Opt-in structural formatting (MAK-20). The rules live in SmartFormatter and
@@ -261,27 +261,27 @@ class AppState: ObservableObject {
     // turn each group on. All default OFF so ordinary prose is never touched until
     // the user opts in.
     @Published var normalizeNumbers: Bool {
-        didSet { UserDefaults.standard.set(normalizeNumbers, forKey: "normalizeNumbers") }
+        didSet { settingsStore.set(normalizeNumbers, forKey: "normalizeNumbers") }
     }
 
     @Published var normalizeCurrency: Bool {
-        didSet { UserDefaults.standard.set(normalizeCurrency, forKey: "normalizeCurrency") }
+        didSet { settingsStore.set(normalizeCurrency, forKey: "normalizeCurrency") }
     }
 
     @Published var spokenListsEnabled: Bool {
-        didSet { UserDefaults.standard.set(spokenListsEnabled, forKey: "spokenListsEnabled") }
+        didSet { settingsStore.set(spokenListsEnabled, forKey: "spokenListsEnabled") }
     }
 
     @Published var basicMarkdownEnabled: Bool {
-        didSet { UserDefaults.standard.set(basicMarkdownEnabled, forKey: "basicMarkdownEnabled") }
+        didSet { settingsStore.set(basicMarkdownEnabled, forKey: "basicMarkdownEnabled") }
     }
 
     @Published var liveChunkDuration: Double {
-        didSet { UserDefaults.standard.set(liveChunkDuration, forKey: "liveChunkDuration") }
+        didSet { settingsStore.set(liveChunkDuration, forKey: "liveChunkDuration") }
     }
 
     @Published var pauseBasedLiveChunksEnabled: Bool {
-        didSet { UserDefaults.standard.set(pauseBasedLiveChunksEnabled, forKey: "pauseBasedLiveChunksEnabled") }
+        didSet { settingsStore.set(pauseBasedLiveChunksEnabled, forKey: "pauseBasedLiveChunksEnabled") }
     }
 
     /// Default transcription engine for a fresh install. Parakeet is the preferred
@@ -304,7 +304,7 @@ class AppState: ObservableObject {
     @Published var transcriptionEngine: String {
         didSet {
             guard transcriptionEngine != oldValue else { return }
-            UserDefaults.standard.set(transcriptionEngine, forKey: "transcriptionEngine")
+            settingsStore.set(transcriptionEngine, forKey: "transcriptionEngine")
             // WhisperKit doesn't support the "type live" (liveChunks) output mode —
             // it streams via its own pipeline. If a stale liveChunks value carries
             // over when switching to WhisperKit, snap it to the streaming-friendly
@@ -350,7 +350,7 @@ class AppState: ObservableObject {
     @Published var parakeetVariant: String {
         didSet {
             guard parakeetVariant != oldValue else { return }
-            UserDefaults.standard.set(parakeetVariant, forKey: "parakeetVariant")
+            settingsStore.set(parakeetVariant, forKey: "parakeetVariant")
             rebuildFileEngine()
             ensureSelectedEngineModel()
         }
@@ -358,7 +358,7 @@ class AppState: ObservableObject {
 
     @Published var whisperBackend: String {
         didSet {
-            UserDefaults.standard.set(whisperBackend, forKey: "whisperBackend")
+            settingsStore.set(whisperBackend, forKey: "whisperBackend")
             if whisperBackend != "serverAPI" {
                 whisperEngine?.stopServer()
             } else {
@@ -418,11 +418,11 @@ class AppState: ObservableObject {
     }
 
     @Published var openAIEnhancementMode: String {
-        didSet { UserDefaults.standard.set(openAIEnhancementMode, forKey: "openAIEnhancementMode") }
+        didSet { settingsStore.set(openAIEnhancementMode, forKey: "openAIEnhancementMode") }
     }
 
     @Published var translationTargetLanguage: String {
-        didSet { UserDefaults.standard.set(translationTargetLanguage, forKey: "translationTargetLanguage") }
+        didSet { settingsStore.set(translationTargetLanguage, forKey: "translationTargetLanguage") }
     }
 
     @Published var openAIAPIKey: String {
@@ -430,7 +430,7 @@ class AppState: ObservableObject {
     }
 
     @Published var openAIModel: String {
-        didSet { UserDefaults.standard.set(openAIModel, forKey: "openAIModel") }
+        didSet { settingsStore.set(openAIModel, forKey: "openAIModel") }
     }
 
     /// Which LLM backend powers post-processing: "openai" (cloud) or
@@ -438,7 +438,7 @@ class AppState: ObservableObject {
     /// keeps everything on-device/on-LAN, preserving the privacy story.
     @Published var llmProvider: String {
         didSet {
-            UserDefaults.standard.set(llmProvider, forKey: "llmProvider")
+            settingsStore.set(llmProvider, forKey: "llmProvider")
             if llmProvider == "bundled" {
                 // Provision/warm only when AI cleanup is actually on — switching
                 // the provider (or Reset All Settings) with cleanup off must not
@@ -457,12 +457,12 @@ class AppState: ObservableObject {
 
     /// Base URL (through /v1) of the local OpenAI-compatible server.
     @Published var localLLMBaseURL: String {
-        didSet { UserDefaults.standard.set(localLLMBaseURL, forKey: "localLLMBaseURL") }
+        didSet { settingsStore.set(localLLMBaseURL, forKey: "localLLMBaseURL") }
     }
 
     /// Model name to request from the local server.
     @Published var localLLMModel: String {
-        didSet { UserDefaults.standard.set(localLLMModel, forKey: "localLLMModel") }
+        didSet { settingsStore.set(localLLMModel, forKey: "localLLMModel") }
     }
 
     // MARK: - Summarization model (MAK-53)
@@ -477,18 +477,18 @@ class AppState: ObservableObject {
     /// provider id (`bundled` / `local` / `openai`). Agent-CLI is intentionally not
     /// offered for summaries — the summarize seam is OpenAI-shape only.
     @Published var summaryLLMProvider: String {
-        didSet { UserDefaults.standard.set(summaryLLMProvider, forKey: "summaryLLMProvider") }
+        didSet { settingsStore.set(summaryLLMProvider, forKey: "summaryLLMProvider") }
     }
 
     /// Model to request for summaries (empty ⇒ the resolved provider's default).
     @Published var summaryLLMModel: String {
-        didSet { UserDefaults.standard.set(summaryLLMModel, forKey: "summaryLLMModel") }
+        didSet { settingsStore.set(summaryLLMModel, forKey: "summaryLLMModel") }
     }
 
     /// Custom server URL for summaries — used only when `summaryLLMProvider ==
     /// "local"`. Blank falls back to the cleanup local server URL.
     @Published var summaryLLMEndpoint: String {
-        didSet { UserDefaults.standard.set(summaryLLMEndpoint, forKey: "summaryLLMEndpoint") }
+        didSet { settingsStore.set(summaryLLMEndpoint, forKey: "summaryLLMEndpoint") }
     }
 
     /// Selected built-in (bundled llama.cpp) refinement model id, from
@@ -496,7 +496,7 @@ class AppState: ObservableObject {
     @Published var bundledLLMModel: String {
         didSet {
             guard bundledLLMModel != oldValue else { return }
-            UserDefaults.standard.set(bundledLLMModel, forKey: "bundledLLMModel")
+            settingsStore.set(bundledLLMModel, forKey: "bundledLLMModel")
             // The selected model changed. Stop the server now so a stale model
             // isn't reused, then either download the new model (if missing) or
             // warm it. ensureRunning relaunches on the new -m path anyway, but
@@ -558,8 +558,12 @@ class AppState: ObservableObject {
     #if OPENWHISP_INSTRUMENTATION
     /// Dev-only: show the debug HUD on the recording overlay. Toggled from the
     /// menu-bar checkbox; persisted. Only exists in instrumented builds.
+    // NOTE: this default reads `UserDefaults.standard` directly (not the injected
+    // `settingsStore`): a stored-property default is evaluated before `init`
+    // assigns `self.settingsStore`, so it can't reference the seam. The didSet
+    // write below still routes through the seam.
     @Published var debugOverlayEnabled: Bool = UserDefaults.standard.object(forKey: "debugOverlayEnabled") as? Bool ?? true {
-        didSet { UserDefaults.standard.set(debugOverlayEnabled, forKey: "debugOverlayEnabled") }
+        didSet { settingsStore.set(debugOverlayEnabled, forKey: "debugOverlayEnabled") }
     }
     #endif
 
@@ -589,7 +593,7 @@ class AppState: ObservableObject {
     /// natural-language instruction ("make it a telegram post") that the LLM applies
     /// to the just-dictated text. Requires an LLM provider. On by default.
     @Published var instructionChainEnabled: Bool {
-        didSet { UserDefaults.standard.set(instructionChainEnabled, forKey: "instructionChainEnabled") }
+        didSet { settingsStore.set(instructionChainEnabled, forKey: "instructionChainEnabled") }
     }
 
     /// Enable spoken *edit commands* in preview-mode dictation: a standalone
@@ -600,7 +604,7 @@ class AppState: ObservableObject {
     /// `VoiceEditRouter`. On by default: the parser only fires on a whole-utterance
     /// match, so it's false-positive-safe, and the payoff is high.
     @Published var voiceEditingEnabled: Bool {
-        didSet { UserDefaults.standard.set(voiceEditingEnabled, forKey: "voiceEditingEnabled") }
+        didSet { settingsStore.set(voiceEditingEnabled, forKey: "voiceEditingEnabled") }
     }
 
 
@@ -609,10 +613,10 @@ class AppState: ObservableObject {
     /// stdout) just before insertion. Off by default; fail-open (any error/timeout
     /// keeps the original text). See ScriptRunner / ScriptOutcome.
     @Published var scriptPostProcessorEnabled: Bool {
-        didSet { UserDefaults.standard.set(scriptPostProcessorEnabled, forKey: "scriptPostProcessorEnabled") }
+        didSet { settingsStore.set(scriptPostProcessorEnabled, forKey: "scriptPostProcessorEnabled") }
     }
     @Published var scriptPostProcessorPath: String {
-        didSet { UserDefaults.standard.set(scriptPostProcessorPath, forKey: "scriptPostProcessorPath") }
+        didSet { settingsStore.set(scriptPostProcessorPath, forKey: "scriptPostProcessorPath") }
     }
 
     /// Output target (M9 / MAK-11..14): where a FINAL dictation is delivered. A
@@ -667,12 +671,12 @@ class AppState: ObservableObject {
     /// Apply per-app profile overrides (language / output mode / AI cleanup)
     /// based on the frontmost app when a dictation starts.
     @Published var perAppModesEnabled: Bool {
-        didSet { UserDefaults.standard.set(perAppModesEnabled, forKey: "perAppModesEnabled") }
+        didSet { settingsStore.set(perAppModesEnabled, forKey: "perAppModesEnabled") }
     }
 
     /// Keep a local history of completed transcriptions (recover/reuse). Local only.
     @Published var historyEnabled: Bool {
-        didSet { UserDefaults.standard.set(historyEnabled, forKey: "historyEnabled") }
+        didSet { settingsStore.set(historyEnabled, forKey: "historyEnabled") }
     }
 
     // MARK: Raw-audio retention (MAK-40) — OPT-IN, on-device only
@@ -682,7 +686,7 @@ class AppState: ObservableObject {
     /// retained clip immediately (the audio was the only reason to keep them).
     @Published var retainRawAudioEnabled: Bool {
         didSet {
-            UserDefaults.standard.set(retainRawAudioEnabled, forKey: "retainRawAudioEnabled")
+            settingsStore.set(retainRawAudioEnabled, forKey: "retainRawAudioEnabled")
             if !retainRawAudioEnabled { purgeAllRetainedAudio() }
         }
     }
@@ -690,7 +694,7 @@ class AppState: ObservableObject {
     /// Retention policy — delete audio + history older than N days (0 = no age cap).
     @Published var audioRetentionDays: Int {
         didSet {
-            UserDefaults.standard.set(audioRetentionDays, forKey: "audioRetentionDays")
+            settingsStore.set(audioRetentionDays, forKey: "audioRetentionDays")
             applyRetentionPolicy()
         }
     }
@@ -698,7 +702,7 @@ class AppState: ObservableObject {
     /// Retention policy — keep at most N retained clips (0 = no count cap).
     @Published var audioRetentionMaxClips: Int {
         didSet {
-            UserDefaults.standard.set(audioRetentionMaxClips, forKey: "audioRetentionMaxClips")
+            settingsStore.set(audioRetentionMaxClips, forKey: "audioRetentionMaxClips")
             applyRetentionPolicy()
         }
     }
@@ -743,7 +747,7 @@ class AppState: ObservableObject {
     /// or stops the control-plane socket server.
     @Published var agentBridgeEnabled: Bool {
         didSet {
-            UserDefaults.standard.set(agentBridgeEnabled, forKey: "agentBridgeEnabled")
+            settingsStore.set(agentBridgeEnabled, forKey: "agentBridgeEnabled")
             agentBridgeServer.allowUnsignedClients = agentBridgeAllowUnsignedClients
             if agentBridgeEnabled { agentBridgeServer.start() } else { agentBridgeServer.stop() }
         }
@@ -752,7 +756,7 @@ class AppState: ObservableObject {
     /// can connect. Default-off; on-brand escape hatch for the hackable positioning.
     @Published var agentBridgeAllowUnsignedClients: Bool {
         didSet {
-            UserDefaults.standard.set(agentBridgeAllowUnsignedClients, forKey: "agentBridgeAllowUnsignedClients")
+            settingsStore.set(agentBridgeAllowUnsignedClients, forKey: "agentBridgeAllowUnsignedClients")
             agentBridgeServer.allowUnsignedClients = agentBridgeAllowUnsignedClients
         }
     }
@@ -761,7 +765,7 @@ class AppState: ObservableObject {
     /// through the user's OpenAI key. When off and the provider is OpenAI, agent
     /// `refine` is refused with `cloudRefineDisabled`.
     @Published var agentBridgeAllowCloudAI: Bool {
-        didSet { UserDefaults.standard.set(agentBridgeAllowCloudAI, forKey: "agentBridgeAllowCloudAI") }
+        didSet { settingsStore.set(agentBridgeAllowCloudAI, forKey: "agentBridgeAllowCloudAI") }
     }
     /// End an agent-initiated dictation automatically once the speaker falls
     /// silent, instead of waiting for the timeout. Default-ON: the whole point of
@@ -769,7 +773,7 @@ class AppState: ObservableObject {
     /// finish gesture (the hotkey cancels it). NEVER affects user (hotkey)
     /// sessions — only sessions the bridge started. See [[SilenceAutoStop]].
     @Published var agentBridgeSilenceAutoStop: Bool {
-        didSet { UserDefaults.standard.set(agentBridgeSilenceAutoStop, forKey: "agentBridgeSilenceAutoStop") }
+        didSet { settingsStore.set(agentBridgeSilenceAutoStop, forKey: "agentBridgeSilenceAutoStop") }
     }
     /// Finish an AGENT dictation on the Parakeet EOU variant's end-of-utterance
     /// signal (MAK-46 Phase 5), a crisper "the human finished" than energy silence.
@@ -777,7 +781,7 @@ class AppState: ObservableObject {
     /// EOU events, so it's a no-op on any other engine/variant. Agent sessions
     /// only, alongside (not replacing) the silence detector.
     @Published var agentBridgeEouAutoStop: Bool {
-        didSet { UserDefaults.standard.set(agentBridgeEouAutoStop, forKey: "agentBridgeEouAutoStop") }
+        didSet { settingsStore.set(agentBridgeEouAutoStop, forKey: "agentBridgeEouAutoStop") }
     }
     /// Auto-stop a hands-free (locked) dictation after a long stretch of silence,
     /// so a forgotten toggle session doesn't record forever (MAK-16). Default-ON;
@@ -785,17 +789,17 @@ class AppState: ObservableObject {
     /// long (see `lockSafetyConfig`) so a normal mid-thought pause never ends it.
     /// Only ever affects USER locked sessions; hold-to-talk is untouched.
     @Published var handsFreeSilenceAutoStop: Bool {
-        didSet { UserDefaults.standard.set(handsFreeSilenceAutoStop, forKey: "handsFreeSilenceAutoStop") }
+        didSet { settingsStore.set(handsFreeSilenceAutoStop, forKey: "handsFreeSilenceAutoStop") }
     }
     /// Play a short chime when an agent opens a dictation so you notice it even
     /// when you're not looking at that corner of the screen. Agent sessions only.
     @Published var agentBridgeChimeEnabled: Bool {
-        didSet { UserDefaults.standard.set(agentBridgeChimeEnabled, forKey: "agentBridgeChimeEnabled") }
+        didSet { settingsStore.set(agentBridgeChimeEnabled, forKey: "agentBridgeChimeEnabled") }
     }
     /// Read the agent's question aloud (on-device, no network) when it opens a
     /// dictation, so you can answer without reading the overlay. Agent sessions only.
     @Published var agentBridgeSpeakQuestionEnabled: Bool {
-        didSet { UserDefaults.standard.set(agentBridgeSpeakQuestionEnabled, forKey: "agentBridgeSpeakQuestionEnabled") }
+        didSet { settingsStore.set(agentBridgeSpeakQuestionEnabled, forKey: "agentBridgeSpeakQuestionEnabled") }
     }
     /// Audible cues (chime + spoken question) for agent-initiated dictation.
     /// On-device; gated by the two settings above.
@@ -879,7 +883,7 @@ class AppState: ObservableObject {
     /// Bias whisper recognition toward custom terms. Default-on; harmless when
     /// the vocabulary is empty (no prompt is sent).
     @Published var customVocabularyEnabled: Bool {
-        didSet { UserDefaults.standard.set(customVocabularyEnabled, forKey: "customVocabularyEnabled") }
+        didSet { settingsStore.set(customVocabularyEnabled, forKey: "customVocabularyEnabled") }
     }
 
     /// User's custom vocabulary (bias terms + heard→correct substitutions).
@@ -899,7 +903,7 @@ class AppState: ObservableObject {
     /// type-over-the-word correction and PROPOSE it (never auto-apply). Default-on;
     /// gated further by `customVocabularyEnabled`. Off = the watcher never arms.
     @Published var correctionLearningEnabled: Bool {
-        didSet { UserDefaults.standard.set(correctionLearningEnabled, forKey: "correctionLearningEnabled") }
+        didSet { settingsStore.set(correctionLearningEnabled, forKey: "correctionLearningEnabled") }
     }
 
     /// Pending learned-correction proposals + declined keys, persisted locally.
@@ -914,7 +918,7 @@ class AppState: ObservableObject {
     /// UserDefaults (it carries an array, so the per-bool key idiom doesn't fit).
     /// The captured context itself is NEVER persisted — only this config is.
     @Published var screenContext: ScreenContextSettings {
-        didSet { Self.persistScreenContext(screenContext) }
+        didSet { persistScreenContext(screenContext) }
     }
 
     /// The screen context captured at the start of the CURRENT session (bias terms
@@ -1019,7 +1023,7 @@ class AppState: ObservableObject {
 
     /// Whether the user has completed (or skipped) the first-run onboarding.
     @Published var didCompleteOnboarding: Bool {
-        didSet { UserDefaults.standard.set(didCompleteOnboarding, forKey: "didCompleteOnboarding") }
+        didSet { settingsStore.set(didCompleteOnboarding, forKey: "didCompleteOnboarding") }
     }
 
     // MARK: - Discoverability hints (MAK-25)
@@ -1028,13 +1032,13 @@ class AppState: ObservableObject {
     /// the rotating-hint auto-off window. Incremented once per completed user
     /// dictation in `recordStats`. Persisted so the first-run window survives quits.
     @Published private(set) var hintSessionCount: Int {
-        didSet { UserDefaults.standard.set(hintSessionCount, forKey: "hintSessionCount") }
+        didSet { settingsStore.set(hintSessionCount, forKey: "hintSessionCount") }
     }
 
     /// Ids of overlay hints the user has permanently dismissed. Persisted; a
     /// dismissed hint never shows again (see `HintRotation`).
     @Published private(set) var dismissedHintIDs: Set<String> {
-        didSet { UserDefaults.standard.set(Array(dismissedHintIDs), forKey: "dismissedHintIDs") }
+        didSet { settingsStore.set(Array(dismissedHintIDs), forKey: "dismissedHintIDs") }
     }
 
     /// The rotating overlay hint to show for the current first-run session, or nil
@@ -1401,7 +1405,7 @@ class AppState: ObservableObject {
     /// Persist a setting unless a profile override is currently active.
     private func persist<T>(_ value: T, _ key: String) {
         guard !suppressSettingsPersistence else { return }
-        UserDefaults.standard.set(value, forKey: key)
+        settingsStore.set(value, forKey: key)
     }
 
     private enum TranscriptionKind {
@@ -1699,82 +1703,92 @@ class AppState: ObservableObject {
     private let injectedAudioCapture: AudioCapture?
     private let injectedFileEngine: FileTranscriptionEngine?
 
+    /// The persisted-settings backing store (UserDefaults in the shipping app).
+    /// Every `@Published` setting reads its saved value from here at init and
+    /// writes changes back through here in its `didSet` — this is the seam that
+    /// lets the persistence layer be swapped for an in-memory store in tests
+    /// (MAK-32 SettingsStore extraction). Keys and value shapes are identical to
+    /// the old direct-`UserDefaults` path; do not rename them (iOS contract).
+    let settingsStore: SettingsStore
+
     init(
         secretStore: SecretStore = KeychainStore(),
         launchAtLoginService: LaunchAtLoginService = LaunchAtLogin(),
         textOutput: TextOutput = TextInserter(),
         audioCapture: AudioCapture? = nil,
-        fileEngine: FileTranscriptionEngine? = nil
+        fileEngine: FileTranscriptionEngine? = nil,
+        settingsStore: SettingsStore = UserDefaults.standard
     ) {
         self.secretStore = secretStore
         self.launchAtLoginService = launchAtLoginService
         self.textOutput = textOutput
         self.injectedAudioCapture = audioCapture
         self.injectedFileEngine = fileEngine
-        let savedWhisperBinaryPath = UserDefaults.standard.string(forKey: "whisperBinaryPath") ?? ""
+        self.settingsStore = settingsStore
+        let savedWhisperBinaryPath = settingsStore.string(forKey: "whisperBinaryPath") ?? ""
         whisperBinaryPath = Self.preferredWhisperCLIPath(savedPath: savedWhisperBinaryPath)
 
         // Versioned settings migration MUST run before any key is read below:
         // it preserves old defaults for existing installs and splits the legacy
         // "en means translate" language value into language + translateToEnglish.
-        SettingsMigration.migrate(UserDefaults.standard)
+        SettingsMigration.migrate(settingsStore)
 
         // Default first-run model is "base" (147 MB): fast enough for a quick
         // first success, and — unlike the old "tiny" default — one of the
         // visible quality tiers, so a fresh install never renders as the
         // synthetic "Custom" row. (Existing installs keep "tiny" via migration.)
-        let savedModel = UserDefaults.standard.string(forKey: "modelName") ?? "base"
+        let savedModel = settingsStore.string(forKey: "modelName") ?? "base"
         let fileName = Self.modelFileName(for: savedModel)
         modelName = savedModel
-        let savedModelPath = UserDefaults.standard.string(forKey: "modelPath") ?? ""
+        let savedModelPath = settingsStore.string(forKey: "modelPath") ?? ""
         modelPath = Self.preferredModelPath(savedPath: savedModelPath, fileName: fileName)
-        microphoneID = UserDefaults.standard.string(forKey: "microphoneID") ?? ""
-        language = UserDefaults.standard.string(forKey: "language") ?? "auto"
-        translateToEnglish = UserDefaults.standard.object(forKey: "translateToEnglish") as? Bool ?? false
-        triggerMode = UserDefaults.standard.string(forKey: "triggerMode") ?? "fn"
+        microphoneID = settingsStore.string(forKey: "microphoneID") ?? ""
+        language = settingsStore.string(forKey: "language") ?? "auto"
+        translateToEnglish = settingsStore.object(forKey: "translateToEnglish") as? Bool ?? false
+        triggerMode = settingsStore.string(forKey: "triggerMode") ?? "fn"
         // Custom trigger (MAK-17): -1 keycode = bare-modifier binding / unset.
-        customTriggerKeyCode = UserDefaults.standard.object(forKey: "customTriggerKeyCode") as? Int ?? -1
-        customTriggerModifiers = UserDefaults.standard.object(forKey: "customTriggerModifiers") as? Int ?? 0
+        customTriggerKeyCode = settingsStore.object(forKey: "customTriggerKeyCode") as? Int ?? -1
+        customTriggerModifiers = settingsStore.object(forKey: "customTriggerModifiers") as? Int ?? 0
         // Press-to-talk stays the default activation; hands-free lock (toggle) is opt-in.
-        hotkeyMode = UserDefaults.standard.string(forKey: "hotkeyMode") ?? "hold"
+        hotkeyMode = settingsStore.string(forKey: "hotkeyMode") ?? "hold"
         // Left Control: the old rightControl default doesn't exist on MacBook
         // keyboards, which made refine silently impossible there.
-        refineKey = UserDefaults.standard.string(forKey: "refineKey") ?? RefineKey.defaultKey.rawValue
-        mouseTrigger = UserDefaults.standard.string(forKey: "mouseTrigger") ?? MouseTrigger.defaultTrigger.id
-        outputMode = UserDefaults.standard.string(forKey: "outputMode") ?? "preview"
-        showOverlay = UserDefaults.standard.object(forKey: "showOverlay") as? Bool ?? true
-        voiceIndicatorStyle = VoiceIndicatorStyle.from(UserDefaults.standard.string(forKey: "voiceIndicatorStyle"))
+        refineKey = settingsStore.string(forKey: "refineKey") ?? RefineKey.defaultKey.rawValue
+        mouseTrigger = settingsStore.string(forKey: "mouseTrigger") ?? MouseTrigger.defaultTrigger.id
+        outputMode = settingsStore.string(forKey: "outputMode") ?? "preview"
+        showOverlay = settingsStore.object(forKey: "showOverlay") as? Bool ?? true
+        voiceIndicatorStyle = VoiceIndicatorStyle.from(settingsStore.string(forKey: "voiceIndicatorStyle"))
         launchAtLogin = launchAtLoginService.isEnabled
         // Restoring is what users assume happens — clipboard clobbering is the
         // top complaint about paste-based dictation. (Existing installs keep
         // their old effective value via migration.)
-        restoreClipboard = UserDefaults.standard.object(forKey: "restoreClipboard") as? Bool ?? true
-        insertionMode = UserDefaults.standard.string(forKey: "insertionMode") ?? "auto"
-        addTrailingSpace = UserDefaults.standard.object(forKey: "addTrailingSpace") as? Bool ?? false
-        autoGainEnabled = UserDefaults.standard.object(forKey: "autoGainEnabled") as? Bool ?? true
-        quietDictationEnabled = UserDefaults.standard.object(forKey: "quietDictationEnabled") as? Bool ?? false
-        smartFormattingEnabled = UserDefaults.standard.object(forKey: "smartFormattingEnabled") as? Bool ?? true
-        spokenPunctuationEnabled = UserDefaults.standard.object(forKey: "spokenPunctuationEnabled") as? Bool ?? true
-        fillerRemovalEnabled = UserDefaults.standard.object(forKey: "fillerRemovalEnabled") as? Bool ?? true
-        fileTaggingEnabled = UserDefaults.standard.object(forKey: "fileTaggingEnabled") as? Bool ?? false
+        restoreClipboard = settingsStore.object(forKey: "restoreClipboard") as? Bool ?? true
+        insertionMode = settingsStore.string(forKey: "insertionMode") ?? "auto"
+        addTrailingSpace = settingsStore.object(forKey: "addTrailingSpace") as? Bool ?? false
+        autoGainEnabled = settingsStore.object(forKey: "autoGainEnabled") as? Bool ?? true
+        quietDictationEnabled = settingsStore.object(forKey: "quietDictationEnabled") as? Bool ?? false
+        smartFormattingEnabled = settingsStore.object(forKey: "smartFormattingEnabled") as? Bool ?? true
+        spokenPunctuationEnabled = settingsStore.object(forKey: "spokenPunctuationEnabled") as? Bool ?? true
+        fillerRemovalEnabled = settingsStore.object(forKey: "fillerRemovalEnabled") as? Bool ?? true
+        fileTaggingEnabled = settingsStore.object(forKey: "fileTaggingEnabled") as? Bool ?? false
         // MAK-20 structural formatting groups default OFF (opt-in).
-        normalizeNumbers = UserDefaults.standard.object(forKey: "normalizeNumbers") as? Bool ?? false
-        normalizeCurrency = UserDefaults.standard.object(forKey: "normalizeCurrency") as? Bool ?? false
-        spokenListsEnabled = UserDefaults.standard.object(forKey: "spokenListsEnabled") as? Bool ?? false
-        basicMarkdownEnabled = UserDefaults.standard.object(forKey: "basicMarkdownEnabled") as? Bool ?? false
-        liveChunkDuration = UserDefaults.standard.object(forKey: "liveChunkDuration") as? Double ?? 2.0
-        pauseBasedLiveChunksEnabled = UserDefaults.standard.object(forKey: "pauseBasedLiveChunksEnabled") as? Bool ?? false
-        transcriptionEngine = UserDefaults.standard.string(forKey: "transcriptionEngine") ?? Self.defaultTranscriptionEngine
-        whisperKitModel = UserDefaults.standard.string(forKey: "whisperKitModel") ?? "openai_whisper-small"
+        normalizeNumbers = settingsStore.object(forKey: "normalizeNumbers") as? Bool ?? false
+        normalizeCurrency = settingsStore.object(forKey: "normalizeCurrency") as? Bool ?? false
+        spokenListsEnabled = settingsStore.object(forKey: "spokenListsEnabled") as? Bool ?? false
+        basicMarkdownEnabled = settingsStore.object(forKey: "basicMarkdownEnabled") as? Bool ?? false
+        liveChunkDuration = settingsStore.object(forKey: "liveChunkDuration") as? Double ?? 2.0
+        pauseBasedLiveChunksEnabled = settingsStore.object(forKey: "pauseBasedLiveChunksEnabled") as? Bool ?? false
+        transcriptionEngine = settingsStore.string(forKey: "transcriptionEngine") ?? Self.defaultTranscriptionEngine
+        whisperKitModel = settingsStore.string(forKey: "whisperKitModel") ?? "openai_whisper-small"
         parakeetVariant = ParakeetCatalog.normalize(
-            UserDefaults.standard.string(forKey: "parakeetVariant") ?? ParakeetCatalog.defaultVariantID
+            settingsStore.string(forKey: "parakeetVariant") ?? ParakeetCatalog.defaultVariantID
         )
-        if let savedBackend = UserDefaults.standard.string(forKey: "whisperBackend") {
+        if let savedBackend = settingsStore.string(forKey: "whisperBackend") {
             whisperBackend = savedBackend
         } else {
             whisperBackend = "serverAPI"
         }
-        openAIEnhancementMode = UserDefaults.standard.string(forKey: "openAIEnhancementMode") ?? "rephrase"
+        openAIEnhancementMode = settingsStore.string(forKey: "openAIEnhancementMode") ?? "rephrase"
         // MAK-35: resolve the AI-cleanup intensity dial. Prefer a stored dial value;
         // on FIRST load for an existing install (no dial persisted yet) derive it
         // from the legacy on/off + mode so behavior is preserved exactly (enabled +
@@ -1782,9 +1796,9 @@ class AppState: ObservableObject {
         // fall through to migrated(enabled:false) == .none, matching the old default
         // of AI cleanup off out of the box.
         let resolvedIntensity = CleanupIntensity.resolveInitial(
-            storedDialRawValue: UserDefaults.standard.string(forKey: "cleanupIntensity"),
-            legacyEnabled: UserDefaults.standard.object(forKey: "openAIEnhancementEnabled") as? Bool ?? false,
-            legacyMode: UserDefaults.standard.string(forKey: "openAIEnhancementMode") ?? "rephrase"
+            storedDialRawValue: settingsStore.string(forKey: "cleanupIntensity"),
+            legacyEnabled: settingsStore.object(forKey: "openAIEnhancementEnabled") as? Bool ?? false,
+            legacyMode: settingsStore.string(forKey: "openAIEnhancementMode") ?? "rephrase"
         )
         cleanupIntensity = resolvedIntensity
         // Seed the "last non-none" memory so the legacy toggle restores the user's
@@ -1793,16 +1807,16 @@ class AppState: ObservableObject {
         // local `resolvedIntensity`, not the stored property — Swift forbids reading
         // a stored property mid-init before all are initialized.)
         lastNonNoneCleanupIntensity = CleanupIntensity.resolveLastNonNone(
-            storedRawValue: UserDefaults.standard.string(forKey: "lastNonNoneCleanupIntensity"),
+            storedRawValue: settingsStore.string(forKey: "lastNonNoneCleanupIntensity"),
             resolvedIntensity: resolvedIntensity
         )
-        translationTargetLanguage = UserDefaults.standard.string(forKey: "translationTargetLanguage") ?? "en"
+        translationTargetLanguage = settingsStore.string(forKey: "translationTargetLanguage") ?? "en"
         // One-time migration: move any legacy plaintext key out of UserDefaults into the
         // Keychain. didSet does not fire during init, so the keychain write must be explicit.
         let keychainKey = secretStore.read(key: "openAIAPIKey")
         if let keychainKey, !keychainKey.isEmpty {
             openAIAPIKey = keychainKey
-        } else if let legacyKey = UserDefaults.standard.string(forKey: "openAIAPIKey"),
+        } else if let legacyKey = settingsStore.string(forKey: "openAIAPIKey"),
                   !legacyKey.isEmpty {
             secretStore.save(legacyKey, key: "openAIAPIKey")
             UserDefaults.standard.removeObject(forKey: "openAIAPIKey")
@@ -1810,53 +1824,53 @@ class AppState: ObservableObject {
         } else {
             openAIAPIKey = ""
         }
-        openAIModel = UserDefaults.standard.string(forKey: "openAIModel") ?? "gpt-4o-mini"
+        openAIModel = settingsStore.string(forKey: "openAIModel") ?? "gpt-4o-mini"
         // Built-in by default: first enable of AI cleanup works offline with
         // zero setup, matching the product's privacy story. (Existing installs
         // keep "openai" via migration.)
-        llmProvider = UserDefaults.standard.string(forKey: "llmProvider") ?? "bundled"
-        localLLMBaseURL = UserDefaults.standard.string(forKey: "localLLMBaseURL") ?? "http://localhost:8080/v1"
-        localLLMModel = UserDefaults.standard.string(forKey: "localLLMModel") ?? ""
+        llmProvider = settingsStore.string(forKey: "llmProvider") ?? "bundled"
+        localLLMBaseURL = settingsStore.string(forKey: "localLLMBaseURL") ?? "http://localhost:8080/v1"
+        localLLMModel = settingsStore.string(forKey: "localLLMModel") ?? ""
         // MAK-53: summarization model override (default = same as cleanup).
-        summaryLLMProvider = UserDefaults.standard.string(forKey: "summaryLLMProvider") ?? SummaryModelResolver.sameAsCleanupID
-        summaryLLMModel = UserDefaults.standard.string(forKey: "summaryLLMModel") ?? ""
-        summaryLLMEndpoint = UserDefaults.standard.string(forKey: "summaryLLMEndpoint") ?? ""
-        bundledLLMModel = UserDefaults.standard.string(forKey: "bundledLLMModel") ?? "qwen2.5-0.5b-instruct"
+        summaryLLMProvider = settingsStore.string(forKey: "summaryLLMProvider") ?? SummaryModelResolver.sameAsCleanupID
+        summaryLLMModel = settingsStore.string(forKey: "summaryLLMModel") ?? ""
+        summaryLLMEndpoint = settingsStore.string(forKey: "summaryLLMEndpoint") ?? ""
+        bundledLLMModel = settingsStore.string(forKey: "bundledLLMModel") ?? "qwen2.5-0.5b-instruct"
         // Agent-CLI provider (MAK-44) — used only when llmProvider == "agentCLI".
         // Default to the Claude preset so opting in works with zero extra typing.
-        agentCLIPreset = UserDefaults.standard.string(forKey: "agentCLIPreset") ?? "claude"
-        agentCLICustomCommand = UserDefaults.standard.string(forKey: "agentCLICustomCommand") ?? ""
-        agentCLICustomArgsText = UserDefaults.standard.string(forKey: "agentCLICustomArgsText") ?? ""
-        agentCLITimeout = UserDefaults.standard.object(forKey: "agentCLITimeout") as? Double ?? 30.0
-        instructionChainEnabled = UserDefaults.standard.object(forKey: "instructionChainEnabled") as? Bool ?? true
-        voiceEditingEnabled = UserDefaults.standard.object(forKey: "voiceEditingEnabled") as? Bool ?? true
-        scriptPostProcessorEnabled = UserDefaults.standard.object(forKey: "scriptPostProcessorEnabled") as? Bool ?? false
-        scriptPostProcessorPath = UserDefaults.standard.string(forKey: "scriptPostProcessorPath") ?? ""
+        agentCLIPreset = settingsStore.string(forKey: "agentCLIPreset") ?? "claude"
+        agentCLICustomCommand = settingsStore.string(forKey: "agentCLICustomCommand") ?? ""
+        agentCLICustomArgsText = settingsStore.string(forKey: "agentCLICustomArgsText") ?? ""
+        agentCLITimeout = settingsStore.object(forKey: "agentCLITimeout") as? Double ?? 30.0
+        instructionChainEnabled = settingsStore.object(forKey: "instructionChainEnabled") as? Bool ?? true
+        voiceEditingEnabled = settingsStore.object(forKey: "voiceEditingEnabled") as? Bool ?? true
+        scriptPostProcessorEnabled = settingsStore.object(forKey: "scriptPostProcessorEnabled") as? Bool ?? false
+        scriptPostProcessorPath = settingsStore.string(forKey: "scriptPostProcessorPath") ?? ""
         outputTargetSettings = Self.loadOutputTargetSettings()
         ruleSet = RuleStore.load()
         screenContext = Self.loadScreenContext()
-        perAppModesEnabled = UserDefaults.standard.object(forKey: "perAppModesEnabled") as? Bool ?? false
-        historyEnabled = UserDefaults.standard.object(forKey: "historyEnabled") as? Bool ?? true
+        perAppModesEnabled = settingsStore.object(forKey: "perAppModesEnabled") as? Bool ?? false
+        historyEnabled = settingsStore.object(forKey: "historyEnabled") as? Bool ?? true
         // MAK-40 raw-audio retention: opt-in (default OFF); policy defaults keep the
         // newest 50 clips and impose no age cap until the user sets one.
-        retainRawAudioEnabled = UserDefaults.standard.bool(forKey: "retainRawAudioEnabled")
-        audioRetentionDays = UserDefaults.standard.integer(forKey: "audioRetentionDays")
-        audioRetentionMaxClips = UserDefaults.standard.object(forKey: "audioRetentionMaxClips") as? Int ?? 50
+        retainRawAudioEnabled = settingsStore.bool(forKey: "retainRawAudioEnabled")
+        audioRetentionDays = settingsStore.integer(forKey: "audioRetentionDays")
+        audioRetentionMaxClips = settingsStore.object(forKey: "audioRetentionMaxClips") as? Int ?? 50
         // Agent Bridge (M8) — default off; started at launch via startAgentBridgeIfEnabled().
         // (Property observers don't fire during init, so the lazy server isn't
         // touched here — it starts only from the explicit launch call.)
-        agentBridgeEnabled = UserDefaults.standard.bool(forKey: "agentBridgeEnabled")
-        agentBridgeAllowUnsignedClients = UserDefaults.standard.bool(forKey: "agentBridgeAllowUnsignedClients")
-        agentBridgeAllowCloudAI = UserDefaults.standard.bool(forKey: "agentBridgeAllowCloudAI")
+        agentBridgeEnabled = settingsStore.bool(forKey: "agentBridgeEnabled")
+        agentBridgeAllowUnsignedClients = settingsStore.bool(forKey: "agentBridgeAllowUnsignedClients")
+        agentBridgeAllowCloudAI = settingsStore.bool(forKey: "agentBridgeAllowCloudAI")
         // Default-ON (silence auto-stop is the expected agent-dictate UX).
-        agentBridgeSilenceAutoStop = UserDefaults.standard.object(forKey: "agentBridgeSilenceAutoStop") as? Bool ?? true
-        agentBridgeEouAutoStop = UserDefaults.standard.object(forKey: "agentBridgeEouAutoStop") as? Bool ?? false
-        handsFreeSilenceAutoStop = UserDefaults.standard.object(forKey: "handsFreeSilenceAutoStop") as? Bool ?? true
+        agentBridgeSilenceAutoStop = settingsStore.object(forKey: "agentBridgeSilenceAutoStop") as? Bool ?? true
+        agentBridgeEouAutoStop = settingsStore.object(forKey: "agentBridgeEouAutoStop") as? Bool ?? false
+        handsFreeSilenceAutoStop = settingsStore.object(forKey: "handsFreeSilenceAutoStop") as? Bool ?? true
         // Default-ON: the chime and spoken question are the whole point of an
         // agent handing you the mic — you should notice and be able to answer
         // without staring at the overlay. Users can turn either off.
-        agentBridgeChimeEnabled = UserDefaults.standard.object(forKey: "agentBridgeChimeEnabled") as? Bool ?? true
-        agentBridgeSpeakQuestionEnabled = UserDefaults.standard.object(forKey: "agentBridgeSpeakQuestionEnabled") as? Bool ?? true
+        agentBridgeChimeEnabled = settingsStore.object(forKey: "agentBridgeChimeEnabled") as? Bool ?? true
+        agentBridgeSpeakQuestionEnabled = settingsStore.object(forKey: "agentBridgeSpeakQuestionEnabled") as? Bool ?? true
         agentClients = AgentClientStore.load()
         profiles = AppProfileStore.load()
         // MAK-39: load user-authored Modes. On the FIRST launch after Modes ship,
@@ -1870,13 +1884,13 @@ class AppState: ObservableObject {
             ? AppProfileStore.load().map(Mode.init(fromProfile:))
             : loadedModes
         history = TranscriptionHistoryStore.load()
-        customVocabularyEnabled = UserDefaults.standard.object(forKey: "customVocabularyEnabled") as? Bool ?? true
+        customVocabularyEnabled = settingsStore.object(forKey: "customVocabularyEnabled") as? Bool ?? true
         vocabulary = VocabularyStore.load()
-        correctionLearningEnabled = UserDefaults.standard.object(forKey: "correctionLearningEnabled") as? Bool ?? true
+        correctionLearningEnabled = settingsStore.object(forKey: "correctionLearningEnabled") as? Bool ?? true
         correctionProposals = CorrectionProposalStore.load()
-        didCompleteOnboarding = UserDefaults.standard.bool(forKey: "didCompleteOnboarding")
-        hintSessionCount = UserDefaults.standard.integer(forKey: "hintSessionCount")
-        dismissedHintIDs = Set(UserDefaults.standard.stringArray(forKey: "dismissedHintIDs") ?? [])
+        didCompleteOnboarding = settingsStore.bool(forKey: "didCompleteOnboarding")
+        hintSessionCount = settingsStore.integer(forKey: "hintSessionCount")
+        dismissedHintIDs = Set(settingsStore.stringArray(forKey: "dismissedHintIDs") ?? [])
 
         wireUpServices()
         overlayController = OverlayWindowController(appState: self)
@@ -4774,12 +4788,14 @@ class AppState: ObservableObject {
     /// Persist the whole output-target settings blob as JSON under one key.
     private func persistOutputTargetSettings() {
         guard let data = try? JSONEncoder().encode(outputTargetSettings) else { return }
-        UserDefaults.standard.set(data, forKey: "outputTargetSettings")
+        settingsStore.set(data, forKey: "outputTargetSettings")
     }
 
     /// Load the persisted output-target settings, defaulting to focused-app (today's
     /// behavior) when absent or unreadable.
     private static func loadOutputTargetSettings() -> OutputTargetSettings {
+        // Static (called during init before `self.settingsStore` is assigned), so
+        // it reads UserDefaults.standard directly rather than the injected seam.
         guard let data = UserDefaults.standard.data(forKey: "outputTargetSettings"),
               let decoded = try? JSONDecoder().decode(OutputTargetSettings.self, from: data)
         else { return OutputTargetSettings() }
@@ -4829,13 +4845,16 @@ class AppState: ObservableObject {
         ruleEngineRunner.planAndRun(rules: ruleSet, context: context, payload: payload)
     }
 
-    private static func persistScreenContext(_ settings: ScreenContextSettings) {
+    /// Instance method (called only from `screenContext`'s didSet, where `self`
+    /// exists) so its write routes through the injected `settingsStore` seam.
+    private func persistScreenContext(_ settings: ScreenContextSettings) {
         guard let data = try? JSONEncoder().encode(settings) else { return }
-        UserDefaults.standard.set(data, forKey: "screenContextSettings")
+        settingsStore.set(data, forKey: "screenContextSettings")
     }
 
     /// Load the persisted screen-context config, defaulting to OFF (opt-in) when
-    /// absent or unreadable.
+    /// absent or unreadable. Static (init-time), so it reads UserDefaults.standard
+    /// directly rather than the injected seam.
     private static func loadScreenContext() -> ScreenContextSettings {
         guard let data = UserDefaults.standard.data(forKey: "screenContextSettings"),
               let decoded = try? JSONDecoder().decode(ScreenContextSettings.self, from: data)
@@ -5624,12 +5643,12 @@ class AppState: ObservableObject {
         // Originals were already in UserDefaults from before the override; the
         // assignments above re-persist them anyway. Belt-and-suspenders: ensure
         // they reflect the true globals.
-        UserDefaults.standard.set(language, forKey: "language")
-        UserDefaults.standard.set(translateToEnglish, forKey: "translateToEnglish")
-        UserDefaults.standard.set(outputMode, forKey: "outputMode")
+        settingsStore.set(language, forKey: "language")
+        settingsStore.set(translateToEnglish, forKey: "translateToEnglish")
+        settingsStore.set(outputMode, forKey: "outputMode")
         // AI cleanup is now stored via the intensity dial (MAK-35), so persist THAT
         // key — the legacy on/off boolean is a derived facade with no backing store.
-        UserDefaults.standard.set(cleanupIntensity.rawValue, forKey: "cleanupIntensity")
+        settingsStore.set(cleanupIntensity.rawValue, forKey: "cleanupIntensity")
     }
 
     // MARK: - History

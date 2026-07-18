@@ -1,10 +1,50 @@
 import Foundation
 
-/// The slice of UserDefaults the settings migration touches, as a protocol so
-/// tests run against an in-memory store.
-protocol SettingsStore {
+/// The slice of the settings backing store (UserDefaults in the app) that the
+/// migration AND `AppState`'s persisted-settings layer read/write through, as a
+/// protocol so tests — and the iOS companion — can run against an in-memory or
+/// alternate store. `object`/`set` are the primitive contract; the typed
+/// accessors below mirror `UserDefaults`'s convenience readers and get default
+/// implementations on top of `object(forKey:)`, so a store only has to implement
+/// the two primitives to satisfy the whole protocol.
+///
+/// This is a versioned contract (consumed by the iOS companion, MAK-51): the key
+/// names and value types flowing through here are the on-disk settings format —
+/// do not rename keys or change value shapes without a migration.
+public protocol SettingsStore {
     func object(forKey defaultName: String) -> Any?
     func set(_ value: Any?, forKey defaultName: String)
+
+    // Typed convenience readers (mirror UserDefaults). Default implementations
+    // are provided in terms of `object(forKey:)`; `UserDefaults` overrides them
+    // with its own native implementations automatically.
+    func string(forKey defaultName: String) -> String?
+    func bool(forKey defaultName: String) -> Bool
+    func integer(forKey defaultName: String) -> Int
+    func data(forKey defaultName: String) -> Data?
+    func stringArray(forKey defaultName: String) -> [String]?
+}
+
+public extension SettingsStore {
+    func string(forKey defaultName: String) -> String? {
+        object(forKey: defaultName) as? String
+    }
+    func bool(forKey defaultName: String) -> Bool {
+        (object(forKey: defaultName) as? Bool)
+            ?? (object(forKey: defaultName) as? NSNumber)?.boolValue
+            ?? false
+    }
+    func integer(forKey defaultName: String) -> Int {
+        (object(forKey: defaultName) as? Int)
+            ?? (object(forKey: defaultName) as? NSNumber)?.intValue
+            ?? 0
+    }
+    func data(forKey defaultName: String) -> Data? {
+        object(forKey: defaultName) as? Data
+    }
+    func stringArray(forKey defaultName: String) -> [String]? {
+        object(forKey: defaultName) as? [String]
+    }
 }
 
 extension UserDefaults: SettingsStore {}

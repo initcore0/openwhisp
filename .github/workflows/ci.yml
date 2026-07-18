@@ -107,6 +107,19 @@ jobs:
       - name: Build OpenWhispBridgeKit for iOS
         run: xcodebuild -scheme OpenWhispBridgeKit -destination 'generic/platform=iOS' build
 
+  appstate-ratchet:
+    # AppState decomposition ratchet (MAK-32): fails if the tracked AppState
+    # source (AppState.swift + AppState+*.swift extensions) exceeds the checked-in
+    # high-water mark in scripts/appstate-loc-budget.txt. Keeps the god-object
+    # from silently regrowing while the strangler epic shrinks it. Pure text/LOC
+    # check — no toolchain, runs on Linux in seconds.
+    name: AppState LOC ratchet
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check AppState LOC ratchet
+        run: ./scripts/check-appstate-ratchet.sh
+
   third-party-pins:
     # Supply-chain hygiene gate (MAK-64): every third_party/ submodule must be
     # pinned to an upstream release tag (or be allowlisted with a reason), and
