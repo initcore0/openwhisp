@@ -1,22 +1,142 @@
 {
   "$schema": "./changelog.schema.md",
   "project": "OpenWhisp",
-  "generated": "2026-07-14",
+  "generated": "2026-07-18",
   "releases": [
     {
       "id": "2026-07",
       "title": "July 2026",
-      "date": "2026-07-14",
-      "summary": "The headline: Parakeet — our fast, on-device realtime streaming engine — is now the default on a fresh install. Alongside it, a big batch of new features, fixes, and under-the-hood hardening, all landed on main, all covered by tests, all on your machine. New this release also includes built-in auto-update and a 28-fix stability sweep. Among the features: meeting mode that records a call and gives you an on-device transcript plus a local Markdown summary — now with Me/Them speaker attribution and a live talking indicator, and with a separate, optionally larger summarization model you can point at your own server — a floating Scratchpad to dictate into with no target app, quiet-dictation mode for whispering into your mic, opt-in on-device audio retention with one-click re-transcription and an auto-cleanup policy, a fully-remappable dictation trigger with a record-a-shortcut field, an AppleScript keystroke insert method and mouse-button dictation triggers, a local Usage Insights dashboard, opt-in screen-context awareness that biases transcription toward the names already on screen, batch file transcription with watch folders, hands-free (tap-to-lock) dictation, adjustable AI cleanup, voice editing, a self-learning dictionary, rich local formatting, spoken-filename @-mentions for code editors, agent-CLI cleanup, output targets that route a dictation to a file/Shortcut/webhook, first-class Modes you can invoke by name, a Rules engine that runs your own actions when a dictation finishes, and an openwhisp:// URL scheme so Raycast, Alfred, or any launcher can drive dictation.",
+      "date": "2026-07-18",
+      "summary": "The headline: Parakeet — our fast, on-device realtime streaming engine — is now the default on a fresh install. Alongside it, a big batch of new features, fixes, and under-the-hood hardening, all landed on main, all covered by tests, all on your machine. New this release also includes built-in auto-update and a 28-fix stability sweep. The latest additions: per-app refine tone (casual in Slack, formal in Mail, verbatim in your terminal), a fifth transcription engine — Apple's SpeechAnalyzer on macOS 26 — and agent dictation that now knows your project's branch and file names and lets you tap to finish. Among the features: meeting mode that records a call and gives you an on-device transcript plus a local Markdown summary — now with Me/Them speaker attribution and a live talking indicator, and with a separate, optionally larger summarization model you can point at your own server — a floating Scratchpad to dictate into with no target app, quiet-dictation mode for whispering into your mic, opt-in on-device audio retention with one-click re-transcription and an auto-cleanup policy, a fully-remappable dictation trigger with a record-a-shortcut field, an AppleScript keystroke insert method and mouse-button dictation triggers, a local Usage Insights dashboard, opt-in screen-context awareness that biases transcription toward the names already on screen, batch file transcription with watch folders, hands-free (tap-to-lock) dictation, adjustable AI cleanup, voice editing, a self-learning dictionary, rich local formatting, spoken-filename @-mentions for code editors, agent-CLI cleanup, output targets that route a dictation to a file/Shortcut/webhook, first-class Modes you can invoke by name, a Rules engine that runs your own actions when a dictation finishes, and an openwhisp:// URL scheme so Raycast, Alfred, or any launcher can drive dictation.",
       "stats": {
-        "changesShipped": 46,
-        "newFeatures": 28,
-        "testsPassing": 1539,
+        "changesShipped": 53,
+        "newFeatures": 32,
+        "testsPassing": 1713,
         "onDevicePercent": 100,
-        "newFeaturesLive": 28,
+        "newFeaturesLive": 32,
         "newFeaturesCorePending": 0
       },
       "entries": [
+        {
+          "category": "feature",
+          "headline": "Per-app refine tone — casual in Slack, formal in Mail, verbatim in your terminal",
+          "body": "Set how the AI cleans up your words per app, so a message in Slack comes out casual, an email in Mail comes out formal, and dictation into a terminal or code editor is left verbatim — no AI rewrite at all. It's Wispr Flow's most-praised feature, done entirely on-device: pick a preset (verbatim, minimal, casual, formal, or a custom prompt) for any app in Settings. Code editors and terminals default to verbatim automatically so a spoken command is never reshaped.",
+          "tickets": [
+            "MAK-77"
+          ],
+          "prs": [
+            203
+          ],
+          "howTo": {
+            "availability": "live",
+            "summary": "Give each app its own refine tone in Settings › Profiles.",
+            "steps": [
+              "Open Settings › Profiles and turn on “Apply per-app profiles”.",
+              "Add an app (or pick an existing profile) and choose a Refine preset in its column: Verbatim, Minimal cleanup, Casual, Formal, or Custom.",
+              "For Custom, a prompt editor appears below the table — write a one-line tone instruction (it still runs behind the same safety guard, so it can't translate your words).",
+              "Terminals and code editors (Terminal, iTerm2, Warp, VS Code, Xcode, JetBrains, Cursor, Zed, and more) default to verbatim automatically — an explicit preset overrides that.",
+              "Precedence when more than one applies: an active Mode wins, then the per-app preset, then your global cleanup dial."
+            ]
+          }
+        },
+        {
+          "category": "feature",
+          "headline": "A fifth engine: Apple's SpeechAnalyzer (macOS 26) — fast, on-device file transcription",
+          "body": "On macOS 26, OpenWhisp can use Apple's new SpeechAnalyzer / SpeechTranscriber as an on-device transcription engine — fully local, auto-punctuating, and about 2× faster than Whisper on file transcription. It backs the file queue, meetings, watch folders, and history re-transcribe, with a live-dictation variant too. It sits alongside Parakeet (the default), WhisperKit, whisper.cpp, and Apple Speech; pick it in Settings › Models.",
+          "tickets": [
+            "MAK-59"
+          ],
+          "prs": [
+            188
+          ],
+          "howTo": {
+            "availability": "live",
+            "summary": "On macOS 26, choose Apple SpeechAnalyzer in Settings › Models.",
+            "steps": [
+              "Requires macOS 26 — the engine only appears there.",
+              "Open Settings › Models and select Apple SpeechAnalyzer.",
+              "It runs on-device and auto-punctuates. The file-transcription path (files, meetings, watch folders, history re-transcribe) is the primary, fastest win — roughly 2× Whisper's speed on files.",
+              "Custom-vocabulary biasing isn't wired for this engine yet; use Parakeet, WhisperKit, or whisper.cpp when you need it."
+            ]
+          }
+        },
+        {
+          "category": "feature",
+          "headline": "Agent dictation gets your project's vocabulary — branch, folder, and file names land right",
+          "body": "When a coding agent hands you the mic, OpenWhisp now feeds it your workspace context — the project folder name, the current git branch, and file/symbol names — so spoken dev terms come out spelled correctly (your branch feature/agent-eou, a file called getUserProfile). It's OpenWhisp's local answer to Claude Code's /voice project hints, and it works exactly where /voice can't: API-key, Bedrock, SSH, and privacy-locked setups. The context is derived on your Mac, used only for that session, never saved, and API-key-shaped tokens are filtered out so nothing secret leaks into a transcript.",
+          "tickets": [
+            "MAK-75"
+          ],
+          "prs": [
+            202
+          ],
+          "howTo": {
+            "availability": "live",
+            "summary": "Automatic for MCP agents — the cwd and git branch are derived on each dictate call.",
+            "steps": [
+              "No setup for MCP clients: openwhisp mcp runs in the client's working directory and self-derives the folder name + git branch on each openwhisp_dictate call.",
+              "A client can also pass explicit context (e.g. recent file names) — explicit values win and merge with the derived ones.",
+              "Opt out with the OPENWHISP_MCP_WORKSPACE_CONTEXT environment variable (0/false/off/no).",
+              "From the CLI, pass --cwd, --git-branch, or --terms \"a,b,c\".",
+              "Terms bias whichever engine honors it (whisper.cpp, WhisperKit, Apple Speech) and are session-scoped only — never written to your vocabulary file."
+            ]
+          }
+        },
+        {
+          "category": "feature",
+          "headline": "Tap to finish an agent dictation — a deliberate “done”, like Claude Code /voice",
+          "body": "When an agent asks you a question by voice, you can now end the answer yourself with a tap of your dictation key — a deliberate finish, instead of waiting out the silence/end-of-utterance detector or a timeout. A new autoSubmit option on the openwhisp_dictate tool matches Claude Code /voice's behavior (hold or tap, submit automatically or wait for confirm). Your own hotkey dictations are unaffected.",
+          "tickets": [
+            "MAK-76"
+          ],
+          "prs": [
+            200
+          ],
+          "howTo": {
+            "availability": "live",
+            "summary": "During an agent dictation, tap your dictation key to finish and return the transcript now.",
+            "steps": [
+              "When a coding agent opens a dictation, speak your answer.",
+              "Tap your dictation hotkey to end the session immediately and return the transcript — overriding any pending silence/EOU settle wait.",
+              "A tap during the confirm window re-opens the session so you can append more.",
+              "Agents can set autoSubmit on the openwhisp_dictate tool to choose submit-immediately vs. wait-for-confirm."
+            ]
+          }
+        },
+        {
+          "category": "fix",
+          "headline": "Custom vocabulary now works on Parakeet (files, meetings, and re-transcribes)",
+          "body": "Custom vocabulary was silently doing nothing on Parakeet — the default engine. It now biases Parakeet's transcription of files, meetings, and history re-transcribes toward your terms (via FluidAudio's built-in keyword spotting). It's batch-only on this engine, so it doesn't apply to live dictation — the Settings footnote says so plainly — and it always fails open: if biasing can't run, you still get your transcript.",
+          "tickets": [
+            "MAK-71",
+            "MAK-70"
+          ],
+          "prs": [
+            178
+          ]
+        },
+        {
+          "category": "improvement",
+          "headline": "A calmer Settings — a short everyday list, power-user panes tucked away",
+          "body": "The Settings sidebar had grown to a wall of 15 rows. It's now a short Setup section with the panes you actually touch, plus a collapsible “More features” group for the rest (it auto-opens if you deep-link into one). A few power-user controls moved out of the first-run flow too — so a fresh install can be productive without changing a single setting. Nothing was removed or renamed; your existing settings are untouched.",
+          "tickets": [
+            "MAK-62"
+          ],
+          "prs": [
+            194
+          ]
+        },
+        {
+          "category": "improvement",
+          "headline": "Five-minute “voice for your agent” setup guides",
+          "body": "New setup guides walk you through giving your coding agent a voice in about five minutes — one page each for Claude Code, Cursor, and any generic MCP client, plus an honest comparison of OpenWhisp against Claude Code /voice, VoiceMode, and Spokenly. The Claude Code guide has dedicated sections for API-key / Amazon Bedrock users, SSH / remote sessions, and HIPAA / privacy-locked orgs — exactly the setups where a cloud voice feature can't go.",
+          "tickets": [
+            "MAK-60"
+          ],
+          "prs": [
+            187
+          ]
+        },
         {
           "category": "improvement",
           "headline": "Parakeet is now the default, recommended transcription engine",
