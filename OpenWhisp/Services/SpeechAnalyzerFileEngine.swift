@@ -82,7 +82,12 @@ final class SpeechAnalyzerFileEngine: FileTranscriptionEngine {
                 do {
                     let text = try await SpeechAnalyzerBridge.transcribeFile(
                         wavURL: URL(fileURLWithPath: wavPath),
-                        languageSetting: language
+                        languageSetting: language,
+                        // MAK-84: custom-vocabulary + screen-context bias terms,
+                        // whisper-shaped (comma-joined) — the bridge splits them
+                        // into SpeechAnalyzer's contextual strings. Honored because
+                        // EngineCapabilities declares speechAnalyzer vocabulary .all.
+                        prompt: prompt
                     )
                     if deleteWhenDone { try? FileManager.default.removeItem(atPath: wavPath) }
                     await MainActor.run { self.onTranscriptionComplete?(requestID, text) }

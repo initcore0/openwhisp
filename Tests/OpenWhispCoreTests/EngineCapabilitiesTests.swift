@@ -31,7 +31,7 @@ final class EngineCapabilitiesTests: XCTestCase {
             EngineCapabilities.whisperKit:     (true,  .all,       true,  true),
             EngineCapabilities.parakeet:       (false, .batchOnly, true,  true),
             EngineCapabilities.appleSpeech:    (false, .all,       true,  false),
-            EngineCapabilities.speechAnalyzer: (false, .none,      true,  false),
+            EngineCapabilities.speechAnalyzer: (false, .all,       true,  false),
         ]
 
         for engine in allEngines {
@@ -95,16 +95,16 @@ final class EngineCapabilitiesTests: XCTestCase {
             EngineCapabilities.vocabularySupport(transcriptionEngine: EngineCapabilities.parakeet),
             .batchOnly)
 
-        // MAK-69 wired the previously-unwired seams: WhisperKit's promptTokens
-        // (tokenizer) and Apple Speech's contextualStrings both now bias, so both
-        // are .all. SpeechAnalyzer's contextualStrings stays unwired → .none.
+        // MAK-69 wired WhisperKit's promptTokens (tokenizer) and Apple Speech's
+        // contextualStrings; MAK-84 wired SpeechAnalyzer's AnalysisContext
+        // contextualStrings on both paths — so all three are .all.
         XCTAssertEqual(
             EngineCapabilities.vocabularySupport(transcriptionEngine: EngineCapabilities.whisperKit), .all)
         XCTAssertEqual(
             EngineCapabilities.vocabularySupport(transcriptionEngine: EngineCapabilities.appleSpeech), .all)
         XCTAssertEqual(
-            EngineCapabilities.vocabularySupport(transcriptionEngine: EngineCapabilities.speechAnalyzer), .none,
-            "SpeechAnalyzer discards the prompt (unwired) — the bias-terms UI must not be offered for it")
+            EngineCapabilities.vocabularySupport(transcriptionEngine: EngineCapabilities.speechAnalyzer), .all,
+            "SpeechAnalyzer biases via AnalysisContext.contextualStrings on both paths (MAK-84) — the bias-terms UI is offered for it")
     }
 
     /// The bias-terms field is offered iff terms reach the engine *somewhere*.
@@ -120,7 +120,8 @@ final class EngineCapabilitiesTests: XCTestCase {
             transcriptionEngine: EngineCapabilities.whisperKit))
         XCTAssertTrue(EngineCapabilities.supportsVocabularyBiasing(
             transcriptionEngine: EngineCapabilities.appleSpeech))
-        XCTAssertFalse(EngineCapabilities.supportsVocabularyBiasing(
+        // MAK-84 wired it.
+        XCTAssertTrue(EngineCapabilities.supportsVocabularyBiasing(
             transcriptionEngine: EngineCapabilities.speechAnalyzer))
     }
 

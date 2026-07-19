@@ -45,6 +45,7 @@ let package = Package(
                 "AgentEouAutoStop.swift",
                 "StreamingRoutePolicy.swift",
                 "SpeechAnalyzerAvailability.swift",
+                "SpeechAnalyzerContextualStrings.swift",
                 "SettingsResetDefaults.swift",
                 "ProfileResolver.swift",
                 "Mode.swift",
