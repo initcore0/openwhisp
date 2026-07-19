@@ -6528,7 +6528,7 @@ extension AppState: AgentBridgeHost {
     /// unimplemented tools.
     func bridgeCapabilities() -> [String] {
         [BridgeWire.Capability.dictate, BridgeWire.Capability.refine,
-         BridgeWire.Capability.history, BridgeWire.Capability.sync]
+         BridgeWire.Capability.history, BridgeWire.Capability.sync, BridgeWire.Capability.transcribeFile]
     }
 
     // MARK: Refine (M8)

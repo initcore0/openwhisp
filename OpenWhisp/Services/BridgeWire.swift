@@ -26,14 +26,19 @@ public enum BridgeWire {
     /// peer simply never sees them (the `transcribeFile` precedent, and the
     /// `sync` verbs added in MAK-51 WP0b). We track those additive milestones as a
     /// human-readable label (``wireVersionLabel``) rather than a wire field.
+    ///
+    /// v1.3 (MAK-83): `transcribe.file` is now a LIVE additive verb — an agent
+    /// hands OpenWhisp a local audio file and gets the transcript back, all
+    /// on-device. Still additive (gated by the `transcribeFile` capability), so a
+    /// client that never learns it exists is untouched.
     public static let protocolVersion = 1
 
     /// Human-readable additive-milestone label for logs / docs / the settings
     /// pane. NOT sent on the wire and NEVER used for authorization or negotiation
     /// (that is ``protocolVersion`` + ``Capability``). Bumped on each additive
     /// milestone: v1.0 base verbs, v1.1 reserved `transcribe.file`, v1.2 the
-    /// `sync.*` verbs (MAK-51 WP0b).
-    public static let wireVersionLabel = "1.2"
+    /// `sync.*` verbs (MAK-51 WP0b), v1.3 `transcribe.file` LIVE (MAK-83).
+    public static let wireVersionLabel = "1.3"
 
     /// The one JSON-RPC frame cap the transport enforces (1 MiB). A line longer
     /// than this closes the connection — a broken/hostile client can't force the
@@ -72,8 +77,9 @@ public enum BridgeWire {
         case dictateCancel = "dictate.cancel"
         case refine = "refine"
         case historyList = "history.list"
-        /// Deferred to v1.1; reserved so the name is designed once and gated by
-        /// the capabilities handshake.
+        /// (MAK-83, wire v1.3) Transcribe a local audio file the agent points at,
+        /// on-device. Gated by the `transcribeFile` capability + the same-named
+        /// consent scope. The name was reserved from v1.0 and is now wired.
         case transcribeFile = "transcribe.file"
         /// P2P sync (MAK-51 WP0b, wire v1.2). Gated by the `sync` capability so a
         /// v1 client that never learns the verb exists is untouched.
@@ -102,15 +108,16 @@ public enum BridgeWire {
         ///   stuck unable to stop its own session.
         ///
         /// Kept exhaustive (no `default`) so adding a Method forces a scope
-        /// decision here; `transcribe.file` is reserved/unimplemented and maps to
-        /// nil until v1.1 wires it (the router rejects it as unavailable today).
+        /// decision here; `transcribe.file` reads a local audio file the agent
+        /// hands over and so is guarded by its OWN `transcribeFile` scope (MAK-83).
         public var requiredScope: AgentScope? {
             switch self {
-            case .hello, .status, .dictateStop, .dictateCancel, .transcribeFile:
+            case .hello, .status, .dictateStop, .dictateCancel:
                 return nil
-            case .dictate:      return .dictate
-            case .historyList:  return .history
-            case .refine:       return .refine
+            case .dictate:        return .dictate
+            case .historyList:    return .history
+            case .refine:         return .refine
+            case .transcribeFile: return .transcribeFile
             case .syncManifest, .syncPull, .syncPush:
                 return .sync
             }
@@ -625,6 +632,36 @@ extension BridgeWire {
     public struct RefineResult: Codable, Sendable, Equatable {
         public var text: String
         public init(text: String) { self.text = text }
+    }
+
+    // MARK: - transcribe.file (MAK-83, wire v1.3)
+
+    /// Params for `transcribe.file`: a local audio/video file the agent points at,
+    /// transcribed on-device. `path` is validated server-side (absolute, exists,
+    /// readable, a supported audio extension, under the size cap, canonicalized to
+    /// defeat traversal). OpenWhisp only reads the file it's pointed at — this is
+    /// not an expansion of the agent's own filesystem reach.
+    public struct TranscribeFileParams: Codable, Sendable, Equatable {
+        public var path: String
+        /// Optional BCP-47 language hint passed to the engine.
+        public var language: String?
+
+        public init(path: String, language: String? = nil) {
+            self.path = path
+            self.language = language
+        }
+    }
+
+    public struct TranscribeFileResult: Codable, Sendable, Equatable {
+        public var text: String
+        /// Decoded media duration in seconds, when the decoder determined it.
+        /// Additive/optional so an older peer that never sets it decodes cleanly.
+        public var durationSeconds: Double?
+
+        public init(text: String, durationSeconds: Double? = nil) {
+            self.text = text
+            self.durationSeconds = durationSeconds
+        }
     }
 
     // MARK: - history.list

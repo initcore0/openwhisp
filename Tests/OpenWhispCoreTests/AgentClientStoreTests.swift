@@ -144,6 +144,8 @@ final class AgentClientStoreTests: XCTestCase {
             }
             XCTAssertNil(r.policy(for: .sync),
                 "a legacy record must have NO sync decision — first sync prompts")
+            XCTAssertNil(r.policy(for: .transcribeFile),
+                "a legacy record must have NO transcribeFile decision (MAK-83) — first use prompts")
             XCTAssertEqual(r.signingID, "TEAMID")
         }
     }

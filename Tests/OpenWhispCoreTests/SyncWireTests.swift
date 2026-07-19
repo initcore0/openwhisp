@@ -25,9 +25,10 @@ final class SyncWireTests: XCTestCase {
     }
 
     func testWireVersionLabelIsAdditiveOnly() {
-        // The additive milestone bumped to 1.2 for sync, but the on-the-wire major
-        // stays 1 so no existing client is treated as "from the future".
-        XCTAssertEqual(BridgeWire.wireVersionLabel, "1.2")
+        // The additive milestone bumped to 1.3 for transcribe.file (MAK-83), but
+        // the on-the-wire major stays 1 so no existing client is treated as "from
+        // the future".
+        XCTAssertEqual(BridgeWire.wireVersionLabel, "1.3")
         XCTAssertEqual(BridgeWire.protocolVersion, 1)
     }
 
