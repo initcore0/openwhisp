@@ -459,7 +459,7 @@ private final class LANConnection {
             return true
 
         case .syncManifest(let id):
-            guard consentGranted(.sync, id: id) else { return true }
+            guard consentGranted(BridgeWire.Method.syncManifest.requiredScope!, id: id) else { return true }
             let result = onMain { self.host?.bridgeSyncManifest() }
             if let result {
                 onMain { self.host?.bridgeDidCall(clientName: self.clientName, tool: AgentScope.sync.rawValue) }
@@ -468,7 +468,7 @@ private final class LANConnection {
             return true
 
         case .syncPull(let id, let params):
-            guard consentGranted(.sync, id: id) else { return true }
+            guard consentGranted(BridgeWire.Method.syncPull.requiredScope!, id: id) else { return true }
             let result = onMain { self.host?.bridgeSyncPull(params: params) }
             if let result {
                 onMain { self.host?.bridgeDidCall(clientName: self.clientName, tool: AgentScope.sync.rawValue) }
@@ -477,7 +477,7 @@ private final class LANConnection {
             return true
 
         case .syncPush(let id, let params):
-            guard consentGranted(.sync, id: id) else { return true }
+            guard consentGranted(BridgeWire.Method.syncPush.requiredScope!, id: id) else { return true }
             let result = onMain { self.host?.bridgeSyncPush(params: params) }
             if let result {
                 onMain { self.host?.bridgeDidCall(clientName: self.clientName, tool: AgentScope.sync.rawValue) }

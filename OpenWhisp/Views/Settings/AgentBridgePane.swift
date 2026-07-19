@@ -170,21 +170,27 @@ struct AgentBridgePane: View {
     /// A compact per-scope status chip. A nil policy means the scope hasn't been
     /// decided yet (the agent will be prompted on first use).
     private func scopeChip(_ label: String, _ policy: AgentConsentPolicy?) -> some View {
-        let (text, color): (String, Color) = {
+        // SF Symbol per status (never glyph/emoji in the label — see the menu-bar
+        // icon convention): a filled check for a standing grant, a slash for a
+        // standing deny, a question mark for "asks", a dash for undecided.
+        let (symbol, text, color): (String, String, Color) = {
             switch policy {
-            case .always:       return ("✓ always", .green)
-            case .whileRunning: return ("✓ this run", .green)
-            case .askEveryTime: return ("asks", .secondary)
-            case .denied:       return ("✗ denied", .red)
-            case nil:           return ("—", .secondary)
+            case .always:       return ("checkmark.circle.fill", "always", .green)
+            case .whileRunning: return ("checkmark.circle", "this run", .green)
+            case .askEveryTime: return ("questionmark.circle", "asks", .secondary)
+            case .denied:       return ("slash.circle.fill", "denied", .red)
+            case nil:           return ("minus.circle", "—", .secondary)
             }
         }()
-        return Text("\(label): \(text)")
-            .font(.caption2)
-            .padding(.horizontal, 6).padding(.vertical, 2)
-            .background(color.opacity(0.12))
-            .foregroundColor(color)
-            .clipShape(Capsule())
+        return HStack(spacing: 3) {
+            Image(systemName: symbol)
+            Text("\(label): \(text)")
+        }
+        .font(.caption2)
+        .padding(.horizontal, 6).padding(.vertical, 2)
+        .background(color.opacity(0.12))
+        .foregroundColor(color)
+        .clipShape(Capsule())
     }
 
     // MARK: Helpers

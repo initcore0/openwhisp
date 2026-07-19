@@ -277,7 +277,7 @@ final class AgentBridgeServer {
 
         case .historyList(let id, let params):
             let clientName = state.clientName // copy out of `inout` for the closures below
-            guard consentGranted(clientName, scope: .history, fd: fd, id: id) else { return true }
+            guard consentGranted(clientName, scope: BridgeWire.Method.historyList.requiredScope!, fd: fd, id: id) else { return true }
             let limit = BridgeRouter.resolvedHistoryLimit(params.limit)
             let entries = onMain { self.host?.bridgeHistory(limit: limit) ?? [] }
             onMain { self.host?.bridgeDidCall(clientName: clientName, tool: AgentScope.history.rawValue) }
@@ -286,7 +286,7 @@ final class AgentBridgeServer {
 
         case .dictate(let id, let params):
             let clientName = state.clientName
-            guard consentGranted(clientName, scope: .dictate, fd: fd, id: id) else { return true }
+            guard consentGranted(clientName, scope: BridgeWire.Method.dictate.requiredScope!, fd: fd, id: id) else { return true }
             let timeout = BridgeRouter.resolvedTimeoutSeconds(params.timeoutSeconds)
             let autoSubmit = params.autoSubmit ?? BridgeWire.DictateParams.defaultAutoSubmit
             switch blockingDictate(clientName: clientName, prompt: params.prompt, timeout: timeout, language: params.language, context: params.context, autoSubmit: autoSubmit) {
@@ -310,7 +310,7 @@ final class AgentBridgeServer {
 
         case .refine(let id, let params):
             let clientName = state.clientName
-            guard consentGranted(clientName, scope: .refine, fd: fd, id: id) else { return true }
+            guard consentGranted(clientName, scope: BridgeWire.Method.refine.requiredScope!, fd: fd, id: id) else { return true }
             switch blockingRefine(clientName: clientName, text: params.text, instruction: params.instruction) {
             case .success(let text):
                 onMain { self.host?.bridgeDidCall(clientName: clientName, tool: AgentScope.refine.rawValue) }
@@ -322,7 +322,7 @@ final class AgentBridgeServer {
 
         case .syncManifest(let id):
             let clientName = state.clientName
-            guard consentGranted(clientName, scope: .sync, fd: fd, id: id) else { return true }
+            guard consentGranted(clientName, scope: BridgeWire.Method.syncManifest.requiredScope!, fd: fd, id: id) else { return true }
             let result = onMain { self.host?.bridgeSyncManifest() }
             if let result {
                 onMain { self.host?.bridgeDidCall(clientName: clientName, tool: AgentScope.sync.rawValue) }
@@ -334,7 +334,7 @@ final class AgentBridgeServer {
 
         case .syncPull(let id, let params):
             let clientName = state.clientName
-            guard consentGranted(clientName, scope: .sync, fd: fd, id: id) else { return true }
+            guard consentGranted(clientName, scope: BridgeWire.Method.syncPull.requiredScope!, fd: fd, id: id) else { return true }
             let result = onMain { self.host?.bridgeSyncPull(params: params) }
             if let result {
                 onMain { self.host?.bridgeDidCall(clientName: clientName, tool: AgentScope.sync.rawValue) }
@@ -346,7 +346,7 @@ final class AgentBridgeServer {
 
         case .syncPush(let id, let params):
             let clientName = state.clientName
-            guard consentGranted(clientName, scope: .sync, fd: fd, id: id) else { return true }
+            guard consentGranted(clientName, scope: BridgeWire.Method.syncPush.requiredScope!, fd: fd, id: id) else { return true }
             let result = onMain { self.host?.bridgeSyncPush(params: params) }
             if let result {
                 onMain { self.host?.bridgeDidCall(clientName: clientName, tool: AgentScope.sync.rawValue) }
