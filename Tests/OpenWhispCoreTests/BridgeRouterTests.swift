@@ -109,10 +109,22 @@ final class BridgeRouterTests: XCTestCase {
         }
     }
 
-    func testTranscribeFileRejectedInV1() {
-        let routed = BridgeRouter.route(line: line(#"{"id":1,"method":"transcribe.file","params":{"path":"/x.wav"}}"#), hasHandshaken: true)
+    func testTranscribeFileRoutesWithPath() {
+        let routed = BridgeRouter.route(
+            line: line(#"{"id":1,"method":"transcribe.file","params":{"path":"/x.wav","language":"en"}}"#),
+            hasHandshaken: true)
+        guard case let .intent(.transcribeFile(_, params)) = routed else {
+            return XCTFail("expected transcribeFile intent, got \(routed)")
+        }
+        XCTAssertEqual(params.path, "/x.wav")
+        XCTAssertEqual(params.language, "en")
+    }
+
+    func testTranscribeFileRequiresPath() {
+        let routed = BridgeRouter.route(
+            line: line(#"{"id":1,"method":"transcribe.file","params":{}}"#), hasHandshaken: true)
         guard case let .error(_, err) = routed else { return XCTFail("expected error, got \(routed)") }
-        XCTAssertEqual(err.data?.reason, .unknownMethod)
+        XCTAssertEqual(err.code, BridgeWire.ErrorObject.invalidParams)
     }
 
     // MARK: Sync verbs (MAK-51 WP0b, wire v1.2)

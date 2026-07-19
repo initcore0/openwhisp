@@ -202,6 +202,30 @@ public final class MCPServer {
                                         resultType: BridgeWire.RefineResult.self)
                 return .text(r.text)
 
+            case "openwhisp_transcribe_file":
+                guard let path = arguments["path"]?.stringValue, !path.isEmpty else {
+                    return .text("transcribe_file requires 'path' (an absolute path to an audio file)", isError: true)
+                }
+                // A long file can take a while to decode + transcribe; emit
+                // keep-alive progress against the client's token (like dictate) so
+                // the tool call doesn't trip an agent's ~60s timeout. No token → no
+                // emitter. `total` is unknown up front, so send an indeterminate
+                // stream.
+                var progress: ProgressEmitter?
+                if let progressToken {
+                    progress = ProgressEmitter(
+                        token: progressToken, interval: progressIntervalSeconds,
+                        total: nil, server: self)
+                    progress?.start()
+                }
+                defer { progress?.stop() }
+                let r = try bridge.call(
+                    method: BridgeWire.Method.transcribeFile.rawValue,
+                    params: BridgeWire.TranscribeFileParams(
+                        path: path, language: arguments["language"]?.stringValue),
+                    resultType: BridgeWire.TranscribeFileResult.self)
+                return .text(r.text.isEmpty ? "(no speech found in the file)" : r.text)
+
             case "openwhisp_history":
                 let r = try bridge.call(method: BridgeWire.Method.historyList.rawValue,
                                         params: BridgeWire.HistoryListParams(limit: arguments["limit"]?.intValue),
@@ -272,7 +296,8 @@ public final class MCPServer {
     OpenWhisp exposes on-device voice tools. Use openwhisp_dictate to ask the user \
     a question by voice instead of ending your turn with a plain-text question; \
     use openwhisp_refine to rewrite text with the user's local AI; use \
-    openwhisp_history to recall what the user recently dictated. Everything runs on \
+    openwhisp_history to recall what the user recently dictated; use openwhisp_transcribe_file to \
+    transcribe a local audio/video file on-device. Everything runs on \
     the user's Mac — no audio or text leaves the device (unless the user has \
     explicitly enabled a cloud AI provider).
     """
@@ -367,6 +392,26 @@ public final class MCPServer {
                     "limit": .object(["type": .string("integer"),
                                       "description": .string("Max entries (default 20, max 200).")]),
                 ]),
+            ]),
+        ]),
+        .object([
+            "name": .string("openwhisp_transcribe_file"),
+            "description": .string("""
+            Call this to transcribe a local audio or video file — the user hands you (or you already \
+            have) a path to a recording and you need the words. Give the absolute path; OpenWhisp \
+            decodes it (wav, mp3, m4a, mp4, and more) and transcribes it on the user's Mac with their \
+            configured engine. Everything stays on-device. OpenWhisp only reads the file you name — \
+            this does not give you any new file access.
+            """),
+            "inputSchema": .object([
+                "type": .string("object"),
+                "properties": .object([
+                    "path": .object(["type": .string("string"),
+                                     "description": .string("Absolute path to the audio/video file to transcribe.")]),
+                    "language": .object(["type": .string("string"),
+                                         "description": .string("Optional BCP-47 language hint (e.g. \"en\", \"es\").")]),
+                ]),
+                "required": .array([.string("path")]),
             ]),
         ]),
     ])

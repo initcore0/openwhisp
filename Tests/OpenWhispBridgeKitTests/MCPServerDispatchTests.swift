@@ -39,15 +39,32 @@ final class MCPServerDispatchTests: XCTestCase {
         XCTAssertEqual(value, .object([:]))
     }
 
-    func testToolsListReturnsThreeTools() throws {
+    func testToolsListReturnsAllTools() throws {
         let m = try message(#"{"id":1,"method":"tools/list"}"#)
         guard case .result(_, let value) = MCPServer().controlResponse(for: m),
               case .array(let tools)? = value["tools"] else {
             return XCTFail("expected tools array")
         }
-        XCTAssertEqual(tools.count, 3)
+        XCTAssertEqual(tools.count, 4)
         let names = tools.compactMap { $0["name"]?.stringValue }
-        XCTAssertEqual(Set(names), ["openwhisp_dictate", "openwhisp_refine", "openwhisp_history"])
+        XCTAssertEqual(Set(names),
+                       ["openwhisp_dictate", "openwhisp_refine", "openwhisp_history", "openwhisp_transcribe_file"])
+    }
+
+    func testTranscribeFileToolSchema() throws {
+        let m = try message(#"{"id":1,"method":"tools/list"}"#)
+        guard case .result(_, let value) = MCPServer().controlResponse(for: m),
+              case .array(let tools)? = value["tools"] else {
+            return XCTFail("expected tools array")
+        }
+        let tool = tools.first { $0["name"]?.stringValue == "openwhisp_transcribe_file" }
+        let props = tool?["inputSchema"]?["properties"]
+        XCTAssertEqual(props?["path"]?["type"]?.stringValue, "string")
+        XCTAssertEqual(props?["language"]?["type"]?.stringValue, "string")
+        guard case .array(let required)? = tool?["inputSchema"]?["required"] else {
+            return XCTFail("expected required array")
+        }
+        XCTAssertEqual(required.compactMap { $0.stringValue }, ["path"])
     }
 
     func testDictateToolAdvertisesAutoSubmit() throws {

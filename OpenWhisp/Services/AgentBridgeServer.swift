@@ -320,6 +320,18 @@ final class AgentBridgeServer {
             }
             return true
 
+        case .transcribeFile(let id, let params):
+            let clientName = state.clientName
+            guard consentGranted(clientName, scope: BridgeWire.Method.transcribeFile.requiredScope!, fd: fd, id: id) else { return true }
+            switch blockingTranscribeFile(clientName: clientName, path: params.path, language: params.language) {
+            case .success(let result):
+                onMain { self.host?.bridgeDidCall(clientName: clientName, tool: AgentScope.transcribeFile.rawValue) }
+                send(fd, id: id, result: result)
+            case .failure(let err):
+                sendError(fd, id: id, error: err)
+            }
+            return true
+
         case .syncManifest(let id):
             let clientName = state.clientName
             guard consentGranted(clientName, scope: BridgeWire.Method.syncManifest.requiredScope!, fd: fd, id: id) else { return true }
@@ -384,6 +396,18 @@ final class AgentBridgeServer {
     ) -> Result<String, BridgeWire.ErrorObject> {
         blockOnHost(noHost: .failure(.domain(.internalError, message: "no host"))) { host, done in
             host.bridgeRefine(clientName: clientName, text: text, instruction: instruction, completion: done)
+        }
+    }
+
+    /// Block this connection thread until a file transcription completes. The host
+    /// validates the path, decodes on-device, and returns the transcript or a
+    /// mapped error. A long file can hold the thread for a while — that's fine, the
+    /// connection is per-call.
+    private func blockingTranscribeFile(
+        clientName: String, path: String, language: String?
+    ) -> Result<BridgeWire.TranscribeFileResult, BridgeWire.ErrorObject> {
+        blockOnHost(noHost: .failure(.domain(.internalError, message: "no host"))) { host, done in
+            host.bridgeTranscribeFile(clientName: clientName, path: path, language: language, completion: done)
         }
     }
 

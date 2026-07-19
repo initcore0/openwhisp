@@ -20,6 +20,7 @@ final class AgentConsentEnforcementTests: XCTestCase {
         XCTAssertEqual(BridgeWire.Method.dictate.requiredScope, .dictate)
         XCTAssertEqual(BridgeWire.Method.historyList.requiredScope, .history)
         XCTAssertEqual(BridgeWire.Method.refine.requiredScope, .refine)
+        XCTAssertEqual(BridgeWire.Method.transcribeFile.requiredScope, .transcribeFile)
         XCTAssertEqual(BridgeWire.Method.syncManifest.requiredScope, .sync)
         XCTAssertEqual(BridgeWire.Method.syncPull.requiredScope, .sync)
         XCTAssertEqual(BridgeWire.Method.syncPush.requiredScope, .sync)
@@ -29,7 +30,7 @@ final class AgentConsentEnforcementTests: XCTestCase {
         // hello only advertises posture; status is read-only health; stop/cancel
         // merely END a session the same client already started under a dictate
         // grant — gating them would strand a caller unable to stop its own mic.
-        for method in [BridgeWire.Method.hello, .status, .dictateStop, .dictateCancel, .transcribeFile] {
+        for method in [BridgeWire.Method.hello, .status, .dictateStop, .dictateCancel] {
             XCTAssertNil(method.requiredScope, "\(method.rawValue) must be unguarded")
         }
     }
@@ -39,7 +40,8 @@ final class AgentConsentEnforcementTests: XCTestCase {
         // has no `default`). This asserts the set stays fully classified.
         let guarded = BridgeWire.Method.allCases.filter { $0.requiredScope != nil }
         XCTAssertEqual(Set(guarded.map(\.rawValue)),
-                       ["dictate", "history.list", "refine", "sync.manifest", "sync.pull", "sync.push"])
+                       ["dictate", "history.list", "refine", "transcribe.file",
+                        "sync.manifest", "sync.pull", "sync.push"])
     }
 
     // MARK: (b) A verb is refused unless ITS scope is granted (the refusal path)
@@ -78,7 +80,7 @@ final class AgentConsentEnforcementTests: XCTestCase {
     func testGrantDoesNotLeakAcrossScopes() {
         // Grant each scope in isolation; assert ONLY that verb's scope allows and
         // every other guarded verb still prompts.
-        let guardedScopes: [AgentScope] = [.dictate, .history, .refine, .sync]
+        let guardedScopes: [AgentScope] = [.dictate, .history, .refine, .transcribeFile, .sync]
         for granted in guardedScopes {
             let record = AgentClientRecord(
                 clientName: "c", scopePolicies: [granted: .always], firstSeen: now)

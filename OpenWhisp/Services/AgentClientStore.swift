@@ -26,6 +26,13 @@ public enum AgentScope: String, Codable, Equatable, Sendable, CaseIterable {
     /// your mic (`dictate`) or your LLM (`refine`). An old consent file that
     /// predates this scope simply has no decision recorded → first sync prompts.
     case sync
+    /// Transcribe a local audio file the agent hands over (MAK-83): the agent
+    /// gives OpenWhisp a path and gets the transcript, all on-device. A per-scope
+    /// grant so approving file transcription never implies driving the mic
+    /// (`dictate`), reading `history`, or running the LLM (`refine`). Not in
+    /// ``legacyV1Scopes``, so a migrated always-allow client has NO decision here
+    /// and prompts on first use.
+    case transcribeFile
 
     /// The scopes that existed when consent was a single `policy` value (v1).
     /// FROZEN: the legacy-record migration maps the old blanket policy onto
@@ -41,6 +48,7 @@ public enum AgentScope: String, Codable, Equatable, Sendable, CaseIterable {
         case .history: return "read your dictation history"
         case .refine:  return "rewrite text with your on-device AI"
         case .sync:    return "sync your vocabulary, modes, and history"
+        case .transcribeFile: return "transcribe an audio file on your Mac"
         }
     }
 
@@ -51,6 +59,7 @@ public enum AgentScope: String, Codable, Equatable, Sendable, CaseIterable {
         case .history: return "History"
         case .refine:  return "Refine"
         case .sync:    return "Sync"
+        case .transcribeFile: return "Transcribe"
         }
     }
 
@@ -61,6 +70,7 @@ public enum AgentScope: String, Codable, Equatable, Sendable, CaseIterable {
         case .history: return "clock.arrow.circlepath"
         case .refine:  return "wand.and.stars"
         case .sync:    return "arrow.triangle.2.circlepath"
+        case .transcribeFile: return "waveform.badge.magnifyingglass"
         }
     }
 
@@ -73,6 +83,7 @@ public enum AgentScope: String, Codable, Equatable, Sendable, CaseIterable {
         case .history: return "It can read the text of your recent dictations and which apps they went to."
         case .refine:  return "It can send text to your configured AI model to rewrite it."
         case .sync:    return "It can read and merge your vocabulary, profiles, modes, packs, and dictation history with this paired device over your local network."
+        case .transcribeFile: return "It can point OpenWhisp at an audio file on your Mac and get the transcript back. OpenWhisp only reads the file the agent names — this does not give the agent any new access to your files (it can already read what it points at)."
         }
     }
 }

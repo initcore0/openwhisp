@@ -15,13 +15,14 @@ Enable it in **Settings → Agent Bridge**.
 
 ## What agents get
 
-Three tools, exposed over the [Model Context Protocol](https://modelcontextprotocol.io):
+Four tools, exposed over the [Model Context Protocol](https://modelcontextprotocol.io):
 
 | Tool | What it does |
 |---|---|
 | `openwhisp_dictate` | Shows a prompt and opens the voice overlay; the user speaks, the transcript returns to the agent. Use it to ask the user a question by voice instead of ending your turn with typed text. |
 | `openwhisp_refine` | Rewrites text per a natural-language instruction using your configured on-device LLM (same model/prompt as the refine hotkey). |
 | `openwhisp_history` | Returns recent dictations (text, timestamp, target app), newest first. |
+| `openwhisp_transcribe_file` | Transcribes a local audio/video file you point at (`path`, optional `language`) with the user's configured file engine — wav, mp3, m4a, mp4, and more, decoded and transcribed entirely on-device. OpenWhisp only reads the file you name; this is not new filesystem access. |
 
 ### P2P sync verbs (wire v1.2, capability `sync`)
 
@@ -230,10 +231,13 @@ secure field · `64` usage · `65` version mismatch.
   adapter may connect (verified by the peer's audit token — no PID-reuse race).
   Enable *Allow unsigned / third-party clients* to write your own.
 - **Consent, per capability.** Consent is granted **separately for each
-  capability** — dictate, history, and refine. Approving an agent to ask you a
-  question does **not** let it read your dictation history or run your AI; the
-  first call in each capability prompts on its own (always / while running / once
-  / deny). The settings pane shows each agent's per-capability status; Revoke
+  capability** — dictate, history, refine, and transcribe-file. Approving an
+  agent to ask you a question does **not** let it read your dictation history,
+  run your AI, or transcribe a file; the first call in each capability prompts on
+  its own (always / while running / once / deny). The transcribe-file prompt
+  makes clear OpenWhisp only reads the file the agent names — it is **not** an
+  expansion of the agent's own filesystem access (it can already read what it
+  points at). The settings pane shows each agent's per-capability status; Revoke
   clears them all. One caveat: `dictate.stop` / `dictate.cancel` are session
   controls, not capabilities — any admitted (signed, same-user) client can end
   the current agent dictation, because `openwhisp dictate --stop` from your own

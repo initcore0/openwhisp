@@ -56,6 +56,15 @@ protocol AgentBridgeHost: AnyObject {
         clientName: String, text: String, instruction: String,
         completion: @escaping (Result<String, BridgeWire.ErrorObject>) -> Void
     )
+    /// Transcribe a local audio file the agent handed over (MAK-83). `path` is the
+    /// raw client-supplied path — the host validates it (via
+    /// `TranscribeFileRequest`), decodes it on-device with the user's configured
+    /// file engine, and delivers the transcript (or a mapped error). `completion`
+    /// fires on the main thread; the server blocks its connection thread until then.
+    func bridgeTranscribeFile(
+        clientName: String, path: String, language: String?,
+        completion: @escaping (Result<BridgeWire.TranscribeFileResult, BridgeWire.ErrorObject>) -> Void
+    )
 
     // MARK: P2P sync (MAK-51 WP0b seam; real impls WP6-mac).
     //
@@ -76,6 +85,18 @@ protocol AgentBridgeHost: AnyObject {
 }
 
 extension AgentBridgeHost {
+    /// Default: a host that doesn't implement file transcription (the sync
+    /// loopback harness, a test double) refuses cleanly rather than failing to
+    /// compile. AppState overrides this with the real engine-backed handler, and
+    /// only a build that implements it advertises the `transcribeFile` capability.
+    func bridgeTranscribeFile(
+        clientName: String, path: String, language: String?,
+        completion: @escaping (Result<BridgeWire.TranscribeFileResult, BridgeWire.ErrorObject>) -> Void
+    ) {
+        completion(.failure(.domain(
+            .internalError, message: "file transcription isn't available on this host")))
+    }
+
     func bridgeSyncManifest() -> BridgeWire.SyncManifestResult {
         BridgeWire.SyncManifestResult(
             schemaVersion: ConfigBundle.currentSchemaVersion,

@@ -494,6 +494,7 @@ private final class LANConnection {
         // These also can't block the shared transport queue for tens of seconds
         // the way a LAN bridge.dictate would.
         case .historyList(let id, _), .dictate(let id, _), .refine(let id, _),
+             .transcribeFile(let id, _),
              .dictateStop(let id), .dictateCancel(let id):
             sendError(id: id, error: BridgeWire.ErrorObject(
                 code: BridgeWire.ErrorObject.methodNotFound,

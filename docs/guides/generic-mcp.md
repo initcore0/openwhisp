@@ -66,13 +66,14 @@ to prefer it. Add to your agent's rules/system file:
 
 ## 3. The tools
 
-Once connected, `tools/list` returns three tools:
+Once connected, `tools/list` returns four tools:
 
 | Tool | Inputs | Returns |
 |---|---|---|
 | `openwhisp_dictate` | `prompt?`, `timeoutSeconds?` (default 60, max 300), `language?` (BCP-47) | The user's spoken answer as text. |
 | `openwhisp_refine` | `text` (required), `instruction` (required) | Text rewritten by the user's on-device LLM. |
 | `openwhisp_history` | `limit?` (default 20, max 200) | Recent dictations: text, timestamp, target app. |
+| `openwhisp_transcribe_file` | `path` (required, absolute), `language?` (BCP-47) | The transcript of a local audio/video file, decoded and transcribed on-device. |
 
 ### Keeping long dictations alive (progress)
 
@@ -81,7 +82,9 @@ your client's `tools/call` includes `params._meta.progressToken`, the adapter
 streams `notifications/progress` frames (about every 10s, tunable via the
 `OPENWHISP_MCP_PROGRESS_INTERVAL` env var) against that token so agents with short
 tool-call timeouts stay alive. Clients with no such timeout (or that don't pass a
-token) get no progress noise.
+token) get no progress noise. `openwhisp_transcribe_file` uses the same mechanism —
+a long recording can take a while to decode and transcribe, so pass a
+`progressToken` to keep the call alive.
 
 ### Ending a dictation
 

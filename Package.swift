@@ -135,6 +135,7 @@ let package = Package(
                 "SummaryModelResolver.swift",
                 "SubtitleFormatter.swift",
                 "WatchFolderPolicy.swift",
+                "TranscribeFileRequest.swift",
                 "Rules.swift",
                 "RuleStore.swift",
                 "TipsCatalog.swift",

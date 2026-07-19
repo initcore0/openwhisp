@@ -17,6 +17,8 @@ public enum BridgeRouter {
         case dictateCancel(id: BridgeWire.RPCID?)
         case refine(id: BridgeWire.RPCID?, params: BridgeWire.RefineParams)
         case historyList(id: BridgeWire.RPCID?, params: BridgeWire.HistoryListParams)
+        // Transcribe a local audio file the agent points at (MAK-83, wire v1.3).
+        case transcribeFile(id: BridgeWire.RPCID?, params: BridgeWire.TranscribeFileParams)
         // P2P sync (MAK-51 WP0b, wire v1.2). Handlers live behind AgentBridgeHost;
         // the mac-side real handlers are WP6-mac.
         case syncManifest(id: BridgeWire.RPCID?)
@@ -105,14 +107,14 @@ public enum BridgeRouter {
             return .intent(.historyList(id: id, params: params))
 
         case .transcribeFile:
-            // Reserved for v1.1; the capabilities handshake keeps clients from
-            // sending it, but reject explicitly if one does.
-            return .error(
-                id: id,
-                error: BridgeWire.ErrorObject.domain(
-                    .unknownMethod, message: "transcribe.file is not available in this version"
-                )
-            )
+            // A path is REQUIRED; an absent/mistyped payload is invalidParams,
+            // mirroring refine's required-params contract. Deeper validation
+            // (absolute/exists/readable/extension/size) is the host's job via
+            // TranscribeFileRequest, not the router's.
+            guard let params = decodeParams(BridgeWire.TranscribeFileParams.self, from: line) else {
+                return invalidParams(id, "transcribe.file requires a 'path'")
+            }
+            return .intent(.transcribeFile(id: id, params: params))
 
         case .syncManifest:
             // No params; the host answers with the local manifest.
