@@ -84,6 +84,37 @@ public enum BridgeWire {
         case syncPull = "sync.pull"
         /// Mirror shape, phone→Mac: offer a bundle + history delta to merge.
         case syncPush = "sync.push"
+
+        /// The consent scope a call of this method MUST be granted before the
+        /// server will run it, or nil for an unguarded method. This is the single
+        /// source of truth for the per-scope enforcement in
+        /// `AgentBridgeServer.execute` (and the LAN server) — each guarded verb
+        /// resolves consent against exactly the scope named here, so a mic grant
+        /// never rides history and vice-versa (MAK-81).
+        ///
+        /// Unguarded (nil):
+        /// - `hello` establishes the connection and only advertises the client's
+        ///   CURRENT posture (it never acts on a scope);
+        /// - `status` is a read-only health snapshot with no private content;
+        /// - `dictate.stop` / `dictate.cancel` only END a session the SAME client
+        ///   already started under a `dictate` grant — they can't start listening,
+        ///   read history, or refine, so gating them would just let a caller get
+        ///   stuck unable to stop its own session.
+        ///
+        /// Kept exhaustive (no `default`) so adding a Method forces a scope
+        /// decision here; `transcribe.file` is reserved/unimplemented and maps to
+        /// nil until v1.1 wires it (the router rejects it as unavailable today).
+        public var requiredScope: AgentScope? {
+            switch self {
+            case .hello, .status, .dictateStop, .dictateCancel, .transcribeFile:
+                return nil
+            case .dictate:      return .dictate
+            case .historyList:  return .history
+            case .refine:       return .refine
+            case .syncManifest, .syncPull, .syncPush:
+                return .sync
+            }
+        }
     }
 
     /// Server→client notification method names (no `id`, no response).
