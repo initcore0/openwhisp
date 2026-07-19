@@ -65,6 +65,8 @@ nettop -p "$(pgrep -x OpenWhisp)"   # silence
 
 Password fields are detected and skipped. History stays on your machine. The only thing that ever leaves is text you explicitly send to a cloud AI, if you choose to turn that on.
 
+Don't want to trust — want to *check*? The [Privacy Proof](docs/PRIVACY_PROOF.md) page enumerates every network path in the code and ships a `scripts/audit-network.sh` you can run to see the verdict yourself.
+
 ### ✍️ It writes like you meant it
 
 Filler words disappear. "New paragraph" becomes one. Your jargon and names are spelled right. Optionally, a small AI model — **running on your Mac** — polishes the result. Say *"make it a Slack message"* mid-sentence and it will.
