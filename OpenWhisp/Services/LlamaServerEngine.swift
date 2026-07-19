@@ -465,8 +465,9 @@ final class LlamaServerEngine {
     /// Loopback port range this engine picks from. Disjoint from
     /// `WhisperEngine.portRange` so the two engines probing concurrently at
     /// startup can never land on the same candidate — the "sibling race" in
-    /// MAK-28. Llama uses the upper band; whisper the lower.
-    static let portRange: ClosedRange<Int> = 8678...9177
+    /// MAK-28. Llama uses the upper band; whisper the lower. The bands (and their
+    /// tested disjointness) live in the pure core `LoopbackPortRanges` (MAK-85).
+    static let portRange: ClosedRange<Int> = LoopbackPortRanges.llama
 
     // MARK: - Logging
 
