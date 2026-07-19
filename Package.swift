@@ -126,6 +126,7 @@ let package = Package(
                 "ServerProcessIdentity.swift",
                 "ServerLaunchRetry.swift",
                 "ManagedServerSpec.swift",
+                "LoopbackPortRanges.swift",
                 "WhisperResponseClassifier.swift",
                 "FileTranscriptionQueue.swift",
                 "Meeting.swift",

@@ -79,7 +79,10 @@ enum ManagedServerProcess {
     /// in disjoint ranges; port 0 would let the kernel hand either engine any
     /// ephemeral port, re-opening the sibling collision.
     static func reservePort(in range: ClosedRange<Int>) -> ReservedPort? {
-        for candidate in range.shuffled() {
+        // Walk the pure, unit-tested candidate order (a full permutation of the
+        // band — MAK-85) so the "every port tried before giving up" contract is
+        // the one actually exercised here, not a bare `range.shuffled()`.
+        for candidate in LoopbackPortRanges.candidateOrder(in: range) {
             if let fd = boundLoopbackSocket(candidate) {
                 return ReservedPort(port: candidate, socketFD: fd)
             }

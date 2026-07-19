@@ -157,4 +157,109 @@ final class WhisperResponseClassifierTests: XCTestCase {
             XCTFail("Wrong-typed text field should classify as .error")
         }
     }
+
+    // MARK: - CLI path (MAK-85): silence reduces to .cleanEmpty on THIS backend too
+
+    func testCLIRealTranscriptReturnsText() {
+        let outcome = WhisperResponseClassifier.classifyCLI(
+            exitCode: 0,
+            stdout: body("  hello world  "),
+            stderr: ""
+        )
+        XCTAssertEqual(outcome, .transcript("hello world"))
+    }
+
+    func testCLIMultilineTranscriptCollapsesNewlines() {
+        // whisper-cli can emit line-wrapped output; the CLI reduction folds
+        // newlines to spaces and trims, exactly like the old inline code did.
+        let outcome = WhisperResponseClassifier.classifyCLI(
+            exitCode: 0,
+            stdout: body("line one\nline two\n"),
+            stderr: ""
+        )
+        XCTAssertEqual(outcome, .transcript("line one line two"))
+    }
+
+    func testCLIEmptyStdoutIsCleanEmpty() {
+        // A clean exit with no stdout is "no speech detected" — a clean no-op,
+        // NOT an error. This is the CLI half of the PR #83 parity fix.
+        XCTAssertEqual(
+            WhisperResponseClassifier.classifyCLI(exitCode: 0, stdout: Data(), stderr: ""),
+            .cleanEmpty
+        )
+    }
+
+    func testCLIWhitespaceOnlyStdoutIsCleanEmpty() {
+        // Only spaces/newlines/tabs on a clean exit → no speech.
+        XCTAssertEqual(
+            WhisperResponseClassifier.classifyCLI(exitCode: 0, stdout: body("  \n\t  "), stderr: ""),
+            .cleanEmpty
+        )
+    }
+
+    func testCLIWhitespaceOnlyStdoutWithStderrIsStillCleanEmpty() {
+        // A clean exit that logged to stderr (whisper-cli always prints timings
+        // to stderr) but produced no transcript is STILL no-speech, not an error —
+        // stderr never leaks into the success classification.
+        XCTAssertEqual(
+            WhisperResponseClassifier.classifyCLI(
+                exitCode: 0,
+                stdout: body(" "),
+                stderr: "whisper_print_timings: load time = 42.00 ms"
+            ),
+            .cleanEmpty
+        )
+    }
+
+    func testCLINonZeroExitIsError() {
+        let outcome = WhisperResponseClassifier.classifyCLI(
+            exitCode: 1,
+            stdout: Data(),
+            stderr: "error: failed to load model"
+        )
+        XCTAssertEqual(outcome, .error(message: "whisper exited with code 1: error: failed to load model"))
+    }
+
+    func testCLINonZeroExitWithEmptyStderrStillReportsCode() {
+        // A non-zero exit with nothing on stderr still errors, reporting the code.
+        XCTAssertEqual(
+            WhisperResponseClassifier.classifyCLI(exitCode: 137, stdout: Data(), stderr: "   "),
+            .error(message: "whisper exited with code 137")
+        )
+    }
+
+    // MARK: - Cross-backend PARITY: the same silence classifies identically (MAK-85)
+
+    func testSilenceClassifiesIdenticallyOnBothBackends() {
+        // The regression PR #83 introduced (server errored on silence, CLI
+        // no-op'd) can't recur: a "no speech" result from EITHER backend reduces
+        // to the exact same .cleanEmpty outcome. This is the one assertion that
+        // pins the two paths together.
+        let serverSilence = WhisperResponseClassifier.classify(
+            statusCode: 200,
+            body: body(#"{"text":" "}"#)
+        )
+        let cliSilence = WhisperResponseClassifier.classifyCLI(
+            exitCode: 0,
+            stdout: body(" "),
+            stderr: "some timing noise on stderr"
+        )
+        XCTAssertEqual(serverSilence, .cleanEmpty)
+        XCTAssertEqual(cliSilence, .cleanEmpty)
+        XCTAssertEqual(serverSilence, cliSilence)
+    }
+
+    func testRealTranscriptClassifiesIdenticallyOnBothBackends() {
+        let serverText = WhisperResponseClassifier.classify(
+            statusCode: 200,
+            body: body(#"{"text":"  hello there \n"}"#)
+        )
+        let cliText = WhisperResponseClassifier.classifyCLI(
+            exitCode: 0,
+            stdout: body("  hello there \n"),
+            stderr: ""
+        )
+        XCTAssertEqual(serverText, .transcript("hello there"))
+        XCTAssertEqual(serverText, cliText)
+    }
 }

@@ -271,27 +271,35 @@ class WhisperEngine: FileTranscriptionEngine {
                     print("[WhisperEngine] stderr: \(stderr)")
                 }
 
-                if exitCode == 0 {
-                    let text = (String(data: stdoutData, encoding: .utf8) ?? "")
-                        .trimmingCharacters(in: .whitespacesAndNewlines)
-                        .replacingOccurrences(of: "\n", with: " ")
-
+                // Reduce the CLI run through the SAME classifier the server path
+                // uses (MAK-85), so silence collapses to `.cleanEmpty` on both
+                // backends instead of the old error-vs-no-op split from PR #83.
+                switch WhisperResponseClassifier.classifyCLI(
+                    exitCode: exitCode,
+                    stdout: stdoutData,
+                    stderr: stderr
+                ) {
+                case .cleanEmpty:
+                    // No speech detected — a clean no-op, delivered as "" (NOT an
+                    // error), matching the server path. Emit the same worker-status
+                    // note so the two backends look identical to the UI.
+                    print("[WhisperEngine] result (exit=\(exitCode)): \"\" (len=0, no speech)")
+                    self.log("CLI result exit=\(exitCode), textLen=0 (no speech)")
+                    DispatchQueue.main.async {
+                        self.onWorkerStatus?("No speech detected")
+                        self.onTranscriptionComplete?(requestID, "")
+                    }
+                case .transcript(let text):
                     print("[WhisperEngine] result (exit=\(exitCode)): \"\(text)\" (len=\(text.count))")
                     self.log("CLI result exit=\(exitCode), textLen=\(text.count)")
-
                     DispatchQueue.main.async {
-                        if text.isEmpty {
-                            // No speech detected — skip
-                            self.onTranscriptionComplete?(requestID, "")
-                        } else {
-                            self.onTranscriptionComplete?(requestID, text)
-                        }
+                        self.onTranscriptionComplete?(requestID, text)
                     }
-                } else {
+                case .error(let message):
                     print("[WhisperEngine] ERROR: exit=\(exitCode), stderr=\(stderr)")
                     self.log("CLI error exit=\(exitCode), stderr=\(stderr.prefix(2000))")
                     DispatchQueue.main.async {
-                        self.onTranscriptionError?(requestID, "whisper exited with code \(exitCode): \(stderr)")
+                        self.onTranscriptionError?(requestID, message)
                     }
                 }
             } catch {
@@ -698,8 +706,13 @@ class WhisperEngine: FileTranscriptionEngine {
             #endif
         case .cleanEmpty:
             // Server ran fine but heard no speech — a clean no-op, not an error.
+            // Emit the same worker-status note the CLI path does (MAK-85) so the
+            // two backends look identical to the UI on silence.
             log("Server API response HTTP \(http.statusCode), textLen=0 (no speech)")
             print("[WhisperEngine] worker result: \"\" (len=0, no speech)")
+            DispatchQueue.main.async {
+                self.onWorkerStatus?("No speech detected")
+            }
         case .transcript(let text):
             // Do NOT log the raw body: it contains the transcript and is written
             // to a persistent, never-rotated cache log. Only record the length.
@@ -752,8 +765,9 @@ class WhisperEngine: FileTranscriptionEngine {
     /// Loopback port range this engine picks from. Disjoint from
     /// `LlamaServerEngine.portRange` so the two engines probing concurrently at
     /// startup can never land on the same candidate — the "sibling race" in
-    /// MAK-28. Whisper uses the lower half, llama the upper.
-    static let portRange: ClosedRange<Int> = 8178...8677
+    /// MAK-28. Whisper uses the lower half, llama the upper. The bands (and their
+    /// tested disjointness) live in the pure core `LoopbackPortRanges` (MAK-85).
+    static let portRange: ClosedRange<Int> = LoopbackPortRanges.whisper
 
     static func logFileURL() -> URL { serverSpec.logFileURL }
 

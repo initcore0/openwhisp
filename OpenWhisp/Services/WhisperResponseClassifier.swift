@@ -81,4 +81,34 @@ enum WhisperResponseClassifier {
         let text = decoded.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return text.isEmpty ? .cleanEmpty : .transcript(text)
     }
+
+    /// Reduce a **CLI** (`whisper-cli`) run into the SAME `Outcome` the server
+    /// path routes through (MAK-85). This is the CLI half of the silence
+    /// contract: a clean exit whose trimmed stdout is empty is `.cleanEmpty` (the
+    /// "no speech detected" no-op), a clean exit with text is a `.transcript`,
+    /// and a non-zero exit is an `.error`.
+    ///
+    /// Sharing this reduction is what keeps the two backends from ever disagreeing
+    /// about silence again: the original PR #83 bug (the server path errored on an
+    /// empty transcript while the CLI path silently no-op'd) can't drift back,
+    /// because BOTH paths now collapse silence to `.cleanEmpty` through one
+    /// unit-tested function. It also trims identically to the server path.
+    ///
+    /// - Parameters:
+    ///   - exitCode: the child's termination status (0 == success).
+    ///   - stdout: the raw child stdout (untrimmed); this method does the trim.
+    ///   - stderr: child stderr, folded into the error message ONLY (never the
+    ///     success path).
+    static func classifyCLI(exitCode: Int32, stdout: Data, stderr: String) -> Outcome {
+        guard exitCode == 0 else {
+            let trimmedErr = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+            let detail = trimmedErr.isEmpty ? "" : ": \(trimmedErr)"
+            return .error(message: "whisper exited with code \(exitCode)\(detail)")
+        }
+        let text = (String(data: stdout, encoding: .utf8) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "\n", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return text.isEmpty ? .cleanEmpty : .transcript(text)
+    }
 }
