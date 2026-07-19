@@ -160,12 +160,16 @@ public enum EngineCapabilities {
     ///     path — hence `.all` (the app drives Apple Speech only as a streamer).
     ///     Locale-gated languages; streaming partials yes; no word timestamps
     ///     surfaced.
-    ///   - **speechAnalyzer** — ASR-only. `AnalysisContext.contextualStrings`
-    ///     exists but is only reachable behind the `#if compiler(>=6.2)` /
-    ///     `macOS 26` gates and isn't wired through the current bridge, so it is
-    ///     declared **unsupported** (`.none`) — offered-iff-honored means we don't
-    ///     claim it until the bridge carries it. Locale-gated; streaming partials
-    ///     yes; no word timestamps surfaced.
+    ///   - **speechAnalyzer** — ASR-only. Biases via
+    ///     `AnalysisContext.contextualStrings` (macOS 26 SDK), attached to the
+    ///     analyzer with `SpeechAnalyzer.setContext` before analysis on BOTH the
+    ///     file and streaming paths (MAK-84) — hence `.all`. The bias terms are the
+    ///     comma-joined prompt split into discrete phrases, same round-trip as the
+    ///     other engines. All new-symbol code is behind the `#if compiler(>=6.2)` /
+    ///     `macOS 26` gates; the term-preparation logic is pure and tested. NB: the
+    ///     live-recognition *effect* still needs the MAK-72 live-mic pass — this
+    ///     wiring is verified by `swift test` + build, not yet by ear. Locale-gated;
+    ///     streaming partials yes; no word timestamps surfaced.
     private static let table: [String: Capabilities] = Dictionary(
         uniqueKeysWithValues: [
             Capabilities(
@@ -190,7 +194,7 @@ public enum EngineCapabilities {
                 languages: .localeInstalled),
             Capabilities(
                 id: speechAnalyzer, displayName: "Apple SpeechAnalyzer",
-                translation: false, vocabulary: .none,
+                translation: false, vocabulary: .all,
                 streamingPartials: true, wordTimestamps: false,
                 languages: .localeInstalled),
         ].map { ($0.id, $0) })
@@ -237,9 +241,9 @@ public enum EngineCapabilities {
     /// The bias prompt to hand a streaming engine's `start` — the user's
     /// vocabulary prompt when this engine honors vocabulary on the STREAMING
     /// path, else "" (offered-iff-honored, MAK-69): whisper.cpp/WhisperKit/
-    /// Apple Speech honor it; Parakeet (batch-only) and SpeechAnalyzer (unwired)
-    /// get "" — a declared no-op the vocabulary UI already told the user about,
-    /// never a silent drop.
+    /// Apple Speech/SpeechAnalyzer (MAK-84) honor it; Parakeet (batch-only) gets
+    /// "" — a declared no-op the vocabulary UI already told the user about, never
+    /// a silent drop.
     public static func streamingPrompt(
         transcriptionEngine: String, vocabularyPrompt: String
     ) -> String {

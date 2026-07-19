@@ -42,19 +42,18 @@ final class SpeechAnalyzerStreamingEngine: StreamingTranscriptionEngine {
     }
 
     func start(language: String, prompt: String) throws {
-        // `prompt` (vocabulary bias terms) is intentionally ignored: SpeechAnalyzer
-        // exposes `AnalysisContext.contextualStrings`, but that seam isn't wired
-        // through the current bridge (it's only reachable behind the macOS 26 /
-        // #if compiler(>=6.2) gates), so this is a DECLARED no-op —
-        // EngineCapabilities.vocabularySupport(speechAnalyzer) == .none, and the UI
-        // never offers bias terms for it. See TranscriptionEngine.start's contract.
+        // `prompt` carries the whisper-shaped (comma-joined) vocabulary + screen-
+        // context bias terms. MAK-84 wires them into SpeechAnalyzer's
+        // contextual-strings context (see runStart), so this is the `.all`
+        // vocabulary declaration for speechAnalyzer in EngineCapabilities —
+        // offered iff honored, on the streaming path too.
         try MainActor.assumeIsolated {
-            try runStart(language: language)
+            try runStart(language: language, prompt: prompt)
         }
     }
 
     @MainActor
-    private func runStart(language: String) throws {
+    private func runStart(language: String, prompt: String) throws {
         stop(cancel: true)
 
         guard SpeechAnalyzerAvailability.isSupportedOS else {
@@ -125,6 +124,11 @@ final class SpeechAnalyzerStreamingEngine: StreamingTranscriptionEngine {
                 let (transcriber, _) = try await SpeechAnalyzerBridge.prepareTranscriber(
                     languageSetting: language)
                 let analyzer = SpeechAnalyzer(modules: [transcriber])
+
+                // Custom-vocabulary biasing (MAK-84): attach the bias terms via the
+                // analyzer's contextual-strings context BEFORE start(inputSequence:).
+                // Empty prompt → empty context → the plain unbiased path.
+                try await analyzer.setContext(SpeechAnalyzerBridge.makeContext(prompt: prompt))
 
                 // Resolve the analyzer's required input format and build the
                 // converter OFF the tap thread. A nil format means no module can
