@@ -109,6 +109,7 @@ spot a stale or wrong cell, please open an issue.
 
 ## See also
 
+- [Privacy Proof — "Nothing leaves your Mac", and how to verify it](../PRIVACY_PROOF.md) — every network path in the code, plus a `scripts/audit-network.sh` you can run
 - [Claude Code guide](claude-code.md)
 - [Cursor guide](cursor.md)
 - [Generic MCP client guide](generic-mcp.md)
