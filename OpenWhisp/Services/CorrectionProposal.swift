@@ -147,6 +147,38 @@ struct CorrectionProposalState: Codable, Equatable {
         return copy
     }
 
+    /// Enqueue a proposal for an ALREADY-VALIDATED candidate substitution (the
+    /// caller — `CorrectionLearningPipeline` — has already run the learner). Same
+    /// de-dup rules as `considering(inserted:surviving:…)`: skip if declined,
+    /// already pending, or already a rule is the caller's job (it checks existing
+    /// rules before calling). Returns the new state and, when added, the proposal.
+    func considering(
+        candidate: Vocabulary.Substitution,
+        now: Date = Date()
+    ) -> (state: CorrectionProposalState, added: CorrectionProposal?) {
+        let key = CorrectionProposal.key(from: candidate.from, to: candidate.to)
+        if declinedKeys.contains(key) { return (self, nil) }
+        if pending.contains(where: { $0.key == key }) { return (self, nil) }
+
+        let proposal = CorrectionProposal(from: candidate.from, to: candidate.to, date: now)
+        var copy = self
+        copy.pending.append(proposal)
+        if copy.pending.count > Self.maxPending {
+            copy.pending.removeFirst(copy.pending.count - Self.maxPending)
+        }
+        return (copy, proposal)
+    }
+
+    /// Remove one pending proposal by id WITHOUT marking it declined — used when a
+    /// repeated correction auto-adds the rule, so the now-redundant prompt is
+    /// simply dropped (the user got the fix they were making). No-op if not pending.
+    func clearingPending(id: CorrectionProposal.ID) -> CorrectionProposalState {
+        guard pending.contains(where: { $0.id == id }) else { return self }
+        var copy = self
+        copy.pending.removeAll { $0.id == id }
+        return copy
+    }
+
     /// Clear the whole pending queue (e.g. a "dismiss all" affordance). Does NOT
     /// mark them declined — they're just cleared, and could be re-proposed later.
     func clearingPending() -> CorrectionProposalState {

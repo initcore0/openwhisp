@@ -287,12 +287,9 @@ enum ScreenContextHarvester {
         // privacy feature must not launder credentials off the screen, so reject
         // them outright. A false positive (some rare 16+-char digit-bearing
         // identifier) costs one missed bias term; a false negative leaks a secret.
-        if count >= 16 && hasDigit {
-            let hasLower = term.unicodeScalars.contains { CharacterSet.lowercaseLetters.contains($0) }
-            let digitCount = term.unicodeScalars.filter { CharacterSet.decimalDigits.contains($0) }.count
-            let digitHeavy = Double(digitCount) / Double(count) >= 0.25
-            if (hasUpper && hasLower) || digitHeavy { return nil }
-        }
+        // The definition lives in `SecretTokenGuard` so the self-learning
+        // dictionary (MAK-86) applies the identical refusal before learning a term.
+        if SecretTokenGuard.looksLikeSecret(term) { return nil }
 
         var score = 0
         // camelCase / PascalCase: an internal uppercase after a lowercase, or a

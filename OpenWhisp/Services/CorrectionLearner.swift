@@ -79,6 +79,100 @@ enum CorrectionLearner {
         return Vocabulary.Substitution(from: fromToken, to: toToken)
     }
 
+    /// Propose a MULTI-word substitution from an insert→edit pair, or `nil` if the
+    /// edit isn't a clear, learnable phrase correction (MAK-86 slice 1).
+    ///
+    /// This handles the corrections `proposeSubstitution` can't, because they
+    /// change the WORD COUNT — a mis-heard run split apart, or a compound word
+    /// wrongly split:
+    ///
+    ///   - "Parra keet" → "Parakeet"     (2 → 1: a split run rejoined)
+    ///   - "open whisper" → "OpenWhisp"  (2 → 1: compound + casing)
+    ///   - "clod code" → "Claude Code"   (2 → 2: two-word phrase fix)
+    ///
+    /// Gates (all must hold):
+    ///  1. **Both sides non-empty** after trimming.
+    ///  2. **Something actually changed** after typographic normalization (so a
+    ///     smart-quote/dash swap alone never reads as a correction).
+    ///  3. **Bounded size.** Each side is 1…`maxWords` whitespace tokens. A single
+    ///     word on both sides is delegated to `proposeSubstitution` (the stricter
+    ///     same-word gate), so the multi-word path only fires when at least one
+    ///     side is a phrase.
+    ///  4. **No secret material.** If either the inserted or surviving text carries
+    ///     a token that looks like an API key / token / hash (`SecretTokenGuard`),
+    ///     we refuse — the learned rule lands in synced `vocabulary.json`.
+    ///  5. **Plausible correction, not a rewrite.** The collapsed (whitespace-
+    ///     removed, lowercased, typography-folded) forms must be *similar* — a
+    ///     small edit distance relative to length — so "Parra keet"→"Parakeet"
+    ///     (collapsed "parrakeet"→"parakeet", distance 1) learns, while an
+    ///     unrelated phrase swap ("send the report"→"forward the document") is
+    ///     rejected. A pure re-spacing/casing of the same letters always learns.
+    ///
+    /// `from`/`to` are the ORIGINAL (un-normalized) trimmed strings.
+    static func proposePhraseSubstitution(
+        inserted: String,
+        surviving: String,
+        maxWords: Int = 4
+    ) -> Vocabulary.Substitution? {
+        // (1) reject empties.
+        let insTrimmed = inserted.trimmingCharacters(in: .whitespacesAndNewlines)
+        let survTrimmed = surviving.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !insTrimmed.isEmpty, !survTrimmed.isEmpty else { return nil }
+
+        // (2) typographic-only difference → nothing to learn.
+        guard normalize(insTrimmed) != normalize(survTrimmed) else { return nil }
+
+        // (3) bounded size; at least one side must be a phrase (else defer to the
+        // single-word gate, which is stricter about same-word similarity).
+        let insTokens = tokenize(insTrimmed)
+        let survTokens = tokenize(survTrimmed)
+        guard insTokens.count >= 1, insTokens.count <= maxWords,
+              survTokens.count >= 1, survTokens.count <= maxWords else { return nil }
+        guard insTokens.count > 1 || survTokens.count > 1 else {
+            return proposeSubstitution(inserted: inserted, surviving: surviving)
+        }
+
+        // (4) never learn credential-shaped material into the synced dictionary.
+        guard !SecretTokenGuard.containsSecret(insTrimmed),
+              !SecretTokenGuard.containsSecret(survTrimmed) else { return nil }
+
+        // (5) plausible phrase correction, not a wholesale rewrite.
+        guard isPlausiblePhraseCorrection(from: insTrimmed, to: survTrimmed) else { return nil }
+
+        return Vocabulary.Substitution(from: insTrimmed, to: survTrimmed)
+    }
+
+    /// Whether two phrases are close enough to be one misrecognition rather than a
+    /// rewrite. We compare their COLLAPSED forms — whitespace removed, lowercased,
+    /// typography folded — so re-spacing and casing don't count as edits: this is
+    /// what makes "Parra keet"→"Parakeet" ("parrakeet"→"parakeet") read as a
+    /// distance-1 fix. A pure re-spacing/re-casing (equal collapsed forms) always
+    /// qualifies; otherwise the collapsed Levenshtein distance must be small
+    /// relative to the longer form.
+    private static func isPlausiblePhraseCorrection(from: String, to: String) -> Bool {
+        let a = collapse(from)
+        let b = collapse(to)
+        guard !a.isEmpty, !b.isEmpty else { return false }
+
+        // Same letters, only spacing/case differ → always a correction to learn.
+        if a == b { return true }
+
+        let distance = levenshtein(a, b)
+        let longer = max(a.count, b.count)
+        guard longer > 0 else { return false }
+        let ratio = Double(distance) / Double(longer)
+        // Slightly looser than the single-word gate: phrases are longer, and the
+        // common case (a split run) collapses to a tiny distance. Cap the absolute
+        // distance so a long unrelated phrase can't sneak in on ratio alone.
+        return distance <= 4 && ratio <= 0.34
+    }
+
+    /// Lowercase, fold typography, and remove ALL whitespace — the comparison form
+    /// for phrase similarity (so re-spacing is a zero-cost transformation).
+    private static func collapse(_ s: String) -> String {
+        normalize(s).lowercased().filter { !$0.isWhitespace }
+    }
+
     // MARK: - Heuristic helpers
 
     /// A change is a plausible single-word correction when it's either a pure

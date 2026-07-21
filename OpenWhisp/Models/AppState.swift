@@ -918,6 +918,11 @@ class AppState: ObservableObject {
         didSet { CorrectionProposalStore.save(correctionProposals) }
     }
 
+    /// Per-pair correction observation counts (MAK-86); repeats auto-add. Local JSON, never synced. See `CorrectionConfidenceState`.
+    @Published var correctionConfidence: CorrectionConfidenceState {
+        didSet { CorrectionConfidenceStore.save(correctionConfidence) }
+    }
+
     /// MAK-34 — live screen-context awareness config. Strictly opt-in (off by
     /// default), per-app allowlisted. Persisted as a single JSON blob in
     /// UserDefaults (it carries an array, so the per-bool key idiom doesn't fit).
@@ -1887,6 +1892,7 @@ class AppState: ObservableObject {
         vocabulary = VocabularyStore.load()
         correctionLearningEnabled = settingsStore.object(forKey: "correctionLearningEnabled") as? Bool ?? true
         correctionProposals = CorrectionProposalStore.load()
+        correctionConfidence = CorrectionConfidenceStore.load()
         didCompleteOnboarding = settingsStore.bool(forKey: "didCompleteOnboarding")
         hintSessionCount = settingsStore.integer(forKey: "hintSessionCount")
         dismissedHintIDs = Set(settingsStore.stringArray(forKey: "dismissedHintIDs") ?? [])
@@ -5098,18 +5104,17 @@ class AppState: ObservableObject {
         }
     }
 
-    /// A captured (inserted, surviving) single-word edit: run it through the learner
-    /// + proposal state. Adds a user-facing proposal iff it's an unambiguous
-    /// correction that isn't already a rule / pending / previously declined. NEVER
-    /// mutates the dictionary here — acceptance is an explicit user action.
+    /// A captured (inserted, surviving) edit — single- or multi-word (MAK-86): the
+    /// pure `CorrectionLearningPipeline` decides ignore / propose / auto-add. Only a
+    /// repeat-corroborated auto-add mutates the dictionary (never a one-off).
     private func handleObservedCorrection(inserted: String, surviving: String) {
-        let (newState, added) = correctionProposals.considering(
-            inserted: inserted,
-            surviving: surviving,
-            existingSubstitutions: vocabulary.substitutions
-        )
-        guard added != nil else { return }
-        correctionProposals = newState   // didSet persists
+        let (newState, outcome) = CorrectionLearningPipeline.decide(
+            inserted: inserted, surviving: surviving,
+            existingSubstitutions: vocabulary.substitutions,
+            state: .init(proposals: correctionProposals, confidence: correctionConfidence))
+        correctionProposals = newState.proposals
+        correctionConfidence = newState.confidence
+        vocabulary = CorrectionLearningPipeline.applying(outcome, to: vocabulary)
     }
 
     /// Accept a pending correction proposal: fold it into the real vocabulary (so it
@@ -5118,22 +5123,16 @@ class AppState: ObservableObject {
         let (newState, accepted) = correctionProposals.accepting(id)
         guard let accepted else { return }
         correctionProposals = newState
-        // Don't duplicate an identical rule if one somehow already exists.
-        let key = CorrectionProposal.key(from: accepted.from, to: accepted.to)
-        let exists = vocabulary.substitutions.contains {
-            CorrectionProposal.key(from: $0.from, to: $0.to) == key
-        }
-        if !exists {
-            // Route through the stamping helper so the accepted rule carries a
-            // fresh updatedAt (a user action edits the vocabulary → LWW must see it).
-            vocabulary = vocabulary.addingSubstitution(accepted)
-        }
+        vocabulary = vocabulary.addingSubstitutionIfAbsent(accepted)  // stamped, dup-safe
     }
 
     /// Reject a pending correction proposal: dequeue it and remember not to re-offer
     /// the same fix. Does not touch the dictionary.
     func rejectCorrectionProposal(_ id: CorrectionProposal.ID) {
-        correctionProposals = correctionProposals.rejecting(id)
+        let next = CorrectionLearningPipeline.rejecting(
+            id, state: .init(proposals: correctionProposals, confidence: correctionConfidence))
+        correctionProposals = next.proposals
+        correctionConfidence = next.confidence
     }
 
     /// File-tagging (MAK-48) fires ONLY when the user opted in AND the app being
@@ -5529,6 +5528,7 @@ class AppState: ObservableObject {
         vocabulary = .empty
         flushVocabularySave()   // reset must persist the cleared vocab promptly
         correctionProposals = .empty
+        correctionConfidence = .empty
         profiles = []
         clearHistory()
 
