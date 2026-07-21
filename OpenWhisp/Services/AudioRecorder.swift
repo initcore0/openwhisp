@@ -104,8 +104,11 @@ class AudioRecorder: NSObject, AVAudioRecorderDelegate, AudioCapture {
         case .useDevice(let uid):
             guard let device = AudioInputRouter.resolve(uid: uid) else { return false }
             return AudioInputRouter.apply(device, to: engine)
-        case .unresolved:
-            return false
+        case .fallbackToDefault(let uid):
+            // Pinned mic disconnected — capture the system default so the session
+            // can run; the device is used again the moment it reconnects.
+            NSLog("[AudioRecorder] pinned mic '%@' disconnected — capturing system default", uid)
+            return true
         }
     }
     
@@ -125,8 +128,9 @@ class AudioRecorder: NSObject, AVAudioRecorderDelegate, AudioCapture {
 
         // Legacy AVAudioRecorder can only capture from the system default input.
         // Temporarily switch the default to the selected device (restored in stop()).
-        // A non-empty selection that can't be resolved is a hard error — never
-        // silently record the default (the historical selected-mic-ignored bug).
+        // A CONNECTED selection whose default-switch fails is a hard error — never
+        // silently record the wrong mic (the historical selected-mic-ignored bug).
+        // A pinned but DISCONNECTED device falls back to recording the default.
         switch AudioInputRoutingPolicy.decide(
             microphoneID: selectedDeviceID ?? "",
             deviceResolved: AudioInputRouter.canResolve(uid: selectedDeviceID ?? "")
@@ -148,9 +152,8 @@ class AudioRecorder: NSObject, AVAudioRecorderDelegate, AudioCapture {
                 onStateChanged?(.error(AudioInputRoutingPolicy.unresolvedMessage(uid: uid)))
                 return
             }
-        case .unresolved(let uid):
-            onStateChanged?(.error(AudioInputRoutingPolicy.unresolvedMessage(uid: uid)))
-            return
+        case .fallbackToDefault(let uid):
+            NSLog("[AudioRecorder] pinned mic '%@' disconnected — recording system default", uid)
         }
 
         do {

@@ -2025,7 +2025,7 @@ class AppState: ObservableObject {
                     // overlay flips from "starting" to the green "speak now" cue.
                     self.isArming = false
                     self.isRecording = true
-                    self.statusMessage = self.outputMode == "liveChunks" ? "Listening..." : "Recording..."
+                    self.statusMessage = self.outputMode == "liveChunks" ? AudioInputRouter.listeningStatus(microphoneID: self.microphoneID) : "Recording..."
                     // The hotkey-up can land AFTER the grant callback's pendingStop
                     // guard but BEFORE this state change is delivered. Nothing else
                     // reads pendingStop once recording starts, so honor it here —
@@ -2121,7 +2121,7 @@ class AppState: ObservableObject {
                     if self.isTranscribing && self.livePipelineIsDrained {
                         self.completeFinalText(self.currentSessionText)
                     }
-                    self.statusMessage = self.isTranscribing ? "Finalizing..." : "Listening..."
+                    self.statusMessage = self.isTranscribing ? "Finalizing..." : AudioInputRouter.listeningStatus(microphoneID: self.microphoneID)
                     return
                 }
                 self.error = msg
@@ -2223,7 +2223,7 @@ class AppState: ObservableObject {
         case .beginListening:
             isArming = false
             isRecording = true
-            statusMessage = "Listening..."
+            statusMessage = AudioInputRouter.listeningStatus(microphoneID: microphoneID)
         case .beginListeningThenStop:
             // The hotkey-up landed while the engine was still arming (after the
             // grant callback's pendingStop guard, so nothing else consumes it).
@@ -2231,7 +2231,7 @@ class AppState: ObservableObject {
             // unattended. Same handling as the recorder's `.recording` case.
             isArming = false
             isRecording = true
-            statusMessage = "Listening..."
+            statusMessage = AudioInputRouter.listeningStatus(microphoneID: microphoneID)
             pendingStop = false
             stopDictation()
         }
@@ -3561,7 +3561,7 @@ class AppState: ObservableObject {
         agentEouDetector?.notePartial()
         let text = postProcess(rawText)
         streamingText = text
-        statusMessage = text.isEmpty ? "Listening..." : "Listening..."
+        statusMessage = AudioInputRouter.listeningStatus(microphoneID: microphoneID)
 
         // Once refine is armed mid-session, the words being spoken are the
         // INSTRUCTION — don't type them into the document as live chunks.
@@ -3966,12 +3966,12 @@ class AppState: ObservableObject {
                 if isTranscribing && livePipelineIsDrained {
                     completeFinalText(currentSessionText)
                 } else {
-                    statusMessage = isTranscribing ? "Finalizing..." : "Listening..."
+                    statusMessage = isTranscribing ? "Finalizing..." : AudioInputRouter.listeningStatus(microphoneID: microphoneID)
                 }
             } else if isTranscribing {
                 completeFinalText(currentSessionText)
             } else {
-                statusMessage = "Listening..."
+                statusMessage = AudioInputRouter.listeningStatus(microphoneID: microphoneID)
             }
             return
         }

@@ -122,8 +122,10 @@ final class WhisperKitStreamingEngine: StreamingTranscriptionEngine {
             // Resolve the selected input device. It's passed straight into
             // AudioStreamTranscriber(inputDeviceID:) (our WhisperKit fork backports
             // upstream #503), which forwards it to startRecordingLive — WhisperKit
-            // captures the chosen device directly, no system-default swap needed. An
-            // unresolved pinned device is a hard error, never a silent default capture.
+            // captures the chosen device directly, no system-default swap needed. A
+            // pinned but DISCONNECTED device falls back to the system default so the
+            // session can run (the AirPods-disconnect hang); a CONNECTED device that
+            // fails to resolve at application time stays a hard error.
             let inputDeviceID: AudioDeviceID?
             switch AudioInputRoutingPolicy.decide(
                 microphoneID: selectedDeviceID,
@@ -140,9 +142,9 @@ final class WhisperKitStreamingEngine: StreamingTranscriptionEngine {
                     return
                 }
                 inputDeviceID = id
-            case .unresolved(let uid):
-                callbacks.error?(AudioInputRoutingPolicy.unresolvedMessage(uid: uid))
-                return
+            case .fallbackToDefault(let uid):
+                NSLog("[WhisperKitStreamingEngine] pinned mic '%@' disconnected — capturing system default", uid)
+                inputDeviceID = nil
             }
 
             let kit = try await ensureLoaded()

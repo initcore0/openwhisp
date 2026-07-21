@@ -38,6 +38,18 @@ enum AudioInputRouter {
         resolve(uid: uid) != nil
     }
 
+    /// Live-capture status line for the current mic setting: annotated while the
+    /// pinned device is disconnected and capture fell back to the system default
+    /// (evaluated live, not snapshotted — if the device reconnects mid-session the
+    /// annotation drops even though the running capture stays on the default; the
+    /// next session picks the pinned device up again).
+    static func listeningStatus(microphoneID: String) -> String {
+        AudioInputRoutingPolicy.listeningStatus(
+            micFellBackToDefault: AudioInputRoutingPolicy.fellBackToDefault(
+                microphoneID: microphoneID,
+                deviceResolved: canResolve(uid: microphoneID)))
+    }
+
     // MARK: Per-engine application (no global mutation)
 
     /// Pin `device` as the input for a specific `AVAudioEngine` by setting its input
