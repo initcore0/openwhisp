@@ -136,7 +136,7 @@ Wispr Flow and Aqua are polished but cloud-based. Superwhisper and MacWhisper ar
 
 ## Docs
 
-[Agent Bridge & MCP](docs/AGENT_BRIDGE.md) · [Architecture](docs/ARCHITECTURE.md) · [Settings](docs/SETTINGS.md) · [Privacy & Security](SECURITY.md) · [Roadmap](docs/ROADMAP.md) · [Contributing](CONTRIBUTING.md)
+[Agent Bridge & MCP](docs/AGENT_BRIDGE.md) · [Architecture](docs/ARCHITECTURE.md) · [Settings](docs/SETTINGS.md) · [Engine Benchmarks](docs/BENCHMARKS.md) · [Privacy & Security](SECURITY.md) · [Roadmap](docs/ROADMAP.md) · [Contributing](CONTRIBUTING.md)
 
 Mirror for regions where the main site is blocked: [initcore0.github.io/openwhisp-mirror](https://initcore0.github.io/openwhisp-mirror/)
 
