@@ -1224,16 +1224,73 @@ class AppState: ObservableObject {
     #endif
     private var targetApplication: NSRunningApplication?
     private var overlayIsVisible = false
-    private var activeSessionID = UUID()
-    /// The session that last started the AudioRecorder. The recorder's
-    /// onStateChanged callback is wired once (not per-session) and delivers
-    /// through a main-actor Task hop, so a state change from a cancelled
-    /// session can land after the next session already began — e.g. a stale
-    /// `.stopped` clearing the isRecording a new streaming session just set,
-    /// wedging it (its stop would then only set pendingStop, which nothing
-    /// consumes once streaming is live). Comparing this against
-    /// activeSessionID drops those stale transitions.
-    private var recorderSessionID: UUID?
+    /// The dictation session's mutable state inventory (MAK-8 step 9a). Formerly a
+    /// scatter of `private var`s on this class; gathered into one Foundation-only
+    /// value type in `OpenWhispCore` so the state machine is unit-testable and the
+    /// later strangler steps (9b/9c) have a seam to move the lifecycle onto. The
+    /// pass-through computed properties below preserve every existing guard's
+    /// byte-identical semantics — only the storage moved.
+    private var dictationSession = DictationSessionState()
+
+    // MARK: DictationSessionState pass-throughs (MAK-8 step 9a)
+    // Each mirrors a former stored property 1:1; read/write the backing struct so
+    // the (ordering-sensitive) session guards behave exactly as before. Field
+    // docs live on `DictationSessionState` in OpenWhispCore.
+    private var activeSessionID: UUID {
+        get { dictationSession.activeSessionID } set { dictationSession.activeSessionID = newValue } }
+    private var recorderSessionID: UUID? {
+        get { dictationSession.recorderSessionID } set { dictationSession.recorderSessionID = newValue } }
+    private var sessionActive: Bool {
+        get { dictationSession.sessionActive } set { dictationSession.sessionActive = newValue } }
+    private var pendingStop: Bool {
+        get { dictationSession.pendingStop } set { dictationSession.pendingStop = newValue } }
+    private var pendingPreemptStart: Bool {
+        get { dictationSession.pendingPreemptStart } set { dictationSession.pendingPreemptStart = newValue } }
+    private var currentSessionText: String {
+        get { dictationSession.currentSessionText } set { dictationSession.currentSessionText = newValue } }
+    private var isStreamingSession: Bool {
+        get { dictationSession.isStreamingSession } set { dictationSession.isStreamingSession = newValue } }
+    private var acceptingLiveChunks: Bool {
+        get { dictationSession.acceptingLiveChunks } set { dictationSession.acceptingLiveChunks = newValue } }
+    private var openAIEnhancementEnabledForSession: Bool {
+        get { dictationSession.openAIEnhancementEnabledForSession }
+        set { dictationSession.openAIEnhancementEnabledForSession = newValue } }
+    private var suppressOutput: Bool {
+        get { dictationSession.suppressOutput } set { dictationSession.suppressOutput = newValue } }
+    private var sessionInitiator: SessionInitiator {
+        get { dictationSession.sessionInitiator } set { dictationSession.sessionInitiator = newValue } }
+    private var sessionOutcome: SessionOutcome? {
+        get { dictationSession.sessionOutcome } set { dictationSession.sessionOutcome = newValue } }
+    private var isLiveChunkSession: Bool {
+        get { dictationSession.isLiveChunkSession } set { dictationSession.isLiveChunkSession = newValue } }
+    private var isPreviewSession: Bool {
+        get { dictationSession.isPreviewSession } set { dictationSession.isPreviewSession = newValue } }
+    private var isAppleSpeechSession: Bool {
+        get { dictationSession.isAppleSpeechSession } set { dictationSession.isAppleSpeechSession = newValue } }
+    private var appleLiveInsertedText: String {
+        get { dictationSession.appleLiveInsertedText } set { dictationSession.appleLiveInsertedText = newValue } }
+    private var appleDidCompleteFinal: Bool {
+        get { dictationSession.appleDidCompleteFinal } set { dictationSession.appleDidCompleteFinal = newValue } }
+    private var voiceEditingActiveForSession: Bool {
+        get { dictationSession.voiceEditingActiveForSession }
+        set { dictationSession.voiceEditingActiveForSession = newValue } }
+    private var voiceEditBuffer: VoiceEditBuffer {
+        get { dictationSession.voiceEditBuffer } set { dictationSession.voiceEditBuffer = newValue } }
+    private var profileOverrideBackup: ProfileOverrideBackup? {
+        get { dictationSession.profileOverrideBackup } set { dictationSession.profileOverrideBackup = newValue } }
+    private var modeRefineInstructionOverride: String? {
+        get { dictationSession.modeRefineInstructionOverride }
+        set { dictationSession.modeRefineInstructionOverride = newValue } }
+    private var presetRefineInstructionOverride: String? {
+        get { dictationSession.presetRefineInstructionOverride }
+        set { dictationSession.presetRefineInstructionOverride = newValue } }
+    private var sessionInsertionModeOverride: InsertionMode? {
+        get { dictationSession.sessionInsertionModeOverride }
+        set { dictationSession.sessionInsertionModeOverride = newValue } }
+    private var suppressSettingsPersistence: Bool {
+        get { dictationSession.suppressSettingsPersistence }
+        set { dictationSession.suppressSettingsPersistence = newValue } }
+
     private var transcriptionRequests: [UUID: TranscriptionRequest] = [:]
 
     /// Strong ref to the throwaway engine driving a history re-transcribe (MAK-40),
@@ -1248,20 +1305,6 @@ class AppState: ObservableObject {
     /// Chunk payloads (WAV file URLs) keyed by the pipeline's ChunkID, so AppState
     /// can transcribe / clean up files while the pipeline tracks only sequencing.
     private var liveChunkURLs: [LiveChunkPipeline.ChunkID: URL] = [:]
-    private var currentSessionText = ""
-    private var isStreamingSession = false
-    private var acceptingLiveChunks = false
-    /// True from beginSession() until the session terminates. Tracks dictation intent
-    /// independently of isRecording, which only flips true inside async grant callbacks.
-    private var sessionActive = false
-    /// Set when a stop arrives before the grant callback has started recording.
-    private var pendingStop = false
-    /// Set while a preempt-deferred startDictation is queued (an agent session
-    /// was cancelled this turn; the user's session starts next turn). A stop or
-    /// cancel arriving in that one-turn gap consumes the flag so the deferred
-    /// start no-ops instead of arming a session whose stop already passed.
-    private var pendingPreemptStart = false
-    private var openAIEnhancementEnabledForSession = false
 
     // MARK: Agent Bridge session plumbing (dormant until M8 wires the bridge)
     //
@@ -1270,19 +1313,11 @@ class AppState: ObservableObject {
     // transcript to the calling client and pastes nothing. These fields carry
     // that intent through the existing funnel additively — default `.user` /
     // false / nil, so a user-initiated session behaves exactly as before.
+    // (The intent-carrying fields — sessionInitiator / suppressOutput /
+    // sessionOutcome — now live in `dictationSession`; see the pass-throughs
+    // above. `onSessionEnd` stays here: it is a UI/IO side-effect sink, not
+    // Foundation-clean session state.)
 
-    /// Who started the current session. Set by the caller BEFORE beginSession()
-    /// (the agent path sets `.agent`; the user hotkey leaves it `.user`) and reset
-    /// to `.user` in finishSessionUI().
-    private var sessionInitiator: SessionInitiator = .user
-    /// Session snapshot of "return the transcript, don't paste it", frozen in
-    /// beginSession() from the initiator (like isPreviewSession) and cleared in
-    /// finishSessionUI(). Read in insertCompletedText().
-    private var suppressOutput = false
-    /// The outcome recorded at the session's terminal point, read once by
-    /// onSessionEnd in finishSessionUI(). Defaults to `.cancelled` if never set
-    /// (abort, or an error terminal that didn't record one).
-    private var sessionOutcome: SessionOutcome?
     /// Fired exactly once in finishSessionUI() with the session outcome, then
     /// cleared. nil for user sessions. The Agent Bridge sets this to receive the
     /// dictation result of an agent-initiated session.
@@ -1334,32 +1369,6 @@ class AppState: ObservableObject {
     /// clipboard instead — drives a "copied, press ⌘V" cue in the overlay so the
     /// result is never silently lost.
     @Published private(set) var clipboardFallbackActive = false
-    /// Snapshot of whether this session uses live-chunk output, captured at
-    /// beginSession(). The live-chunk drain pipeline must be gated on this rather
-    /// than the live @Published outputMode, so a mid-session settings change can't
-    /// strand queued chunks and hang the session in "Finalizing...".
-    private var isLiveChunkSession = false
-    /// Snapshot of preview-and-polish mode for this session. In preview mode
-    /// chunks are captured (into currentSessionText/streamingText for the overlay)
-    /// but NOT pasted; the whole text is polished once at finalization and pasted
-    /// a single time. Snapshotted at beginSession so a mid-session settings change
-    /// can't change the paste behavior partway through.
-    private var isPreviewSession = false
-    private var isAppleSpeechSession = false
-    private var appleLiveInsertedText = ""
-    private var appleDidCompleteFinal = false
-    /// Whether spoken edit commands (`voiceEditingEnabled`) are honored for THIS
-    /// session — snapshotted in `startStreamingSession()` (the streaming path that
-    /// reaches `handleAppleSpeechFinal`, where `outputMode` is authoritative), so a
-    /// mid-session settings flip can't change how the pending text is finalized.
-    /// Only ever true for a preview-mode streaming session (the mode where text is
-    /// held until the end and can therefore still be edited before the single paste).
-    private var voiceEditingActiveForSession = false
-    /// The session's edit buffer: finalized dictation utterances accumulate here and
-    /// standalone edit commands ("scratch that" / "undo" / …) mutate it, so the
-    /// pasted text is `voiceEditBuffer.text` — the dictation AFTER the spoken edits.
-    /// Reset at beginSession; only read when `voiceEditingActiveForSession`.
-    private var voiceEditBuffer = VoiceEditBuffer()
     /// True when the active engine/variant emits end-of-utterance events — only
     /// the Parakeet EOU streaming variant does (MAK-46 Phase 5). Gates arming the
     /// agent EOU auto-stop so it stays inert on every other engine.
@@ -1382,33 +1391,10 @@ class AppState: ObservableObject {
     /// one must dedupe itself without clearing the other's guard.
     private var inFlightModelDownloads: Set<String> = []
 
-    /// Global setting values saved before a per-app profile temporarily overrode
-    /// them for the current session, so they can be restored when it ends.
-    private var profileOverrideBackup: (language: String, translateToEnglish: Bool, outputMode: String, aiCleanup: Bool)?
-
-    /// The refine instruction contributed by the Mode active for the current
-    /// session (MAK-39): the composed tone + free-form instruction. nil when no
-    /// Mode is active or the active Mode steers nothing. Session-scoped: set in
-    /// `applyProfileForFrontmostApp`, cleared in `restoreProfileOverridesIfNeeded`.
-    /// `makeWholeTextRefiner` prefers it over the intensity-dial prompt so a Mode's
-    /// style actually reaches the LLM.
-    private var modeRefineInstructionOverride: String?
-
-    /// Per-app refine-preset prompt (MAK-77); same lifecycle as the Mode override
-    /// above, loses to it in the composer, never exempts the RefineOutputGuard.
-    private var presetRefineInstructionOverride: String?
-
-    /// A per-app profile's text-insert method for the CURRENT session (MAK-42), or
-    /// nil when no profile overrides it. Kept separate from the persisted global
-    /// `insertionMode` (unlike the other overrides it isn't a published setting the
-    /// UI mirrors), so it's a plain session-scoped value: set on profile apply,
-    /// cleared on restore, and preferred by `currentInsertionMode`.
-    private var sessionInsertionModeOverride: InsertionMode?
-
-    /// While a per-app profile override is in effect, don't persist the overridden
-    /// settings to UserDefaults — otherwise a crash/force-quit mid-session would
-    /// leave the profile's values as the user's globals on next launch.
-    private var suppressSettingsPersistence = false
+    // (profileOverrideBackup / modeRefineInstructionOverride /
+    // presetRefineInstructionOverride / sessionInsertionModeOverride /
+    // suppressSettingsPersistence now live in `dictationSession`; see the
+    // pass-throughs near the top of the class.)
 
     /// Persist a setting unless a profile override is currently active.
     private func persist<T>(_ value: T, _ key: String) {
@@ -5635,8 +5621,8 @@ class AppState: ObservableObject {
         guard mode != nil || presetOutcome != .inherit else { return }
 
         // Back up the overridable globals.
-        profileOverrideBackup = (language: language, translateToEnglish: translateToEnglish,
-                                 outputMode: outputMode, aiCleanup: openAIEnhancementEnabled)
+        profileOverrideBackup = ProfileOverrideBackup(language: language, translateToEnglish: translateToEnglish,
+                                                      outputMode: outputMode, aiCleanup: openAIEnhancementEnabled)
         suppressSettingsPersistence = true
 
         if let mode {
