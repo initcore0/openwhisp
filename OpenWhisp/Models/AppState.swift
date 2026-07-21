@@ -969,16 +969,6 @@ class AppState: ObservableObject {
     /// the leading word(s). The overlay shows a "starting / not capturing yet"
     /// cue instead of the green "speak now" cue. See `OverlayPhase`.
     @Published var isArming = false
-    /// True for the current session when a microphone is pinned in Settings but was
-    /// disconnected at session start, so capture fell back to the system default
-    /// input (the engines make the same `AudioInputRoutingPolicy` decision). Used to
-    /// annotate the live status so the fallback is never silent; the pinned UID
-    /// stays in settings and is used again once the device reconnects.
-    private var sessionMicFellBackToDefault = false
-    /// Live-capture status line, annotated when the pinned mic is disconnected.
-    private var listeningStatus: String {
-        sessionMicFellBackToDefault ? "Listening... (default mic)" : "Listening..."
-    }
     @Published var lastTranscription: String?
     /// The text this session actually inserted into the FOCUSED app (not a sink), kept
     /// so the overlay "revert to original" (MAK-35) can attempt an in-place swap of
@@ -2035,7 +2025,7 @@ class AppState: ObservableObject {
                     // overlay flips from "starting" to the green "speak now" cue.
                     self.isArming = false
                     self.isRecording = true
-                    self.statusMessage = self.outputMode == "liveChunks" ? self.listeningStatus : "Recording..."
+                    self.statusMessage = self.outputMode == "liveChunks" ? AudioInputRouter.listeningStatus(microphoneID: self.microphoneID) : "Recording..."
                     // The hotkey-up can land AFTER the grant callback's pendingStop
                     // guard but BEFORE this state change is delivered. Nothing else
                     // reads pendingStop once recording starts, so honor it here —
@@ -2131,7 +2121,7 @@ class AppState: ObservableObject {
                     if self.isTranscribing && self.livePipelineIsDrained {
                         self.completeFinalText(self.currentSessionText)
                     }
-                    self.statusMessage = self.isTranscribing ? "Finalizing..." : self.listeningStatus
+                    self.statusMessage = self.isTranscribing ? "Finalizing..." : AudioInputRouter.listeningStatus(microphoneID: self.microphoneID)
                     return
                 }
                 self.error = msg
@@ -2233,7 +2223,7 @@ class AppState: ObservableObject {
         case .beginListening:
             isArming = false
             isRecording = true
-            statusMessage = listeningStatus
+            statusMessage = AudioInputRouter.listeningStatus(microphoneID: microphoneID)
         case .beginListeningThenStop:
             // The hotkey-up landed while the engine was still arming (after the
             // grant callback's pendingStop guard, so nothing else consumes it).
@@ -2241,7 +2231,7 @@ class AppState: ObservableObject {
             // unattended. Same handling as the recorder's `.recording` case.
             isArming = false
             isRecording = true
-            statusMessage = listeningStatus
+            statusMessage = AudioInputRouter.listeningStatus(microphoneID: microphoneID)
             pendingStop = false
             stopDictation()
         }
@@ -3571,7 +3561,7 @@ class AppState: ObservableObject {
         agentEouDetector?.notePartial()
         let text = postProcess(rawText)
         streamingText = text
-        statusMessage = listeningStatus
+        statusMessage = AudioInputRouter.listeningStatus(microphoneID: microphoneID)
 
         // Once refine is armed mid-session, the words being spoken are the
         // INSTRUCTION — don't type them into the document as live chunks.
@@ -3952,11 +3942,6 @@ class AppState: ObservableObject {
         // the overlay shows a wait cue so the user doesn't speak into the gap and
         // lose the first word(s). `.recording` clears isArming.
         isArming = true
-        // Snapshot the mic-fallback decision for the session's status line (the
-        // capture engines independently make the same decision when routing).
-        let pinnedMic = microphoneID.trimmingCharacters(in: .whitespacesAndNewlines)
-        sessionMicFellBackToDefault =
-            !pinnedMic.isEmpty && !AudioInputRouter.canResolve(uid: pinnedMic)
         statusMessage = "Starting..."
         startElapsedTimer()
         // Agent-initiated sessions ALWAYS show the overlay (regardless of the
@@ -3981,12 +3966,12 @@ class AppState: ObservableObject {
                 if isTranscribing && livePipelineIsDrained {
                     completeFinalText(currentSessionText)
                 } else {
-                    statusMessage = isTranscribing ? "Finalizing..." : listeningStatus
+                    statusMessage = isTranscribing ? "Finalizing..." : AudioInputRouter.listeningStatus(microphoneID: microphoneID)
                 }
             } else if isTranscribing {
                 completeFinalText(currentSessionText)
             } else {
-                statusMessage = listeningStatus
+                statusMessage = AudioInputRouter.listeningStatus(microphoneID: microphoneID)
             }
             return
         }

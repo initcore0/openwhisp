@@ -60,4 +60,18 @@ enum AudioInputRoutingPolicy {
     static func fallbackNotice(uid: String) -> String {
         "Saved microphone is disconnected — using the default input."
     }
+
+    /// Convenience for session-state callers that only need to know whether the
+    /// decision was the announced fallback (same inputs as `decide`).
+    static func fellBackToDefault(microphoneID: String, deviceResolved: Bool) -> Bool {
+        if case .fallbackToDefault = decide(
+            microphoneID: microphoneID, deviceResolved: deviceResolved) { return true }
+        return false
+    }
+
+    /// Live-capture status line, annotated when the pinned mic fell back to the
+    /// default so the active input is never misrepresented in the UI.
+    static func listeningStatus(micFellBackToDefault: Bool) -> String {
+        micFellBackToDefault ? "Listening... (default mic)" : "Listening..."
+    }
 }

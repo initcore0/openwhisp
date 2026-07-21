@@ -67,6 +67,24 @@ final class AudioInputRoutingPolicyTests: XCTestCase {
         XCTAssertFalse(msg.contains("UID-7"))
     }
 
+    func testFellBackToDefaultMirrorsTheDecision() {
+        XCTAssertTrue(AudioInputRoutingPolicy.fellBackToDefault(
+            microphoneID: "Disconnected-UID", deviceResolved: false))
+        XCTAssertFalse(AudioInputRoutingPolicy.fellBackToDefault(
+            microphoneID: "Connected-UID", deviceResolved: true))
+        XCTAssertFalse(AudioInputRoutingPolicy.fellBackToDefault(
+            microphoneID: "", deviceResolved: false))
+    }
+
+    func testListeningStatusAnnotatesTheFallback() {
+        XCTAssertEqual(
+            AudioInputRoutingPolicy.listeningStatus(micFellBackToDefault: false),
+            "Listening...")
+        XCTAssertTrue(
+            AudioInputRoutingPolicy.listeningStatus(micFellBackToDefault: true)
+                .contains("default mic"))
+    }
+
     func testFallbackNoticeIsUserFacing() {
         let msg = AudioInputRoutingPolicy.fallbackNotice(uid: "UID-7")
         XCTAssertFalse(msg.isEmpty)
