@@ -77,8 +77,8 @@ final class SpeechAnalyzerStreamingEngine: StreamingTranscriptionEngine {
         let input = engine.inputNode
 
         // Route to the pinned input device BEFORE reading the format (same policy
-        // as AppleSpeechEngine — a non-empty unresolved selection is a hard error,
-        // never a silent fallback to the built-in mic).
+        // as AppleSpeechEngine — a disconnected pinned device falls back to the
+        // system default; a connected one that fails to route is a hard error).
         switch AudioInputRoutingPolicy.decide(
             microphoneID: selectedDeviceID,
             deviceResolved: AudioInputRouter.canResolve(uid: selectedDeviceID)
@@ -91,9 +91,8 @@ final class SpeechAnalyzerStreamingEngine: StreamingTranscriptionEngine {
                 throw SpeechAnalyzerBridge.BridgeError.unsupportedLocale(
                     AudioInputRoutingPolicy.unresolvedMessage(uid: uid))
             }
-        case .unresolved(let uid):
-            throw SpeechAnalyzerBridge.BridgeError.unsupportedLocale(
-                AudioInputRoutingPolicy.unresolvedMessage(uid: uid))
+        case .fallbackToDefault(let uid):
+            NSLog("[SpeechAnalyzerStreamingEngine] pinned mic '%@' disconnected — capturing system default", uid)
         }
 
         let micFormat = input.outputFormat(forBus: 0)

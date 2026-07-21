@@ -1,10 +1,12 @@
 import XCTest
 @testable import OpenWhispCore
 
-/// The pure routing decision that fixes the "selected mic silently ignored" bug.
-/// The CoreAudio resolution itself is app-side (needs a live audio stack), but the
-/// DECISION — empty=default, resolved=use, unresolved=error-not-fallback — is pure
-/// and pinned here so a regression to silent fallback fails a unit test.
+/// The pure routing decision behind mic selection. The CoreAudio resolution itself
+/// is app-side (needs a live audio stack), but the DECISION — empty=default,
+/// resolved=use, disconnected=announced-fallback-to-default — is pure and pinned
+/// here. A disconnected pinned device must NOT wedge the session (the
+/// AirPods-disconnect "Starting…" hang), and must carry its UID so callers can
+/// announce the fallback rather than silently capturing a different mic.
 final class AudioInputRoutingPolicyTests: XCTestCase {
 
     func testEmptyMicIDFollowsSystemDefault() {
@@ -33,14 +35,16 @@ final class AudioInputRoutingPolicyTests: XCTestCase {
         )
     }
 
-    /// The crux of the bug: a pinned device that can't be resolved must surface as
-    /// `.unresolved`, NOT silently degrade to `.systemDefault`.
-    func testUnresolvedPinnedDeviceDoesNotFallBackToDefault() {
+    /// A pinned device that isn't connected falls back to the default input so the
+    /// session can run — but as `.fallbackToDefault` carrying the UID (never plain
+    /// `.systemDefault`), so callers must announce the fallback instead of silently
+    /// capturing a different mic than the one the user picked.
+    func testDisconnectedPinnedDeviceFallsBackToDefaultWithNotice() {
         let decision = AudioInputRoutingPolicy.decide(
             microphoneID: "Disconnected-UID", deviceResolved: false)
-        XCTAssertEqual(decision, .unresolved(uid: "Disconnected-UID"))
+        XCTAssertEqual(decision, .fallbackToDefault(uid: "Disconnected-UID"))
         XCTAssertNotEqual(decision, .systemDefault,
-                          "an unresolved pinned device must never silently become the default")
+                          "the fallback must stay distinguishable so it is announced, not silent")
     }
 
     func testMicIDIsTrimmedBeforeCarryingThroughTheDecision() {
@@ -51,7 +55,7 @@ final class AudioInputRoutingPolicyTests: XCTestCase {
         )
         XCTAssertEqual(
             AudioInputRoutingPolicy.decide(microphoneID: "  UID-7  ", deviceResolved: false),
-            .unresolved(uid: "UID-7")
+            .fallbackToDefault(uid: "UID-7")
         )
     }
 
@@ -60,6 +64,13 @@ final class AudioInputRoutingPolicyTests: XCTestCase {
         XCTAssertFalse(msg.isEmpty)
         // Points the user at where to fix it, doesn't leak the raw UID.
         XCTAssertTrue(msg.contains("Settings"))
+        XCTAssertFalse(msg.contains("UID-7"))
+    }
+
+    func testFallbackNoticeIsUserFacing() {
+        let msg = AudioInputRoutingPolicy.fallbackNotice(uid: "UID-7")
+        XCTAssertFalse(msg.isEmpty)
+        XCTAssertTrue(msg.lowercased().contains("default"))
         XCTAssertFalse(msg.contains("UID-7"))
     }
 }

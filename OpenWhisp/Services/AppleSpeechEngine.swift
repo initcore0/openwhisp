@@ -113,9 +113,11 @@ final class AppleSpeechEngine: StreamingTranscriptionEngine {
         let input = engine.inputNode
 
         // Route to the selected input device BEFORE reading the format (the format
-        // follows the device). A non-empty selection that can't be resolved is a
-        // hard error — never silently fall back to the system default (that was the
-        // bug where picking a non-default mic still captured the built-in one).
+        // follows the device). A CONNECTED selection whose routing fails is a hard
+        // error — never silently capture a different mic (that was the bug where
+        // picking a non-default mic still captured the built-in one). A pinned but
+        // DISCONNECTED device instead falls back to the system default so the
+        // session can run (the AirPods-disconnect hang).
         switch AudioInputRoutingPolicy.decide(
             microphoneID: selectedDeviceID,
             deviceResolved: AudioInputRouter.canResolve(uid: selectedDeviceID)
@@ -129,8 +131,8 @@ final class AppleSpeechEngine: StreamingTranscriptionEngine {
                   AudioInputRouter.apply(device, to: engine) else {
                 throw AppleSpeechError.unavailable(AudioInputRoutingPolicy.unresolvedMessage(uid: uid))
             }
-        case .unresolved(let uid):
-            throw AppleSpeechError.unavailable(AudioInputRoutingPolicy.unresolvedMessage(uid: uid))
+        case .fallbackToDefault(let uid):
+            NSLog("[AppleSpeechEngine] pinned mic '%@' disconnected — capturing system default", uid)
         }
 
         let format = input.outputFormat(forBus: 0)

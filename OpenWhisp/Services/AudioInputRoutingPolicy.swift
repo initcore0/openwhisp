@@ -15,17 +15,22 @@ enum AudioInputRoutingPolicy {
     /// What the capture layer should do for a given `microphoneID` setting.
     enum Decision: Equatable {
         /// No specific device pinned — capture from whatever the OS default input is.
-        /// This is the intended behavior for an empty `microphoneID`, and it must NOT
-        /// be reached as a silent fallback when a pinned device fails to resolve.
         case systemDefault
         /// Route capture to the pinned device (carrying the trimmed UID; the caller
         /// re-resolves it to a live device at application time).
         case useDevice(uid: String)
-        /// A device WAS pinned but couldn't be resolved (disconnected, or its UID no
-        /// longer matches any enumerated input). The caller must surface this — never
-        /// silently fall back to the system default, which is the historical bug that
-        /// made a non-default selection silently capture the built-in mic.
-        case unresolved(uid: String)
+        /// A device WAS pinned but isn't currently connected (its UID no longer
+        /// matches any enumerated input — e.g. AirPods put back in their case).
+        /// Capture proceeds on the SYSTEM DEFAULT input and the caller surfaces
+        /// `fallbackNotice` so the user knows which mic is live. The pinned UID is
+        /// kept in settings, so the device is used again the moment it reconnects.
+        ///
+        /// This is distinct from the historical silent-wrong-mic bug: that bug was a
+        /// CONNECTED selection whose routing was never applied (or failed to apply),
+        /// which remains a hard error at the `useDevice` application sites. Refusing
+        /// to capture at all for a disconnected mic just wedged the session at
+        /// "Starting…" with no path forward (the AirPods-disconnect hang).
+        case fallbackToDefault(uid: String)
     }
 
     /// Decide how to route, given the stored setting and whether the resolver found a
@@ -34,16 +39,25 @@ enum AudioInputRoutingPolicy {
     ///
     /// - `microphoneID` empty  → `.systemDefault` (regardless of `deviceResolved`).
     /// - non-empty + resolved  → `.useDevice`.
-    /// - non-empty + unresolved → `.unresolved` (caller surfaces an error).
+    /// - non-empty + unresolved → `.fallbackToDefault` (caller captures the system
+    ///   default and surfaces `fallbackNotice`).
     static func decide(microphoneID: String, deviceResolved: Bool) -> Decision {
         let uid = microphoneID.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !uid.isEmpty else { return .systemDefault }
-        return deviceResolved ? .useDevice(uid: uid) : .unresolved(uid: uid)
+        return deviceResolved ? .useDevice(uid: uid) : .fallbackToDefault(uid: uid)
     }
 
-    /// User-facing message for an unresolved pinned device. Kept here so the wording
-    /// is identical across the capture paths that surface it.
+    /// User-facing message when a pinned device is CONNECTED but routing capture to
+    /// it failed (resolve/apply raced a disconnect or CoreAudio refused the switch).
+    /// Kept identical across the capture paths that surface it.
     static func unresolvedMessage(uid: String) -> String {
         "Selected microphone isn't available. Reconnect it or pick another in Settings → Dictation."
+    }
+
+    /// User-facing notice when a pinned-but-disconnected device made capture fall
+    /// back to the system default input. Informational, not an error — the session
+    /// still runs.
+    static func fallbackNotice(uid: String) -> String {
+        "Saved microphone is disconnected — using the default input."
     }
 }

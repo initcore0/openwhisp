@@ -144,8 +144,9 @@ final class ParakeetStreamingEngine: StreamingTranscriptionEngine {
             let input = engine.inputNode
 
             // Route to the selected input device BEFORE reading the format.
-            // An unresolved pinned device is a hard error, never a silent
-            // fall-back to the system default (same policy as Apple Speech).
+            // A pinned but disconnected device falls back to the system default;
+            // a connected device that fails to route stays a hard error (same
+            // policy as Apple Speech).
             switch AudioInputRoutingPolicy.decide(
                 microphoneID: selectedDeviceID,
                 deviceResolved: AudioInputRouter.canResolve(uid: selectedDeviceID)
@@ -158,9 +159,8 @@ final class ParakeetStreamingEngine: StreamingTranscriptionEngine {
                     callbacks.error?(AudioInputRoutingPolicy.unresolvedMessage(uid: uid))
                     return
                 }
-            case .unresolved(let uid):
-                callbacks.error?(AudioInputRoutingPolicy.unresolvedMessage(uid: uid))
-                return
+            case .fallbackToDefault(let uid):
+                NSLog("[ParakeetStreamingEngine] pinned mic '%@' disconnected — capturing system default", uid)
             }
 
             let format = input.outputFormat(forBus: 0)
