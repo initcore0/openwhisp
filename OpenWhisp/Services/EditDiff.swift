@@ -78,4 +78,76 @@ enum EditDiff {
     private static func isSingleToken(_ s: String) -> Bool {
         !s.contains(where: { $0.isWhitespace })
     }
+
+    // MARK: - Multi-word capture (MAK-86 slice 1)
+
+    /// Derive a MULTI-word correction pair from the after-insert / later snapshots.
+    ///
+    /// This is the widened sibling of `singleTokenCorrection`: it still requires
+    /// exactly ONE contiguous changed region (anchored on the longest common
+    /// prefix/suffix, snapped outward to whole-word boundaries), but allows that
+    /// region to span up to `maxWords` whitespace-delimited tokens on EACH side.
+    /// This captures the misrecognitions a single-token diff can't:
+    ///
+    ///   - a run split into pieces: "Parra keet" → "Parakeet"
+    ///   - a word wrongly split: "open whisper" → "OpenWhisp"
+    ///   - a short mis-heard phrase: "clod code" → "Claude Code"
+    ///
+    /// The token counts on the two sides need NOT match (a collapse changes the
+    /// count), which is exactly why the single-token/equal-count path can't handle
+    /// these. Returns nil when there's no change, when the change spans more than
+    /// one region, or when either side exceeds `maxWords` tokens (a bigger edit is
+    /// too ambiguous to attribute to one misrecognition).
+    ///
+    /// - Note: For a genuine one-word fix this and `singleTokenCorrection` agree;
+    ///   the learner (`proposePhraseSubstitution`) applies the real safety gate on
+    ///   top, so this only has to bound the *shape* of the region.
+    static func multiWordCorrection(
+        afterInsert: String,
+        later: String,
+        maxWords: Int = 4
+    ) -> (inserted: String, surviving: String)? {
+        guard afterInsert != later else { return nil }
+
+        let a = Array(afterInsert)
+        let b = Array(later)
+
+        // Longest common prefix (character level).
+        var p = 0
+        while p < a.count && p < b.count && a[p] == b[p] { p += 1 }
+
+        // Longest common suffix length, not overlapping the prefix on either side.
+        var s = 0
+        while s < (a.count - p) && s < (b.count - p) && a[a.count - 1 - s] == b[b.count - 1 - s] { s += 1 }
+
+        let left = p
+        let rightA = a.count - s
+        let rightB = b.count - s
+
+        // Snap the region OUTWARD to whole-word boundaries so a common prefix/suffix
+        // that cut through a word ("Para|keet" vs "Parra| keet") doesn't leave a
+        // fragment. The left boundary is shared; each right boundary walks its own
+        // side forward to the next whitespace.
+        var wordLeft = left
+        while wordLeft > 0 && !a[wordLeft - 1].isWhitespace { wordLeft -= 1 }
+
+        var wordRightA = rightA
+        while wordRightA < a.count && !a[wordRightA].isWhitespace { wordRightA += 1 }
+        var wordRightB = rightB
+        while wordRightB < b.count && !b[wordRightB].isWhitespace { wordRightB += 1 }
+
+        let midA = String(a[wordLeft..<wordRightA]).trimmingCharacters(in: .whitespacesAndNewlines)
+        let midB = String(b[wordLeft..<wordRightB]).trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard !midA.isEmpty, !midB.isEmpty else { return nil }
+
+        // Bound the region to at most `maxWords` tokens per side. A single
+        // contiguous region is already guaranteed by the prefix/suffix anchoring;
+        // capping the token span keeps us to small, attributable corrections.
+        let aWords = midA.split(whereSeparator: { $0.isWhitespace }).count
+        let bWords = midB.split(whereSeparator: { $0.isWhitespace }).count
+        guard aWords >= 1, aWords <= maxWords, bWords >= 1, bWords <= maxWords else { return nil }
+
+        return (inserted: midA, surviving: midB)
+    }
 }

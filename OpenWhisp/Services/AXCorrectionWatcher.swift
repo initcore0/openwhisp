@@ -25,18 +25,24 @@ import ApplicationServices
 ///    apps — Electron/web views especially — never emit it, and the observer's
 ///    threading/lifetime is a footgun). A single debounced re-read of
 ///    `kAXValueAttribute` is the reliable subset, so that's what ships.
+///  - **Never a secure field.** Before capturing, the delayed re-read checks
+///    `SecureFieldDetector.focusedFieldIsSecure()` and drops anything typed into a
+///    password field — a learned rule lands in the synced dictionary.
 ///  - **The learner is the final gate.** Even a captured pair only becomes a
-///    *proposal* the user must accept; `CorrectionLearner.proposeSubstitution` and
-///    `CorrectionProposalState` reject anything that isn't an unambiguous one-word
-///    correction, and nothing is ever applied to the dictionary silently.
+///    *proposal* (or, once corroborated, an auto-add) after `CorrectionLearner`
+///    and the confidence weighting judge it. Single-word fixes go through
+///    `proposeSubstitution`; widened multi-word / split-run corrections
+///    ("Parra keet" → "Parakeet") through `proposePhraseSubstitution`. Nothing is
+///    applied to the dictionary from a one-off, low-confidence capture silently.
 ///
 /// # Known limits (deferred, documented)
 ///
 ///  - If the user keeps DICTATING after the final (so the field grows by whole
-///    sentences), `EditDiff` returns nil — we only learn from a localized one-word
-///    fix, not from continued dictation.
+///    sentences), `EditDiff` returns nil — we only learn from a localized fix (now
+///    up to ~4 words), not from continued dictation.
 ///  - Apps that don't expose a readable `kAXValueAttribute` (some web/Electron
-///    fields) yield no snapshot, so nothing is captured there.
+///    fields) yield no snapshot, so nothing is captured there. Electron/web
+///    AXWebArea coverage is MAK-86 slice 2, not this slice.
 ///  - Only ONE deferred re-read per insert: if the user corrects the word AFTER the
 ///    debounce window, this pass misses it. The window is a deliberate
 ///    reliability/latency trade, not a claim of continuous observation.
@@ -108,11 +114,21 @@ final class AXCorrectionWatcher {
         // Nothing changed → nothing to learn.
         guard currentValue != armed.afterInsertValue else { return }
 
-        // Localized single-word edit? EditDiff + the learner are the gate.
-        guard let pair = EditDiff.singleTokenCorrection(
-            afterInsert: armed.afterInsertValue,
-            later: currentValue
-        ) else { return }
+        // Never learn from a secure (password) field: if the focused element is a
+        // secure text field, drop the capture. Fail-open (see SecureFieldDetector):
+        // only a positive secure match suppresses learning.
+        guard !SecureFieldDetector.focusedFieldIsSecure() else { return }
+
+        // Localized edit? Prefer the single-word diff (the strictest, longest-
+        // tested shape); fall back to the widened multi-word diff for split-run /
+        // compound corrections ("Parra keet" → "Parakeet"). The learner is the
+        // real gate on top — this only bounds the shape of the captured region.
+        let pair = EditDiff.singleTokenCorrection(
+            afterInsert: armed.afterInsertValue, later: currentValue
+        ) ?? EditDiff.multiWordCorrection(
+            afterInsert: armed.afterInsertValue, later: currentValue
+        )
+        guard let pair else { return }
 
         onCorrection(pair.inserted, pair.surviving)
     }

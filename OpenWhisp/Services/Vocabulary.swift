@@ -137,6 +137,19 @@ public struct Vocabulary: Codable, Equatable {
         return copy
     }
 
+    /// Append `sub` unless a rule with the same case-insensitive `from→to` already
+    /// exists. Stamped `now`. The single funnel for machine-added rules (accepted
+    /// proposals, MAK-86 auto-adds) so a duplicate can never slip in. Returns a new
+    /// Vocabulary (unchanged when the rule is already present).
+    public func addingSubstitutionIfAbsent(_ sub: Substitution, now: Date = Date()) -> Vocabulary {
+        func key(_ f: String, _ t: String) -> String {
+            "\(f.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())\u{1F}\(t.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())"
+        }
+        let k = key(sub.from, sub.to)
+        guard !substitutions.contains(where: { key($0.from, $0.to) == k }) else { return self }
+        return addingSubstitution(sub, now: now)
+    }
+
     /// Remove the substitution with `id`. Returns a new Vocabulary (no stamp —
     /// the entry is gone; a tombstone model is out of scope for the v1 merge).
     public func removingSubstitution(_ id: Substitution.ID) -> Vocabulary {
