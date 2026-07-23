@@ -36,7 +36,14 @@ final class AgentBridgeServer {
     /// When false (the default), a peer must satisfy our own code-signing
     /// requirement (same Team ID, or same designated requirement). The Settings
     /// "Allow unsigned / third-party clients" toggle sets this true.
-    var allowUnsignedClients = false
+    /// Written from the main thread, read by `authenticatePeer` on
+    /// per-connection threads — guarded by `stateLock` like the server's other
+    /// cross-thread state.
+    var allowUnsignedClients: Bool {
+        get { stateLock.lock(); defer { stateLock.unlock() }; return _allowUnsignedClients }
+        set { stateLock.lock(); defer { stateLock.unlock() }; _allowUnsignedClients = newValue }
+    }
+    private var _allowUnsignedClients = false
 
     private let stateLock = NSLock()
     private var listenFD: Int32 = -1

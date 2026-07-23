@@ -40,7 +40,16 @@ struct LLMBenchModelResult {
 
 @MainActor
 final class LLMBenchRunner {
-    private let engine = LlamaServerEngine()
+    /// Own spec (distinct PID/log files): with the production identity, this
+    /// engine's init-time stale-reap would SIGTERM AppState's LIVE llama-server
+    /// (killing any in-flight refine), and the first refine after a bench run
+    /// would reap the bench server mid-bench in return.
+    private let engine = LlamaServerEngine(spec: ManagedServerSpec(
+        executableBasename: "llama-server",
+        logTag: "llama-server-bench",
+        pidFileName: "llama-server-bench.pid",
+        logFileName: "llama-bench.log"
+    ))
     private let service = OpenAITranslationService()
 
     /// Load the canned cases shipped in the bundle (scripts/bench is dev-only, so

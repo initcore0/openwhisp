@@ -262,7 +262,19 @@ final class LANBridgeServer {
                 sec, keyDD as __DispatchData, identityDD as __DispatchData)
         }
 
-        let params = NWParameters(tls: tls, tcp: NWProtocolTCP.Options())
+        // TCP keepalive: the server is purely receive-driven and has no
+        // post-handshake timeout, so a peer that vanishes without FIN/RST (left
+        // WiFi, slept, hopped networks) would otherwise leave a ghost
+        // LANConnection retained forever — eight of those exhaust the
+        // connection cap and sync silently stops until the listener restarts.
+        // Keepalive makes the OS detect the dead peer and error the connection,
+        // which releases it back under the cap.
+        let tcp = NWProtocolTCP.Options()
+        tcp.enableKeepalive = true
+        tcp.keepaliveIdle = 30
+        tcp.keepaliveInterval = 10
+        tcp.keepaliveCount = 3
+        let params = NWParameters(tls: tls, tcp: tcp)
         params.includePeerToPeer = true
         return params
     }

@@ -43,6 +43,11 @@ extension AppState: SyncStore {
     /// actually survive (see SyncStore.syncHistoryRetentionLimit).
     var syncHistoryRetentionLimit: Int? { TranscriptionHistoryStore.maxEntries }
 
+    /// Surfaces the privacy toggle to the push handler so a history-off Mac
+    /// reports zero history merges instead of "merged N" for entries the setter
+    /// above silently refused to persist.
+    var syncHistoryEnabled: Bool { historyEnabled }
+
     /// Content hash of the bundled config packs, so a peer's manifest can tell if
     /// its pack set differs. Packs are read-only bundled resources; identity only.
     func syncPacksHash() -> String {

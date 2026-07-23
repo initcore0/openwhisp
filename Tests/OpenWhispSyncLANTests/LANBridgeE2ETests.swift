@@ -298,7 +298,18 @@ final class SyncVerbHandlersTests: XCTestCase {
         var syncVocabulary: Vocabulary = .empty
         var syncProfiles: [AppProfile] = []
         var syncModes: [Mode] = []
-        var syncHistory: [TranscriptionEntry] = []
+        /// Mirrors AppState's privacy-toggle conformance: history reads empty and
+        /// the setter refuses writes while the toggle is off.
+        var historyEnabled = true
+        var syncHistoryEnabled: Bool { historyEnabled }
+        var syncHistory: [TranscriptionEntry] {
+            get { historyEnabled ? storedHistory : [] }
+            set {
+                guard historyEnabled else { return }
+                storedHistory = newValue
+            }
+        }
+        private var storedHistory: [TranscriptionEntry] = []
         var syncHistoryRetentionLimit: Int?
         func syncPacksHash() -> String { "" }
         func syncPackBundles() -> [ConfigBundle] { [] }
@@ -382,5 +393,27 @@ final class SyncVerbHandlersTests: XCTestCase {
 
         let second = handlers.push(payload)
         XCTAssertEqual(second.mergedCounts.history, 0, "identical re-push must merge nothing")
+    }
+
+    /// History disabled (privacy toggle off): the store's history setter refuses
+    /// writes, so a push must merge zero history entries and REPORT zero.
+    /// Counting the incoming entries as merged (each looks "new" against the
+    /// empty snapshot) told the peer "merged N" for entries that were never
+    /// persisted — it would re-offer the same entries on every sync cycle.
+    func testPushWithHistoryDisabledReportsZeroHistoryMerged() {
+        let store = MemStore()
+        store.historyEnabled = false
+        let handlers = SyncVerbHandlers(store: store)
+
+        let payload = BridgeWire.SyncBundleResult(
+            bundle: ConfigBundle(profiles: nil, modes: nil, vocabulary: nil),
+            historyEntries: [entry(1), entry(2)])
+        let result = handlers.push(payload)
+
+        XCTAssertTrue(result.accepted)
+        XCTAssertEqual(result.mergedCounts.history, 0,
+                       "must not claim history merges the store refused to persist")
+        store.historyEnabled = true
+        XCTAssertTrue(store.syncHistory.isEmpty, "nothing may have been persisted")
     }
 }
