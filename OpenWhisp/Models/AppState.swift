@@ -2139,15 +2139,43 @@ class AppState: ObservableObject {
     /// handlers. Both backends drive the same live-preview/delta-paste path, so the
     /// callbacks are identical — only the underlying recognizer differs.
     ///
-    /// The partial/final closures are (re)bound per streaming session in
+    /// The partial/final/error closures are (re)bound per streaming session in
     /// `bindStreamingSessionCallbacks(_:sessionID:)` so they capture the session
     /// generation and can drop late callbacks from a previous engine session (e.g.
     /// Apple Speech's 0.8s synthesized-final fallback firing after a quick
-    /// cancel+restart). The error/level closures below aren't session-critical, so
-    /// they're wired once here.
+    /// cancel+restart). Only the level closure isn't session-critical, so it's
+    /// wired once here.
     private func wireStreamingEngineCallbacks(_ engine: StreamingTranscriptionEngine) {
         bindStreamingSessionCallbacks(engine, sessionID: activeSessionID)
-        let sessionID = activeSessionID
+        engine.onLevelChanged = { [weak self] display, vad in
+            Task { @MainActor in self?.updateAudioLevel(display, vadLevel: vad) }
+        }
+    }
+
+    /// (Re)bind the partial/final/started/error closures of a streaming engine to
+    /// a specific session generation. The closures capture `sessionID` and drop
+    /// the callback if the session has since moved on. This closes the late-final
+    /// hole: on a quick cancel+restart, a leftover synthesized final from the
+    /// PREVIOUS engine session would otherwise be treated as the CURRENT session's
+    /// final (pasting the old transcript and completing the new session early),
+    /// because `isAppleSpeechSession` is a plain boolean that the successor
+    /// session also sets true. Called per streaming session start
+    /// (`startStreamingSession`) with the fresh `activeSessionID`.
+    ///
+    /// `onError` MUST be in this per-session rebind: it was previously bound only
+    /// at wiring time, so the captured ID predated every session (`beginSession`
+    /// rotates `activeSessionID`) and the fence dropped every real mid-session
+    /// engine error — the session hung at "Listening..." with the recognizer dead.
+    private func bindStreamingSessionCallbacks(_ engine: StreamingTranscriptionEngine, sessionID: UUID) {
+        engine.onPartial = { [weak self] text in
+            Task { @MainActor in self?.handleAppleSpeechPartial(text, sessionID: sessionID) }
+        }
+        engine.onFinal = { [weak self] text in
+            Task { @MainActor in self?.handleAppleSpeechFinal(text, sessionID: sessionID) }
+        }
+        engine.onStarted = { [weak self] in
+            Task { @MainActor in self?.handleStreamingCaptureStarted(sessionID: sessionID) }
+        }
         engine.onError = { [weak self] message in
             Task { @MainActor in
                 guard let self, self.isAppleSpeechSession else { return }
@@ -2165,30 +2193,6 @@ class AppState: ObservableObject {
                 self.sessionOutcome = .error(message: message)
                 self.finishSessionUI()
             }
-        }
-        engine.onLevelChanged = { [weak self] display, vad in
-            Task { @MainActor in self?.updateAudioLevel(display, vadLevel: vad) }
-        }
-    }
-
-    /// (Re)bind the partial/final closures of a streaming engine to a specific
-    /// session generation. The closures capture `sessionID` and pass it to the
-    /// handlers, which drop the callback if the session has since moved on. This
-    /// closes the late-final hole: on a quick cancel+restart, a leftover
-    /// synthesized final from the PREVIOUS engine session would otherwise be
-    /// treated as the CURRENT session's final (pasting the old transcript and
-    /// completing the new session early), because `isAppleSpeechSession` is a plain
-    /// boolean that the successor session also sets true. Called per streaming
-    /// session start (`startStreamingSession`) with the fresh `activeSessionID`.
-    private func bindStreamingSessionCallbacks(_ engine: StreamingTranscriptionEngine, sessionID: UUID) {
-        engine.onPartial = { [weak self] text in
-            Task { @MainActor in self?.handleAppleSpeechPartial(text, sessionID: sessionID) }
-        }
-        engine.onFinal = { [weak self] text in
-            Task { @MainActor in self?.handleAppleSpeechFinal(text, sessionID: sessionID) }
-        }
-        engine.onStarted = { [weak self] in
-            Task { @MainActor in self?.handleStreamingCaptureStarted(sessionID: sessionID) }
         }
     }
 
@@ -2256,7 +2260,15 @@ class AppState: ObservableObject {
     /// silence-referenced and would make the fixed gates meaningless.
     @MainActor
     private func updateAudioLevel(_ level: Float, vadLevel: Float) {
-        audioLevel = level
+        // Publish only meaningful changes: this fires at audio-buffer rate
+        // (~20–45 Hz) and AppState is one monolithic ObservableObject, so every
+        // assignment re-renders EVERY observing window (Settings, Onboarding,
+        // Lab…), not just the overlay waveform. Sub-1% wiggle is invisible on
+        // the waveform but was the bulk of the render storm while dictating
+        // with a settings pane open. Detectors below still see every sample.
+        if abs(audioLevel - level) >= 0.01 || (level == 0 && audioLevel != 0) {
+            audioLevel = level
+        }
         feedLockSafetyAutoStop(vadLevel: vadLevel)
         // EOU settle check (MAK-46 Phase 5): the level tick is a free continuous
         // clock; cheap because the detector is nil except for an armed agent session.
@@ -2790,12 +2802,20 @@ class AppState: ObservableObject {
         }
     }
 
-    private static func bundledLLMManifest() -> [ModelManifestEntry]? {
+    /// Cached: the manifest is a bundle resource that cannot change while the app
+    /// runs, and the Cleanup pane consults it several times per SwiftUI render —
+    /// re-reading + re-decoding it from disk per render was measurable during
+    /// dictation (every @Published tick re-renders the visible pane).
+    private static let cachedBundledLLMManifest: [ModelManifestEntry]? = {
         guard let url = Bundle.main.resourceURL?.appendingPathComponent("models/llm-manifest.json"),
               let data = try? Data(contentsOf: url) else {
             return nil
         }
         return try? JSONDecoder().decode([ModelManifestEntry].self, from: data)
+    }()
+
+    private static func bundledLLMManifest() -> [ModelManifestEntry]? {
+        cachedBundledLLMManifest
     }
 
     /// True when a resident whisper.cpp server is held in memory at the same time
@@ -3236,8 +3256,20 @@ class AppState: ObservableObject {
             // WhisperKit has no external server; warm = preload its CoreML model
             // up front (with a visible status) so the slow first load doesn't block
             // the first dictation. Doesn't depend on whisperBackend.
-            guard !isModelDownloading else {
+            // Gate on the WhisperKit-specific download state, not the GGML flag
+            // (`isModelDownloading` tracks only whisper.cpp downloads): warming an
+            // UNSTAGED model would fall into WhisperKitBridge's auto-download
+            // while ensureSelectedEngineModel kicks the managed download of the
+            // same model — two concurrent multi-hundred-MB fetches. The managed
+            // download owns staging (single-flight, re-warms on completion), so
+            // an unstaged model routes there instead of warming.
+            guard whisperKitDownloadingModel == nil else {
                 whisperWorkerStatus = "Waiting for model"
+                return
+            }
+            guard WhisperKitModelCatalog.isStaged(whisperKitModel) else {
+                whisperWorkerStatus = "Waiting for model"
+                downloadWhisperKitModel(whisperKitModel)
                 return
             }
             whisperEngine?.warmServer(binaryPath: whisperBinaryPath, modelPath: modelPath)
@@ -4551,8 +4583,16 @@ class AppState: ObservableObject {
                     guard let self else { return }
                     guard sessionID == self.activeSessionID else {
                         self.refineDebug("applyRefineLLM RESULT DROPPED: session changed")
-                        // Don't leave the machine stuck in .applying — abort it.
-                        self.executeRefineEffects(self.refineFlow.handle(.abort))
+                        // Don't leave the machine stuck in .applying — but only
+                        // abort if it still holds THIS call's refine. A newer
+                        // session may have engaged its own refine on the shared
+                        // machine by now; aborting that would clear the new
+                        // session's text and finish its UI, silently losing that
+                        // dictation.
+                        if case .applying(let step1, let inFlightInstruction, _) = self.refineFlow.state,
+                           step1 == target, inFlightInstruction == instruction {
+                            self.executeRefineEffects(self.refineFlow.handle(.abort))
+                        }
                         return
                     }
                     switch result {
@@ -4569,7 +4609,11 @@ class AppState: ObservableObject {
         }, fallback: { [weak self] in
             guard let self else { return }
             guard sessionID == self.activeSessionID else {
-                self.executeRefineEffects(self.refineFlow.handle(.abort))
+                // Same stale-abort guard as the completion path above.
+                if case .applying(let step1, let inFlightInstruction, _) = self.refineFlow.state,
+                   step1 == target, inFlightInstruction == instruction {
+                    self.executeRefineEffects(self.refineFlow.handle(.abort))
+                }
                 return
             }
             // Built-in model unavailable: treat as a failed refine (inserts step-1).
@@ -4962,13 +5006,11 @@ class AppState: ObservableObject {
             // Only clear if a newer notice/session hasn't superseded this one.
             guard self.clipboardFallbackToken == token else { return }
             self.clipboardFallbackActive = false
-            // Don't hide a NEW session's overlay while it's still arming
-            // (isRecording flips true only after the async grant + engine start), and
+            // Don't hide a NEW session's overlay (see overlayIsSettled), and
             // keep it up while a "revert to original" is still offered so that
             // affordance stays reachable (MAK-35) — the revert flow dismisses it.
             let revertOffered = self.history.first?.revertTarget != nil
-            if !self.isRecording && !self.isTranscribing && !self.sessionActive
-                && !self.isArming && !revertOffered {
+            if self.overlayIsSettled && !revertOffered {
                 self.hideOverlayNow()
             }
         }
@@ -5236,14 +5278,13 @@ class AppState: ObservableObject {
         if delay > 0 {
             Task { @MainActor in
                 try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
-                // Also check sessionActive/isArming: a new session started during
-                // the delay is "arming" (isRecording still false) and its overlay
-                // must not be hidden by this stale task. Likewise leave the overlay up
-                // if a refine was armed on it or a clipboard-fallback cue is showing —
-                // both actively own the overlay and dismiss it themselves. (The longer
-                // hold used when a revert is offered widens the window these can occur.)
-                if !self.isRecording && !self.isTranscribing && !self.sessionActive
-                    && !self.isArming && !self.refineArmed && !self.clipboardFallbackActive {
+                // A new session started during the delay is "arming" (isRecording
+                // still false) and its overlay must not be hidden by this stale
+                // task; same for a refine, a clipboard-fallback cue, or an agent
+                // question being read aloud — see overlayIsSettled. (The longer
+                // hold used when a revert is offered widens the window these can
+                // occur.)
+                if self.overlayIsSettled {
                     self.hideOverlayNow()
                 }
             }
@@ -5737,8 +5778,12 @@ class AppState: ObservableObject {
             }
             history = Array(history.prefix(TranscriptionHistoryStore.maxEntries))
         }
-        TranscriptionHistoryStore.save(history)
-        applyRetentionPolicy()
+        // One background write covers both the insert and any retention sweep —
+        // previously this was up to two synchronous whole-file encodes (200
+        // entries with full transcripts) on the main actor at paste time, while
+        // the overlay was animating its completion state.
+        applyRetentionPolicy(persist: false)
+        persistHistory()
     }
 
     func clearHistory() {
@@ -5827,7 +5872,9 @@ class AppState: ObservableObject {
     /// it dictates: drop expired entries (age cap) and prune surplus audio (count
     /// cap). Pure decision in `AudioRetentionPolicy`; this just applies it. No-op
     /// when retention is off (the policy returns an empty sweep).
-    func applyRetentionPolicy(now: Date = Date()) {
+    /// `persist: false` lets `recordHistory` coalesce the sweep's write with its
+    /// own into a single background save.
+    func applyRetentionPolicy(now: Date = Date(), persist: Bool = true) {
         let settings = AudioRetentionSettings(
             enabled: retainRawAudioEnabled,
             maxAgeDays: audioRetentionDays,
@@ -5857,8 +5904,22 @@ class AppState: ObservableObject {
             }
             return e
         }
-        TranscriptionHistoryStore.save(history)
+        if persist { persistHistory() }
     }
+
+    /// Persist the current history off the main actor. `history` is a value type,
+    /// so this snapshots and hands the encode + atomic write to the serial store
+    /// queue (same pattern as the debounced vocabulary save): ordering is
+    /// preserved, and the paste hot path never blocks on disk.
+    private func persistHistory() {
+        let snapshot = history
+        Self.storeSaveQueue.async { TranscriptionHistoryStore.save(snapshot) }
+    }
+
+    /// Background serial queue for the per-dictation store writes (history,
+    /// stats). Serial so snapshots land in order; last write wins with the
+    /// newest state.
+    private static let storeSaveQueue = DispatchQueue(label: "com.openwhisp.app.store-save")
 
     /// Stage a COPY of a just-finished whole-session WAV for retention, made before
     /// the engine deletes the original. No-op when retention is off. Replaces any
@@ -5939,7 +6000,10 @@ class AppState: ObservableObject {
             transcriptionLatencySeconds: latency
         )
         dictationStats.record(event)
-        DictationStatsStore.save(dictationStats)
+        // Same off-main-actor write as persistHistory(): stats save on every
+        // completed dictation, right on the paste hot path.
+        let snapshot = dictationStats
+        Self.storeSaveQueue.async { DictationStatsStore.save(snapshot) }
 
         // MAK-25: count only genuine USER dictations toward the first-run hint
         // window — never agent sessions or refine passes (those aren't the user
@@ -6086,10 +6150,19 @@ class AppState: ObservableObject {
     private func dismissOverlayIfSettled(after delay: TimeInterval) {
         Task { @MainActor in
             try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
-            guard !self.isRecording, !self.isTranscribing, !self.sessionActive,
-                  !self.isArming, !self.refineArmed, !self.clipboardFallbackActive else { return }
+            guard self.overlayIsSettled else { return }
             self.hideOverlayNow()
         }
+    }
+
+    /// True when nothing owns the overlay anymore: no session in any phase, no
+    /// armed refine, no clipboard-fallback cue, and no agent question being read
+    /// aloud (that pre-session window shows the question hero + Esc target while
+    /// every session flag is still false — a stale delayed hide must not pull it
+    /// down mid-TTS). Single predicate so the delayed-hide sites can't drift.
+    private var overlayIsSettled: Bool {
+        !isRecording && !isTranscribing && !sessionActive && !isArming
+            && !refineArmed && !clipboardFallbackActive && !agentDictateReadingQuestion
     }
 
     // MARK: - Config import / export
@@ -6695,8 +6768,14 @@ extension AppState: AgentBridgeHost {
         context: BridgeWire.DictateContext?, autoSubmit: Bool = BridgeWire.DictateParams.defaultAutoSubmit,
         completion: @escaping (Result<BridgeWire.DictateResult, BridgeWire.ErrorObject>) -> Void
     ) {
-        // Busy: the human (or another agent session) always wins the mic.
-        guard !isRecording, !isTranscribing, !sessionActive else {
+        // Busy: the human (or another agent session) always wins the mic. The
+        // TTS question-reading window counts as busy too: there the session
+        // flags are all still false (beginSession is deferred until the spoken
+        // question ends) but `onSessionEnd` is already armed — a second dictate
+        // admitted here would overwrite it and strand the first caller's
+        // connection thread forever. Mirrors the user-hotkey path's guard.
+        guard !isRecording, !isTranscribing, !sessionActive,
+              !agentDictateReadingQuestion, onSessionEnd == nil else {
             completion(.failure(.domain(.busy, message: "OpenWhisp is busy with another dictation; try again shortly")))
             return
         }
