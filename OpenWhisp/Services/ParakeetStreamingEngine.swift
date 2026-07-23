@@ -28,6 +28,13 @@ final class ParakeetStreamingEngine: StreamingTranscriptionEngine {
     var onLevelChanged: ((_ display: Float, _ vad: Float) -> Void)?
     var onStarted: (() -> Void)?
 
+    /// Audio tee for the dual-runtime translator: the mic frames FluidAudio is
+    /// already resampling to mono 16 kHz, forwarded to a second consumer. Set by
+    /// AppState only when the dual path is armed; nil otherwise. Read on the audio
+    /// thread inside the tap — the consumer (TranslationChunker via
+    /// LiveTranslationCoordinator) is thread-safe.
+    var onAudioBuffer: (([Float]) -> Void)?
+
     /// Fires when the underlying manager reports a NEW end-of-utterance event
     /// (only the EOU variant exposes these). Used by the agent-dictate EOU
     /// auto-stop (MAK-46 Phase 5); nil for every other caller. Fires on the main
@@ -253,6 +260,21 @@ final class ParakeetStreamingEngine: StreamingTranscriptionEngine {
                 }
             }
 
+            // Dual-runtime translate tee: build a converter from the tap format to
+            // mono 16 kHz Float ONCE per session (never in the audio callback), and
+            // only when a consumer is attached. The tap forwards the converted
+            // samples so the translator never opens a second mic. Snapshotting the
+            // closure here (not reading self.onAudioBuffer per buffer) keeps the hot
+            // path free of a main-actor property read.
+            let audioTee = self.onAudioBuffer
+            let teeConverter: AVAudioConverter? = audioTee == nil
+                ? nil
+                : AVAudioConverter(
+                    from: format,
+                    to: AVAudioFormat(
+                        commonFormat: .pcmFormatFloat32, sampleRate: 16_000,
+                        channels: 1, interleaved: false)!)
+
             // The tap closure runs on an audio thread but touches no session
             // state — AsyncStream.Continuation.yield is Sendable + thread-safe,
             // so it yields straight from the audio thread (no main-actor hop
@@ -260,6 +282,9 @@ final class ParakeetStreamingEngine: StreamingTranscriptionEngine {
             input.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
                 continuation.yield(buffer)
                 self?.publishLevel(from: buffer)
+                if let audioTee, let teeConverter {
+                    Self.forwardResampled(buffer, using: teeConverter, to: audioTee)
+                }
             }
 
             audioEngine = engine
@@ -397,6 +422,34 @@ final class ParakeetStreamingEngine: StreamingTranscriptionEngine {
         }
         inFlightLoad = task
         return task
+    }
+
+    /// Resample one tap buffer to mono 16 kHz Float and hand the samples to the
+    /// dual-runtime tee. Runs on the audio thread; `converter` is session-scoped
+    /// and used only from this single tap, so its internal state is not shared.
+    /// A conversion failure drops the buffer silently — the translator degrades to
+    /// fewer segments, never a crash on the audio thread.
+    private static func forwardResampled(
+        _ buffer: AVAudioPCMBuffer,
+        using converter: AVAudioConverter,
+        to sink: ([Float]) -> Void
+    ) {
+        let ratio = 16_000.0 / buffer.format.sampleRate
+        let capacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 16
+        guard let out = AVAudioPCMBuffer(
+            pcmFormat: converter.outputFormat, frameCapacity: capacity) else { return }
+        var supplied = false
+        var err: NSError?
+        let status = converter.convert(to: out, error: &err) { _, inputStatus in
+            if supplied { inputStatus.pointee = .noDataNow; return nil }
+            supplied = true
+            inputStatus.pointee = .haveData
+            return buffer
+        }
+        guard status == .haveData || status == .inputRanDry,
+              let channel = out.floatChannelData, out.frameLength > 0 else { return }
+        let samples = Array(UnsafeBufferPointer(start: channel[0], count: Int(out.frameLength)))
+        sink(samples)
     }
 
     private func publishLevel(from buffer: AVAudioPCMBuffer) {

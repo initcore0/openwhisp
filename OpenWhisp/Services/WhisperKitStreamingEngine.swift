@@ -19,6 +19,10 @@ final class WhisperKitStreamingEngine: StreamingTranscriptionEngine {
     var onError: ((String) -> Void)?
     var onLevelChanged: ((_ display: Float, _ vad: Float) -> Void)?
     var onStarted: (() -> Void)?
+    /// Declared no-op: WhisperKit can translate itself, so the dual-runtime path
+    /// (which gates on `EngineCapabilities.providesAudioTap == false` here) never
+    /// tees from it. Present only to satisfy the protocol.
+    var onAudioBuffer: (([Float]) -> Void)?
 
     /// WhisperKit model id (its own namespace). Defaults to the staged `small`
     /// (multilingual EN+RU) — the same model the file engine uses.

@@ -174,6 +174,15 @@ final class StreamOverlayServer {
         }
     }
 
+    /// Publish an already-translated segment on the TRANSLATED caption track
+    /// (dual-runtime translation — Parakeet drives the original track live while a
+    /// whisper-family translator produces these English segments ~1–3s behind).
+    /// Engine/model-neutral like every other input seam: the caller does the
+    /// translating; the server only windows the text onto the second track.
+    func publishTranslatedFinal(_ text: String) {
+        broadcast(captions.setTranslatedText(text))
+    }
+
     /// Clear the overlay now (capture stopped).
     func publishClear() {
         broadcast(captions.clear())

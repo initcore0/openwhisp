@@ -117,6 +117,20 @@ public protocol StreamingTranscriptionEngine: AnyObject {
     /// actor. Never fires for a session that fails to start (`onError` ends it).
     var onStarted: (() -> Void)? { get set }
 
+    /// Optional audio tee: raw mic frames (mono, 16 kHz, Float32 in roughly
+    /// [-1, 1]) the engine is already capturing, forwarded to a second consumer
+    /// WITHOUT opening another microphone. Its one use today is the dual-runtime
+    /// translate path (`DualRuntimeTranslationPolicy`): a fast ASR-only engine
+    /// (Parakeet) tees its audio to a whisper-family translator while it drives
+    /// the live preview. Fires on whatever thread the tap runs; the consumer must
+    /// be cheap and thread-safe (the Parakeet tap runs on the audio thread).
+    ///
+    /// Engines that can't cheaply forward frames leave this a no-op and declare
+    /// `EngineCapabilities.providesAudioTap == false`; callers gate on the
+    /// capability, never on the engine name, so a nil-forwarding engine is a
+    /// declared no-op the policy already routed around — never a silent drop.
+    var onAudioBuffer: (([Float]) -> Void)? { get set }
+
     /// Pin the input device (an opaque platform UID, e.g. the CoreAudio device UID
     /// stored as `microphoneID`) for the NEXT `start()`. The empty string means
     /// "follow the system default input". Call before `start()`; a device pinned

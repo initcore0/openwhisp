@@ -150,7 +150,10 @@ let package = Package(
                 "TranscriptInterleaver.swift",
                 "MeetingOrphanScan.swift",
                 "StreamOverlay.swift",
-                "StreamIngest.swift"
+                "StreamIngest.swift",
+                "DualRuntimeTranslationPolicy.swift",
+                "TranslationChunker.swift",
+                "TranslationSegmentQueue.swift"
             ]
         ),
         // The Agent Bridge client + MCP stdio adapter. A library (not folded into

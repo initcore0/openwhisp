@@ -113,6 +113,15 @@ public enum EngineCapabilities {
         public let streamingPartials: Bool
         /// Whether the engine can emit per-word timestamps.
         public let wordTimestamps: Bool
+        /// Whether the engine's live streaming path can cheaply FORWARD the raw
+        /// mic frames it is already capturing (mono 16 kHz Float32) via
+        /// `StreamingTranscriptionEngine.onAudioBuffer`. This is the capability
+        /// the DUAL-RUNTIME translate path gates on (`DualRuntimeTranslationPolicy`):
+        /// a fast ASR-only engine can tee its audio to a whisper-family translator
+        /// without ever opening a second microphone. Only engines that own an
+        /// AVAudioEngine tap and can resample there declare it — the Apple
+        /// recognizers, whose taps live inside the framework, do not.
+        public let providesAudioTap: Bool
         /// Language coverage, for the pick-time language gate.
         public let languages: LanguageCoverage
 
@@ -123,6 +132,7 @@ public enum EngineCapabilities {
             vocabulary: VocabularySupport,
             streamingPartials: Bool,
             wordTimestamps: Bool,
+            providesAudioTap: Bool = false,
             languages: LanguageCoverage
         ) {
             self.id = id
@@ -131,6 +141,7 @@ public enum EngineCapabilities {
             self.vocabulary = vocabulary
             self.streamingPartials = streamingPartials
             self.wordTimestamps = wordTimestamps
+            self.providesAudioTap = providesAudioTap
             self.languages = languages
         }
     }
@@ -186,6 +197,10 @@ public enum EngineCapabilities {
                 id: parakeet, displayName: "Parakeet",
                 translation: false, vocabulary: .batchOnly,
                 streamingPartials: true, wordTimestamps: true,
+                // Parakeet owns its AVAudioEngine tap and already resamples every
+                // buffer to mono 16 kHz for FluidAudio — forwarding those frames to
+                // the dual-runtime translator is free, so it declares the audio tap.
+                providesAudioTap: true,
                 languages: .multilingual),
             Capabilities(
                 id: appleSpeech, displayName: "Apple Speech",
@@ -256,6 +271,13 @@ public enum EngineCapabilities {
     /// refuses a non-English fixed pick up front rather than emitting garbage.
     public static func allowsLanguagePick(languageCode: String, transcriptionEngine: String) -> Bool {
         capabilities(for: transcriptionEngine).languages.allowsPick(languageCode: languageCode)
+    }
+
+    /// Whether `engine`'s live streaming path can forward raw mic frames via
+    /// `StreamingTranscriptionEngine.onAudioBuffer`. The gate for teeing audio to
+    /// the dual-runtime translator (see `DualRuntimeTranslationPolicy`).
+    public static func providesAudioTap(transcriptionEngine: String) -> Bool {
+        capabilities(for: transcriptionEngine).providesAudioTap
     }
 
     /// Human-readable engine name, for UI that has to explain a capability gap

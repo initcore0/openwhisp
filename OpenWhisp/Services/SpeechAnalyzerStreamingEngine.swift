@@ -26,6 +26,9 @@ final class SpeechAnalyzerStreamingEngine: StreamingTranscriptionEngine {
     var onError: ((String) -> Void)?
     var onLevelChanged: ((_ display: Float, _ vad: Float) -> Void)?
     var onStarted: (() -> Void)?
+    /// Declared no-op: SpeechAnalyzer declares `providesAudioTap == false`, so the
+    /// dual-runtime translator never tees from it. Present only for the protocol.
+    var onAudioBuffer: (([Float]) -> Void)?
 
     // Mic + analyzer handles, main-actor confined (start/stop are @MainActor).
     @MainActor private var audioEngine: AVAudioEngine?

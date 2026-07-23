@@ -108,6 +108,88 @@ final class StreamOverlayTests: XCTestCase {
         XCTAssertEqual(decoded.canvasWidth, 1280)
         XCTAssertEqual(decoded.charsPerLine, StreamOverlayConfig().charsPerLine)
         XCTAssertEqual(decoded.lingerSeconds, StreamOverlayConfig().lingerSeconds)
+        // captionTrack (added with dual-runtime translation) is absent in v1 →
+        // defaults to .original, so an old install keeps its single-track look.
+        XCTAssertEqual(decoded.captionTrack, .original)
+    }
+
+    func testCaptionTrackDecodesAndRoundTrips() throws {
+        var c = StreamOverlayConfig()
+        c.captionTrack = .both
+        let data = try JSONEncoder().encode(c)
+        let back = try JSONDecoder().decode(StreamOverlayConfig.self, from: data)
+        XCTAssertEqual(back.captionTrack, .both)
+        // An unknown/garbage value would fail enum decode; decodeIfPresent guards
+        // the ABSENT case, which the v1 test covers.
+    }
+
+    // MARK: - Two-track (translated) reducer
+
+    func testTranslatedTrackIsIndependentOfOriginal() {
+        var caps = StreamOverlayCaptions(maxLines: 3, charsPerLine: 42)
+        var snap = caps.setText("привет как дела")
+        XCTAssertEqual(snap.lines, ["привет как дела"])
+        XCTAssertEqual(snap.translatedLines, [], "no translated segment yet")
+        // A translated segment lands without disturbing the original line.
+        snap = caps.setTranslatedText("hello how are you")
+        XCTAssertEqual(snap.lines, ["привет как дела"], "original track untouched")
+        XCTAssertEqual(snap.translatedLines, ["hello how are you"])
+        // A new original partial keeps the translated line in place (it trails).
+        snap = caps.setText("привет как дела сегодня")
+        XCTAssertEqual(snap.translatedLines, ["hello how are you"])
+    }
+
+    func testTranslatedTrackWrapsAndWindows() {
+        var caps = StreamOverlayCaptions(maxLines: 2, charsPerLine: 10)
+        let snap = caps.setTranslatedText("one two three four five six")
+        XCTAssertLessThanOrEqual(snap.translatedLines.count, 2, "windowed to maxLines")
+        XCTAssertTrue(snap.translatedLines.allSatisfy { $0.count <= 10 })
+    }
+
+    func testClearHidesBothTracks() {
+        var caps = StreamOverlayCaptions(maxLines: 3, charsPerLine: 42)
+        _ = caps.setText("original")
+        _ = caps.setTranslatedText("translated")
+        let snap = caps.clear()
+        XCTAssertEqual(snap.lines, [])
+        XCTAssertEqual(snap.translatedLines, [])
+    }
+
+    func testSnapshotDecodesWithoutTranslatedLines() throws {
+        // A single-track client/older frame with no translatedLines key still
+        // decodes (the field defaults to []), keeping the wire backward-compatible.
+        let v1 = ##"{"lines":["hi"],"revision":3}"##
+        let snap = try JSONDecoder().decode(
+            StreamOverlayCaptions.Snapshot.self, from: Data(v1.utf8))
+        XCTAssertEqual(snap.lines, ["hi"])
+        XCTAssertEqual(snap.translatedLines, [])
+        XCTAssertEqual(snap.revision, 3)
+    }
+
+    func testSSEFrameCarriesTranslatedLines() throws {
+        var caps = StreamOverlayCaptions(maxLines: 3, charsPerLine: 42)
+        _ = caps.setText("оригинал")
+        let frame = StreamOverlaySSE.frame(caps.setTranslatedText("original"))
+        let json = frame
+            .dropFirst("event: caption\ndata: ".count)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let decoded = try JSONDecoder().decode(
+            StreamOverlayCaptions.Snapshot.self, from: Data(json.utf8))
+        XCTAssertEqual(decoded.lines, ["оригинал"])
+        XCTAssertEqual(decoded.translatedLines, ["original"])
+    }
+
+    func testPageRendersTranslatedTrackPerMode() {
+        let both = StreamOverlayPage.html(
+            config: StreamOverlayConfig(captionTrack: .both))
+        XCTAssertTrue(both.contains("const track = 'both'"))
+        XCTAssertTrue(both.contains("translatedLines"))
+        let translated = StreamOverlayPage.html(
+            config: StreamOverlayConfig(captionTrack: .translated))
+        XCTAssertTrue(translated.contains("const track = 'translated'"))
+        let original = StreamOverlayPage.html(
+            config: StreamOverlayConfig(captionTrack: .original))
+        XCTAssertTrue(original.contains("const track = 'original'"))
     }
 
     // MARK: - SSE framing

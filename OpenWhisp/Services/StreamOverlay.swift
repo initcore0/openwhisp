@@ -8,6 +8,16 @@ import Foundation
 /// source"; these parameters control the canvas it renders into and how the
 /// captions look. Pure data — the page generator (`StreamOverlayPage`) and the
 /// server consume it; nothing here touches an engine, a model, or AppKit.
+/// Which caption track(s) the overlay shows when dual-runtime translation is
+/// active: the original spoken language, the English translation, or both
+/// (bilingual, original above translated). Persisted as its raw string so a new
+/// case never breaks an old saved config (decode falls back to `.original`).
+public enum StreamOverlayCaptionTrack: String, Codable, Equatable, Sendable, CaseIterable {
+    case original
+    case translated
+    case both
+}
+
 public struct StreamOverlayConfig: Codable, Equatable, Sendable {
     /// Canvas size the browser source is expected to use (e.g. 1920x1080).
     public var canvasWidth: Int
@@ -35,6 +45,11 @@ public struct StreamOverlayConfig: Codable, Equatable, Sendable {
     public var translationEnabled: Bool
     /// BCP-47-ish target language tag for the injected translator (e.g. "es").
     public var targetLanguage: String
+    /// Which caption track(s) to display when a translated track is being
+    /// published (dual-runtime translation). `.original` keeps the pre-translation
+    /// behavior exactly, so an install that never enables translation is
+    /// unaffected. `.translated` shows only the English line; `.both` is bilingual.
+    public var captionTrack: StreamOverlayCaptionTrack
 
     public init(
         canvasWidth: Int = 1920,
@@ -47,7 +62,8 @@ public struct StreamOverlayConfig: Codable, Equatable, Sendable {
         charsPerLine: Int = 42,
         lingerSeconds: Int = 4,
         translationEnabled: Bool = false,
-        targetLanguage: String = ""
+        targetLanguage: String = "",
+        captionTrack: StreamOverlayCaptionTrack = .original
     ) {
         self.canvasWidth = canvasWidth
         self.canvasHeight = canvasHeight
@@ -60,6 +76,7 @@ public struct StreamOverlayConfig: Codable, Equatable, Sendable {
         self.lingerSeconds = lingerSeconds
         self.translationEnabled = translationEnabled
         self.targetLanguage = targetLanguage
+        self.captionTrack = captionTrack
     }
 
     /// Backward-compatible decode: fields added after the first release fall
@@ -78,6 +95,7 @@ public struct StreamOverlayConfig: Codable, Equatable, Sendable {
         lingerSeconds = try c.decodeIfPresent(Int.self, forKey: .lingerSeconds) ?? defaults.lingerSeconds
         translationEnabled = try c.decodeIfPresent(Bool.self, forKey: .translationEnabled) ?? defaults.translationEnabled
         targetLanguage = try c.decodeIfPresent(String.self, forKey: .targetLanguage) ?? defaults.targetLanguage
+        captionTrack = try c.decodeIfPresent(StreamOverlayCaptionTrack.self, forKey: .captionTrack) ?? defaults.captionTrack
     }
 
     /// True iff `value` is a `#RGB`, `#RRGGBB`, or `#RRGGBBAA` hex color.
@@ -124,16 +142,38 @@ public struct StreamOverlayConfig: Codable, Equatable, Sendable {
 public struct StreamOverlayCaptions: Equatable, Sendable {
     /// One immutable frame of what the overlay should display.
     public struct Snapshot: Codable, Equatable, Sendable {
-        /// Wrapped subtitle lines, oldest first, at most `maxLines`. Empty means
-        /// the overlay shows nothing (no speech right now).
+        /// Wrapped ORIGINAL-language subtitle lines, oldest first, at most
+        /// `maxLines`. Empty means the overlay shows no original track.
         public var lines: [String]
+        /// Wrapped TRANSLATED (English) subtitle lines, oldest first, at most
+        /// `maxLines`. Empty when translation is off or no translated segment has
+        /// arrived yet — a client rendering only the original track ignores it, so
+        /// this stays backward-compatible with the single-track page.
+        public var translatedLines: [String]
         /// Monotonic revision so a client can drop stale/out-of-order frames.
         public var revision: Int
+
+        public init(lines: [String], translatedLines: [String] = [], revision: Int) {
+            self.lines = lines
+            self.translatedLines = translatedLines
+            self.revision = revision
+        }
+
+        /// Backward-compatible decode: a single-track frame (no `translatedLines`)
+        /// still loads — the field defaults to empty, so an older overlay page or
+        /// cached frame keeps working.
+        public init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            lines = try c.decode([String].self, forKey: .lines)
+            translatedLines = try c.decodeIfPresent([String].self, forKey: .translatedLines) ?? []
+            revision = try c.decode(Int.self, forKey: .revision)
+        }
     }
 
     public let maxLines: Int
     public let charsPerLine: Int
     private var lines: [String] = []
+    private var translatedLines: [String] = []
     private var revision: Int = 0
 
     public init(maxLines: Int, charsPerLine: Int = 42) {
@@ -141,21 +181,35 @@ public struct StreamOverlayCaptions: Equatable, Sendable {
         self.charsPerLine = max(8, charsPerLine)
     }
 
-    /// Show `text` (the current utterance so far — partial or final alike):
-    /// wrap it and keep the trailing window. Empty/whitespace text clears.
+    /// Show `text` (the current ORIGINAL-language utterance so far — partial or
+    /// final alike): wrap it and keep the trailing window. Empty/whitespace text
+    /// clears the original track. Leaves the translated track untouched (it
+    /// trails on its own cadence).
     public mutating func setText(_ text: String) -> Snapshot {
         let wrapped = Self.wrap(text, width: charsPerLine)
         lines = Array(wrapped.suffix(maxLines))
         return bump()
     }
 
-    /// Hide the captions (silence timeout / session reset).
-    public mutating func clear() -> Snapshot {
-        lines = []
+    /// Show `text` on the TRANSLATED track (a finalized English segment, ~1–3s
+    /// behind the original). Same wrap/window rules; independent of the original
+    /// track so a lagging translation never disturbs the live original line.
+    public mutating func setTranslatedText(_ text: String) -> Snapshot {
+        let wrapped = Self.wrap(text, width: charsPerLine)
+        translatedLines = Array(wrapped.suffix(maxLines))
         return bump()
     }
 
-    public var snapshot: Snapshot { Snapshot(lines: lines, revision: revision) }
+    /// Hide BOTH tracks (silence timeout / session reset).
+    public mutating func clear() -> Snapshot {
+        lines = []
+        translatedLines = []
+        return bump()
+    }
+
+    public var snapshot: Snapshot {
+        Snapshot(lines: lines, translatedLines: translatedLines, revision: revision)
+    }
 
     private mutating func bump() -> Snapshot {
         revision += 1
@@ -248,24 +302,46 @@ public enum StreamOverlayPage {
             padding: 0.05em 0.4em;
             margin-top: 0.12em;
           }
+          /* Translated track: slightly smaller + dimmed, sits under the original. */
+          #captions .translated div {
+            font-size: 0.82em;
+            opacity: 0.82;
+          }
         </style>
         </head>
         <body>
         <div id="captions"></div>
         <script>
           const el = document.getElementById('captions');
+          // Which track(s) to show: original | translated | both.
+          const track = '\(c.captionTrack.rawValue)';
           let lastRevision = -1;
           const source = new EventSource('/events');
+          function renderLines(parent, lines, className) {
+            if (!lines || !lines.length) return;
+            const group = document.createElement('span');
+            if (className) group.className = className;
+            for (const line of lines) {
+              const d = document.createElement('div');
+              d.textContent = line;
+              group.appendChild(d);
+              group.appendChild(document.createElement('br'));
+            }
+            parent.appendChild(group);
+          }
           source.addEventListener('caption', (e) => {
             const snap = JSON.parse(e.data);
             if (snap.revision <= lastRevision) return; // drop stale frames
             lastRevision = snap.revision;
             el.textContent = '';
-            for (const line of snap.lines) {
-              const d = document.createElement('div');
-              d.textContent = line;
-              el.appendChild(d);
-              el.appendChild(document.createElement('br'));
+            const translated = snap.translatedLines || [];
+            if (track === 'translated') {
+              renderLines(el, translated, 'translated');
+            } else if (track === 'both') {
+              renderLines(el, snap.lines, 'original');
+              renderLines(el, translated, 'translated');
+            } else {
+              renderLines(el, snap.lines, 'original');
             }
           });
         </script>

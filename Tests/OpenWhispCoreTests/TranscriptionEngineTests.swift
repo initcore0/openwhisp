@@ -51,6 +51,10 @@ final class FakeStreamingTranscriptionEngine: StreamingTranscriptionEngine {
     var onError: ((String) -> Void)?
     var onLevelChanged: ((_ display: Float, _ vad: Float) -> Void)?
     var onStarted: (() -> Void)?
+    var onAudioBuffer: (([Float]) -> Void)?
+
+    /// Test helper: push frames through the audio tee (as a real tap would).
+    func feedAudio(_ samples: [Float]) { onAudioBuffer?(samples) }
 
     private(set) var startedLanguages: [String] = []
     private(set) var startedPrompts: [String] = []

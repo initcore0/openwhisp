@@ -8,6 +8,9 @@ final class AppleSpeechEngine: StreamingTranscriptionEngine {
     var onError: ((String) -> Void)?
     var onLevelChanged: ((_ display: Float, _ vad: Float) -> Void)?
     var onStarted: (() -> Void)?
+    /// Declared no-op: Apple Speech declares `providesAudioTap == false` (its tap
+    /// lives inside SFSpeech), so the dual-runtime translator never tees from it.
+    var onAudioBuffer: (([Float]) -> Void)?
 
     // AVAudioEngine / recognizer handles. Touched only on the main actor (start and
     // stop are @MainActor-only callers — see the note below), so they stay confined

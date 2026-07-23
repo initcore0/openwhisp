@@ -26,12 +26,13 @@ final class EngineCapabilitiesTests: XCTestCase {
         let expected: [String: (translate: Bool,
                                 vocab: EngineCapabilities.VocabularySupport,
                                 partials: Bool,
-                                wordTS: Bool)] = [
-            EngineCapabilities.whisperCpp:     (true,  .all,       false, true),
-            EngineCapabilities.whisperKit:     (true,  .all,       true,  true),
-            EngineCapabilities.parakeet:       (false, .batchOnly, true,  true),
-            EngineCapabilities.appleSpeech:    (false, .all,       true,  false),
-            EngineCapabilities.speechAnalyzer: (false, .all,       true,  false),
+                                wordTS: Bool,
+                                audioTap: Bool)] = [
+            EngineCapabilities.whisperCpp:     (true,  .all,       false, true,  false),
+            EngineCapabilities.whisperKit:     (true,  .all,       true,  true,  false),
+            EngineCapabilities.parakeet:       (false, .batchOnly, true,  true,  true),
+            EngineCapabilities.appleSpeech:    (false, .all,       true,  false, false),
+            EngineCapabilities.speechAnalyzer: (false, .all,       true,  false, false),
         ]
 
         for engine in allEngines {
@@ -66,6 +67,11 @@ final class EngineCapabilitiesTests: XCTestCase {
 
             XCTAssertEqual(cap.streamingPartials, want.partials, "\(engine) streaming partials")
             XCTAssertEqual(cap.wordTimestamps, want.wordTS, "\(engine) word timestamps")
+
+            XCTAssertEqual(cap.providesAudioTap, want.audioTap, "\(engine) audio tap")
+            XCTAssertEqual(
+                EngineCapabilities.providesAudioTap(transcriptionEngine: engine),
+                want.audioTap, "\(engine) providesAudioTap reader")
         }
     }
 
