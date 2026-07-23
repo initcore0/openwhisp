@@ -40,12 +40,22 @@ final class StreamOverlayServer {
     private var listener: NWListener?
     /// The port the listener actually bound. Nil until started.
     private(set) var boundPort: UInt16?
+    /// Fired (main actor) if the listener dies AFTER a successful start() —
+    /// e.g. the port was grabbed between checks. Lets the owner reflect the
+    /// real state instead of showing a server that silently went away.
+    var onFailure: ((String) -> Void)?
 
     /// Transport queue for all Network.framework callbacks.
     private let queue = DispatchQueue(label: "app.openwhisp.streamoverlay")
     /// Live connections, retained until closed (same rationale as LANBridgeServer).
     /// Only touched on `queue`.
     private nonisolated(unsafe) var connections: [ObjectIdentifier: OverlayConnection] = [:]
+    /// The most recent SSE frame, cached ON THE TRANSPORT QUEUE so a newly
+    /// connected client can be greeted without hopping to the main actor. A
+    /// synchronous main-thread wait here (the first design) froze EVERY overlay
+    /// response whenever the main thread was busy (modal dialog, long task) —
+    /// the transport queue is shared by all connections. Only touched on `queue`.
+    private nonisolated(unsafe) var latestFrame: String = ""
 
     /// Cap on concurrent connections — one OBS source plus a preview tab is the
     /// real workload; the cap keeps a runaway client from accumulating sockets.
@@ -83,7 +93,10 @@ final class StreamOverlayServer {
                 }
             case .failed(let err):
                 self.log.error("stream overlay listener failed: \(String(describing: err), privacy: .public)")
-                Task { @MainActor in self.stop() }
+                Task { @MainActor in
+                    self.stop()
+                    self.onFailure?(String(describing: err))
+                }
             default:
                 break
             }
@@ -98,17 +111,19 @@ final class StreamOverlayServer {
             }
             let session = OverlayConnection(
                 connection: conn, queue: queue, log: log, html: html,
-                initialSnapshot: { [weak self] in
-                    // Read on main so the SSE greeting matches the latest commit.
-                    guard let self else { return nil }
-                    return self.onMain { self.captions.snapshot }
-                },
+                // Runs on `queue`: greet from the queue-cached frame, never by
+                // waiting on the main actor (see `latestFrame`).
+                initialFrame: { [weak self] in self?.latestFrame ?? "" },
                 onClosed: { [weak self] closed in
                     self?.connections.removeValue(forKey: ObjectIdentifier(closed))
                 })
             self.connections[ObjectIdentifier(session)] = session
             session.start()
         }
+        // Seed the greeting cache with the current caption state so a client
+        // connecting before any publish still gets a coherent (empty) snapshot.
+        let seed = StreamOverlaySSE.frame(captions.snapshot)
+        queue.async { [weak self] in self?.latestFrame = seed }
         listener.start(queue: queue)
         self.listener = listener
         log.info("stream overlay listening (loopback)")
@@ -160,18 +175,9 @@ final class StreamOverlayServer {
         let frame = StreamOverlaySSE.frame(snapshot)
         queue.async { [weak self] in
             guard let self else { return }
+            self.latestFrame = frame
             for (_, conn) in self.connections { conn.sendEvent(frame) }
         }
-    }
-
-    /// Synchronous main-thread hop for the transport queue (never called from
-    /// main, so the wait can't self-deadlock).
-    private nonisolated func onMain<T>(_ body: @escaping @MainActor () -> T) -> T {
-        var result: T!
-        let sem = DispatchSemaphore(value: 0)
-        DispatchQueue.main.async { MainActor.assumeIsolated { result = body() }; sem.signal() }
-        sem.wait()
-        return result
     }
 }
 
@@ -185,7 +191,8 @@ private final class OverlayConnection {
     private let queue: DispatchQueue
     private let log: Logger
     private let html: String
-    private let initialSnapshot: () -> StreamOverlayCaptions.Snapshot?
+    /// Returns the latest cached SSE frame; called on the transport queue.
+    private let initialFrame: () -> String
     private let onClosed: (OverlayConnection) -> Void
     private var closedFired = false
 
@@ -198,14 +205,14 @@ private final class OverlayConnection {
 
     init(
         connection: NWConnection, queue: DispatchQueue, log: Logger, html: String,
-        initialSnapshot: @escaping () -> StreamOverlayCaptions.Snapshot?,
+        initialFrame: @escaping () -> String,
         onClosed: @escaping (OverlayConnection) -> Void
     ) {
         self.connection = connection
         self.queue = queue
         self.log = log
         self.html = html
-        self.initialSnapshot = initialSnapshot
+        self.initialFrame = initialFrame
         self.onClosed = onClosed
     }
 
@@ -306,10 +313,12 @@ private final class OverlayConnection {
             guard let self else { return }
             if error != nil { self.close(); return }
             // Greet the client with the current state so a source added
-            // mid-session shows the captions already on screen.
-            if let snap = self.initialSnapshot() {
+            // mid-session shows the captions already on screen. Reads the
+            // queue-cached frame — never blocks on the main actor.
+            let frame = self.initialFrame()
+            if !frame.isEmpty {
                 self.connection.send(
-                    content: Data(StreamOverlaySSE.frame(snap).utf8),
+                    content: Data(frame.utf8),
                     completion: .contentProcessed { _ in })
             }
         })

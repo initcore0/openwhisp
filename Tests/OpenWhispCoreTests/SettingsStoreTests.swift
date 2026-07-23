@@ -221,6 +221,10 @@ final class SettingsStoreTests: XCTestCase {
         "smartFormattingEnabled",
         "spokenListsEnabled",
         "spokenPunctuationEnabled",
+        // Stream overlay (live subtitles for OBS/Twitch) — added with the feature.
+        "streamOverlayConfig",
+        "streamOverlayEnabled",
+        "streamOverlayPort",
         "summaryLLMEndpoint",
         "summaryLLMModel",
         "summaryLLMProvider",

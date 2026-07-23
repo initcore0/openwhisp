@@ -36,6 +36,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
     case profiles
     case agentBridge
     case sync
+    case streamOverlay
 
     var id: String { rawValue }
 
@@ -50,7 +51,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
         switch self {
         case .general, .dictation, .models, .cleanup, .output, .privacy, .advanced:
             return .setup
-        case .insights, .modes, .rules, .files, .meetings, .profiles, .agentBridge, .sync:
+        case .insights, .modes, .rules, .files, .meetings, .profiles, .agentBridge, .sync, .streamOverlay:
             return .moreFeatures
         }
     }
@@ -73,6 +74,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
         case .profiles:    return "Per-App Profiles"
         case .agentBridge: return "Agent Bridge"
         case .sync:        return "Sync"
+        case .streamOverlay: return "Stream Overlay"
         case .privacy:     return "Privacy & Permissions"
         case .advanced:    return "Advanced"
         }
@@ -93,6 +95,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
         case .profiles:    return "square.grid.2x2"
         case .agentBridge: return "point.3.connected.trianglepath.dotted"
         case .sync:        return "arrow.triangle.2.circlepath"
+        case .streamOverlay: return "captions.bubble"
         case .privacy:     return "lock.shield"
         case .advanced:    return "wrench.and.screwdriver"
         }
@@ -181,6 +184,7 @@ struct SettingsView: View {
         case .profiles:  ProfilesPane(appState: appState)
         case .agentBridge: AgentBridgePane(appState: appState)
         case .sync:      SyncPane(appState: appState)
+        case .streamOverlay: StreamOverlayPane(appState: appState)
         case .privacy:   PrivacyPane(appState: appState)
         case .advanced:  AdvancedPane(appState: appState)
         }

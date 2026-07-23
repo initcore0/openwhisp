@@ -885,6 +885,45 @@ class AppState: ObservableObject {
             })
     }()
 
+    // MARK: Stream overlay — live subtitles for OBS/Twitch (browser source)
+
+    /// Master switch for the loopback subtitle server. Off by default; when on,
+    /// the server starts at launch and follows the toggle live.
+    @Published var streamOverlayEnabled: Bool = false {
+        didSet {
+            settingsStore.set(streamOverlayEnabled, forKey: "streamOverlayEnabled")
+            refreshStreamOverlayServer()
+        }
+    }
+    /// Fixed port for the overlay URL (OBS browser sources want a stable URL).
+    /// Kept outside the whisper/llama loopback bands (see LoopbackPortRanges).
+    @Published var streamOverlayPort: Int = AppState.streamOverlayDefaultPort {
+        didSet {
+            settingsStore.set(streamOverlayPort, forKey: "streamOverlayPort")
+            refreshStreamOverlayServer()
+        }
+    }
+    /// Display parameters of the overlay page (canvas, font, colors, line count).
+    /// Persisted as JSON; every change restarts the server (debounced) so the
+    /// served page always reflects the saved look.
+    @Published var streamOverlayConfig: StreamOverlayConfig = StreamOverlayConfig() {
+        didSet {
+            if let data = try? JSONEncoder().encode(streamOverlayConfig) {
+                settingsStore.set(String(decoding: data, as: UTF8.self), forKey: "streamOverlayConfig")
+            }
+            refreshStreamOverlayServer()
+        }
+    }
+    /// True while the overlay server is up (drives the pane's status row).
+    /// Written only by the lifecycle in AppState+StreamOverlay.swift.
+    @Published var streamOverlayRunning = false
+    /// The live server instance; nil while disabled. Owned by the lifecycle in
+    /// AppState+StreamOverlay.swift.
+    var streamOverlayServer: StreamOverlayServer?
+    /// Debounce for config-driven restarts (a color-picker drag fires dozens of
+    /// updates; restarting the listener per tick would drop SSE clients).
+    var streamOverlayRestartTimer: Timer?
+
     /// Bias whisper recognition toward custom terms. Default-on; harmless when
     /// the vocabulary is empty (no prompt is sent).
     @Published var customVocabularyEnabled: Bool {
@@ -981,7 +1020,13 @@ class AppState: ObservableObject {
     /// focused-app insert path; nil when the last output went to a file/webhook/shortcut
     /// sink or nothing was inserted. Cleared once reverted so a swap can't run twice.
     private var lastInsertedIntoFocusedApp: String?
-    @Published var streamingText: String = ""
+    @Published var streamingText: String = "" {
+        // The one assignment site every dictation path already flows through
+        // (streaming partials, live-chunk appends, session resets), so the stream
+        // overlay's live caption mirrors the pipeline instead of one engine's
+        // callback. "" (session reset) clears the overlay's partial line.
+        didSet { streamOverlayServer?.publishPartial(streamingText) }
+    }
     @Published var statusMessage: String = "Ready"
     @Published var error: String?
     @Published var whisperWorkerStatus: String = "Not started"
@@ -1861,6 +1906,15 @@ class AppState: ObservableObject {
         // without staring at the overlay. Users can turn either off.
         agentBridgeChimeEnabled = settingsStore.object(forKey: "agentBridgeChimeEnabled") as? Bool ?? true
         agentBridgeSpeakQuestionEnabled = settingsStore.object(forKey: "agentBridgeSpeakQuestionEnabled") as? Bool ?? true
+        // Stream overlay (live subtitles) — default off; started at launch via
+        // startStreamOverlayIfEnabled() (property observers don't fire in init).
+        streamOverlayEnabled = settingsStore.bool(forKey: "streamOverlayEnabled")
+        streamOverlayPort = settingsStore.object(forKey: "streamOverlayPort") as? Int
+            ?? Self.streamOverlayDefaultPort
+        if let json = settingsStore.string(forKey: "streamOverlayConfig"),
+           let config = try? JSONDecoder().decode(StreamOverlayConfig.self, from: Data(json.utf8)) {
+            streamOverlayConfig = config.sanitized()
+        }
         agentClients = AgentClientStore.load()
         profiles = AppProfileStore.load()
         // MAK-39: load user-authored Modes. On the FIRST launch after Modes ship,
@@ -4147,6 +4201,14 @@ class AppState: ObservableObject {
 
     private func completeFinalText(_ text: String) {
         let finalText = postProcess(text, isFinalTranscript: true)
+
+        // Stream overlay: commit this session's cleaned transcript as a caption
+        // line. Skipped mid-refine — the spoken words there are an INSTRUCTION,
+        // not content, and must not be subtitled. Runs before the refine/enhance
+        // branches so captions track speech latency, not LLM latency.
+        if refineContentSnapshot == nil, !finalText.isEmpty {
+            streamOverlayServer?.publishFinal(finalText)
+        }
 
         // Self-learning dictionary (MAK-41), Part A: bump usageCount for exactly the
         // substitution rules that fired against this dictation, keyed on the RAW
