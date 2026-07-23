@@ -371,7 +371,16 @@ final class MeetingCaptureSession {
     private func teardownLegs() {
         micLeg?.stop()
         micLeg = nil
-        systemLeg = nil   // SCK stopCapture already awaited by caller
+        // Own the SCK stop here so EVERY teardown path releases the capture.
+        // The normal stop() already awaited stopCapture (so this no-ops —
+        // SystemAudioCapture.stop nils its stream first), but legFailed and the
+        // stop-during-SCK-startup abort used to just drop the reference,
+        // leaving ScreenCaptureKit capturing (screen-recording indicator on,
+        // OS-level capture running) until app exit.
+        if let system = systemLeg {
+            Task { await system.stop() }
+        }
+        systemLeg = nil
     }
 
     private func discardWriter() {

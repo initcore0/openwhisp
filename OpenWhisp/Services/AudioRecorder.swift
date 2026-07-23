@@ -328,9 +328,16 @@ class AudioRecorder: NSObject, AVAudioRecorderDelegate, AudioCapture {
     
     private func scheduleChunkTimer(chunkDuration: Double) {
         chunkTimer?.invalidate()
-        chunkTimer = Timer.scheduledTimer(withTimeInterval: chunkDuration, repeats: true) { [weak self] _ in
+        // .common, not .default: this timer is the ONLY chunk-finalization
+        // trigger on the fixed-interval path, and a .default-mode timer stops
+        // firing while the run loop is in an event-tracking mode — i.e. the
+        // whole time the status-bar menu is open or a window is being dragged.
+        // Live transcription would silently stall mid-dictation.
+        let timer = Timer(timeInterval: chunkDuration, repeats: true) { [weak self] _ in
             self?.rotateChunk()
         }
+        RunLoop.main.add(timer, forMode: .common)
+        chunkTimer = timer
     }
     
     private func rotateChunk() {
@@ -725,12 +732,16 @@ class AudioRecorder: NSObject, AVAudioRecorderDelegate, AudioCapture {
 
     private func startMetering() {
         meterTimer?.invalidate()
-        meterTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
+        // .common mode so the level indicator keeps updating while the
+        // status-bar menu is open (see scheduleChunkTimer).
+        let timer = Timer(timeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
             guard let self, let recorder = self.recorder else { return }
             recorder.updateMeters()
             let power = recorder.averagePower(forChannel: 0)
             self.onLevelChanged?(AudioLevel.fromDB(power))
         }
+        RunLoop.main.add(timer, forMode: .common)
+        meterTimer = timer
     }
     
     /// Opens the next rotated chunk file using the 16 kHz mono int16 target

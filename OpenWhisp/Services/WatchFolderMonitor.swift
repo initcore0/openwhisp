@@ -15,6 +15,9 @@ final class WatchFolderMonitor {
     var onFilesObserved: (([WatchedFileEvent]) -> Void)?
 
     private var stream: FSEventStreamRef?
+    /// Confined to `queue` — `rescan()` iterates it there, so every mutation
+    /// goes through the serial queue too. Assigning from the caller's thread
+    /// raced an in-flight rescan (unsynchronized CoW Array read/write).
     private var paths: [String] = []
     private let queue = DispatchQueue(label: "app.openwhisp.watchfolders")
 
@@ -23,8 +26,10 @@ final class WatchFolderMonitor {
     func start(paths: [String]) {
         stop()
         let existing = paths.filter { FileManager.default.fileExists(atPath: $0) }
+        // Serialized before the stream starts (events + the initial scan below
+        // also run on `queue`), so every rescan sees the fresh list.
+        queue.async { [weak self] in self?.paths = existing }
         guard !existing.isEmpty else { return }
-        self.paths = existing
 
         var context = FSEventStreamContext(
             version: 0,

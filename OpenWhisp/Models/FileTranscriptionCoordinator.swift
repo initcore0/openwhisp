@@ -62,6 +62,13 @@ final class FileTranscriptionCoordinator: ObservableObject {
         self.engineConfig = engineConfig
         self.store = storeURL ?? FileTranscriptionCoordinator.defaultStoreURL()
         loadPersisted()
+        // Resume restored work: loadPersisted resets mid-flight jobs back to
+        // .queued precisely so they rerun after a crash/quit, but nothing else
+        // ever pumps them (pump() only runs on add/remove events) — a batch
+        // queued before a relaunch would sit at "Queued" forever. Deferred a
+        // turn so the owner (AppState) finishes initializing before
+        // engineConfig() is consulted.
+        Task { @MainActor [weak self] in self?.pump() }
     }
 
     // MARK: - Public API (called by UI)
@@ -297,8 +304,14 @@ final class FileTranscriptionCoordinator: ObservableObject {
             Task { [weak self] in
                 let enhanced = await enhance(raw)
                 await MainActor.run {
-                    self?.queue.finishEnhancing(jobID, enhancedText: enhanced)
-                    self?.finishActive()
+                    // Bail if this job is no longer the active one (same guard as
+                    // the decode loop): the user may have removed it mid-enhance,
+                    // in which case pump() already started the NEXT job —
+                    // finishActive() here would tear down that job's engine/work
+                    // dir and wedge the queue at a non-terminal stage forever.
+                    guard let self, self.activeJobID == jobID else { return }
+                    self.queue.finishEnhancing(jobID, enhancedText: enhanced)
+                    self.finishActive()
                 }
             }
         } else {
