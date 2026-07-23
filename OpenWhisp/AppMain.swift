@@ -66,6 +66,10 @@ class OpenWhispApp: NSObject, NSApplicationDelegate {
         // Agent Bridge (M8): start the local control-plane socket if enabled.
         appState.startAgentBridgeIfEnabled()
 
+        // Stream overlay (live subtitles for OBS/Twitch): start the loopback
+        // caption server if enabled.
+        appState.streamOverlay.startIfEnabled()
+
         // Sparkle auto-update (MAK-56): start the updater. Touching `.shared`
         // constructs the SPUStandardUpdaterController and begins the scheduled
         // check cycle (honoring the user's persisted auto-check preference). On a

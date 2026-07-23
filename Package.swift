@@ -148,7 +148,9 @@ let package = Package(
                 "MeetingMixer.swift",
                 "MeetingTalkState.swift",
                 "TranscriptInterleaver.swift",
-                "MeetingOrphanScan.swift"
+                "MeetingOrphanScan.swift",
+                "StreamOverlay.swift",
+                "StreamIngest.swift"
             ]
         ),
         // The Agent Bridge client + MCP stdio adapter. A library (not folded into
@@ -181,6 +183,8 @@ let package = Package(
                 "Services/AgentBridgeHost.swift",
                 "Services/SyncBridgeHost.swift",
                 "Services/LANBridgeServer.swift",
+                "Services/StreamOverlayServer.swift",
+                "Services/StreamAudioIngestServer.swift",
                 "SyncLoopback/Runtime.swift",
             ]
         ),

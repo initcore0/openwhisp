@@ -885,6 +885,11 @@ class AppState: ObservableObject {
             })
     }()
 
+    /// Stream overlay (live subtitles for OBS/Twitch): settings, server
+    /// lifecycle, and capture intent all live in the coordinator (MAK-32);
+    /// AppState only carries the session-funnel seams that call into it.
+    lazy var streamOverlay = StreamOverlayCoordinator(store: settingsStore, app: self)
+
     /// Bias whisper recognition toward custom terms. Default-on; harmless when
     /// the vocabulary is empty (no prompt is sent).
     @Published var customVocabularyEnabled: Bool {
@@ -981,7 +986,11 @@ class AppState: ObservableObject {
     /// focused-app insert path; nil when the last output went to a file/webhook/shortcut
     /// sink or nothing was inserted. Cleared once reverted so a swap can't run twice.
     private var lastInsertedIntoFocusedApp: String?
-    @Published var streamingText: String = ""
+    @Published var streamingText: String = "" {
+        // The one assignment site every dictation path flows through — the
+        // overlay subtitle mirrors the pipeline, not one engine's callback.
+        didSet { streamOverlay.publishPartial(streamingText) }
+    }
     @Published var statusMessage: String = "Ready"
     @Published var error: String?
     @Published var whisperWorkerStatus: String = "Not started"
@@ -1245,7 +1254,8 @@ class AppState: ObservableObject {
         get { dictationSession.activeSessionID } set { dictationSession.activeSessionID = newValue } }
     private var recorderSessionID: UUID? {
         get { dictationSession.recorderSessionID } set { dictationSession.recorderSessionID = newValue } }
-    private var sessionActive: Bool {
+    // Internal (not private): StreamOverlayCoordinator's capture guards read it.
+    var sessionActive: Bool {
         get { dictationSession.sessionActive } set { dictationSession.sessionActive = newValue } }
     private var pendingStop: Bool {
         get { dictationSession.pendingStop } set { dictationSession.pendingStop = newValue } }
@@ -2273,24 +2283,6 @@ class AppState: ObservableObject {
         stopDictation()
     }
 
-    /// Silence safety config for a LOCKED user session. Same detector as the
-    /// agent bridge but with a MUCH longer hangover: a hands-free user is likely
-    /// composing and may pause to think, so this is a "you clearly walked away"
-    /// backstop (~8s of continuous silence after speech), never a quick finish.
-    private static let lockSafetyConfig = SilenceAutoStop.Config(silenceToStop: 8.0)
-
-    /// Lock-safety config for quiet mode: the lowered whisper-friendly speech/silence
-    /// gates (so a whisper still arms the detector) but keeping the long 8s safety
-    /// stop, so a whispered session is still protected from running forever.
-    private static let quietLockSafetyConfig: SilenceAutoStop.Config = {
-        let q = QuietDictationMode.quietSilenceAutoStopConfig
-        return SilenceAutoStop.Config(
-            speechLevel: q.speechLevel,
-            silenceLevel: q.silenceLevel,
-            silenceToStop: 8.0,
-            minSpeechToArm: q.minSpeechToArm
-        )
-    }()
 
     /// Feed the locked-user-session silence safety auto-stop (MAK-16). Arms the
     /// detector lazily on the first live sample of a locked user session, then
@@ -2301,7 +2293,9 @@ class AppState: ObservableObject {
     private func feedLockSafetyAutoStop(vadLevel: Float) {
         guard dictationLocked, handsFreeSilenceAutoStop,
               sessionActive, isRecording,
-              !sessionInitiator.isAgent else {
+              !sessionInitiator.isAgent,
+              // Captions capture sits open through long silences by design.
+              !streamOverlay.captureActive else {
             // Not an armed context — drop any stale detector so a later hold
             // session can't inherit it.
             lockSafetyDetector = nil
@@ -2309,7 +2303,7 @@ class AppState: ObservableObject {
         }
         if lockSafetyDetector == nil {
             lockSafetyDetector = SilenceAutoStop(
-                config: quietDictationEnabled ? Self.quietLockSafetyConfig : Self.lockSafetyConfig
+                config: quietDictationEnabled ? .quietLockSafety : .lockSafety
             )
         }
         let now = ProcessInfo.processInfo.systemUptime
@@ -2457,7 +2451,10 @@ class AppState: ObservableObject {
         // secure-field refusal guard above and profile resolution, before any
         // routing. The gate re-checks the secure-field and per-app rules.
         captureScreenContext()
-        let liveMode = outputMode == "liveChunks" || outputMode == "preview"
+        // An overlay capture session must produce text LIVE regardless of the
+        // paste-time outputMode — batch subtitles would only appear after Stop.
+        let liveMode = streamOverlay.captureRequested
+            || outputMode == "liveChunks" || outputMode == "preview"
         // Streaming backends (Apple Speech and Parakeet always; WhisperKit when a
         // live preview is wanted) run the real-time path. All go through the shared
         // streaming session starter; `activeStreamingEngine` picks the recognizer.
@@ -3512,7 +3509,7 @@ class AppState: ObservableObject {
         // Agent sessions return the transcript over the bridge and must never
         // type into the frontmost app — the overlay preview above still updates.
         guard isLiveChunkSession, !suppressOutput, !text.isEmpty else { return }
-        let delta = liveDelta(previous: appleLiveInsertedText, current: text)
+        let delta = LiveTranscriptDelta.delta(previous: appleLiveInsertedText, current: text)
         guard !delta.isEmpty else { return }
 
         // Use a leading separator (matching insertLiveChunk) so the trailing space stays
@@ -3567,7 +3564,7 @@ class AppState: ObservableObject {
         // While a refine is armed the delta is the spoken INSTRUCTION — same guard as the
         // partial handler; completeFinalText consumes it via the snapshot path.
         if isLiveChunkSession, !suppressOutput, refineContentSnapshot == nil, !SecureFieldDetector.focusedFieldIsSecure() {
-            let delta = liveDelta(previous: appleLiveInsertedText, current: finalText)
+            let delta = LiveTranscriptDelta.delta(previous: appleLiveInsertedText, current: finalText)
             if !delta.isEmpty {
                 let insertion = appleLiveInsertedText.isEmpty ? delta : " \(delta)"
                 appleLiveInsertedText = finalText
@@ -3584,13 +3581,6 @@ class AppState: ObservableObject {
         completeFinalText(finalText)
     }
 
-    private func liveDelta(previous: String, current: String) -> String {
-        guard current.count > previous.count else { return "" }
-        let prefix = current.prefix(previous.count)
-        guard prefix == previous else { return "" }
-        return String(current.dropFirst(previous.count))
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-    }
 
     func startRecording() {
         guard !isRecording, !isTranscribing else { return }
@@ -3857,7 +3847,8 @@ class AppState: ObservableObject {
         // Agent-initiated sessions return the transcript to the caller instead of
         // pasting. Snapshot from the initiator (set by the bridge before this call)
         // so a mid-session change can't alter the paste-vs-return disposition.
-        suppressOutput = sessionInitiator.isAgent
+        // Overlay CAPTURE sessions likewise never type (subtitles only).
+        suppressOutput = streamOverlay.sessionDidBegin() || sessionInitiator.isAgent
         // Spoken edit commands (MAK-19) are gated per-session, but the decision is
         // made in startStreamingSession() — the streaming path that actually reaches
         // the interception site (handleAppleSpeechFinal) and where `outputMode` is
@@ -4147,6 +4138,12 @@ class AppState: ObservableObject {
 
     private func completeFinalText(_ text: String) {
         let finalText = postProcess(text, isFinalTranscript: true)
+
+        // Overlay subtitle. Skipped mid-refine (spoken words there are an
+        // instruction); before the refine branches so captions track speech.
+        if refineContentSnapshot == nil, !finalText.isEmpty {
+            streamOverlay.publishFinal(finalText)
+        }
 
         // Self-learning dictionary (MAK-41), Part A: bump usageCount for exactly the
         // substitution rules that fired against this dictation, keyed on the RAW
@@ -5155,6 +5152,8 @@ class AppState: ObservableObject {
         }
         sessionInitiator = .user
         suppressOutput = false
+        // Captions capture ends with its session; hides lingering subtitles.
+        streamOverlay.sessionDidEnd()
         sessionOutcome = nil
         agentDictatePrompt = nil
         agentDictateClientLabel = nil

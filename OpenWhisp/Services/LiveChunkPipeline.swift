@@ -137,3 +137,18 @@ struct LiveChunkPipeline {
         queuedCount = 0
     }
 }
+
+/// The trailing delta between two live-transcript revisions: what a streaming
+/// session should PASTE when `current` extends `previous`. "" when the new
+/// hypothesis isn't a pure extension (the recognizer rewrote earlier words —
+/// pasting anything would duplicate text). Pure string logic, extracted from
+/// AppState (MAK-32) so it's unit-tested.
+public enum LiveTranscriptDelta {
+    public static func delta(previous: String, current: String) -> String {
+        guard current.count > previous.count else { return "" }
+        let prefix = current.prefix(previous.count)
+        guard prefix == previous else { return "" }
+        return String(current.dropFirst(previous.count))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
