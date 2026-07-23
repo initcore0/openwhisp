@@ -88,4 +88,28 @@ enum ModelStorage {
         f.allowedUnits = [.useKB, .useMB, .useGB]
         return f.string(fromByteCount: max(0, bytes))
     }
+
+    // MARK: - Disk measurement (moved from AppState under the MAK-32 ratchet)
+
+    /// Allocated size of a directory tree (bytes) — regular files only.
+    static func directorySize(at url: URL) -> Int64 {
+        let fm = FileManager.default
+        guard let en = fm.enumerator(
+            at: url,
+            includingPropertiesForKeys: [.totalFileAllocatedSizeKey, .fileAllocatedSizeKey, .isRegularFileKey]
+        ) else { return 0 }
+        var total: Int64 = 0
+        for case let f as URL in en {
+            let vals = try? f.resourceValues(forKeys: [.totalFileAllocatedSizeKey, .fileAllocatedSizeKey, .isRegularFileKey])
+            guard vals?.isRegularFile == true else { continue }
+            total += Int64(vals?.totalFileAllocatedSize ?? vals?.fileAllocatedSize ?? 0)
+        }
+        return total
+    }
+
+    /// Allocated size of a single file (bytes).
+    static func fileSize(at url: URL) -> Int64 {
+        let vals = try? url.resourceValues(forKeys: [.totalFileAllocatedSizeKey, .fileAllocatedSizeKey])
+        return Int64(vals?.totalFileAllocatedSize ?? vals?.fileAllocatedSize ?? 0)
+    }
 }

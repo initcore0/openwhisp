@@ -1684,7 +1684,7 @@ class AppState: ObservableObject {
     }
 
     var languageDisplayName: String {
-        Self.languageDisplayName(for: language)
+        LanguageResolver.displayName(for: language)
     }
 
     /// Test/DI seam: when injected, `wireUpServices()` uses these instead of
@@ -1716,7 +1716,7 @@ class AppState: ObservableObject {
         self.injectedFileEngine = fileEngine
         self.settingsStore = settingsStore
         let savedWhisperBinaryPath = settingsStore.string(forKey: "whisperBinaryPath") ?? ""
-        whisperBinaryPath = Self.preferredWhisperCLIPath(savedPath: savedWhisperBinaryPath)
+        whisperBinaryPath = WhisperModelPaths.preferredWhisperCLIPath(savedPath: savedWhisperBinaryPath)
 
         // Versioned settings migration MUST run before any key is read below:
         // it preserves old defaults for existing installs and splits the legacy
@@ -1728,10 +1728,10 @@ class AppState: ObservableObject {
         // visible quality tiers, so a fresh install never renders as the
         // synthetic "Custom" row. (Existing installs keep "tiny" via migration.)
         let savedModel = settingsStore.string(forKey: "modelName") ?? "base"
-        let fileName = Self.modelFileName(for: savedModel)
+        let fileName = WhisperModelPaths.modelFileName(for: savedModel)
         modelName = savedModel
         let savedModelPath = settingsStore.string(forKey: "modelPath") ?? ""
-        modelPath = Self.preferredModelPath(savedPath: savedModelPath, fileName: fileName)
+        modelPath = WhisperModelPaths.preferredModelPath(savedPath: savedModelPath, fileName: fileName)
         microphoneID = settingsStore.string(forKey: "microphoneID") ?? ""
         language = settingsStore.string(forKey: "language") ?? "auto"
         translateToEnglish = settingsStore.object(forKey: "translateToEnglish") as? Bool ?? false
@@ -1901,84 +1901,13 @@ class AppState: ObservableObject {
         lanBridgeServer.refresh(hasPairedPeers: pairingStore.hasPairedPeers)
     }
 
-    private static func modelFileName(for modelName: String) -> String {
-        switch modelName {
-        case "tiny":          return "ggml-tiny.bin"
-        case "tiny.en":       return "ggml-tiny.en.bin"
-        case "base":          return "ggml-base.bin"
-        case "base.en":       return "ggml-base.en.bin"
-        case "small":         return "ggml-small.bin"
-        case "small.en":      return "ggml-small.en.bin"
-        case "medium":        return "ggml-medium.bin"
-        case "medium.en":     return "ggml-medium.en.bin"
-        case "large-v3":      return "ggml-large-v3.bin"
-        case "large-v3-turbo": return "ggml-large-v3-turbo.bin"
-        default:         return "ggml-base.bin"
-        }
-    }
-
-    static func languageDisplayName(for code: String) -> String {
-        switch code {
-        case "auto": return "Auto Detect"
-        case "en": return "English"
-        case "ru": return "Russian"
-        case "es": return "Spanish"
-        case "fr": return "French"
-        case "de": return "German"
-        case "it": return "Italian"
-        case "pt": return "Portuguese"
-        case "ja": return "Japanese"
-        case "zh": return "Chinese"
-        case "ko": return "Korean"
-        case "ar": return "Arabic"
-        default: return code.uppercased()
-        }
-    }
-
+    // Model file names, CLI/model path fallbacks and the models directory live in
+    // core (WhisperModelPaths) per the MAK-32 decomposition; language display
+    // names live on LanguageResolver.
     private func resolvedModelPath() -> String {
-        Self.applicationSupportModelsDirectory()
-            .appendingPathComponent(Self.modelFileName(for: modelName))
+        WhisperModelPaths.applicationSupportModelsDirectory()
+            .appendingPathComponent(WhisperModelPaths.modelFileName(for: modelName))
             .path
-    }
-
-    private static func preferredWhisperCLIPath(savedPath: String) -> String {
-        if !savedPath.isEmpty, FileManager.default.fileExists(atPath: savedPath) {
-            return savedPath
-        }
-
-        if let bundled = bundledResourcePath("whisper/whisper-cli"),
-           FileManager.default.isExecutableFile(atPath: bundled) {
-            return bundled
-        }
-
-        return "\(NSHomeDirectory())/whisper.cpp/build/bin/whisper-cli"
-    }
-
-    private static func preferredModelPath(savedPath: String, fileName: String) -> String {
-        if !savedPath.isEmpty, FileManager.default.fileExists(atPath: savedPath) {
-            return savedPath
-        }
-
-        let oldWhisperCppPath = "\(NSHomeDirectory())/whisper.cpp/models/\(fileName)"
-        if FileManager.default.fileExists(atPath: oldWhisperCppPath) {
-            return oldWhisperCppPath
-        }
-
-        return applicationSupportModelsDirectory()
-            .appendingPathComponent(fileName)
-            .path
-    }
-
-    private static func bundledResourcePath(_ relativePath: String) -> String? {
-        Bundle.main.resourceURL?
-            .appendingPathComponent(relativePath)
-            .path
-    }
-
-    private static func applicationSupportModelsDirectory() -> URL {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-            ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support")
-        return base.appendingPathComponent("OpenWhisp/models", isDirectory: true)
     }
 
     private func wireUpServices() {
@@ -2685,7 +2614,7 @@ class AppState: ObservableObject {
         let fileName = Self.bundledLLMManifest()?
             .first(where: { $0.id == bundledLLMModel })?.file
             ?? "\(bundledLLMModel).gguf"
-        return Self.applicationSupportModelsDirectory()
+        return WhisperModelPaths.applicationSupportModelsDirectory()
             .appendingPathComponent(fileName)
             .path
     }
@@ -2701,7 +2630,7 @@ class AppState: ObservableObject {
         let fileName = Self.bundledLLMManifest()?
             .first(where: { $0.id == id })?.file
             ?? "\(id).gguf"
-        return Self.applicationSupportModelsDirectory()
+        return WhisperModelPaths.applicationSupportModelsDirectory()
             .appendingPathComponent(fileName)
             .path
     }
@@ -3031,7 +2960,7 @@ class AppState: ObservableObject {
             }
         }
         // GGUF files start with the ASCII magic "GGUF".
-        try Self.validateModelMagic(at: downloadedURL, expected: ["GGUF"], fileName: fileName)
+        try WhisperModelPaths.validateModelMagic(at: downloadedURL, expected: ["GGUF"], fileName: fileName)
         try? FileManager.default.removeItem(at: destination)
         try FileManager.default.moveItem(at: downloadedURL, to: tempURL)
         try FileManager.default.moveItem(at: tempURL, to: destination)
@@ -3062,18 +2991,18 @@ class AppState: ObservableObject {
                 kind: .whisperKit,
                 label: WhisperKitModelCatalog.displayInfo(for: name).label,
                 path: path.path,
-                bytes: Self.directorySize(at: path),
+                bytes: ModelStorage.directorySize(at: path),
                 isActive: name == activeWhisperKit
             ))
         }
 
         // whisper.cpp GGML (*.bin) and built-in LLM (*.gguf) share OpenWhisp/models.
-        let modelsDir = Self.applicationSupportModelsDirectory()
+        let modelsDir = WhisperModelPaths.applicationSupportModelsDirectory()
         let activeGGMLPath = URL(fileURLWithPath: modelPath).standardizedFileURL.path
         let activeLLMPath = URL(fileURLWithPath: selectedLLMModelPath()).standardizedFileURL.path
         for name in (try? fm.contentsOfDirectory(atPath: modelsDir.path)) ?? [] {
             let url = modelsDir.appendingPathComponent(name)
-            let bytes = Self.fileSize(at: url)
+            let bytes = ModelStorage.fileSize(at: url)
             if name.hasSuffix(".bin") {
                 items.append(ModelStorage.Item(
                     kind: .whisperCpp, label: name, path: url.path, bytes: bytes,
@@ -3100,7 +3029,7 @@ class AppState: ObservableObject {
                 kind: .parakeet,
                 label: ModelStorage.parakeetRepoLabel(forFolder: name),
                 path: path.path,
-                bytes: Self.directorySize(at: path),
+                bytes: ModelStorage.directorySize(at: path),
                 isActive: false
             ))
         }
@@ -3134,26 +3063,6 @@ class AppState: ObservableObject {
 
     /// Recursive allocated size of a directory (bytes). Used for WhisperKit models,
     /// which are folders of compiled sub-models.
-    private static func directorySize(at url: URL) -> Int64 {
-        let fm = FileManager.default
-        guard let en = fm.enumerator(
-            at: url,
-            includingPropertiesForKeys: [.totalFileAllocatedSizeKey, .fileAllocatedSizeKey, .isRegularFileKey]
-        ) else { return 0 }
-        var total: Int64 = 0
-        for case let f as URL in en {
-            let vals = try? f.resourceValues(forKeys: [.totalFileAllocatedSizeKey, .fileAllocatedSizeKey, .isRegularFileKey])
-            guard vals?.isRegularFile == true else { continue }
-            total += Int64(vals?.totalFileAllocatedSize ?? vals?.fileAllocatedSize ?? 0)
-        }
-        return total
-    }
-
-    /// Allocated size of a single file (bytes).
-    private static func fileSize(at url: URL) -> Int64 {
-        let vals = try? url.resourceValues(forKeys: [.totalFileAllocatedSizeKey, .fileAllocatedSizeKey])
-        return Int64(vals?.totalFileAllocatedSize ?? vals?.fileAllocatedSize ?? 0)
-    }
 
     /// Download + stage a WhisperKit model from the model manager. Single-flight:
     /// ignores a request while another download is in progress.
@@ -5503,7 +5412,7 @@ class AppState: ObservableObject {
         whisperKitModel = "openai_whisper-small"
         modelName = "base"
         parakeetVariant = ParakeetCatalog.defaultVariantID
-        whisperBinaryPath = Self.preferredWhisperCLIPath(savedPath: "")
+        whisperBinaryPath = WhisperModelPaths.preferredWhisperCLIPath(savedPath: "")
         whisperBackend = "serverAPI"
         liveChunkDuration = 2.0
         pauseBasedLiveChunksEnabled = false
@@ -5577,8 +5486,8 @@ class AppState: ObservableObject {
     /// Application Support location. Drives the Settings model rows' state.
     func isWhisperModelInstalled(_ name: String) -> Bool {
         FileManager.default.fileExists(
-            atPath: Self.applicationSupportModelsDirectory()
-                .appendingPathComponent(Self.modelFileName(for: name))
+            atPath: WhisperModelPaths.applicationSupportModelsDirectory()
+                .appendingPathComponent(WhisperModelPaths.modelFileName(for: name))
                 .path
         )
     }
@@ -6410,25 +6319,10 @@ class AppState: ObservableObject {
             }
         }
         // whisper.cpp GGML files start with the magic "lmgg" (0x67676d6c LE).
-        try Self.validateModelMagic(at: downloadedURL, expected: ["lmgg"], fileName: fileName)
+        try WhisperModelPaths.validateModelMagic(at: downloadedURL, expected: ["lmgg"], fileName: fileName)
         try? FileManager.default.removeItem(at: destination)
         try FileManager.default.moveItem(at: downloadedURL, to: tempURL)
         try FileManager.default.moveItem(at: tempURL, to: destination)
-    }
-
-    /// Reject a downloaded payload that isn't the expected model format before it
-    /// is installed. Catches error/captive-portal pages served with HTTP 200 (a
-    /// status check alone misses those): once a bogus file sits at the model path,
-    /// ensure*ModelExists treats it as installed forever and every transcription
-    /// fails with no in-app recovery.
-    private static func validateModelMagic(at url: URL, expected: [String], fileName: String) throws {
-        let handle = try FileHandle(forReadingFrom: url)
-        defer { try? handle.close() }
-        let head = (try? handle.read(upToCount: 4)) ?? Data()
-        let magics = expected.compactMap { $0.data(using: .ascii) }
-        guard magics.contains(head) else {
-            throw ModelDownloadError(message: "Downloaded \(fileName) is not a valid model file (server may have returned an error page)")
-        }
     }
 
     private static func modelDownloadURL(modelID: String, fileName: String) -> URL {
@@ -6452,13 +6346,6 @@ class AppState: ObservableObject {
         return try? JSONDecoder().decode([ModelManifestEntry].self, from: data)
     }
 
-    private static func formatBytes(_ bytes: Int64) -> String {
-        let formatter = ByteCountFormatter()
-        formatter.allowedUnits = [.useKB, .useMB, .useGB]
-        formatter.countStyle = .file
-        return formatter.string(fromByteCount: bytes)
-    }
-
     // MARK: - Notification
 
     private func showNotification(title: String, body: String) {
@@ -6470,21 +6357,6 @@ class AppState: ObservableObject {
         let req = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
         center.add(req)
     }
-}
-
-struct ModelManifestEntry: Decodable {
-    let id: String
-    let file: String
-    let label: String
-    let size: String
-    let url: String
-    /// Present in the LLM manifest (llm-manifest.json); absent in the whisper one.
-    let license: String?
-}
-
-struct ModelDownloadError: LocalizedError {
-    let message: String
-    var errorDescription: String? { message }
 }
 
 final class ModelDownloader: NSObject, URLSessionDownloadDelegate {

@@ -58,6 +58,27 @@ public enum LanguageResolver {
         return language
     }
 
+    /// Human-readable name for a spoken-language code, for menus/status rows
+    /// (extracted from AppState under the MAK-32 ratchet). Unknown codes fall
+    /// back to the uppercased code rather than failing.
+    public static func displayName(for code: String) -> String {
+        switch code {
+        case "auto": return "Auto Detect"
+        case "en": return "English"
+        case "ru": return "Russian"
+        case "es": return "Spanish"
+        case "fr": return "French"
+        case "de": return "German"
+        case "it": return "Italian"
+        case "pt": return "Portuguese"
+        case "ja": return "Japanese"
+        case "zh": return "Chinese"
+        case "ko": return "Korean"
+        case "ar": return "Arabic"
+        default: return code.uppercased()
+        }
+    }
+
     /// Language of the OUTPUT text, used to pick formatting rules (spoken
     /// punctuation, capitalization): English when translating, else the spoken
     /// language.

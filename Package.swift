@@ -120,6 +120,7 @@ let package = Package(
                 "VoiceIndicatorStyle.swift",
                 "WhisperKitBridge.swift",
                 "WhisperKitModelCatalog.swift",
+                "WhisperModelPaths.swift",
                 "PermissionBannerPolicy.swift",
                 "OnboardingHotkeyGate.swift",
                 "OnboardingModelStatus.swift",
