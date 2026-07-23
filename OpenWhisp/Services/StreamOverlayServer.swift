@@ -64,12 +64,16 @@ final class StreamOverlayServer {
     /// Serializes translate→commit for finals so out-of-order translator
     /// completions can't reorder caption lines.
     private var finalChain: Task<Void, Never>?
+    /// Movie-subtitle auto-hide: rearmed on every publish; fires after
+    /// `lingerSeconds` without new speech and clears the overlay.
+    private var lingerTimer: Timer?
 
     init(config: StreamOverlayConfig, translator: Translator? = nil) {
         let sanitized = config.sanitized()
         self.config = sanitized
         self.translator = translator
-        self.captions = StreamOverlayCaptions(maxLines: sanitized.maxLines)
+        self.captions = StreamOverlayCaptions(
+            maxLines: sanitized.maxLines, charsPerLine: sanitized.charsPerLine)
     }
 
     var isRunning: Bool { listener != nil }
@@ -130,6 +134,8 @@ final class StreamOverlayServer {
     }
 
     func stop() {
+        lingerTimer?.invalidate()
+        lingerTimer = nil
         listener?.cancel()
         listener = nil
         boundPort = nil
@@ -142,18 +148,20 @@ final class StreamOverlayServer {
 
     // MARK: - Publishing captions (the engine-agnostic input seam)
 
-    /// Publish an interim hypothesis. Broadcast immediately; partials are never
-    /// translated (they change too fast to be worth a round trip).
+    /// Publish an interim hypothesis: show the trailing subtitle window of the
+    /// current utterance. Partials are never translated (they change too fast
+    /// to be worth a round trip). An empty partial (session reset) hides the
+    /// captions immediately.
     func publishPartial(_ text: String) {
-        broadcast(captions.setPartial(text))
+        broadcast(captions.setText(text))
     }
 
-    /// Publish a finalized line. Runs through the injected translator first when
-    /// the config enables translation; commits in publish order regardless of
-    /// how long each translation takes.
+    /// Publish the finalized utterance. Runs through the injected translator
+    /// first when the config enables translation; commits in publish order
+    /// regardless of how long each translation takes.
     func publishFinal(_ text: String) {
         guard config.translationEnabled, let translator, !config.targetLanguage.isEmpty else {
-            broadcast(captions.commitFinal(text))
+            broadcast(captions.setText(text))
             return
         }
         let language = config.targetLanguage
@@ -162,16 +170,31 @@ final class StreamOverlayServer {
             await previous?.value
             let translated = await translator(text, language) ?? text
             guard let self else { return }
-            self.broadcast(self.captions.commitFinal(translated))
+            self.broadcast(self.captions.setText(translated))
         }
     }
 
-    /// Clear the overlay (dictation session ended).
+    /// Clear the overlay now (capture stopped).
     func publishClear() {
         broadcast(captions.clear())
     }
 
     private func broadcast(_ snapshot: StreamOverlayCaptions.Snapshot) {
+        // Movie-subtitle auto-hide: any visible captions (re)arm the silence
+        // timer; when it fires with nothing new said, the overlay goes blank.
+        // A clear (empty) frame doesn't rearm — it IS the hidden state.
+        lingerTimer?.invalidate()
+        lingerTimer = nil
+        if !snapshot.lines.isEmpty {
+            lingerTimer = Timer.scheduledTimer(
+                withTimeInterval: TimeInterval(config.lingerSeconds), repeats: false
+            ) { [weak self] _ in
+                Task { @MainActor in
+                    guard let self, self.isRunning else { return }
+                    self.broadcast(self.captions.clear())
+                }
+            }
+        }
         let frame = StreamOverlaySSE.frame(snapshot)
         queue.async { [weak self] in
             guard let self else { return }

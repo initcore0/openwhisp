@@ -67,6 +67,9 @@ extension AppState {
     }
 
     private func stopStreamOverlayServer() {
+        // Capture without a server is pointless — stop it too (also hides any
+        // lingering subtitles via finishSessionUI's publishClear).
+        if streamOverlayCaptureActive { stopStreamOverlayCapture() }
         streamOverlayServer?.stop()
         streamOverlayServer = nil
         streamOverlayRunning = false

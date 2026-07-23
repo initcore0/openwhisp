@@ -55,47 +55,66 @@ final class StreamOverlayTests: XCTestCase {
         XCTAssertEqual(c.sanitized(), c)
     }
 
-    // MARK: - Caption reducer
+    // MARK: - Subtitle reducer (movie-style window)
 
-    func testPartialThenFinalScrollsWindow() {
-        var caps = StreamOverlayCaptions(maxLines: 2)
-        _ = caps.setPartial("hel")
-        var snap = caps.setPartial("hello wor")
-        XCTAssertEqual(snap.partial, "hello wor")
-        XCTAssertEqual(snap.lines, [])
-
-        snap = caps.commitFinal("hello world")
-        XCTAssertEqual(snap.partial, "", "final clears the partial")
-        XCTAssertEqual(snap.lines, ["hello world"])
-
-        _ = caps.commitFinal("line two")
-        snap = caps.commitFinal("line three")
-        XCTAssertEqual(snap.lines, ["line two", "line three"], "window caps at maxLines")
+    func testWrapsAndWindowsLikeMovieSubtitles() {
+        var caps = StreamOverlayCaptions(maxLines: 2, charsPerLine: 12)
+        // Short text: one line, no window trimming.
+        var snap = caps.setText("hello there")
+        XCTAssertEqual(snap.lines, ["hello there"])
+        // Longer text wraps; only the LAST two lines stay (oldest scrolls off).
+        snap = caps.setText("hello there my good friends of the stream")
+        XCTAssertEqual(snap.lines.count, 2)
+        XCTAssertEqual(snap.lines.last, "the stream")
+        XCTAssertTrue(snap.lines.allSatisfy { $0.count <= 12 })
     }
 
-    func testEmptyFinalOnlyClearsPartial() {
-        var caps = StreamOverlayCaptions(maxLines: 3)
-        _ = caps.commitFinal("kept")
-        let snap = caps.commitFinal("   \n")
-        XCTAssertEqual(snap.lines, ["kept"])
-        XCTAssertEqual(snap.partial, "")
+    func testWrapBreaksOnWordsAndHardSplitsLongWords() {
+        XCTAssertEqual(
+            StreamOverlayCaptions.wrap("one two three four", width: 9),
+            ["one two", "three", "four"])
+        // A word longer than the budget hard-splits instead of blowing the line.
+        XCTAssertEqual(
+            StreamOverlayCaptions.wrap("see https://example.com/x ok", width: 10),
+            ["see", "https://ex", "ample.com/", "x ok"])
+        XCTAssertEqual(StreamOverlayCaptions.wrap("", width: 10), [])
+        XCTAssertEqual(StreamOverlayCaptions.wrap("  \n  ", width: 10), [])
+    }
+
+    func testEmptyTextClearsAndClearHides() {
+        var caps = StreamOverlayCaptions(maxLines: 3, charsPerLine: 42)
+        _ = caps.setText("something on screen")
+        var snap = caps.setText("")
+        XCTAssertEqual(snap.lines, [], "empty text (session reset) hides captions")
+        _ = caps.setText("back again")
+        snap = caps.clear()
+        XCTAssertEqual(snap.lines, [], "clear (silence timeout) hides captions")
     }
 
     func testRevisionIsMonotonic() {
-        var caps = StreamOverlayCaptions(maxLines: 3)
-        let a = caps.setPartial("a")
-        let b = caps.commitFinal("a b")
+        var caps = StreamOverlayCaptions(maxLines: 3, charsPerLine: 42)
+        let a = caps.setText("a")
+        let b = caps.setText("a b")
         let c = caps.clear()
         XCTAssertLessThan(a.revision, b.revision)
         XCTAssertLessThan(b.revision, c.revision)
-        XCTAssertEqual(c.lines, [])
+    }
+
+    func testConfigDecodeToleratesMissingNewFields() throws {
+        // A v1 config JSON (no charsPerLine/lingerSeconds) must still decode,
+        // falling back to defaults — users' saved settings survive the upgrade.
+        let v1 = ##"{"canvasWidth":1280,"canvasHeight":720,"fontFamily":"Menlo","fontSize":40,"backgroundColor":"#00000000","textColor":"#FFFFFF","maxLines":3,"translationEnabled":false,"targetLanguage":""}"##
+        let decoded = try JSONDecoder().decode(StreamOverlayConfig.self, from: Data(v1.utf8))
+        XCTAssertEqual(decoded.canvasWidth, 1280)
+        XCTAssertEqual(decoded.charsPerLine, StreamOverlayConfig().charsPerLine)
+        XCTAssertEqual(decoded.lingerSeconds, StreamOverlayConfig().lingerSeconds)
     }
 
     // MARK: - SSE framing
 
     func testSSEFrameShape() throws {
-        var caps = StreamOverlayCaptions(maxLines: 3)
-        let frame = StreamOverlaySSE.frame(caps.commitFinal("hi"))
+        var caps = StreamOverlayCaptions(maxLines: 3, charsPerLine: 42)
+        let frame = StreamOverlaySSE.frame(caps.setText("hi"))
         XCTAssertTrue(frame.hasPrefix("event: caption\ndata: "))
         XCTAssertTrue(frame.hasSuffix("\n\n"))
         // The data line round-trips as a Snapshot.

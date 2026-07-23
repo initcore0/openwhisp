@@ -923,6 +923,15 @@ class AppState: ObservableObject {
     /// Debounce for config-driven restarts (a color-picker drag fires dozens of
     /// updates; restarting the listener per tick would drop SSE clients).
     var streamOverlayRestartTimer: Timer?
+    /// True while the captions CAPTURE session (mic → subtitles) is live —
+    /// drives the pane's Start/Stop Captions button. Distinct from
+    /// `streamOverlayRunning` (the web server): the server can serve an idle
+    /// page while nothing is being captured.
+    @Published var streamOverlayCaptureActive = false
+    /// Set by `startStreamOverlayCapture()` for the next `beginSession` to mark
+    /// that session captions-only (suppress typing, exempt from the hands-free
+    /// silence safety stop). Consumed in `beginSession`.
+    var streamOverlayCaptureRequested = false
 
     /// Bias whisper recognition toward custom terms. Default-on; harmless when
     /// the vocabulary is empty (no prompt is sent).
@@ -2355,7 +2364,10 @@ class AppState: ObservableObject {
     private func feedLockSafetyAutoStop(vadLevel: Float) {
         guard dictationLocked, handsFreeSilenceAutoStop,
               sessionActive, isRecording,
-              !sessionInitiator.isAgent else {
+              !sessionInitiator.isAgent,
+              // A captions capture session is MEANT to sit open through long
+              // silences (a streamer not talking); only its Stop button ends it.
+              !streamOverlayCaptureActive else {
             // Not an armed context — drop any stale detector so a later hold
             // session can't inherit it.
             lockSafetyDetector = nil
@@ -2511,7 +2523,14 @@ class AppState: ObservableObject {
         // secure-field refusal guard above and profile resolution, before any
         // routing. The gate re-checks the secure-field and per-app rules.
         captureScreenContext()
-        let liveMode = outputMode == "liveChunks" || outputMode == "preview"
+        // A stream-overlay capture session must produce text LIVE regardless of
+        // the user's paste-time outputMode — subtitles from a batch session
+        // would only ever appear after Stop. Forcing live routing here sends
+        // streaming engines down the partials path and file engines down the
+        // live-chunk path; the transcript still goes nowhere but the overlay
+        // (suppressOutput is set in beginSession).
+        let liveMode = streamOverlayCaptureRequested
+            || outputMode == "liveChunks" || outputMode == "preview"
         // Streaming backends (Apple Speech and Parakeet always; WhisperKit when a
         // live preview is wanted) run the real-time path. All go through the shared
         // streaming session starter; `activeStreamingEngine` picks the recognizer.
@@ -2525,6 +2544,36 @@ class AppState: ObservableObject {
         } else {
             startRecording()
         }
+    }
+
+    // MARK: Captions capture (mic → subtitles, no typing)
+
+    /// Start the captions capture session from the Stream Overlay pane: a
+    /// locked (hands-free) dictation session whose transcript goes ONLY to the
+    /// overlay — output is suppressed, the hands-free silence safety stop is
+    /// disarmed (a streamer's quiet stretch must not end it), and it runs until
+    /// `stopStreamOverlayCapture()` (or Esc / the dictation hotkey / an agent
+    /// preempt, which end the session through the normal funnel).
+    func startStreamOverlayCapture() {
+        guard streamOverlayEnabled, streamOverlayServer != nil else { return }
+        guard !sessionActive, !meetingInProgress else {
+            statusMessage = meetingInProgress
+                ? "Stop the meeting before starting captions"
+                : "Finish the current dictation before starting captions"
+            return
+        }
+        streamOverlayCaptureRequested = true
+        startDictation(locked: true)
+        // startDictation has synchronous refusal paths (secure field, meeting,
+        // TTS gating) that never reach beginSession — don't leave the request
+        // armed to hijack the user's NEXT normal dictation.
+        if !sessionActive { streamOverlayCaptureRequested = false }
+    }
+
+    /// Stop the captions capture session (the pane's Stop button).
+    func stopStreamOverlayCapture() {
+        guard streamOverlayCaptureActive else { return }
+        stopDictation()
     }
 
     func stopDictation() {
@@ -3911,7 +3960,11 @@ class AppState: ObservableObject {
         // Agent-initiated sessions return the transcript to the caller instead of
         // pasting. Snapshot from the initiator (set by the bridge before this call)
         // so a mid-session change can't alter the paste-vs-return disposition.
-        suppressOutput = sessionInitiator.isAgent
+        // Stream-overlay CAPTURE sessions likewise never type — their transcript's
+        // only destination is the subtitle overlay.
+        streamOverlayCaptureActive = streamOverlayCaptureRequested
+        streamOverlayCaptureRequested = false
+        suppressOutput = sessionInitiator.isAgent || streamOverlayCaptureActive
         // Spoken edit commands (MAK-19) are gated per-session, but the decision is
         // made in startStreamingSession() — the streaming path that actually reaches
         // the interception site (handleAppleSpeechFinal) and where `outputMode` is
@@ -5217,6 +5270,13 @@ class AppState: ObservableObject {
         }
         sessionInitiator = .user
         suppressOutput = false
+        // Captions capture ends with its session (Stop button, Esc, error, or a
+        // preempting dictation all funnel here); hide any lingering subtitles.
+        if streamOverlayCaptureActive {
+            streamOverlayCaptureActive = false
+            streamOverlayServer?.publishClear()
+        }
+        streamOverlayCaptureRequested = false
         sessionOutcome = nil
         agentDictatePrompt = nil
         agentDictateClientLabel = nil

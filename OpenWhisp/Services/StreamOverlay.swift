@@ -21,8 +21,14 @@ public struct StreamOverlayConfig: Codable, Equatable, Sendable {
     public var backgroundColor: String
     /// Caption text color as a `#RRGGBB`/`#RRGGBBAA` hex string.
     public var textColor: String
-    /// How many finalized caption lines stay on screen (older lines scroll off).
+    /// How many subtitle lines stay on screen (older lines scroll off).
     public var maxLines: Int
+    /// Word-wrap budget per subtitle line, in characters (broadcast captions
+    /// use ~32–42). The overlay windows to the LAST `maxLines` wrapped lines.
+    public var charsPerLine: Int
+    /// Captions disappear after this many seconds without new speech — the
+    /// movie-subtitle behavior (an empty scene shows no stale text).
+    public var lingerSeconds: Int
     /// When true the server runs published FINAL lines through its injected
     /// translator before broadcasting. Which translator (if any) is the caller's
     /// choice — the overlay itself never names an engine or model.
@@ -38,6 +44,8 @@ public struct StreamOverlayConfig: Codable, Equatable, Sendable {
         backgroundColor: String = "#00000000",
         textColor: String = "#FFFFFF",
         maxLines: Int = 3,
+        charsPerLine: Int = 42,
+        lingerSeconds: Int = 4,
         translationEnabled: Bool = false,
         targetLanguage: String = ""
     ) {
@@ -48,8 +56,28 @@ public struct StreamOverlayConfig: Codable, Equatable, Sendable {
         self.backgroundColor = backgroundColor
         self.textColor = textColor
         self.maxLines = maxLines
+        self.charsPerLine = charsPerLine
+        self.lingerSeconds = lingerSeconds
         self.translationEnabled = translationEnabled
         self.targetLanguage = targetLanguage
+    }
+
+    /// Backward-compatible decode: fields added after the first release fall
+    /// back to their defaults, so a saved v1 config JSON still loads.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let defaults = StreamOverlayConfig()
+        canvasWidth = try c.decodeIfPresent(Int.self, forKey: .canvasWidth) ?? defaults.canvasWidth
+        canvasHeight = try c.decodeIfPresent(Int.self, forKey: .canvasHeight) ?? defaults.canvasHeight
+        fontFamily = try c.decodeIfPresent(String.self, forKey: .fontFamily) ?? defaults.fontFamily
+        fontSize = try c.decodeIfPresent(Int.self, forKey: .fontSize) ?? defaults.fontSize
+        backgroundColor = try c.decodeIfPresent(String.self, forKey: .backgroundColor) ?? defaults.backgroundColor
+        textColor = try c.decodeIfPresent(String.self, forKey: .textColor) ?? defaults.textColor
+        maxLines = try c.decodeIfPresent(Int.self, forKey: .maxLines) ?? defaults.maxLines
+        charsPerLine = try c.decodeIfPresent(Int.self, forKey: .charsPerLine) ?? defaults.charsPerLine
+        lingerSeconds = try c.decodeIfPresent(Int.self, forKey: .lingerSeconds) ?? defaults.lingerSeconds
+        translationEnabled = try c.decodeIfPresent(Bool.self, forKey: .translationEnabled) ?? defaults.translationEnabled
+        targetLanguage = try c.decodeIfPresent(String.self, forKey: .targetLanguage) ?? defaults.targetLanguage
     }
 
     /// True iff `value` is a `#RGB`, `#RRGGBB`, or `#RRGGBBAA` hex color.
@@ -69,6 +97,8 @@ public struct StreamOverlayConfig: Codable, Equatable, Sendable {
         c.canvasHeight = min(max(c.canvasHeight, 180), 4_320)
         c.fontSize = min(max(c.fontSize, 8), 400)
         c.maxLines = min(max(c.maxLines, 1), 10)
+        c.charsPerLine = min(max(c.charsPerLine, 16), 120)
+        c.lingerSeconds = min(max(c.lingerSeconds, 1), 30)
         if !Self.isValidHexColor(c.backgroundColor) { c.backgroundColor = "#00000000" }
         if !Self.isValidHexColor(c.textColor) { c.textColor = "#FFFFFF" }
         // The font family is interpolated into CSS — strip anything that could
@@ -85,59 +115,79 @@ public struct StreamOverlayConfig: Codable, Equatable, Sendable {
     }
 }
 
-/// The rolling caption state the overlay shows: a capped window of finalized
-/// lines plus the in-flight partial hypothesis. Pure reducer — the server feeds
-/// it published text and broadcasts the snapshots it returns.
+/// Movie-style subtitle state: the CURRENT utterance, word-wrapped to a
+/// per-line character budget and windowed to the LAST `maxLines` lines — old
+/// lines scroll off the top as the speaker continues, exactly like broadcast
+/// captions. Pure reducer — the server feeds it published text and broadcasts
+/// the snapshots it returns; the silence auto-hide timer lives in the server
+/// (time is a side effect).
 public struct StreamOverlayCaptions: Equatable, Sendable {
     /// One immutable frame of what the overlay should display.
     public struct Snapshot: Codable, Equatable, Sendable {
-        /// Finalized lines, oldest first, at most `maxLines`.
+        /// Wrapped subtitle lines, oldest first, at most `maxLines`. Empty means
+        /// the overlay shows nothing (no speech right now).
         public var lines: [String]
-        /// The live partial hypothesis ("" when none).
-        public var partial: String
         /// Monotonic revision so a client can drop stale/out-of-order frames.
         public var revision: Int
     }
 
     public let maxLines: Int
+    public let charsPerLine: Int
     private var lines: [String] = []
-    private var partial: String = ""
     private var revision: Int = 0
 
-    public init(maxLines: Int) {
+    public init(maxLines: Int, charsPerLine: Int = 42) {
         self.maxLines = max(1, maxLines)
+        self.charsPerLine = max(8, charsPerLine)
     }
 
-    /// Replace the live partial hypothesis.
-    public mutating func setPartial(_ text: String) -> Snapshot {
-        partial = text
+    /// Show `text` (the current utterance so far — partial or final alike):
+    /// wrap it and keep the trailing window. Empty/whitespace text clears.
+    public mutating func setText(_ text: String) -> Snapshot {
+        let wrapped = Self.wrap(text, width: charsPerLine)
+        lines = Array(wrapped.suffix(maxLines))
         return bump()
     }
 
-    /// Commit a finalized line (clearing the partial) and scroll old lines off.
-    /// Empty/whitespace finals just clear the partial.
-    public mutating func commitFinal(_ text: String) -> Snapshot {
-        partial = ""
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmed.isEmpty {
-            lines.append(trimmed)
-            if lines.count > maxLines { lines.removeFirst(lines.count - maxLines) }
-        }
-        return bump()
-    }
-
-    /// Clear everything (session ended).
+    /// Hide the captions (silence timeout / session reset).
     public mutating func clear() -> Snapshot {
         lines = []
-        partial = ""
         return bump()
     }
 
-    public var snapshot: Snapshot { Snapshot(lines: lines, partial: partial, revision: revision) }
+    public var snapshot: Snapshot { Snapshot(lines: lines, revision: revision) }
 
     private mutating func bump() -> Snapshot {
         revision += 1
         return snapshot
+    }
+
+    /// Greedy word wrap to `width` characters per line. Words longer than the
+    /// budget are hard-split so a URL or long compound can never blow the line.
+    /// Whitespace (incl. newlines) collapses — subtitles are their own layout.
+    static func wrap(_ text: String, width: Int) -> [String] {
+        var out: [String] = []
+        var current = ""
+        for wordSub in text.split(whereSeparator: { $0.isWhitespace }) {
+            var word = String(wordSub)
+            // Hard-split oversized words first.
+            while word.count > width {
+                if !current.isEmpty { out.append(current); current = "" }
+                out.append(String(word.prefix(width)))
+                word = String(word.dropFirst(width))
+            }
+            if word.isEmpty { continue }
+            if current.isEmpty {
+                current = word
+            } else if current.count + 1 + word.count <= width {
+                current += " " + word
+            } else {
+                out.append(current)
+                current = word
+            }
+        }
+        if !current.isEmpty { out.append(current) }
+        return out
     }
 }
 
@@ -191,7 +241,13 @@ public enum StreamOverlayPage {
             white-space: pre-wrap;
             word-break: break-word;
           }
-          #captions .partial { opacity: 0.65; font-style: italic; }
+          #captions div {
+            display: inline-block;
+            background: rgba(0,0,0,0.55);
+            border-radius: 6px;
+            padding: 0.05em 0.4em;
+            margin-top: 0.12em;
+          }
         </style>
         </head>
         <body>
@@ -209,12 +265,7 @@ public enum StreamOverlayPage {
               const d = document.createElement('div');
               d.textContent = line;
               el.appendChild(d);
-            }
-            if (snap.partial) {
-              const p = document.createElement('div');
-              p.className = 'partial';
-              p.textContent = snap.partial;
-              el.appendChild(p);
+              el.appendChild(document.createElement('br'));
             }
           });
         </script>

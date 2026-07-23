@@ -121,12 +121,37 @@ final class StreamOverlayServerTests: XCTestCase {
             client.wait { $0.contains("text/event-stream") && $0.contains("hello twitch") },
             "greeting snapshot missing: \(client.received.prefix(300))")
 
-        // Live partial + final broadcast to the open stream.
+        // Live partial + final broadcast to the open stream. Movie-subtitle
+        // semantics: the current utterance REPLACES what's shown.
         server.publishPartial("second li")
         XCTAssertTrue(client.wait { $0.contains("second li") })
         server.publishFinal("second line")
-        XCTAssertTrue(client.wait { $0.contains("\"lines\":[\"hello twitch\",\"second line\"]") },
+        XCTAssertTrue(client.wait { $0.contains("\"lines\":[\"second line\"]") },
                       "final not broadcast: \(client.received.suffix(300))")
+    }
+
+    @MainActor
+    func testCaptionsWindowAndAutoHideAfterSilence() throws {
+        var config = StreamOverlayConfig()
+        config.maxLines = 2
+        config.charsPerLine = 16
+        config.lingerSeconds = 1
+        let (server, port) = try startServer(config: config)
+        defer { server.stop() }
+
+        let client = RawClient(port: port)
+        defer { client.close() }
+        client.send("GET /events HTTP/1.1\r\n\r\n")
+        XCTAssertTrue(client.wait { $0.contains("text/event-stream") })
+
+        // A long utterance wraps to 16-char lines and only the LAST TWO show.
+        server.publishPartial("subtitles behave like in the movies now")
+        XCTAssertTrue(client.wait { $0.contains("\"lines\":[\"like in the\",\"movies now\"]") },
+                      "windowed frame missing: \(client.received.suffix(400))")
+
+        // After lingerSeconds of silence the overlay hides itself.
+        XCTAssertTrue(client.wait(timeout: 5) { $0.contains("\"lines\":[]") },
+                      "auto-hide frame missing: \(client.received.suffix(400))")
     }
 
     @MainActor

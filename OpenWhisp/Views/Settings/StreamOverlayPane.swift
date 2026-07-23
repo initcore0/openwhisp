@@ -15,6 +15,7 @@ struct StreamOverlayPane: View {
         Form {
             introSection
             if appState.streamOverlayEnabled {
+                captureSection
                 serverSection
                 displaySection
             }
@@ -33,6 +34,43 @@ struct StreamOverlayPane: View {
             Toggle("Enable stream overlay server", isOn: $appState.streamOverlayEnabled)
         } header: {
             Text("Stream Overlay")
+        }
+    }
+
+    // MARK: Captions capture
+
+    /// The mic → subtitles control. Separate from the server toggle: the server
+    /// serves the (possibly idle) page; this starts/stops actually listening.
+    private var captureSection: some View {
+        Section {
+            HStack {
+                Circle()
+                    .fill(appState.streamOverlayCaptureActive ? Color.red : Color.secondary.opacity(0.4))
+                    .frame(width: 8, height: 8)
+                Text(appState.streamOverlayCaptureActive ? "Capturing — speech becomes subtitles" : "Not capturing")
+                Spacer()
+                if appState.streamOverlayCaptureActive {
+                    Button {
+                        appState.stopStreamOverlayCapture()
+                    } label: {
+                        Label("Stop Captions", systemImage: "stop.circle.fill")
+                    }
+                    .tint(.red)
+                } else {
+                    Button {
+                        appState.startStreamOverlayCapture()
+                    } label: {
+                        Label("Start Captions", systemImage: "record.circle")
+                    }
+                    .disabled(!appState.streamOverlayRunning)
+                }
+            }
+        } header: {
+            Text("Captions")
+        } footer: {
+            Text("Runs hands-free until you stop it — nothing is typed into your apps, and the transcript only feeds the overlay. Long silences don't end it. Esc or the dictation hotkey also stop it.")
+                .font(.caption)
+                .foregroundColor(.secondary)
         }
     }
 
@@ -123,16 +161,36 @@ struct StreamOverlayPane: View {
 
             Stepper(value: configBinding(\.maxLines), in: 1...10) {
                 HStack {
-                    Text("Caption lines on screen")
+                    Text("Subtitle lines on screen")
                     Spacer()
                     Text("\(appState.streamOverlayConfig.maxLines)")
                         .foregroundColor(.secondary)
                 }
             }
+
+            Stepper(value: configBinding(\.charsPerLine), in: 16...120, step: 2) {
+                HStack {
+                    Text("Characters per line")
+                    Spacer()
+                    Text("\(appState.streamOverlayConfig.charsPerLine)")
+                        .foregroundColor(.secondary)
+                }
+            }
+            .help("Word-wrap budget per subtitle line. Broadcast captions use 32–42.")
+
+            Stepper(value: configBinding(\.lingerSeconds), in: 1...30) {
+                HStack {
+                    Text("Hide after silence")
+                    Spacer()
+                    Text("\(appState.streamOverlayConfig.lingerSeconds) s")
+                        .foregroundColor(.secondary)
+                }
+            }
+            .help("Captions disappear this many seconds after speech stops, like movie subtitles.")
         } header: {
             Text("Appearance")
         } footer: {
-            Text("Older caption lines scroll off as new dictations finish. The in-progress phrase shows dimmed until it finalizes.")
+            Text("Behaves like movie subtitles: speech shows as up to the configured number of wrapped lines, older lines scroll off the top as you keep talking, and everything fades out after silence.")
                 .font(.caption)
                 .foregroundColor(.secondary)
         }
