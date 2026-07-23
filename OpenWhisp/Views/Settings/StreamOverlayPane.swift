@@ -17,6 +17,7 @@ struct StreamOverlayPane: View {
             if overlay.enabled {
                 captureSection
                 serverSection
+                translationSection
                 displaySection
             }
         }
@@ -122,6 +123,37 @@ struct StreamOverlayPane: View {
         Binding(
             get: { overlay.port },
             set: { overlay.port = min(max($0, 1_024), 65_535) })
+    }
+
+    // MARK: Translation
+
+    /// Bilingual captions via dual-runtime translation: the fast engine (Parakeet)
+    /// drives the original track live while the whisper model translates each
+    /// utterance to English on a second track ~1–3s behind. This pane only chooses
+    /// which track(s) to SHOW; the translation itself runs when the user has
+    /// "Translate to English" on with a non-English language and Parakeet (the
+    /// dictation-side gate). Engine/model-neutral: only whisper translates, only
+    /// to English.
+    private var translationSection: some View {
+        Section {
+            Picker(selection: captionTrackBinding) {
+                Text("Original only").tag(StreamOverlayCaptionTrack.original)
+                Text("Translated only (English)").tag(StreamOverlayCaptionTrack.translated)
+                Text("Both (bilingual)").tag(StreamOverlayCaptionTrack.both)
+            } label: {
+                Label("Caption track", systemImage: "captions.bubble")
+            }
+
+            SettingsCallout(.info, "Translated captions use your Whisper model and only translate to English. They appear when you dictate a non-English language with “Translate to English” on and the Parakeet engine — the fast engine shows the original line live, the English line follows a second or two behind.")
+        } header: {
+            Text("Translation")
+        }
+    }
+
+    private var captionTrackBinding: Binding<StreamOverlayCaptionTrack> {
+        Binding(
+            get: { overlay.config.captionTrack },
+            set: { overlay.config.captionTrack = $0 })
     }
 
     // MARK: Display

@@ -1191,6 +1191,19 @@ class AppState: ObservableObject {
         )
     }
 
+    /// Dual-runtime live-translation coordinator (Parakeet live + whisper
+    /// translate). Owns the tee/chunker/translate-queue; the translate engine is
+    /// ALWAYS whisper-family against GGML `modelPath` (Parakeet can't translate).
+    lazy var liveTranslation = LiveTranslationCoordinator(config: .init(
+        makeEngine: { WhisperEngine() },
+        resolvePaths: { [weak self] in
+            guard let self else { return ("", "", .cli) }
+            return (self.whisperBinaryPath, self.modelPath,
+                    self.whisperBackend == "serverAPI" ? .serverAPI : .cli)
+        },
+        scratchDirectory: FileManager.default.temporaryDirectory,
+        onSegment: { [weak self] segment in self?.streamOverlay.publishTranslatedFinal(segment) }))
+
     var appleSpeechEngine: StreamingTranscriptionEngine!
     /// Experimental real-time WhisperKit engine. Shares the streaming session
     /// machinery with Apple Speech (same handlers) but uses WhisperKit's
@@ -1846,9 +1859,9 @@ class AppState: ObservableObject {
         voiceEditingEnabled = settingsStore.object(forKey: "voiceEditingEnabled") as? Bool ?? true
         scriptPostProcessorEnabled = settingsStore.object(forKey: "scriptPostProcessorEnabled") as? Bool ?? false
         scriptPostProcessorPath = settingsStore.string(forKey: "scriptPostProcessorPath") ?? ""
-        outputTargetSettings = Self.loadOutputTargetSettings()
+        outputTargetSettings = SettingsBlobLoaders.outputTargetSettings()
         ruleSet = RuleStore.load()
-        screenContext = Self.loadScreenContext()
+        screenContext = SettingsBlobLoaders.screenContext()
         perAppModesEnabled = settingsStore.object(forKey: "perAppModesEnabled") as? Bool ?? false
         historyEnabled = settingsStore.object(forKey: "historyEnabled") as? Bool ?? true
         // MAK-40 raw-audio retention: opt-in (default OFF); policy defaults keep the
@@ -3033,14 +3046,7 @@ class AppState: ObservableObject {
         return ModelStorage.sorted(items)
     }
 
-    /// Base directory FluidAudio stages its CoreML model repos under
-    /// (`~/Library/Application Support/FluidAudio/Models`). Mirrors FluidAudio's
-    /// own `downloadVariant`/`defaultCacheDirectory` layout.
-    static func fluidAudioModelsDirectory() -> URL {
-        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-            .appendingPathComponent("FluidAudio", isDirectory: true)
-            .appendingPathComponent("Models", isDirectory: true)
-    }
+    static func fluidAudioModelsDirectory() -> URL { FluidAudioModelsLocator.modelsDirectory() }
 
     /// Delete a model's files. Refuses the currently-active model (removing it would
     /// force a re-download on the next dictation) — the UI disables that case, this
@@ -3149,16 +3155,7 @@ class AppState: ObservableObject {
     }
 
     /// The set of FluidAudio Models repo folders present on disk right now.
-    static func installedFluidAudioFolders() -> Set<String> {
-        let base = fluidAudioModelsDirectory()
-        let names = (try? FileManager.default.contentsOfDirectory(atPath: base.path)) ?? []
-        return Set(names.filter { name in
-            var isDir: ObjCBool = false
-            FileManager.default.fileExists(
-                atPath: base.appendingPathComponent(name).path, isDirectory: &isDir)
-            return isDir.boolValue
-        })
-    }
+    static func installedFluidAudioFolders() -> Set<String> { FluidAudioModelsLocator.installedFolders() }
 
     func warmWhisperServerIfPossible() {
         // Warm the CURRENTLY SELECTED file-transcription backend — and only that
@@ -3340,6 +3337,14 @@ class AppState: ObservableObject {
         // there would paste the whole final text a second time.
         isLiveChunkSession = outputMode == "liveChunks"
         isAppleSpeechSession = true
+        // Dual-runtime translation: partials still drive the live preview, but the
+        // FINAL text becomes the drained English translation — suppress the
+        // original-language delta pasting when the tee arms.
+        if liveTranslation.armIfNeeded(
+            translateToEnglish: translateToEnglish, language: language,
+            transcriptionEngine: transcriptionEngine, engine: activeStreamingEngine) {
+            isLiveChunkSession = false
+        }
         // Re-bind the active engine's partial/final closures to THIS session's
         // generation so its callbacks carry `activeSessionID`. A late final from a
         // previous engine session (bound to an older generation) is then dropped by
@@ -3578,6 +3583,19 @@ class AppState: ObservableObject {
 
         currentSessionText = finalText
         isAppleSpeechSession = false
+        // Dual-runtime translation: the FINAL text is the drained English
+        // translation (fall back to `finalText` if translation produced nothing).
+        if liveTranslation.active {
+            isTranscribing = true
+            statusMessage = "Translating…"
+            let engine = activeStreamingEngine
+            Task { @MainActor in
+                let translated = await self.liveTranslation.finalTranslation()
+                self.liveTranslation.teardown(engine: engine)
+                self.completeFinalText(translated ?? finalText)
+            }
+            return
+        }
         completeFinalText(finalText)
     }
 
@@ -4777,17 +4795,6 @@ class AppState: ObservableObject {
         settingsStore.set(data, forKey: "outputTargetSettings")
     }
 
-    /// Load the persisted output-target settings, defaulting to focused-app (today's
-    /// behavior) when absent or unreadable.
-    private static func loadOutputTargetSettings() -> OutputTargetSettings {
-        // Static (called during init before `self.settingsStore` is assigned), so
-        // it reads UserDefaults.standard directly rather than the injected seam.
-        guard let data = UserDefaults.standard.data(forKey: "outputTargetSettings"),
-              let decoded = try? JSONDecoder().decode(OutputTargetSettings.self, from: data)
-        else { return OutputTargetSettings() }
-        return decoded
-    }
-
     // MARK: - Rules engine (MAK-43)
 
     /// The app-side runner that executes planned rule actions over the existing
@@ -4836,16 +4843,6 @@ class AppState: ObservableObject {
     private func persistScreenContext(_ settings: ScreenContextSettings) {
         guard let data = try? JSONEncoder().encode(settings) else { return }
         settingsStore.set(data, forKey: "screenContextSettings")
-    }
-
-    /// Load the persisted screen-context config, defaulting to OFF (opt-in) when
-    /// absent or unreadable. Static (init-time), so it reads UserDefaults.standard
-    /// directly rather than the injected seam.
-    private static func loadScreenContext() -> ScreenContextSettings {
-        guard let data = UserDefaults.standard.data(forKey: "screenContextSettings"),
-              let decoded = try? JSONDecoder().decode(ScreenContextSettings.self, from: data)
-        else { return ScreenContextSettings.default }
-        return decoded
     }
 
     /// Capture screen context for the session that is starting, applying the full
@@ -5135,6 +5132,9 @@ class AppState: ObservableObject {
         isLiveChunkSession = false
         isPreviewSession = false
         isStreamingSession = false
+        // Detach the dual-runtime translation tap at every session terminal
+        // (idempotent — the normal finalize path already tore it down).
+        liveTranslation.teardown(engine: activeStreamingEngine)
         // MAK-34: drop the captured screen context at every session terminal, not
         // just cancel — stale context from app A must never survive into anything
         // that runs between sessions or into a later session in app B.

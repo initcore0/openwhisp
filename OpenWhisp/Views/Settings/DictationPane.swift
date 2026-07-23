@@ -140,12 +140,23 @@ struct DictationPane: View {
                         .foregroundStyle(.orange)
                 }
 
-                // Whisper engines only — Apple Speech, SpeechAnalyzer and Parakeet
-                // are ASR-only and don't translate (capability-gated).
-                if LanguageResolver.supportsTranslation(transcriptionEngine: appState.transcriptionEngine) {
+                // Translate-to-English is offered when the active engine can
+                // translate itself (whisper family) OR the dual-runtime path can
+                // run for it: an ASR-only engine that provides an audio tap
+                // (Parakeet) tees the SAME audio to the Whisper model, which
+                // produces the English final while the fast engine drives the live
+                // preview. Both branches are capability-driven — no engine name
+                // here (EngineCapabilities.providesAudioTap gates the dual path).
+                let engineTranslates = LanguageResolver.supportsTranslation(
+                    transcriptionEngine: appState.transcriptionEngine)
+                let dualTranslates = EngineCapabilities.providesAudioTap(
+                    transcriptionEngine: appState.transcriptionEngine)
+                if engineTranslates || dualTranslates {
                     SubtitledToggle(
                         "Translate to English",
-                        subtitle: "Speech in any language comes out as English text.",
+                        subtitle: dualTranslates && !engineTranslates
+                            ? "Speech comes out as English. \(EngineCapabilities.displayName(transcriptionEngine: appState.transcriptionEngine)) shows the original live; the final pasted text is the Whisper translation, a moment behind."
+                            : "Speech in any language comes out as English text.",
                         isOn: $appState.translateToEnglish
                     )
                 }

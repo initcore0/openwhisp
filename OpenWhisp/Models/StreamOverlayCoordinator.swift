@@ -201,4 +201,10 @@ final class StreamOverlayCoordinator: ObservableObject {
     func publishFinal(_ text: String) {
         server?.publishFinal(text)
     }
+
+    /// A translated English segment for the overlay's second caption track
+    /// (dual-runtime translation). No-op when the server isn't running.
+    func publishTranslatedFinal(_ text: String) {
+        server?.publishTranslatedFinal(text)
+    }
 }
