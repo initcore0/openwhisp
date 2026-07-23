@@ -22,8 +22,25 @@ final class FileOutputTarget: OutputTarget {
     private let config: FileOutputConfig
     /// Injected so tests can supply a deterministic timestamp; the app uses `Date()`.
     private let now: () -> Date
-    /// Serial queue so concurrent dictations can't interleave file writes.
-    private let queue = DispatchQueue(label: "com.openwhisp.app.file-output")
+    /// Per-target-file serial queues so concurrent writers can't interleave
+    /// writes to the SAME file. STATIC: a fresh FileOutputTarget is constructed
+    /// per delivery (the output router builds one per finalized dictation,
+    /// RuleEngineRunner one per appendFile action), so a per-instance queue
+    /// would serialize nothing — both can target the same file in the same
+    /// finalize call. Keyed by resolved path rather than one global queue so a
+    /// write stalled on a hung volume (offline SMB, materializing iCloud file)
+    /// can't head-of-line block deliveries to unrelated files.
+    private static let queuesLock = NSLock()
+    nonisolated(unsafe) private static var queues: [String: DispatchQueue] = [:]
+
+    private static func queue(forResolvedPath path: String) -> DispatchQueue {
+        queuesLock.lock()
+        defer { queuesLock.unlock() }
+        if let existing = queues[path] { return existing }
+        let queue = DispatchQueue(label: "com.openwhisp.app.file-output")
+        queues[path] = queue
+        return queue
+    }
     private let fileManager = FileManager.default
 
     init(config: FileOutputConfig, now: @escaping () -> Date = { Date() }) {
@@ -42,6 +59,7 @@ final class FileOutputTarget: OutputTarget {
 
         let config = self.config
         let timestamp = now()
+        let queue = Self.queue(forResolvedPath: Self.resolvedURL(for: config.path).standardizedFileURL.path)
         queue.async { [fileManager] in
             let outcome: OutputDelivery
             do {
@@ -93,14 +111,28 @@ final class FileOutputTarget: OutputTarget {
             try contents.write(to: url, atomically: true, encoding: .utf8)
 
         case .append:
-            let existing = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+            // Only the file's last two bytes decide the separator — reading the
+            // whole (ever-growing daily-note) file per dictation was O(size).
+            let tail = tailBytes(of: url, count: 2)
             guard let chunk = FileOutputFormatter.renderAppendChunk(
-                text: text, config: config, existingContents: existing, date: date
+                text: text, config: config, existingTailBytes: tail, date: date
             ) else {
                 throw FileWriteSkipped(reason: "empty dictation — nothing to append")
             }
             try appendUTF8(chunk, to: url, fileManager: fileManager)
         }
+    }
+
+    /// The last (up to) `count` bytes of the file; [] when missing, empty, or
+    /// unreadable (matching the old whole-file read's `?? ""` fallback).
+    private static func tailBytes(of url: URL, count: Int) -> [UInt8] {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return [] }
+        defer { try? handle.close() }
+        guard let size = try? handle.seekToEnd(), size > 0 else { return [] }
+        let offset = size > UInt64(count) ? size - UInt64(count) : 0
+        guard (try? handle.seek(toOffset: offset)) != nil,
+              let data = try? handle.read(upToCount: count) else { return [] }
+        return [UInt8](data)
     }
 
     /// Append UTF-8 `chunk` to the file at `url`, creating it if absent. Uses a file

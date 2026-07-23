@@ -234,17 +234,18 @@ public struct VocabularySubstitutor: PostProcessor {
     public func apply(to text: String) -> String {
         var result = text
         for sub in substitutions {
-            guard let from = Self.effectiveFrom(sub) else { continue }
+            guard let from = Self.effectiveFrom(sub),
+                  let regex = Self.compiledRegex(for: from) else { continue }
             // Whole-phrase, case-insensitive replacement with word boundaries so
             // we don't rewrite substrings inside larger words. Lookarounds instead
             // of \b: at a non-word edge (e.g. "C++", ".net") \b inverts and
             // demands a word character outside the phrase, so the rule would
             // silently never match. (?<!\w)/(?!\w) equal \b at word-char edges
             // and degrade to "not glued to a word char" at punctuation edges.
-            result = result.replacingOccurrences(
-                of: Self.pattern(for: from),
-                with: NSRegularExpression.escapedTemplate(for: sub.to),
-                options: [.regularExpression, .caseInsensitive]
+            result = regex.stringByReplacingMatches(
+                in: result,
+                range: NSRange(result.startIndex..., in: result),
+                withTemplate: NSRegularExpression.escapedTemplate(for: sub.to)
             )
         }
         return result
@@ -259,12 +260,11 @@ public struct VocabularySubstitutor: PostProcessor {
     /// it fired, the user just wrote it as an identity rule.
     public func firedSubstitutionIDs(in text: String) -> Set<Vocabulary.Substitution.ID> {
         var fired: Set<Vocabulary.Substitution.ID> = []
+        let range = NSRange(text.startIndex..., in: text)
         for sub in substitutions {
-            guard let from = Self.effectiveFrom(sub) else { continue }
-            let regex = try? NSRegularExpression(pattern: Self.pattern(for: from),
-                                                 options: [.caseInsensitive])
-            let range = NSRange(text.startIndex..., in: text)
-            if regex?.firstMatch(in: text, options: [], range: range) != nil {
+            guard let from = Self.effectiveFrom(sub),
+                  let regex = Self.compiledRegex(for: from) else { continue }
+            if regex.firstMatch(in: text, options: [], range: range) != nil {
                 fired.insert(sub.id)
             }
         }
@@ -275,6 +275,25 @@ public struct VocabularySubstitutor: PostProcessor {
     private static func effectiveFrom(_ sub: Vocabulary.Substitution) -> String? {
         let from = sub.from.trimmingCharacters(in: .whitespacesAndNewlines)
         return from.isEmpty ? nil : from
+    }
+
+    /// Process-wide compiled-regex cache. A fresh substitutor is constructed for
+    /// every postProcess call — several times per second during streaming — so
+    /// caching per instance would never hit; the cache is keyed by the rule's
+    /// trimmed `from` phrase at type scope instead. NSRegularExpression is
+    /// immutable and documented thread-safe, so sharing instances is fine; the
+    /// lock only guards the dictionary. Growth is bounded by the distinct `from`
+    /// phrases the user ever configures in one app run.
+    private static let regexCacheLock = NSLock()
+    nonisolated(unsafe) private static var regexCache: [String: NSRegularExpression] = [:]
+
+    private static func compiledRegex(for from: String) -> NSRegularExpression? {
+        regexCacheLock.lock()
+        defer { regexCacheLock.unlock() }
+        if let cached = regexCache[from] { return cached }
+        let regex = try? NSRegularExpression(pattern: pattern(for: from), options: [.caseInsensitive])
+        if let regex { regexCache[from] = regex }
+        return regex
     }
 
     /// The whole-phrase, punctuation-edge-safe match pattern for a `from` phrase.

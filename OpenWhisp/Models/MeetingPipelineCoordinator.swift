@@ -331,8 +331,8 @@ final class MeetingPipelineCoordinator: ObservableObject {
             guard let self else { return }
             do {
                 var chunks: [TranscriptInterleaver.Chunk] = []
-                chunks += try await self.transcribeLeg(speaker: "Me", wav: micWAV, config: cfg)
-                chunks += try await self.transcribeLeg(speaker: "Them", wav: systemWAV, config: cfg)
+                chunks += try await self.transcribeLeg(id, speaker: "Me", wav: micWAV, config: cfg)
+                chunks += try await self.transcribeLeg(id, speaker: "Them", wav: systemWAV, config: cfg)
                 await MainActor.run {
                     guard self.activeTranscribeID == id else { return }
                     guard TranscriptInterleaver.hasMeaningfulText(chunks) else {
@@ -487,7 +487,13 @@ final class MeetingPipelineCoordinator: ObservableObject {
     /// chunk sequentially → return `[Chunk]` labeled with `speaker` and each chunk's
     /// start offset. A dedicated engine is spun up and torn down per leg. Throws on
     /// decode failure; empty chunks are dropped by the interleaver.
-    private func transcribeLeg(speaker: String, wav: URL, config: TranscriptionConfig) async throws -> [TranscriptInterleaver.Chunk] {
+    /// Thrown between chunks when the meeting is no longer the active
+    /// transcription (deleted, or superseded). Propagates to
+    /// `startLegTranscription`'s catch, whose stale-id guard then bails without
+    /// falling back to the mixed WAV.
+    private struct LegSuperseded: Error {}
+
+    private func transcribeLeg(_ meetingID: UUID, speaker: String, wav: URL, config: TranscriptionConfig) async throws -> [TranscriptInterleaver.Chunk] {
         let duration = try await MediaFileDecoder.duration(of: wav)
         let plan = FileChunkPlanner.plan(duration: duration)
         let dir = FileManager.default.temporaryDirectory
@@ -500,6 +506,12 @@ final class MeetingPipelineCoordinator: ObservableObject {
 
         var out: [TranscriptInterleaver.Chunk] = []
         for chunk in plan {
+            // Per-chunk cancellation check (mirrors startMixedTranscription's):
+            // this engine is a LOCAL, so delete()/teardownEngine() can't stop it —
+            // without the check a deleted meeting's leg keeps transcribing while
+            // kickPendingTranscription starts the next meeting's engine, running
+            // two engines concurrently against the one-at-a-time policy.
+            guard activeTranscribeID == meetingID else { throw LegSuperseded() }
             let chunkWAV = dir.appendingPathComponent("leg-chunk-\(chunk.index).wav")
             try await MediaFileDecoder.decodeRange(
                 source: wav, start: chunk.start,

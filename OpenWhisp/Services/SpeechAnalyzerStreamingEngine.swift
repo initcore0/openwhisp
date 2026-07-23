@@ -34,6 +34,13 @@ final class SpeechAnalyzerStreamingEngine: StreamingTranscriptionEngine {
 
     // --- Session state (mirrors AppleSpeechEngine's fence) ---
     @MainActor private var lastPartial = ""
+    /// The latest VOLATILE (not yet finalized) hypothesis text. SpeechTranscriber
+    /// finalizes lazily — typically a sentence behind the speech — so at hotkey
+    /// release the trailing sentence is usually still volatile. The delivered
+    /// final must include it (the partial preview already showed it); dropping
+    /// it loses the user's last words. Cleared when a finalized result
+    /// supersedes it.
+    @MainActor private var lastVolatile = ""
     @MainActor private var finalDelivered = false
     @MainActor private var generation = 0
 
@@ -63,6 +70,7 @@ final class SpeechAnalyzerStreamingEngine: StreamingTranscriptionEngine {
         generation += 1
         finalDelivered = false
         lastPartial = ""
+        lastVolatile = ""
         let myGeneration = generation
 
         // Compile gate: the analyzer code below needs the macOS 26 SDK. On older
@@ -162,11 +170,13 @@ final class SpeechAnalyzerStreamingEngine: StreamingTranscriptionEngine {
                     await MainActor.run {
                         guard self.generation == myGeneration else { return }
                         if isFinal {
-                            // Accumulate finalized segments; volatile results
-                            // update the tail preview only.
+                            // Accumulate finalized segments; the finalized text
+                            // supersedes the volatile hypothesis it replaces.
+                            self.lastVolatile = ""
                             let combined = self.appendFinalized(text)
                             self.onPartial?(combined)
                         } else {
+                            self.lastVolatile = text
                             self.onPartial?(self.lastPartial + text)
                         }
                     }
@@ -175,7 +185,7 @@ final class SpeechAnalyzerStreamingEngine: StreamingTranscriptionEngine {
                 await MainActor.run {
                     guard self.generation == myGeneration, !self.finalDelivered else { return }
                     self.finalDelivered = true
-                    self.onFinal?(self.lastPartial)
+                    self.onFinal?(self.finalWithVolatileTail())
                 }
             } catch {
                 await MainActor.run {
@@ -234,6 +244,18 @@ final class SpeechAnalyzerStreamingEngine: StreamingTranscriptionEngine {
         return lastPartial
     }
 
+    /// The transcript to deliver as the final: every finalized segment plus the
+    /// trailing volatile hypothesis (joined the same way `appendFinalized` joins
+    /// segments). The analyzer is never explicitly finalized on stop, so without
+    /// the tail any session with at least one finalized segment would lose its
+    /// last (still-volatile) sentence — text the live preview already showed.
+    @MainActor
+    private func finalWithVolatileTail() -> String {
+        let tail = lastVolatile.trimmingCharacters(in: .whitespaces)
+        guard !tail.isEmpty else { return lastPartial }
+        return lastPartial.isEmpty ? tail : lastPartial + " " + tail
+    }
+
     func stop(cancel: Bool) {
         MainActor.assumeIsolated { runStop(cancel: cancel) }
     }
@@ -252,12 +274,13 @@ final class SpeechAnalyzerStreamingEngine: StreamingTranscriptionEngine {
             recognitionTask?.cancel()
             recognitionTask = nil
         } else {
-            // Deliver the accumulated final. The results loop may also deliver one
-            // when the stream ends; the finalDelivered guard keeps it single.
+            // Deliver the accumulated final (finalized segments + volatile tail).
+            // The results loop may also deliver one when the stream ends; the
+            // finalDelivered guard keeps it single.
             let myGeneration = generation
             if !finalDelivered {
                 finalDelivered = true
-                onFinal?(lastPartial)
+                onFinal?(finalWithVolatileTail())
             }
             // Let the task wind down; its late final is fenced out by the guard.
             let task = recognitionTask

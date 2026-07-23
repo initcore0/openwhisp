@@ -36,6 +36,11 @@ final class SystemAudioCapture: NSObject, SCStreamOutput, SCStreamDelegate {
     static let targetSampleRate: Double = 16000
 
     private var stream: SCStream?
+    /// Guards `stream`'s take-and-nil in `stop()`: the session's normal stop
+    /// path and `teardownLegs`' safety-net stop can both call `stop()` (from
+    /// different tasks) when a leg failure races a user stop — the lock makes
+    /// exactly one of them own the `stopCapture` call.
+    private let streamLock = NSLock()
     private var converter: AVAudioConverter?
     private let sampleQueue = DispatchQueue(label: "com.openwhisp.app.meeting.system-audio")
     private var targetFormat: AVAudioFormat?
@@ -71,13 +76,19 @@ final class SystemAudioCapture: NSObject, SCStreamOutput, SCStreamDelegate {
         let stream = SCStream(filter: filter, configuration: config, delegate: self)
         try stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: sampleQueue)
         try await stream.startCapture()
+        streamLock.lock()
         self.stream = stream
+        streamLock.unlock()
     }
 
+    /// Idempotent AND safe under concurrent calls (see `streamLock`).
     func stop() async {
-        guard let stream else { return }
-        self.stream = nil
-        try? await stream.stopCapture()
+        streamLock.lock()
+        let taken = stream
+        stream = nil
+        streamLock.unlock()
+        guard let taken else { return }
+        try? await taken.stopCapture()
     }
 
     // MARK: SCStreamOutput

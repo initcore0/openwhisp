@@ -191,10 +191,17 @@ final class WhisperKitStreamingEngine: StreamingTranscriptionEngine {
     func stop(cancel: Bool) {
         // Synchronous main-actor enqueue (see start) so stop→start order is preserved.
         MainActor.assumeIsolated {
+            // Snapshot the final callback at ENQUEUE time, mirroring start()'s
+            // SessionCallbacks: runStop can sit in the chain behind a slow
+            // finalizeTail while AppState admits the next session and rebinds
+            // onFinal to it — a fire-time read would deliver THIS session's
+            // final with the successor's sessionID, straight through AppState's
+            // session fence.
+            let final = self.onFinal
             // Strong capture (see start): teardown must run even if the caller drops
             // its reference to this engine immediately after enqueueing the stop.
             self.lifecycle.enqueue {
-                await self.runStop(cancel: cancel)
+                await self.runStop(cancel: cancel, final: final)
             }
         }
     }
@@ -203,7 +210,7 @@ final class WhisperKitStreamingEngine: StreamingTranscriptionEngine {
     /// transcriber's `stop()` here is what guarantees the mic/input node is released
     /// before any queued start proceeds.
     @MainActor
-    private func runStop(cancel: Bool) async {
+    private func runStop(cancel: Bool, final deliverFinal: ((String) -> Void)?) async {
         let handle = transcriber
         transcriber = nil
         didFinish = true
@@ -221,7 +228,7 @@ final class WhisperKitStreamingEngine: StreamingTranscriptionEngine {
             // Falls back to the assembled transcript (confirmed + unconfirmed).
             let full = await handle?.finalizeTail() ?? handle?.fullText() ?? ""
             let final = full.isEmpty ? lastConfirmedText : full
-            onFinal?(final.trimmingCharacters(in: .whitespacesAndNewlines))
+            deliverFinal?(final.trimmingCharacters(in: .whitespacesAndNewlines))
         }
     }
 

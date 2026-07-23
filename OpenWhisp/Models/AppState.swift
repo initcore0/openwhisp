@@ -1684,7 +1684,7 @@ class AppState: ObservableObject {
     }
 
     var languageDisplayName: String {
-        Self.languageDisplayName(for: language)
+        LanguageResolver.displayName(for: language)
     }
 
     /// Test/DI seam: when injected, `wireUpServices()` uses these instead of
@@ -1716,7 +1716,7 @@ class AppState: ObservableObject {
         self.injectedFileEngine = fileEngine
         self.settingsStore = settingsStore
         let savedWhisperBinaryPath = settingsStore.string(forKey: "whisperBinaryPath") ?? ""
-        whisperBinaryPath = Self.preferredWhisperCLIPath(savedPath: savedWhisperBinaryPath)
+        whisperBinaryPath = WhisperModelPaths.preferredWhisperCLIPath(savedPath: savedWhisperBinaryPath)
 
         // Versioned settings migration MUST run before any key is read below:
         // it preserves old defaults for existing installs and splits the legacy
@@ -1728,10 +1728,10 @@ class AppState: ObservableObject {
         // visible quality tiers, so a fresh install never renders as the
         // synthetic "Custom" row. (Existing installs keep "tiny" via migration.)
         let savedModel = settingsStore.string(forKey: "modelName") ?? "base"
-        let fileName = Self.modelFileName(for: savedModel)
+        let fileName = WhisperModelPaths.modelFileName(for: savedModel)
         modelName = savedModel
         let savedModelPath = settingsStore.string(forKey: "modelPath") ?? ""
-        modelPath = Self.preferredModelPath(savedPath: savedModelPath, fileName: fileName)
+        modelPath = WhisperModelPaths.preferredModelPath(savedPath: savedModelPath, fileName: fileName)
         microphoneID = settingsStore.string(forKey: "microphoneID") ?? ""
         language = settingsStore.string(forKey: "language") ?? "auto"
         translateToEnglish = settingsStore.object(forKey: "translateToEnglish") as? Bool ?? false
@@ -1901,84 +1901,13 @@ class AppState: ObservableObject {
         lanBridgeServer.refresh(hasPairedPeers: pairingStore.hasPairedPeers)
     }
 
-    private static func modelFileName(for modelName: String) -> String {
-        switch modelName {
-        case "tiny":          return "ggml-tiny.bin"
-        case "tiny.en":       return "ggml-tiny.en.bin"
-        case "base":          return "ggml-base.bin"
-        case "base.en":       return "ggml-base.en.bin"
-        case "small":         return "ggml-small.bin"
-        case "small.en":      return "ggml-small.en.bin"
-        case "medium":        return "ggml-medium.bin"
-        case "medium.en":     return "ggml-medium.en.bin"
-        case "large-v3":      return "ggml-large-v3.bin"
-        case "large-v3-turbo": return "ggml-large-v3-turbo.bin"
-        default:         return "ggml-base.bin"
-        }
-    }
-
-    static func languageDisplayName(for code: String) -> String {
-        switch code {
-        case "auto": return "Auto Detect"
-        case "en": return "English"
-        case "ru": return "Russian"
-        case "es": return "Spanish"
-        case "fr": return "French"
-        case "de": return "German"
-        case "it": return "Italian"
-        case "pt": return "Portuguese"
-        case "ja": return "Japanese"
-        case "zh": return "Chinese"
-        case "ko": return "Korean"
-        case "ar": return "Arabic"
-        default: return code.uppercased()
-        }
-    }
-
+    // Model file names, CLI/model path fallbacks and the models directory live in
+    // core (WhisperModelPaths) per the MAK-32 decomposition; language display
+    // names live on LanguageResolver.
     private func resolvedModelPath() -> String {
-        Self.applicationSupportModelsDirectory()
-            .appendingPathComponent(Self.modelFileName(for: modelName))
+        WhisperModelPaths.applicationSupportModelsDirectory()
+            .appendingPathComponent(WhisperModelPaths.modelFileName(for: modelName))
             .path
-    }
-
-    private static func preferredWhisperCLIPath(savedPath: String) -> String {
-        if !savedPath.isEmpty, FileManager.default.fileExists(atPath: savedPath) {
-            return savedPath
-        }
-
-        if let bundled = bundledResourcePath("whisper/whisper-cli"),
-           FileManager.default.isExecutableFile(atPath: bundled) {
-            return bundled
-        }
-
-        return "\(NSHomeDirectory())/whisper.cpp/build/bin/whisper-cli"
-    }
-
-    private static func preferredModelPath(savedPath: String, fileName: String) -> String {
-        if !savedPath.isEmpty, FileManager.default.fileExists(atPath: savedPath) {
-            return savedPath
-        }
-
-        let oldWhisperCppPath = "\(NSHomeDirectory())/whisper.cpp/models/\(fileName)"
-        if FileManager.default.fileExists(atPath: oldWhisperCppPath) {
-            return oldWhisperCppPath
-        }
-
-        return applicationSupportModelsDirectory()
-            .appendingPathComponent(fileName)
-            .path
-    }
-
-    private static func bundledResourcePath(_ relativePath: String) -> String? {
-        Bundle.main.resourceURL?
-            .appendingPathComponent(relativePath)
-            .path
-    }
-
-    private static func applicationSupportModelsDirectory() -> URL {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-            ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support")
-        return base.appendingPathComponent("OpenWhisp/models", isDirectory: true)
     }
 
     private func wireUpServices() {
@@ -2139,15 +2068,43 @@ class AppState: ObservableObject {
     /// handlers. Both backends drive the same live-preview/delta-paste path, so the
     /// callbacks are identical — only the underlying recognizer differs.
     ///
-    /// The partial/final closures are (re)bound per streaming session in
+    /// The partial/final/error closures are (re)bound per streaming session in
     /// `bindStreamingSessionCallbacks(_:sessionID:)` so they capture the session
     /// generation and can drop late callbacks from a previous engine session (e.g.
     /// Apple Speech's 0.8s synthesized-final fallback firing after a quick
-    /// cancel+restart). The error/level closures below aren't session-critical, so
-    /// they're wired once here.
+    /// cancel+restart). Only the level closure isn't session-critical, so it's
+    /// wired once here.
     private func wireStreamingEngineCallbacks(_ engine: StreamingTranscriptionEngine) {
         bindStreamingSessionCallbacks(engine, sessionID: activeSessionID)
-        let sessionID = activeSessionID
+        engine.onLevelChanged = { [weak self] display, vad in
+            Task { @MainActor in self?.updateAudioLevel(display, vadLevel: vad) }
+        }
+    }
+
+    /// (Re)bind the partial/final/started/error closures of a streaming engine to
+    /// a specific session generation. The closures capture `sessionID` and drop
+    /// the callback if the session has since moved on. This closes the late-final
+    /// hole: on a quick cancel+restart, a leftover synthesized final from the
+    /// PREVIOUS engine session would otherwise be treated as the CURRENT session's
+    /// final (pasting the old transcript and completing the new session early),
+    /// because `isAppleSpeechSession` is a plain boolean that the successor
+    /// session also sets true. Called per streaming session start
+    /// (`startStreamingSession`) with the fresh `activeSessionID`.
+    ///
+    /// `onError` MUST be in this per-session rebind: it was previously bound only
+    /// at wiring time, so the captured ID predated every session (`beginSession`
+    /// rotates `activeSessionID`) and the fence dropped every real mid-session
+    /// engine error — the session hung at "Listening..." with the recognizer dead.
+    private func bindStreamingSessionCallbacks(_ engine: StreamingTranscriptionEngine, sessionID: UUID) {
+        engine.onPartial = { [weak self] text in
+            Task { @MainActor in self?.handleAppleSpeechPartial(text, sessionID: sessionID) }
+        }
+        engine.onFinal = { [weak self] text in
+            Task { @MainActor in self?.handleAppleSpeechFinal(text, sessionID: sessionID) }
+        }
+        engine.onStarted = { [weak self] in
+            Task { @MainActor in self?.handleStreamingCaptureStarted(sessionID: sessionID) }
+        }
         engine.onError = { [weak self] message in
             Task { @MainActor in
                 guard let self, self.isAppleSpeechSession else { return }
@@ -2165,30 +2122,6 @@ class AppState: ObservableObject {
                 self.sessionOutcome = .error(message: message)
                 self.finishSessionUI()
             }
-        }
-        engine.onLevelChanged = { [weak self] display, vad in
-            Task { @MainActor in self?.updateAudioLevel(display, vadLevel: vad) }
-        }
-    }
-
-    /// (Re)bind the partial/final closures of a streaming engine to a specific
-    /// session generation. The closures capture `sessionID` and pass it to the
-    /// handlers, which drop the callback if the session has since moved on. This
-    /// closes the late-final hole: on a quick cancel+restart, a leftover
-    /// synthesized final from the PREVIOUS engine session would otherwise be
-    /// treated as the CURRENT session's final (pasting the old transcript and
-    /// completing the new session early), because `isAppleSpeechSession` is a plain
-    /// boolean that the successor session also sets true. Called per streaming
-    /// session start (`startStreamingSession`) with the fresh `activeSessionID`.
-    private func bindStreamingSessionCallbacks(_ engine: StreamingTranscriptionEngine, sessionID: UUID) {
-        engine.onPartial = { [weak self] text in
-            Task { @MainActor in self?.handleAppleSpeechPartial(text, sessionID: sessionID) }
-        }
-        engine.onFinal = { [weak self] text in
-            Task { @MainActor in self?.handleAppleSpeechFinal(text, sessionID: sessionID) }
-        }
-        engine.onStarted = { [weak self] in
-            Task { @MainActor in self?.handleStreamingCaptureStarted(sessionID: sessionID) }
         }
     }
 
@@ -2256,7 +2189,15 @@ class AppState: ObservableObject {
     /// silence-referenced and would make the fixed gates meaningless.
     @MainActor
     private func updateAudioLevel(_ level: Float, vadLevel: Float) {
-        audioLevel = level
+        // Publish only meaningful changes: this fires at audio-buffer rate
+        // (~20–45 Hz) and AppState is one monolithic ObservableObject, so every
+        // assignment re-renders EVERY observing window (Settings, Onboarding,
+        // Lab…), not just the overlay waveform. Sub-1% wiggle is invisible on
+        // the waveform but was the bulk of the render storm while dictating
+        // with a settings pane open. Detectors below still see every sample.
+        if abs(audioLevel - level) >= 0.01 || (level == 0 && audioLevel != 0) {
+            audioLevel = level
+        }
         feedLockSafetyAutoStop(vadLevel: vadLevel)
         // EOU settle check (MAK-46 Phase 5): the level tick is a free continuous
         // clock; cheap because the detector is nil except for an armed agent session.
@@ -2643,6 +2584,10 @@ class AppState: ObservableObject {
         // Persist any pending debounced vocabulary usage-count bump before we exit,
         // so a rapid dictate-then-quit doesn't lose the last increment (MAK-41).
         flushVocabularySave()
+        // Drain the queued history/stats writes for the same reason: a rapid
+        // dictate-then-quit would otherwise exit before the async snapshot
+        // lands, losing the just-completed dictation from history.json.
+        Self.storeSaveQueue.sync {}
         agentBridgeServer.stop()
         lanBridgeServer.stop()
         whisperEngine.stopServer()
@@ -2669,7 +2614,7 @@ class AppState: ObservableObject {
         let fileName = Self.bundledLLMManifest()?
             .first(where: { $0.id == bundledLLMModel })?.file
             ?? "\(bundledLLMModel).gguf"
-        return Self.applicationSupportModelsDirectory()
+        return WhisperModelPaths.applicationSupportModelsDirectory()
             .appendingPathComponent(fileName)
             .path
     }
@@ -2685,7 +2630,7 @@ class AppState: ObservableObject {
         let fileName = Self.bundledLLMManifest()?
             .first(where: { $0.id == id })?.file
             ?? "\(id).gguf"
-        return Self.applicationSupportModelsDirectory()
+        return WhisperModelPaths.applicationSupportModelsDirectory()
             .appendingPathComponent(fileName)
             .path
     }
@@ -2790,12 +2735,20 @@ class AppState: ObservableObject {
         }
     }
 
-    private static func bundledLLMManifest() -> [ModelManifestEntry]? {
+    /// Cached: the manifest is a bundle resource that cannot change while the app
+    /// runs, and the Cleanup pane consults it several times per SwiftUI render —
+    /// re-reading + re-decoding it from disk per render was measurable during
+    /// dictation (every @Published tick re-renders the visible pane).
+    private static let cachedBundledLLMManifest: [ModelManifestEntry]? = {
         guard let url = Bundle.main.resourceURL?.appendingPathComponent("models/llm-manifest.json"),
               let data = try? Data(contentsOf: url) else {
             return nil
         }
         return try? JSONDecoder().decode([ModelManifestEntry].self, from: data)
+    }()
+
+    private static func bundledLLMManifest() -> [ModelManifestEntry]? {
+        cachedBundledLLMManifest
     }
 
     /// True when a resident whisper.cpp server is held in memory at the same time
@@ -2899,7 +2852,8 @@ class AppState: ObservableObject {
         let sessionID = activeSessionID
         statusMessage = statusWhileLoading
         engine.requestStarted()
-        engine.ensureRunning(modelPath: selectedLLMModelPath()) { [weak self] result in
+        engine.ensureRunning(modelPath: selectedLLMModelPath(),
+                             callerHoldsRequestBracket: true) { [weak self] result in
             Task { @MainActor in
                 guard let self else { engine.requestFinished(); return }
                 guard !boundToSession || sessionID == self.activeSessionID else {
@@ -3006,7 +2960,7 @@ class AppState: ObservableObject {
             }
         }
         // GGUF files start with the ASCII magic "GGUF".
-        try Self.validateModelMagic(at: downloadedURL, expected: ["GGUF"], fileName: fileName)
+        try WhisperModelPaths.validateModelMagic(at: downloadedURL, expected: ["GGUF"], fileName: fileName)
         try? FileManager.default.removeItem(at: destination)
         try FileManager.default.moveItem(at: downloadedURL, to: tempURL)
         try FileManager.default.moveItem(at: tempURL, to: destination)
@@ -3037,18 +2991,18 @@ class AppState: ObservableObject {
                 kind: .whisperKit,
                 label: WhisperKitModelCatalog.displayInfo(for: name).label,
                 path: path.path,
-                bytes: Self.directorySize(at: path),
+                bytes: ModelStorage.directorySize(at: path),
                 isActive: name == activeWhisperKit
             ))
         }
 
         // whisper.cpp GGML (*.bin) and built-in LLM (*.gguf) share OpenWhisp/models.
-        let modelsDir = Self.applicationSupportModelsDirectory()
+        let modelsDir = WhisperModelPaths.applicationSupportModelsDirectory()
         let activeGGMLPath = URL(fileURLWithPath: modelPath).standardizedFileURL.path
         let activeLLMPath = URL(fileURLWithPath: selectedLLMModelPath()).standardizedFileURL.path
         for name in (try? fm.contentsOfDirectory(atPath: modelsDir.path)) ?? [] {
             let url = modelsDir.appendingPathComponent(name)
-            let bytes = Self.fileSize(at: url)
+            let bytes = ModelStorage.fileSize(at: url)
             if name.hasSuffix(".bin") {
                 items.append(ModelStorage.Item(
                     kind: .whisperCpp, label: name, path: url.path, bytes: bytes,
@@ -3075,7 +3029,7 @@ class AppState: ObservableObject {
                 kind: .parakeet,
                 label: ModelStorage.parakeetRepoLabel(forFolder: name),
                 path: path.path,
-                bytes: Self.directorySize(at: path),
+                bytes: ModelStorage.directorySize(at: path),
                 isActive: false
             ))
         }
@@ -3109,26 +3063,6 @@ class AppState: ObservableObject {
 
     /// Recursive allocated size of a directory (bytes). Used for WhisperKit models,
     /// which are folders of compiled sub-models.
-    private static func directorySize(at url: URL) -> Int64 {
-        let fm = FileManager.default
-        guard let en = fm.enumerator(
-            at: url,
-            includingPropertiesForKeys: [.totalFileAllocatedSizeKey, .fileAllocatedSizeKey, .isRegularFileKey]
-        ) else { return 0 }
-        var total: Int64 = 0
-        for case let f as URL in en {
-            let vals = try? f.resourceValues(forKeys: [.totalFileAllocatedSizeKey, .fileAllocatedSizeKey, .isRegularFileKey])
-            guard vals?.isRegularFile == true else { continue }
-            total += Int64(vals?.totalFileAllocatedSize ?? vals?.fileAllocatedSize ?? 0)
-        }
-        return total
-    }
-
-    /// Allocated size of a single file (bytes).
-    private static func fileSize(at url: URL) -> Int64 {
-        let vals = try? url.resourceValues(forKeys: [.totalFileAllocatedSizeKey, .fileAllocatedSizeKey])
-        return Int64(vals?.totalFileAllocatedSize ?? vals?.fileAllocatedSize ?? 0)
-    }
 
     /// Download + stage a WhisperKit model from the model manager. Single-flight:
     /// ignores a request while another download is in progress.
@@ -3154,11 +3088,6 @@ class AppState: ObservableObject {
                 }
                 self.whisperKitDownloadStatus = "\(label) installed"
                 self.refreshWhisperKitStagedModels()
-                // If the just-downloaded model is the selected one, warm it now that
-                // it's staged (turns the next dictation's load into a no-op).
-                if self.transcriptionEngine == "whisperKit", self.whisperKitModel == model {
-                    self.warmWhisperServerIfPossible()
-                }
             } catch {
                 self.whisperKitDownloadStatus = "Download failed: \(error.localizedDescription)"
                 // Discrete flag, not just status text: the onboarding model step
@@ -3168,6 +3097,15 @@ class AppState: ObservableObject {
             }
             self.whisperKitDownloadingModel = nil
             self.whisperKitDownloadProgress = 0
+            // Re-warm AFTER the in-flight flag clears (the warm guard checks it),
+            // and regardless of WHICH model just finished: the warm path stages/
+            // queues the currently SELECTED model itself, so this also kicks the
+            // download of a model the user selected while this one was in flight
+            // (the single-flight guard had refused to queue it, and nothing else
+            // would ever retry — the worker sat at "Waiting for model" forever).
+            if !self.whisperKitDownloadFailed, self.transcriptionEngine == "whisperKit" {
+                self.warmWhisperServerIfPossible()
+            }
         }
     }
 
@@ -3236,8 +3174,20 @@ class AppState: ObservableObject {
             // WhisperKit has no external server; warm = preload its CoreML model
             // up front (with a visible status) so the slow first load doesn't block
             // the first dictation. Doesn't depend on whisperBackend.
-            guard !isModelDownloading else {
+            // Gate on the WhisperKit-specific download state, not the GGML flag
+            // (`isModelDownloading` tracks only whisper.cpp downloads): warming an
+            // UNSTAGED model would fall into WhisperKitBridge's auto-download
+            // while ensureSelectedEngineModel kicks the managed download of the
+            // same model — two concurrent multi-hundred-MB fetches. The managed
+            // download owns staging (single-flight, re-warms on completion), so
+            // an unstaged model routes there instead of warming.
+            guard whisperKitDownloadingModel == nil else {
                 whisperWorkerStatus = "Waiting for model"
+                return
+            }
+            guard WhisperKitModelCatalog.isStaged(whisperKitModel) else {
+                whisperWorkerStatus = "Waiting for model"
+                downloadWhisperKitModel(whisperKitModel)
                 return
             }
             whisperEngine?.warmServer(binaryPath: whisperBinaryPath, modelPath: modelPath)
@@ -4551,8 +4501,16 @@ class AppState: ObservableObject {
                     guard let self else { return }
                     guard sessionID == self.activeSessionID else {
                         self.refineDebug("applyRefineLLM RESULT DROPPED: session changed")
-                        // Don't leave the machine stuck in .applying — abort it.
-                        self.executeRefineEffects(self.refineFlow.handle(.abort))
+                        // Don't leave the machine stuck in .applying — but only
+                        // abort if it still holds THIS call's refine. A newer
+                        // session may have engaged its own refine on the shared
+                        // machine by now; aborting that would clear the new
+                        // session's text and finish its UI, silently losing that
+                        // dictation.
+                        if case .applying(let step1, let inFlightInstruction, _) = self.refineFlow.state,
+                           step1 == target, inFlightInstruction == instruction {
+                            self.executeRefineEffects(self.refineFlow.handle(.abort))
+                        }
                         return
                     }
                     switch result {
@@ -4569,7 +4527,11 @@ class AppState: ObservableObject {
         }, fallback: { [weak self] in
             guard let self else { return }
             guard sessionID == self.activeSessionID else {
-                self.executeRefineEffects(self.refineFlow.handle(.abort))
+                // Same stale-abort guard as the completion path above.
+                if case .applying(let step1, let inFlightInstruction, _) = self.refineFlow.state,
+                   step1 == target, inFlightInstruction == instruction {
+                    self.executeRefineEffects(self.refineFlow.handle(.abort))
+                }
                 return
             }
             // Built-in model unavailable: treat as a failed refine (inserts step-1).
@@ -4962,13 +4924,11 @@ class AppState: ObservableObject {
             // Only clear if a newer notice/session hasn't superseded this one.
             guard self.clipboardFallbackToken == token else { return }
             self.clipboardFallbackActive = false
-            // Don't hide a NEW session's overlay while it's still arming
-            // (isRecording flips true only after the async grant + engine start), and
+            // Don't hide a NEW session's overlay (see overlayIsSettled), and
             // keep it up while a "revert to original" is still offered so that
             // affordance stays reachable (MAK-35) — the revert flow dismisses it.
             let revertOffered = self.history.first?.revertTarget != nil
-            if !self.isRecording && !self.isTranscribing && !self.sessionActive
-                && !self.isArming && !revertOffered {
+            if self.overlayIsSettled && !revertOffered {
                 self.hideOverlayNow()
             }
         }
@@ -5236,14 +5196,13 @@ class AppState: ObservableObject {
         if delay > 0 {
             Task { @MainActor in
                 try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
-                // Also check sessionActive/isArming: a new session started during
-                // the delay is "arming" (isRecording still false) and its overlay
-                // must not be hidden by this stale task. Likewise leave the overlay up
-                // if a refine was armed on it or a clipboard-fallback cue is showing —
-                // both actively own the overlay and dismiss it themselves. (The longer
-                // hold used when a revert is offered widens the window these can occur.)
-                if !self.isRecording && !self.isTranscribing && !self.sessionActive
-                    && !self.isArming && !self.refineArmed && !self.clipboardFallbackActive {
+                // A new session started during the delay is "arming" (isRecording
+                // still false) and its overlay must not be hidden by this stale
+                // task; same for a refine, a clipboard-fallback cue, or an agent
+                // question being read aloud — see overlayIsSettled. (The longer
+                // hold used when a revert is offered widens the window these can
+                // occur.)
+                if self.overlayIsSettled {
                     self.hideOverlayNow()
                 }
             }
@@ -5453,7 +5412,7 @@ class AppState: ObservableObject {
         whisperKitModel = "openai_whisper-small"
         modelName = "base"
         parakeetVariant = ParakeetCatalog.defaultVariantID
-        whisperBinaryPath = Self.preferredWhisperCLIPath(savedPath: "")
+        whisperBinaryPath = WhisperModelPaths.preferredWhisperCLIPath(savedPath: "")
         whisperBackend = "serverAPI"
         liveChunkDuration = 2.0
         pauseBasedLiveChunksEnabled = false
@@ -5527,8 +5486,8 @@ class AppState: ObservableObject {
     /// Application Support location. Drives the Settings model rows' state.
     func isWhisperModelInstalled(_ name: String) -> Bool {
         FileManager.default.fileExists(
-            atPath: Self.applicationSupportModelsDirectory()
-                .appendingPathComponent(Self.modelFileName(for: name))
+            atPath: WhisperModelPaths.applicationSupportModelsDirectory()
+                .appendingPathComponent(WhisperModelPaths.modelFileName(for: name))
                 .path
         )
     }
@@ -5737,13 +5696,17 @@ class AppState: ObservableObject {
             }
             history = Array(history.prefix(TranscriptionHistoryStore.maxEntries))
         }
-        TranscriptionHistoryStore.save(history)
-        applyRetentionPolicy()
+        // One background write covers both the insert and any retention sweep —
+        // previously this was up to two synchronous whole-file encodes (200
+        // entries with full transcripts) on the main actor at paste time, while
+        // the overlay was animating its completion state.
+        applyRetentionPolicy(persist: false)
+        persistHistory()
     }
 
     func clearHistory() {
         history = []
-        TranscriptionHistoryStore.save(history)
+        persistHistory()
         // Manual "Clear" wipes the audio too — the clips are only useful attached to
         // a history entry. Only files matching the retained-audio scheme are removed.
         AudioRetentionManager.deleteAllAudio()
@@ -5819,7 +5782,7 @@ class AppState: ObservableObject {
         let trimmed = newText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, let idx = history.firstIndex(where: { $0.id == entryID }) else { return }
         history[idx] = history[idx].reTranscribed(withNewText: trimmed)
-        TranscriptionHistoryStore.save(history)
+        persistHistory()
         textOutput.setClipboard(trimmed)
     }
 
@@ -5827,7 +5790,9 @@ class AppState: ObservableObject {
     /// it dictates: drop expired entries (age cap) and prune surplus audio (count
     /// cap). Pure decision in `AudioRetentionPolicy`; this just applies it. No-op
     /// when retention is off (the policy returns an empty sweep).
-    func applyRetentionPolicy(now: Date = Date()) {
+    /// `persist: false` lets `recordHistory` coalesce the sweep's write with its
+    /// own into a single background save.
+    func applyRetentionPolicy(now: Date = Date(), persist: Bool = true) {
         let settings = AudioRetentionSettings(
             enabled: retainRawAudioEnabled,
             maxAgeDays: audioRetentionDays,
@@ -5857,8 +5822,29 @@ class AppState: ObservableObject {
             }
             return e
         }
-        TranscriptionHistoryStore.save(history)
+        if persist { persistHistory() }
     }
+
+    /// Persist the current history off the main actor. `history` is a value type,
+    /// so this snapshots and hands the encode + atomic write to the serial store
+    /// queue (same pattern as the debounced vocabulary save): ordering is
+    /// preserved, and the paste hot path never blocks on disk.
+    ///
+    /// EVERY history.json write must go through here — a synchronous write from
+    /// the main thread would race the queued snapshots (JSONStore.save is a bare
+    /// atomic rename; two unserialized writers make last-rename-wins diverge
+    /// from program order, e.g. a queued pre-clear snapshot resurrecting a
+    /// just-cleared history on disk). Internal (not private) so the
+    /// AppState+Sync extension's history setter can use it too.
+    func persistHistory() {
+        let snapshot = history
+        Self.storeSaveQueue.async { TranscriptionHistoryStore.save(snapshot) }
+    }
+
+    /// Background serial queue for the per-dictation store writes (history,
+    /// stats). Serial so snapshots land in order; last write wins with the
+    /// newest state.
+    private static let storeSaveQueue = DispatchQueue(label: "com.openwhisp.app.store-save")
 
     /// Stage a COPY of a just-finished whole-session WAV for retention, made before
     /// the engine deletes the original. No-op when retention is off. Replaces any
@@ -5903,7 +5889,7 @@ class AppState: ObservableObject {
                 rawText: e.rawText, audioFileName: nil
             )
         }
-        if changed { TranscriptionHistoryStore.save(history) }
+        if changed { persistHistory() }
     }
 
     /// Fold a completed dictation into the local-only stats aggregates. METADATA
@@ -5939,7 +5925,10 @@ class AppState: ObservableObject {
             transcriptionLatencySeconds: latency
         )
         dictationStats.record(event)
-        DictationStatsStore.save(dictationStats)
+        // Same off-main-actor write as persistHistory(): stats save on every
+        // completed dictation, right on the paste hot path.
+        let snapshot = dictationStats
+        Self.storeSaveQueue.async { DictationStatsStore.save(snapshot) }
 
         // MAK-25: count only genuine USER dictations toward the first-run hint
         // window — never agent sessions or refine passes (those aren't the user
@@ -6010,7 +5999,7 @@ class AppState: ObservableObject {
             appName: old.appName,
             rawText: nil
         )
-        TranscriptionHistoryStore.save(history)
+        persistHistory()
         // Put the original words on the clipboard so the user can paste them right
         // away — matching how copyHistoryEntry works. Deliberately does NOT touch
         // `lastTranscription`: that tracks the LIVE session's last output (used by
@@ -6086,10 +6075,19 @@ class AppState: ObservableObject {
     private func dismissOverlayIfSettled(after delay: TimeInterval) {
         Task { @MainActor in
             try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
-            guard !self.isRecording, !self.isTranscribing, !self.sessionActive,
-                  !self.isArming, !self.refineArmed, !self.clipboardFallbackActive else { return }
+            guard self.overlayIsSettled else { return }
             self.hideOverlayNow()
         }
+    }
+
+    /// True when nothing owns the overlay anymore: no session in any phase, no
+    /// armed refine, no clipboard-fallback cue, and no agent question being read
+    /// aloud (that pre-session window shows the question hero + Esc target while
+    /// every session flag is still false — a stale delayed hide must not pull it
+    /// down mid-TTS). Single predicate so the delayed-hide sites can't drift.
+    private var overlayIsSettled: Bool {
+        !isRecording && !isTranscribing && !sessionActive && !isArming
+            && !refineArmed && !clipboardFallbackActive && !agentDictateReadingQuestion
     }
 
     // MARK: - Config import / export
@@ -6321,25 +6319,10 @@ class AppState: ObservableObject {
             }
         }
         // whisper.cpp GGML files start with the magic "lmgg" (0x67676d6c LE).
-        try Self.validateModelMagic(at: downloadedURL, expected: ["lmgg"], fileName: fileName)
+        try WhisperModelPaths.validateModelMagic(at: downloadedURL, expected: ["lmgg"], fileName: fileName)
         try? FileManager.default.removeItem(at: destination)
         try FileManager.default.moveItem(at: downloadedURL, to: tempURL)
         try FileManager.default.moveItem(at: tempURL, to: destination)
-    }
-
-    /// Reject a downloaded payload that isn't the expected model format before it
-    /// is installed. Catches error/captive-portal pages served with HTTP 200 (a
-    /// status check alone misses those): once a bogus file sits at the model path,
-    /// ensure*ModelExists treats it as installed forever and every transcription
-    /// fails with no in-app recovery.
-    private static func validateModelMagic(at url: URL, expected: [String], fileName: String) throws {
-        let handle = try FileHandle(forReadingFrom: url)
-        defer { try? handle.close() }
-        let head = (try? handle.read(upToCount: 4)) ?? Data()
-        let magics = expected.compactMap { $0.data(using: .ascii) }
-        guard magics.contains(head) else {
-            throw ModelDownloadError(message: "Downloaded \(fileName) is not a valid model file (server may have returned an error page)")
-        }
     }
 
     private static func modelDownloadURL(modelID: String, fileName: String) -> URL {
@@ -6363,13 +6346,6 @@ class AppState: ObservableObject {
         return try? JSONDecoder().decode([ModelManifestEntry].self, from: data)
     }
 
-    private static func formatBytes(_ bytes: Int64) -> String {
-        let formatter = ByteCountFormatter()
-        formatter.allowedUnits = [.useKB, .useMB, .useGB]
-        formatter.countStyle = .file
-        return formatter.string(fromByteCount: bytes)
-    }
-
     // MARK: - Notification
 
     private func showNotification(title: String, body: String) {
@@ -6381,21 +6357,6 @@ class AppState: ObservableObject {
         let req = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
         center.add(req)
     }
-}
-
-struct ModelManifestEntry: Decodable {
-    let id: String
-    let file: String
-    let label: String
-    let size: String
-    let url: String
-    /// Present in the LLM manifest (llm-manifest.json); absent in the whisper one.
-    let license: String?
-}
-
-struct ModelDownloadError: LocalizedError {
-    let message: String
-    var errorDescription: String? { message }
 }
 
 final class ModelDownloader: NSObject, URLSessionDownloadDelegate {
@@ -6695,8 +6656,14 @@ extension AppState: AgentBridgeHost {
         context: BridgeWire.DictateContext?, autoSubmit: Bool = BridgeWire.DictateParams.defaultAutoSubmit,
         completion: @escaping (Result<BridgeWire.DictateResult, BridgeWire.ErrorObject>) -> Void
     ) {
-        // Busy: the human (or another agent session) always wins the mic.
-        guard !isRecording, !isTranscribing, !sessionActive else {
+        // Busy: the human (or another agent session) always wins the mic. The
+        // TTS question-reading window counts as busy too: there the session
+        // flags are all still false (beginSession is deferred until the spoken
+        // question ends) but `onSessionEnd` is already armed — a second dictate
+        // admitted here would overwrite it and strand the first caller's
+        // connection thread forever. Mirrors the user-hotkey path's guard.
+        guard !isRecording, !isTranscribing, !sessionActive,
+              !agentDictateReadingQuestion, onSessionEnd == nil else {
             completion(.failure(.domain(.busy, message: "OpenWhisp is busy with another dictation; try again shortly")))
             return
         }

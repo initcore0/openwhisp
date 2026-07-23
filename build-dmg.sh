@@ -78,7 +78,17 @@ resolve_sparkle_args
 source "$PROJECT_DIR/scripts/instrumentation-args.sh"
 resolve_instrumentation_args
 
+# Optimization: same policy as build.sh — release DMGs ship optimized code.
+# Without this the CONFIG argument was dead in the compile step and every
+# released DMG's app binary was -Onone.
+OPT_ARGS=()
+if [ "$CONFIG" = "release" ]; then
+    OPT_ARGS=( -O )
+fi
+echo "Optimization: ${OPT_ARGS[*]:-'-Onone (default)'}"
+
 xcrun swiftc \
+    "${OPT_ARGS[@]+"${OPT_ARGS[@]}"}" \
     -target arm64-apple-macosx14.0 \
     -sdk "$(xcrun --show-sdk-path --sdk macosx)" \
     -parse-as-library \

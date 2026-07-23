@@ -58,6 +58,14 @@ final class LlamaServerEngine {
         logFileName: "llama-engine.log"
     )
 
+    /// This instance's spec. Defaults to the production identity; a SECOND
+    /// in-process engine (the LLM Lab bench runner) must pass its own spec —
+    /// with the shared PID file, one engine's init-time stale-reap would SIGTERM
+    /// the OTHER engine's live server (reapStaleServer can't tell "orphan from a
+    /// previous crash" from "sibling instance in this process"), and both would
+    /// fight over the PID file's contents.
+    private let spec: ManagedServerSpec
+
     /// Generation counter, guarded by `serverLock`. Bumped on every start/stop/
     /// replace so a concurrent operation can detect that the process it was
     /// waiting on is no longer current. Mirrors WhisperEngine.
@@ -74,11 +82,19 @@ final class LlamaServerEngine {
     private var idleTimer: DispatchSourceTimer?
     private let idleQueue = DispatchQueue(label: "com.openwhisp.llama.idle")
     /// Seconds of inactivity before the server is torn down. Tunable; lowered in
-    /// the dual-engine (resident whisper-server) configuration.
-    var idleTimeout: TimeInterval = 90
+    /// the dual-engine (resident whisper-server) configuration. Written from the
+    /// main actor (AppState) while `scheduleIdleTeardownLocked` reads it on
+    /// background queues — guarded by `serverLock` like the rest of the state
+    /// (the locked paths read `_idleTimeout` directly).
+    var idleTimeout: TimeInterval {
+        get { serverLock.lock(); defer { serverLock.unlock() }; return _idleTimeout }
+        set { serverLock.lock(); defer { serverLock.unlock() }; _idleTimeout = newValue }
+    }
+    private var _idleTimeout: TimeInterval = 90
     private var inFlight = 0
 
-    init() {
+    init(spec: ManagedServerSpec = LlamaServerEngine.serverSpec) {
+        self.spec = spec
         // The init-time port is a placeholder; each (re)launch reserves a FRESH
         // port (MAK-28). Reserve-and-immediately-release just to seed a plausible
         // value for logging.
@@ -88,7 +104,7 @@ final class LlamaServerEngine {
         } else {
             serverPort = Self.portRange.lowerBound
         }
-        ManagedServerProcess.reapStaleServer(spec: Self.serverSpec, ownedPrefixes: Self.ownedServerPrefixes())
+        ManagedServerProcess.reapStaleServer(spec: spec, ownedPrefixes: Self.ownedServerPrefixes())
         log("LlamaServerEngine initialized with server port \(serverPort)")
     }
 
@@ -142,9 +158,16 @@ final class LlamaServerEngine {
     /// health check (the way a lost port-bind race surfaces) re-drives this
     /// method on a FRESH port until the budget is exhausted. Callers use the
     /// default; the retry supplies a decremented value.
+    /// `callerHoldsRequestBracket`: pass true when the caller already ran
+    /// `requestStarted()` for the request this call precedes (the production
+    /// refine path does, so idle teardown can't race the gap). The busy
+    /// fast-path below must not count that bracket as "another generation in
+    /// flight" — otherwise its `inFlight > 0` check is a tautology on the
+    /// refine path and a wedged-but-alive server is never relaunched.
     func ensureRunning(
         modelPath: String,
         attemptsRemaining: Int = 3,
+        callerHoldsRequestBracket: Bool = false,
         completion: @escaping (Result<Void, Error>) -> Void
     ) {
         guard FileManager.default.fileExists(atPath: modelPath) else {
@@ -175,8 +198,25 @@ final class LlamaServerEngine {
                     completion(.success(()))
                     return
                 }
-                // Unhealthy, or stopped/replaced while probing — fall through
-                // (lock re-held) to coalesce or relaunch.
+                // Probe missed but the child is ALIVE on the same model with a
+                // request in flight: don't tear it down. The probe budget is
+                // aggressive (1s request / 1.2s wait), so "busy generating" or
+                // "paging the model back in" is indistinguishable from "dead" —
+                // and SIGTERMing here would kill the live generation (its refine
+                // falls open to raw text) and pay a full cold start. Report
+                // success and let the actual request surface any real failure.
+                // The idle-teardown handler applies the same inFlight courtesy.
+                if self.serverGeneration == probedGeneration,
+                   self.serverModelPath == modelPath,
+                   self.serverProcess?.isRunning == true,
+                   self.inFlight > (callerHoldsRequestBracket ? 1 : 0) {
+                    self.serverLock.unlock()
+                    self.noteActivity()
+                    completion(.success(()))
+                    return
+                }
+                // Unhealthy-and-idle, or stopped/replaced while probing — fall
+                // through (lock re-held) to coalesce or relaunch.
             }
 
             // Coalesce: a start for the SAME model is already in flight — wait on it.
@@ -225,7 +265,7 @@ final class LlamaServerEngine {
                 launched = try ManagedServerProcess.spawn(
                     executablePath: serverPath,
                     arguments: arguments,
-                    spec: Self.serverSpec,
+                    spec: self.spec,
                     releasing: reservation
                 )
             } catch {
@@ -245,7 +285,7 @@ final class LlamaServerEngine {
             self.starting = true
             self.startingModelPath = modelPath
             self.pendingCompletions = [completion]
-            ManagedServerProcess.writePID(process.processIdentifier, spec: Self.serverSpec)
+            ManagedServerProcess.writePID(process.processIdentifier, spec: self.spec)
 
             self.serverLock.unlock()
 
@@ -287,6 +327,9 @@ final class LlamaServerEngine {
                     // rest coalesce onto it via the normal in-flight path.
                     self.log("llama-server failed health check; retrying on a fresh port (\(attemptsRemaining - 1) left)")
                     for waiter in waiters {
+                        // The retry can't tell which waiter held a request
+                        // bracket; pass false so the busy fast-path stays
+                        // conservative (worst case: an extra relaunch).
                         self.ensureRunning(
                             modelPath: modelPath,
                             attemptsRemaining: attemptsRemaining - 1,
@@ -332,10 +375,19 @@ final class LlamaServerEngine {
     /// main-actor callers via noteActivity/requestFinished).
     private func scheduleIdleTeardownLocked() {
         let timer = DispatchSource.makeTimerSource(queue: idleQueue)
-        timer.schedule(deadline: .now() + idleTimeout)
+        timer.schedule(deadline: .now() + _idleTimeout)
         timer.setEventHandler { [weak self] in
             guard let self = self else { return }
             self.serverLock.lock()
+            // Identity check: a handler that has already FIRED and is blocked on
+            // the lock isn't stopped by `cancel()` — a (re)start could replace
+            // this timer and spawn a fresh child while we wait, and acting then
+            // would SIGTERM the seconds-old server (a warm-up has no inFlight
+            // bracket to protect it). Only the CURRENT timer may act.
+            guard timer === self.idleTimer else {
+                self.serverLock.unlock()
+                return
+            }
             if self.inFlight > 0 {
                 // Don't kill a live generation — reschedule.
                 self.scheduleIdleTeardownLocked()
@@ -385,7 +437,7 @@ final class LlamaServerEngine {
         serverModelPath = nil
         serverStdoutPipe = nil
         serverStderrPipe = nil
-        try? FileManager.default.removeItem(at: Self.serverSpec.pidFileURL)
+        try? FileManager.default.removeItem(at: spec.pidFileURL)
     }
 
     // MARK: - Binary resolution
@@ -474,7 +526,7 @@ final class LlamaServerEngine {
     static func logFileURL() -> URL { serverSpec.logFileURL }
 
     private func log(_ message: String) {
-        ManagedServerProcess.appendLog(message, spec: Self.serverSpec)
+        ManagedServerProcess.appendLog(message, spec: spec)
     }
 
     // MARK: - Owned paths

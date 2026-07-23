@@ -171,23 +171,37 @@ public struct SmartFormatter: PostProcessor {
         ("hyphen", "-")
     ]
 
-    private static func applySpokenPunctuation(to text: String) -> String {
-        var result = text
-        for (word, symbol) in punctuationReplacements {
-            // \b...\b word boundaries, case-insensitive. For symbols that should
-            // attach to the preceding word (comma/period/etc.) we also swallow a
-            // leading space so we get "word," not "word ,".
+    /// Precompiled spoken-punctuation regexes. This pass runs on every streaming
+    /// partial over the whole accumulated transcript, so the patterns are
+    /// compiled once here instead of per call. \b...\b word boundaries,
+    /// case-insensitive. For symbols that should attach to the preceding word
+    /// (comma/period/etc.) we also swallow a leading space so we get "word,"
+    /// not "word ,".
+    private static let punctuationRegexes: [(regex: NSRegularExpression, template: String)] =
+        punctuationReplacements.map { word, symbol in
             let attachLeft = [",", ".", "?", "!", ";", ":", ")"].contains(symbol.trimmingCharacters(in: .whitespaces))
             let pattern = attachLeft
                 ? "\\s*\\b\(NSRegularExpression.escapedPattern(for: word))\\b"
                 : "\\b\(NSRegularExpression.escapedPattern(for: word))\\b"
-            result = result.replacingOccurrences(
-                of: pattern,
-                with: symbol,
-                options: [.regularExpression, .caseInsensitive]
-            )
+            let regex = try! NSRegularExpression(pattern: pattern, options: [.caseInsensitive])
+            return (regex, NSRegularExpression.escapedTemplate(for: symbol))
+        }
+
+    private static func applySpokenPunctuation(to text: String) -> String {
+        var result = text
+        for (regex, template) in punctuationRegexes {
+            result = replaceAll(result, regex, template)
         }
         return result
+    }
+
+    /// Run `regex` over the whole of `text`, replacing every match with `template`.
+    private static func replaceAll(_ text: String, _ regex: NSRegularExpression, _ template: String) -> String {
+        regex.stringByReplacingMatches(
+            in: text,
+            range: NSRange(text.startIndex..., in: text),
+            withTemplate: template
+        )
     }
 
     // MARK: - Filler removal
@@ -198,40 +212,37 @@ public struct SmartFormatter: PostProcessor {
     /// ("3 mm wide"), and whisper renders the filler as "Hmm"/"Mm-hmm" anyway.
     private static let fillerWords = ["um", "uh", "uhh", "umm", "erm", "hmm"]
 
+    /// Precompiled: match each filler as a standalone token, optionally followed
+    /// by a comma whisper sometimes attaches.
+    private static let fillerRegexes: [NSRegularExpression] = fillerWords.map {
+        try! NSRegularExpression(pattern: "\\b\($0)\\b,?", options: [.caseInsensitive])
+    }
+
     private static func removeFillers(from text: String) -> String {
         var result = text
-        for filler in fillerWords {
-            // Match the filler as a standalone token, optionally followed by a
-            // comma whisper sometimes attaches, and the surrounding spaces.
-            let pattern = "\\b\(filler)\\b,?"
-            result = result.replacingOccurrences(
-                of: pattern,
-                with: "",
-                options: [.regularExpression, .caseInsensitive]
-            )
+        for regex in fillerRegexes {
+            result = replaceAll(result, regex, "")
         }
         return result
     }
 
     // MARK: - Whitespace
 
+    private static let spaceRunRegex = try! NSRegularExpression(pattern: "[ \\t]+")
+    private static let spaceBeforePunctRegex = try! NSRegularExpression(pattern: " +([,.;:!?\\)])")
+    private static let spaceBeforeNewlineRegex = try! NSRegularExpression(pattern: "[ \\t]+\\n")
+    private static let spaceAfterNewlineRegex = try! NSRegularExpression(pattern: "\\n[ \\t]+")
+    private static let newlineRunRegex = try! NSRegularExpression(pattern: "\\n{3,}")
+
     private static func normalizeWhitespacePreservingNewlines(_ text: String) -> String {
         // Collapse runs of spaces/tabs (not newlines) to a single space.
-        var s = text.replacingOccurrences(
-            of: "[ \\t]+",
-            with: " ",
-            options: .regularExpression
-        )
+        var s = replaceAll(text, spaceRunRegex, " ")
         // Remove spaces that ended up before attached punctuation.
-        s = s.replacingOccurrences(
-            of: " +([,.;:!?\\)])",
-            with: "$1",
-            options: .regularExpression
-        )
+        s = replaceAll(s, spaceBeforePunctRegex, "$1")
         // Trim spaces hugging a newline on either side, and collapse 3+ newlines to 2.
-        s = s.replacingOccurrences(of: "[ \\t]+\\n", with: "\n", options: .regularExpression)
-        s = s.replacingOccurrences(of: "\\n[ \\t]+", with: "\n", options: .regularExpression)
-        s = s.replacingOccurrences(of: "\\n{3,}", with: "\n\n", options: .regularExpression)
+        s = replaceAll(s, spaceBeforeNewlineRegex, "\n")
+        s = replaceAll(s, spaceAfterNewlineRegex, "\n")
+        s = replaceAll(s, newlineRunRegex, "\n\n")
         return s
     }
 
@@ -284,13 +295,11 @@ public struct SmartFormatter: PostProcessor {
     /// should be skipped when deciding what word to capitalize at a line start.
     private static let listOrMarkdownLead: Set<Character> = ["-", "#", "*", ">"]
 
-    /// Capitalize the standalone pronoun "i" -> "I".
+    /// Capitalize the standalone pronoun "i" -> "I". Case-sensitive on purpose.
+    private static let standaloneIRegex = try! NSRegularExpression(pattern: "\\bi\\b")
+
     private static func capitalizeStandaloneI(_ text: String) -> String {
-        text.replacingOccurrences(
-            of: "\\bi\\b",
-            with: "I",
-            options: [.regularExpression]
-        )
+        replaceAll(text, standaloneIRegex, "I")
     }
 
     private static func ensureTerminalPunctuation(_ text: String) -> String {

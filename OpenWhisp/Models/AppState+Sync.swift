@@ -32,16 +32,23 @@ extension AppState: SyncStore {
         set {
             guard historyEnabled else { return }
             // Restore the store's newest-first invariant + retention cap after a
-            // merge appended entries in arbitrary date order, then persist.
+            // merge appended entries in arbitrary date order, then persist via
+            // the single serial store-save queue (mixing synchronous writes with
+            // the queued ones would let an older queued snapshot land last).
             let sorted = newValue.sorted { $0.date > $1.date }
             history = Array(sorted.prefix(TranscriptionHistoryStore.maxEntries))
-            TranscriptionHistoryStore.save(history)
+            persistHistory()
         }
     }
 
     /// The store's retention cap, so a push merge only counts entries that will
     /// actually survive (see SyncStore.syncHistoryRetentionLimit).
     var syncHistoryRetentionLimit: Int? { TranscriptionHistoryStore.maxEntries }
+
+    /// Surfaces the privacy toggle to the push handler so a history-off Mac
+    /// reports zero history merges instead of "merged N" for entries the setter
+    /// above silently refused to persist.
+    var syncHistoryEnabled: Bool { historyEnabled }
 
     /// Content hash of the bundled config packs, so a peer's manifest can tell if
     /// its pack set differs. Packs are read-only bundled resources; identity only.

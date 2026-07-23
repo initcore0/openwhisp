@@ -118,6 +118,24 @@ enum FileOutputFormatter {
         return separator + entry + "\n"
     }
 
+    /// `renderAppendChunk` variant for callers that read only the file's TAIL
+    /// instead of the whole contents: the separator decision needs at most the
+    /// last two bytes (see `appendSeparator(forTailBytes:)`), so the writer can
+    /// stay O(1) in file size on every dictation.
+    static func renderAppendChunk(
+        text: String,
+        config: FileOutputConfig,
+        existingTailBytes: [UInt8],
+        date: Date = Date(),
+        timeZone: TimeZone = .current,
+        locale: Locale = Locale(identifier: "en_US_POSIX")
+    ) -> String? {
+        guard let entry = renderEntry(text: text, config: config, date: date, timeZone: timeZone, locale: locale) else {
+            return nil
+        }
+        return appendSeparator(forTailBytes: existingTailBytes) + entry + "\n"
+    }
+
     /// The FULL contents to write when overwriting: just the rendered entry with a
     /// trailing newline. Returns `nil` for an empty dictation (nothing to write —
     /// the caller leaves the file untouched rather than blanking it).
@@ -173,6 +191,17 @@ enum FileOutputFormatter {
         if existing.isEmpty { return "" }
         if existing.hasSuffix("\n\n") { return "" }
         if existing.hasSuffix("\n") { return "\n" }
+        return "\n\n"
+    }
+
+    /// The same decision derived from just the last (up to) two BYTES of the
+    /// existing file. In UTF-8 the byte 0x0A appears only as the newline
+    /// character itself (never inside a multi-byte sequence), so the suffix
+    /// tests are byte-equivalent to the String version above.
+    private static func appendSeparator(forTailBytes tail: [UInt8]) -> String {
+        if tail.isEmpty { return "" }
+        if tail.count >= 2, tail[tail.count - 2] == 0x0A, tail[tail.count - 1] == 0x0A { return "" }
+        if tail.last == 0x0A { return "\n" }
         return "\n\n"
     }
 }

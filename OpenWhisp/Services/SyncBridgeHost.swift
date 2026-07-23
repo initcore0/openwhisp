@@ -34,10 +34,17 @@ protocol SyncStore: AnyObject {
     /// over-cap entries were reported as merged, trimmed by the store, and
     /// re-reported on every identical re-push (idempotency break).
     var syncHistoryRetentionLimit: Int? { get }
+    /// Whether this device persists history at all (the privacy toggle). When
+    /// false, the store's history setter silently refuses writes — so a push
+    /// must merge zero history entries and REPORT zero, or the peer is told
+    /// "merged N" for entries that were never persisted and re-offers them on
+    /// every sync cycle (idempotency break).
+    var syncHistoryEnabled: Bool { get }
 }
 
 extension SyncStore {
     var syncHistoryRetentionLimit: Int? { nil }
+    var syncHistoryEnabled: Bool { true }
 }
 
 /// The real implementations of the three sync verbs (`sync.manifest` / `sync.pull`
@@ -147,13 +154,18 @@ struct SyncVerbHandlers {
             return BridgeWire.SyncPushResult(accepted: false)
         }
 
+        // History-disabled devices merge NO history: with the toggle off the
+        // store setter is a guarded no-op, so counting the incoming entries as
+        // merged (they'd all be "new" against the empty snapshot) would report
+        // a merge that never persisted — and the peer would re-offer the same
+        // entries forever. Dropping them here keeps count and reality aligned.
         let outcome = SyncMerge.merge(
             localVocabulary: store.syncVocabulary,
             localProfiles: store.syncProfiles,
             localModes: store.syncModes,
             localHistory: store.syncHistory,
             incomingBundle: params.bundle,
-            incomingHistory: params.historyEntries,
+            incomingHistory: store.syncHistoryEnabled ? params.historyEntries : [],
             historyRetentionLimit: store.syncHistoryRetentionLimit)
 
         // Write back only changed sections so a no-op push doesn't churn stores.

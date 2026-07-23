@@ -23,7 +23,10 @@ import Foundation
 public enum JSONStore {
     /// Load and decode `T` from `url`.
     ///
-    /// - Missing or unreadable file → `default` (a fresh store; not an error).
+    /// - Missing file → `default` (a fresh store; not an error).
+    /// - Existing file that cannot be read (permissions, I/O error) → the file is
+    ///   moved aside to `<name>.unreadable-<epoch>` and `default` is returned, so
+    ///   the next save can't overwrite the intact data.
     /// - Decodable file → the decoded value, with `transform` applied (default:
     ///   identity). `AgentClientStore` uses `transform` to run its
     ///   `demoteRunScopedGrants()` step on load.
@@ -45,7 +48,23 @@ public enum JSONStore {
         decoder: JSONDecoder = JSONDecoder(),
         transform: (T) -> T = { $0 }
     ) -> T {
-        guard let data = try? Data(contentsOf: url) else { return defaultValue }
+        let data: Data
+        do {
+            data = try Data(contentsOf: url)
+        } catch let error as NSError
+            where error.domain == NSCocoaErrorDomain && error.code == NSFileReadNoSuchFileError {
+            // Fresh store: no file yet.
+            return defaultValue
+        } catch {
+            // The file EXISTS but could not be read (permissions, I/O error, a
+            // stalled cloud-synced Application Support). Returning the default
+            // silently would let the next save overwrite the intact file — move
+            // it aside first, same as the undecodable branch below.
+            let backup = url.appendingPathExtension("unreadable-\(Int(Date().timeIntervalSince1970))")
+            try? FileManager.default.moveItem(at: url, to: backup)
+            print("[\(label)] read failed: \(error); moved file to \(backup.lastPathComponent)")
+            return defaultValue
+        }
         do {
             return transform(try decoder.decode(T.self, from: data))
         } catch {
