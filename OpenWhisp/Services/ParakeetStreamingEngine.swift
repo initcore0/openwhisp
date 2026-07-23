@@ -278,8 +278,15 @@ final class ParakeetStreamingEngine: StreamingTranscriptionEngine {
 
     func stop(cancel: Bool) {
         MainActor.assumeIsolated {
+            // Snapshot the final callback at ENQUEUE time, mirroring start()'s
+            // SessionCallbacks: runStop can sit in the chain behind a slow
+            // session.finish() while AppState admits the next session and
+            // rebinds onFinal to it — a fire-time read would deliver THIS
+            // session's final with the successor's sessionID, straight through
+            // AppState's session fence.
+            let final = self.onFinal
             self.lifecycle.enqueue {
-                await self.runStop(cancel: cancel)
+                await self.runStop(cancel: cancel, final: final)
             }
         }
     }
@@ -296,7 +303,7 @@ final class ParakeetStreamingEngine: StreamingTranscriptionEngine {
     }
 
     @MainActor
-    private func runStop(cancel: Bool) async {
+    private func runStop(cancel: Bool, final deliverFinal: ((String) -> Void)?) async {
         didStop = true
         // Supersede the session so late partial hops are dropped.
         generation += 1
@@ -324,12 +331,12 @@ final class ParakeetStreamingEngine: StreamingTranscriptionEngine {
             // the final transcript.
             let final = try await session.finish()
                 .trimmingCharacters(in: .whitespacesAndNewlines)
-            onFinal?(final.isEmpty ? lastPartial : final)
+            deliverFinal?(final.isEmpty ? lastPartial : final)
         } catch {
             NSLog("[Parakeet] finish error: %@", error.localizedDescription)
             // Fall back to the last partial rather than erroring the session —
             // the user's words are already on screen in preview mode.
-            onFinal?(lastPartial)
+            deliverFinal?(lastPartial)
         }
     }
 

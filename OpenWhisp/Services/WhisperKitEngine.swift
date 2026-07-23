@@ -214,9 +214,20 @@ final class WhisperKitEngine: FileTranscriptionEngine {
     /// the main actor so the check-and-set is atomic), so we detect exactly once.
     private func stickyAutoLanguage(kit: WhisperKitHandle, wavPath: String) async throws -> String {
         let task = await detectTaskOnMain(kit: kit, wavPath: wavPath)
-        let lang = try await task.value
-        await MainActor.run { self.stickyLanguage = lang }
-        return lang
+        do {
+            let lang = try await task.value
+            await MainActor.run { self.stickyLanguage = lang }
+            return lang
+        } catch {
+            // Drop the failed Task from the cache (mirroring clearFailedLoad):
+            // otherwise one transient detect failure (e.g. an unreadable first
+            // chunk) is re-awaited by every later chunk and the whole session
+            // degrades to per-chunk errors. The next chunk retries on its own audio.
+            await MainActor.run {
+                if self.inFlightDetect == task { self.inFlightDetect = nil }
+            }
+            throw error
+        }
     }
 
     @MainActor
