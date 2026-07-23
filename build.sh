@@ -78,9 +78,22 @@ fi
 source "$PROJECT_DIR/scripts/instrumentation-args.sh"
 resolve_instrumentation_args
 
+# Optimization: release builds ship to users, so the app module must be
+# compiled optimized. The [debug|release] argument previously never reached
+# swiftc (which defaults to -Onone), so even "release" binaries carried
+# debug-level codegen through the whole hot dictation path — while every
+# dependency (WhisperKit/FluidAudio static libs, the CLI) was already built
+# with `swift build -c release`. Debug stays flagless, exactly as before.
+OPT_ARGS=()
+if [ "$CONFIG" = "release" ]; then
+    OPT_ARGS=( -O )
+fi
+echo "Optimization: ${OPT_ARGS[*]:-'-Onone (default)'}"
+
 # swiftc runs inside the if condition so set -e doesn't abort before the
 # failure branch can report.
 if xcrun swiftc \
+    "${OPT_ARGS[@]+"${OPT_ARGS[@]}"}" \
     -target arm64-apple-macosx14.0 \
     -sdk "$(xcrun --show-sdk-path --sdk macosx)" \
     -parse-as-library \

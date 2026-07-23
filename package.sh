@@ -26,7 +26,9 @@ done
 # Pass through WHISPERKIT so a deliberate lean build still works.
 echo "Building fresh binary (rm stale + build.sh)..."
 rm -f "$BUILD_DIR/OpenWhisp"
-"$PROJECT_DIR/build.sh"
+# Packaged .apps are installed and used for real — build optimized (build.sh
+# with no argument is a debug/-Onone build, meant for the dev loop).
+"$PROJECT_DIR/build.sh" release
 
 # Guard: refuse to package a stub (missing WhisperKit) unless WHISPERKIT=0 was
 # explicitly requested. Turns the silent "stub shipped" failure into a build error.
