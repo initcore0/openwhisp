@@ -68,7 +68,7 @@ class OpenWhispApp: NSObject, NSApplicationDelegate {
 
         // Stream overlay (live subtitles for OBS/Twitch): start the loopback
         // caption server if enabled.
-        appState.startStreamOverlayIfEnabled()
+        appState.streamOverlay.startIfEnabled()
 
         // Sparkle auto-update (MAK-56): start the updater. Touching `.shared`
         // constructs the SPUStandardUpdaterController and begins the scheduled

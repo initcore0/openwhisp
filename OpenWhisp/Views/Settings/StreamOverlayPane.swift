@@ -9,12 +9,12 @@ import AppKit
 /// `StreamOverlayConfig`; edits restart the server (debounced in AppState) so
 /// the served page always matches what this pane shows.
 struct StreamOverlayPane: View {
-    @ObservedObject var appState: AppState
+    @ObservedObject var overlay: StreamOverlayCoordinator
 
     var body: some View {
         Form {
             introSection
-            if appState.streamOverlayEnabled {
+            if overlay.enabled {
                 captureSection
                 serverSection
                 displaySection
@@ -31,7 +31,7 @@ struct StreamOverlayPane: View {
                 .font(.callout)
                 .foregroundColor(.secondary)
 
-            Toggle("Enable stream overlay server", isOn: $appState.streamOverlayEnabled)
+            Toggle("Enable stream overlay server", isOn: $overlay.enabled)
         } header: {
             Text("Stream Overlay")
         }
@@ -45,24 +45,24 @@ struct StreamOverlayPane: View {
         Section {
             HStack {
                 Circle()
-                    .fill(appState.streamOverlayCaptureActive ? Color.red : Color.secondary.opacity(0.4))
+                    .fill(overlay.captureActive ? Color.red : Color.secondary.opacity(0.4))
                     .frame(width: 8, height: 8)
-                Text(appState.streamOverlayCaptureActive ? "Capturing — speech becomes subtitles" : "Not capturing")
+                Text(overlay.captureActive ? "Capturing — speech becomes subtitles" : "Not capturing")
                 Spacer()
-                if appState.streamOverlayCaptureActive {
+                if overlay.captureActive {
                     Button {
-                        appState.stopStreamOverlayCapture()
+                        overlay.stopCapture()
                     } label: {
                         Label("Stop Captions", systemImage: "stop.circle.fill")
                     }
                     .tint(.red)
                 } else {
                     Button {
-                        appState.startStreamOverlayCapture()
+                        overlay.startCapture()
                     } label: {
                         Label("Start Captions", systemImage: "record.circle")
                     }
-                    .disabled(!appState.streamOverlayRunning)
+                    .disabled(!overlay.running)
                 }
             }
         } header: {
@@ -80,11 +80,11 @@ struct StreamOverlayPane: View {
         Section {
             HStack {
                 Circle()
-                    .fill(appState.streamOverlayRunning ? Color.green : Color.orange)
+                    .fill(overlay.running ? Color.green : Color.orange)
                     .frame(width: 8, height: 8)
-                Text(appState.streamOverlayRunning ? "Running" : "Starting…")
+                Text(overlay.running ? "Running" : "Starting…")
                 Spacer()
-                Text(appState.streamOverlayURL)
+                Text(overlay.url)
                     .font(.system(.callout, design: .monospaced))
                     .foregroundColor(.secondary)
                     .textSelection(.enabled)
@@ -93,12 +93,12 @@ struct StreamOverlayPane: View {
             HStack {
                 Button {
                     NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(appState.streamOverlayURL, forType: .string)
+                    NSPasteboard.general.setString(overlay.url, forType: .string)
                 } label: {
                     Label("Copy URL", systemImage: "doc.on.doc")
                 }
                 Button {
-                    if let url = URL(string: appState.streamOverlayURL) {
+                    if let url = URL(string: overlay.url) {
                         NSWorkspace.shared.open(url)
                     }
                 } label: {
@@ -120,8 +120,8 @@ struct StreamOverlayPane: View {
     /// restarts via the AppState observer.
     private var portBinding: Binding<Int> {
         Binding(
-            get: { appState.streamOverlayPort },
-            set: { appState.streamOverlayPort = min(max($0, 1_024), 65_535) })
+            get: { overlay.port },
+            set: { overlay.port = min(max($0, 1_024), 65_535) })
     }
 
     // MARK: Display
@@ -149,7 +149,7 @@ struct StreamOverlayPane: View {
                 HStack {
                     Text("Font size")
                     Spacer()
-                    Text("\(appState.streamOverlayConfig.fontSize) px")
+                    Text("\(overlay.config.fontSize) px")
                         .foregroundColor(.secondary)
                 }
             }
@@ -163,7 +163,7 @@ struct StreamOverlayPane: View {
                 HStack {
                     Text("Subtitle lines on screen")
                     Spacer()
-                    Text("\(appState.streamOverlayConfig.maxLines)")
+                    Text("\(overlay.config.maxLines)")
                         .foregroundColor(.secondary)
                 }
             }
@@ -172,7 +172,7 @@ struct StreamOverlayPane: View {
                 HStack {
                     Text("Characters per line")
                     Spacer()
-                    Text("\(appState.streamOverlayConfig.charsPerLine)")
+                    Text("\(overlay.config.charsPerLine)")
                         .foregroundColor(.secondary)
                 }
             }
@@ -182,7 +182,7 @@ struct StreamOverlayPane: View {
                 HStack {
                     Text("Hide after silence")
                     Spacer()
-                    Text("\(appState.streamOverlayConfig.lingerSeconds) s")
+                    Text("\(overlay.config.lingerSeconds) s")
                         .foregroundColor(.secondary)
                 }
             }
@@ -200,23 +200,23 @@ struct StreamOverlayPane: View {
 
     private func configBinding<T>(_ keyPath: WritableKeyPath<StreamOverlayConfig, T>) -> Binding<T> {
         Binding(
-            get: { appState.streamOverlayConfig[keyPath: keyPath] },
-            set: { appState.streamOverlayConfig[keyPath: keyPath] = $0 })
+            get: { overlay.config[keyPath: keyPath] },
+            set: { overlay.config[keyPath: keyPath] = $0 })
     }
 
     private func setCanvas(_ w: Int, _ h: Int) {
-        appState.streamOverlayConfig.canvasWidth = w
-        appState.streamOverlayConfig.canvasHeight = h
+        overlay.config.canvasWidth = w
+        overlay.config.canvasHeight = h
     }
 
     /// A color-well row bridging SwiftUI `Color` ↔ the config's hex string.
     private func colorRow(_ label: String, keyPath: WritableKeyPath<StreamOverlayConfig, String>) -> some View {
         HStack {
             ColorPicker(label, selection: Binding(
-                get: { Color(hex: appState.streamOverlayConfig[keyPath: keyPath]) },
-                set: { appState.streamOverlayConfig[keyPath: keyPath] = $0.hexRGBA }
+                get: { Color(hex: overlay.config[keyPath: keyPath]) },
+                set: { overlay.config[keyPath: keyPath] = $0.hexRGBA }
             ), supportsOpacity: true)
-            Text(appState.streamOverlayConfig[keyPath: keyPath])
+            Text(overlay.config[keyPath: keyPath])
                 .font(.system(.caption, design: .monospaced))
                 .foregroundColor(.secondary)
         }
@@ -226,9 +226,9 @@ struct StreamOverlayPane: View {
     /// transparent and opaque black, keeping the picker for anything custom.
     private var transparentBackgroundBinding: Binding<Bool> {
         Binding(
-            get: { appState.streamOverlayConfig.backgroundColor.hasSuffix("00")
-                && appState.streamOverlayConfig.backgroundColor.count == 9 },
-            set: { appState.streamOverlayConfig.backgroundColor = $0 ? "#00000000" : "#000000" })
+            get: { overlay.config.backgroundColor.hasSuffix("00")
+                && overlay.config.backgroundColor.count == 9 },
+            set: { overlay.config.backgroundColor = $0 ? "#00000000" : "#000000" })
     }
 }
 

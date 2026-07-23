@@ -111,7 +111,9 @@ final class SettingsStoreTests: XCTestCase {
     /// golden list — a rename or a new/removed key fails here until the golden
     /// list is updated deliberately (and, for a rename, a migration added).
     func testAppStateUserDefaultsKeySetHasNotDrifted() throws {
-        let source = try String(contentsOf: Self.appStateSourceURL, encoding: .utf8)
+        let source = try Self.settingsSourceURLs
+            .map { try String(contentsOf: $0, encoding: .utf8) }
+            .joined(separator: "\n")
 
         // Extract every `forKey: "<key>"` literal.
         let pattern = #"forKey:\s*"([^"]+)""#
@@ -142,14 +144,19 @@ final class SettingsStoreTests: XCTestCase {
         )
     }
 
-    /// Path to the checked-in AppState.swift, resolved relative to this test file
-    /// (Tests/OpenWhispCoreTests/ -> ../../OpenWhisp/Models/AppState.swift).
-    private static let appStateSourceURL: URL = {
-        URL(fileURLWithPath: #filePath)               // .../Tests/OpenWhispCoreTests/SettingsStoreTests.swift
+    /// The checked-in sources that persist settings keys, resolved relative to
+    /// this test file. AppState plus the coordinators split out of it (MAK-32) —
+    /// the on-disk contract spans them all, so a key moving between these files
+    /// is invisible here (as it should be) while a rename still trips the guard.
+    private static let settingsSourceURLs: [URL] = {
+        let root = URL(fileURLWithPath: #filePath)    // .../Tests/OpenWhispCoreTests/SettingsStoreTests.swift
             .deletingLastPathComponent()              // .../Tests/OpenWhispCoreTests
             .deletingLastPathComponent()              // .../Tests
             .deletingLastPathComponent()              // repo root
-            .appendingPathComponent("OpenWhisp/Models/AppState.swift")
+        return [
+            root.appendingPathComponent("OpenWhisp/Models/AppState.swift"),
+            root.appendingPathComponent("OpenWhisp/Models/StreamOverlayCoordinator.swift"),
+        ]
     }()
 
     /// The complete set of UserDefaults keys AppState.swift reads or writes.

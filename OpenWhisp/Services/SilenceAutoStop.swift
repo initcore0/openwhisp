@@ -129,3 +129,26 @@ public struct SilenceAutoStop {
         return false
     }
 }
+
+extension SilenceAutoStop.Config {
+    /// Silence safety config for a LOCKED user session (MAK-16). Same detector
+    /// as the agent bridge but with a MUCH longer hangover: a hands-free user
+    /// is likely composing and may pause to think, so this is a "you clearly
+    /// walked away" backstop (~8s of continuous silence after speech), never a
+    /// quick finish.
+    public static let lockSafety = SilenceAutoStop.Config(silenceToStop: 8.0)
+
+    /// Lock-safety config for quiet mode: the lowered whisper-friendly
+    /// speech/silence gates (so a whisper still arms the detector) but keeping
+    /// the long 8s safety stop, so a whispered session is still protected from
+    /// running forever.
+    public static let quietLockSafety: SilenceAutoStop.Config = {
+        let q = QuietDictationMode.quietSilenceAutoStopConfig
+        return SilenceAutoStop.Config(
+            speechLevel: q.speechLevel,
+            silenceLevel: q.silenceLevel,
+            silenceToStop: 8.0,
+            minSpeechToArm: q.minSpeechToArm
+        )
+    }()
+}
