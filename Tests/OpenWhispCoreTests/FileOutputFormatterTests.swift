@@ -168,6 +168,26 @@ final class FileOutputFormatterTests: XCTestCase {
         XCTAssertEqual(chunk, "second\n")
     }
 
+    func testTailBytesOverloadMatchesWholeContentsDecision() {
+        // The writer reads only the file's last two bytes; the byte-based
+        // overload must reach the same separator decision as the String one for
+        // every suffix class (including the one-byte "\n" file).
+        for existing in ["", "first entry", "first entry\n", "first entry\n\n", "\n"] {
+            let fromString = FileOutputFormatter.renderAppendChunk(
+                text: "second", config: config(template: nil),
+                existingContents: existing,
+                date: fixedDate, timeZone: utc, locale: posix
+            )
+            let tail = [UInt8](existing.utf8.suffix(2))
+            let fromTail = FileOutputFormatter.renderAppendChunk(
+                text: "second", config: config(template: nil),
+                existingTailBytes: tail,
+                date: fixedDate, timeZone: utc, locale: posix
+            )
+            XCTAssertEqual(fromTail, fromString, "diverged for existing suffix \(existing.debugDescription)")
+        }
+    }
+
     func testAppendChunkIncludesHeading() {
         let chunk = FileOutputFormatter.renderAppendChunk(
             text: "log this", config: config(template: "## {{datetime}}"),

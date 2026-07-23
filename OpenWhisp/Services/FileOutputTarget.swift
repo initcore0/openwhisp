@@ -22,8 +22,12 @@ final class FileOutputTarget: OutputTarget {
     private let config: FileOutputConfig
     /// Injected so tests can supply a deterministic timestamp; the app uses `Date()`.
     private let now: () -> Date
-    /// Serial queue so concurrent dictations can't interleave file writes.
-    private let queue = DispatchQueue(label: "com.openwhisp.app.file-output")
+    /// Serial queue so concurrent writers can't interleave file writes. STATIC:
+    /// a fresh FileOutputTarget is constructed per delivery (the output router
+    /// builds one per finalized dictation, RuleEngineRunner one per appendFile
+    /// action), so a per-instance queue would serialize nothing — both can
+    /// target the same file in the same finalize call.
+    private static let queue = DispatchQueue(label: "com.openwhisp.app.file-output")
     private let fileManager = FileManager.default
 
     init(config: FileOutputConfig, now: @escaping () -> Date = { Date() }) {
@@ -42,7 +46,7 @@ final class FileOutputTarget: OutputTarget {
 
         let config = self.config
         let timestamp = now()
-        queue.async { [fileManager] in
+        Self.queue.async { [fileManager] in
             let outcome: OutputDelivery
             do {
                 try FileOutputTarget.write(
@@ -93,14 +97,28 @@ final class FileOutputTarget: OutputTarget {
             try contents.write(to: url, atomically: true, encoding: .utf8)
 
         case .append:
-            let existing = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+            // Only the file's last two bytes decide the separator — reading the
+            // whole (ever-growing daily-note) file per dictation was O(size).
+            let tail = tailBytes(of: url, count: 2)
             guard let chunk = FileOutputFormatter.renderAppendChunk(
-                text: text, config: config, existingContents: existing, date: date
+                text: text, config: config, existingTailBytes: tail, date: date
             ) else {
                 throw FileWriteSkipped(reason: "empty dictation — nothing to append")
             }
             try appendUTF8(chunk, to: url, fileManager: fileManager)
         }
+    }
+
+    /// The last (up to) `count` bytes of the file; [] when missing, empty, or
+    /// unreadable (matching the old whole-file read's `?? ""` fallback).
+    private static func tailBytes(of url: URL, count: Int) -> [UInt8] {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return [] }
+        defer { try? handle.close() }
+        guard let size = try? handle.seekToEnd(), size > 0 else { return [] }
+        let offset = size > UInt64(count) ? size - UInt64(count) : 0
+        guard (try? handle.seek(toOffset: offset)) != nil,
+              let data = try? handle.read(upToCount: count) else { return [] }
+        return [UInt8](data)
     }
 
     /// Append UTF-8 `chunk` to the file at `url`, creating it if absent. Uses a file

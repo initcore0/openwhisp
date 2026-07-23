@@ -94,6 +94,34 @@ final class JSONStoreTests: XCTestCase {
         XCTAssertEqual(corruptSiblings.count, 1)
     }
 
+    func testUnreadableExistingFileReturnsDefaultAndQuarantines() throws {
+        // A file that exists but can't be READ (vs. decoded) must not be left in
+        // place: booting with the default and then saving would overwrite the
+        // intact store. It gets moved aside to `.unreadable-*` instead.
+        let url = fileURL()
+        let original = Data("{\"name\":\"real\",\"count\":9}".utf8)
+        try original.write(to: url)
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: url.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path) }
+        if (try? Data(contentsOf: url)) != nil {
+            throw XCTSkip("running as a user that can read mode-000 files (root?)")
+        }
+
+        let fallback = Payload(name: "default", count: 0)
+        let loaded = JSONStore.load(from: url, default: fallback, label: "Test")
+
+        XCTAssertEqual(loaded, fallback)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path),
+                       "unreadable file should have been moved aside")
+        let quarantined = try siblings(of: url).filter { $0.contains(".unreadable-") }
+        XCTAssertEqual(quarantined.count, 1,
+                       "expected exactly one .unreadable-* backup, found \(quarantined)")
+        // The backup still holds the original bytes (verifiable after chmod).
+        let backup = url.deletingLastPathComponent().appendingPathComponent(quarantined[0])
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: backup.path)
+        XCTAssertEqual(try Data(contentsOf: backup), original)
+    }
+
     func testTransformAppliedToDecodedValue() throws {
         let url = fileURL()
         try JSONEncoder().encode(Payload(name: "raw", count: 1)).write(to: url)
