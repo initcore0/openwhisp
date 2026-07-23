@@ -22,12 +22,25 @@ final class FileOutputTarget: OutputTarget {
     private let config: FileOutputConfig
     /// Injected so tests can supply a deterministic timestamp; the app uses `Date()`.
     private let now: () -> Date
-    /// Serial queue so concurrent writers can't interleave file writes. STATIC:
-    /// a fresh FileOutputTarget is constructed per delivery (the output router
-    /// builds one per finalized dictation, RuleEngineRunner one per appendFile
-    /// action), so a per-instance queue would serialize nothing — both can
-    /// target the same file in the same finalize call.
-    private static let queue = DispatchQueue(label: "com.openwhisp.app.file-output")
+    /// Per-target-file serial queues so concurrent writers can't interleave
+    /// writes to the SAME file. STATIC: a fresh FileOutputTarget is constructed
+    /// per delivery (the output router builds one per finalized dictation,
+    /// RuleEngineRunner one per appendFile action), so a per-instance queue
+    /// would serialize nothing — both can target the same file in the same
+    /// finalize call. Keyed by resolved path rather than one global queue so a
+    /// write stalled on a hung volume (offline SMB, materializing iCloud file)
+    /// can't head-of-line block deliveries to unrelated files.
+    private static let queuesLock = NSLock()
+    nonisolated(unsafe) private static var queues: [String: DispatchQueue] = [:]
+
+    private static func queue(forResolvedPath path: String) -> DispatchQueue {
+        queuesLock.lock()
+        defer { queuesLock.unlock() }
+        if let existing = queues[path] { return existing }
+        let queue = DispatchQueue(label: "com.openwhisp.app.file-output")
+        queues[path] = queue
+        return queue
+    }
     private let fileManager = FileManager.default
 
     init(config: FileOutputConfig, now: @escaping () -> Date = { Date() }) {
@@ -46,7 +59,8 @@ final class FileOutputTarget: OutputTarget {
 
         let config = self.config
         let timestamp = now()
-        Self.queue.async { [fileManager] in
+        let queue = Self.queue(forResolvedPath: Self.resolvedURL(for: config.path).standardizedFileURL.path)
+        queue.async { [fileManager] in
             let outcome: OutputDelivery
             do {
                 try FileOutputTarget.write(

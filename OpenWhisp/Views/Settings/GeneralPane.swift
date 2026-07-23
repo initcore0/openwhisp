@@ -140,6 +140,12 @@ struct GeneralPane: View {
             }
             launchAtLoginNeedsApproval = appState.launchAtLoginService.requiresApproval
         }
+        // Approval happens EXTERNALLY in System Settings (which never touches
+        // launchAtLogin), so re-snapshot when the user comes back to the app —
+        // they necessarily deactivated it to visit System Settings.
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            launchAtLoginNeedsApproval = appState.launchAtLoginService.requiresApproval
+        }
     }
 
     private func exportConfig() {

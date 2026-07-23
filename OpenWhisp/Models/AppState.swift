@@ -2655,6 +2655,10 @@ class AppState: ObservableObject {
         // Persist any pending debounced vocabulary usage-count bump before we exit,
         // so a rapid dictate-then-quit doesn't lose the last increment (MAK-41).
         flushVocabularySave()
+        // Drain the queued history/stats writes for the same reason: a rapid
+        // dictate-then-quit would otherwise exit before the async snapshot
+        // lands, losing the just-completed dictation from history.json.
+        Self.storeSaveQueue.sync {}
         agentBridgeServer.stop()
         lanBridgeServer.stop()
         whisperEngine.stopServer()
@@ -2919,7 +2923,8 @@ class AppState: ObservableObject {
         let sessionID = activeSessionID
         statusMessage = statusWhileLoading
         engine.requestStarted()
-        engine.ensureRunning(modelPath: selectedLLMModelPath()) { [weak self] result in
+        engine.ensureRunning(modelPath: selectedLLMModelPath(),
+                             callerHoldsRequestBracket: true) { [weak self] result in
             Task { @MainActor in
                 guard let self else { engine.requestFinished(); return }
                 guard !boundToSession || sessionID == self.activeSessionID else {
@@ -3174,11 +3179,6 @@ class AppState: ObservableObject {
                 }
                 self.whisperKitDownloadStatus = "\(label) installed"
                 self.refreshWhisperKitStagedModels()
-                // If the just-downloaded model is the selected one, warm it now that
-                // it's staged (turns the next dictation's load into a no-op).
-                if self.transcriptionEngine == "whisperKit", self.whisperKitModel == model {
-                    self.warmWhisperServerIfPossible()
-                }
             } catch {
                 self.whisperKitDownloadStatus = "Download failed: \(error.localizedDescription)"
                 // Discrete flag, not just status text: the onboarding model step
@@ -3188,6 +3188,15 @@ class AppState: ObservableObject {
             }
             self.whisperKitDownloadingModel = nil
             self.whisperKitDownloadProgress = 0
+            // Re-warm AFTER the in-flight flag clears (the warm guard checks it),
+            // and regardless of WHICH model just finished: the warm path stages/
+            // queues the currently SELECTED model itself, so this also kicks the
+            // download of a model the user selected while this one was in flight
+            // (the single-flight guard had refused to queue it, and nothing else
+            // would ever retry — the worker sat at "Waiting for model" forever).
+            if !self.whisperKitDownloadFailed, self.transcriptionEngine == "whisperKit" {
+                self.warmWhisperServerIfPossible()
+            }
         }
     }
 
@@ -5788,7 +5797,7 @@ class AppState: ObservableObject {
 
     func clearHistory() {
         history = []
-        TranscriptionHistoryStore.save(history)
+        persistHistory()
         // Manual "Clear" wipes the audio too — the clips are only useful attached to
         // a history entry. Only files matching the retained-audio scheme are removed.
         AudioRetentionManager.deleteAllAudio()
@@ -5864,7 +5873,7 @@ class AppState: ObservableObject {
         let trimmed = newText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, let idx = history.firstIndex(where: { $0.id == entryID }) else { return }
         history[idx] = history[idx].reTranscribed(withNewText: trimmed)
-        TranscriptionHistoryStore.save(history)
+        persistHistory()
         textOutput.setClipboard(trimmed)
     }
 
@@ -5911,7 +5920,14 @@ class AppState: ObservableObject {
     /// so this snapshots and hands the encode + atomic write to the serial store
     /// queue (same pattern as the debounced vocabulary save): ordering is
     /// preserved, and the paste hot path never blocks on disk.
-    private func persistHistory() {
+    ///
+    /// EVERY history.json write must go through here — a synchronous write from
+    /// the main thread would race the queued snapshots (JSONStore.save is a bare
+    /// atomic rename; two unserialized writers make last-rename-wins diverge
+    /// from program order, e.g. a queued pre-clear snapshot resurrecting a
+    /// just-cleared history on disk). Internal (not private) so the
+    /// AppState+Sync extension's history setter can use it too.
+    func persistHistory() {
         let snapshot = history
         Self.storeSaveQueue.async { TranscriptionHistoryStore.save(snapshot) }
     }
@@ -5964,7 +5980,7 @@ class AppState: ObservableObject {
                 rawText: e.rawText, audioFileName: nil
             )
         }
-        if changed { TranscriptionHistoryStore.save(history) }
+        if changed { persistHistory() }
     }
 
     /// Fold a completed dictation into the local-only stats aggregates. METADATA
@@ -6074,7 +6090,7 @@ class AppState: ObservableObject {
             appName: old.appName,
             rawText: nil
         )
-        TranscriptionHistoryStore.save(history)
+        persistHistory()
         // Put the original words on the clipboard so the user can paste them right
         // away — matching how copyHistoryEntry works. Deliberately does NOT touch
         // `lastTranscription`: that tracks the LIVE session's last output (used by

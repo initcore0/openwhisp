@@ -32,10 +32,12 @@ extension AppState: SyncStore {
         set {
             guard historyEnabled else { return }
             // Restore the store's newest-first invariant + retention cap after a
-            // merge appended entries in arbitrary date order, then persist.
+            // merge appended entries in arbitrary date order, then persist via
+            // the single serial store-save queue (mixing synchronous writes with
+            // the queued ones would let an older queued snapshot land last).
             let sorted = newValue.sorted { $0.date > $1.date }
             history = Array(sorted.prefix(TranscriptionHistoryStore.maxEntries))
-            TranscriptionHistoryStore.save(history)
+            persistHistory()
         }
     }
 

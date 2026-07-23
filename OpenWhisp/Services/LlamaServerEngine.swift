@@ -158,9 +158,16 @@ final class LlamaServerEngine {
     /// health check (the way a lost port-bind race surfaces) re-drives this
     /// method on a FRESH port until the budget is exhausted. Callers use the
     /// default; the retry supplies a decremented value.
+    /// `callerHoldsRequestBracket`: pass true when the caller already ran
+    /// `requestStarted()` for the request this call precedes (the production
+    /// refine path does, so idle teardown can't race the gap). The busy
+    /// fast-path below must not count that bracket as "another generation in
+    /// flight" — otherwise its `inFlight > 0` check is a tautology on the
+    /// refine path and a wedged-but-alive server is never relaunched.
     func ensureRunning(
         modelPath: String,
         attemptsRemaining: Int = 3,
+        callerHoldsRequestBracket: Bool = false,
         completion: @escaping (Result<Void, Error>) -> Void
     ) {
         guard FileManager.default.fileExists(atPath: modelPath) else {
@@ -202,7 +209,7 @@ final class LlamaServerEngine {
                 if self.serverGeneration == probedGeneration,
                    self.serverModelPath == modelPath,
                    self.serverProcess?.isRunning == true,
-                   self.inFlight > 0 {
+                   self.inFlight > (callerHoldsRequestBracket ? 1 : 0) {
                     self.serverLock.unlock()
                     self.noteActivity()
                     completion(.success(()))
@@ -320,6 +327,9 @@ final class LlamaServerEngine {
                     // rest coalesce onto it via the normal in-flight path.
                     self.log("llama-server failed health check; retrying on a fresh port (\(attemptsRemaining - 1) left)")
                     for waiter in waiters {
+                        // The retry can't tell which waiter held a request
+                        // bracket; pass false so the busy fast-path stays
+                        // conservative (worst case: an extra relaunch).
                         self.ensureRunning(
                             modelPath: modelPath,
                             attemptsRemaining: attemptsRemaining - 1,
