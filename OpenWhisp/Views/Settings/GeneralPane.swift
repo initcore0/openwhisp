@@ -14,6 +14,12 @@ struct GeneralPane: View {
     // Software-update toggle mirror (Sparkle lives in the AppKit UpdaterManager,
     // not AppState; seed from its live value on appear).
     @State private var autoUpdateEnabled = UpdaterManager.shared.automaticallyChecksForUpdates
+    // Login-item approval snapshot. `requiresApproval` is a live
+    // SMAppService.status query — a synchronous XPC round-trip — and this pane
+    // is the DEFAULT Settings pane whose body re-runs on every AppState publish
+    // (~30 Hz audio level while dictating). Snapshot it on appear and after the
+    // toggle changes instead of querying per render.
+    @State private var launchAtLoginNeedsApproval = false
 
     /// Styles available to pick this build. Grows as later phases land (orb).
     private var availableIndicatorStyles: [VoiceIndicatorStyle] { [.bars, .waveform] }
@@ -22,7 +28,10 @@ struct GeneralPane: View {
         Form {
             Section {
                 Toggle("Launch OpenWhisp at login", isOn: $appState.launchAtLogin)
-                if appState.launchAtLoginService.requiresApproval {
+                    .onChange(of: appState.launchAtLogin) { _ in
+                        launchAtLoginNeedsApproval = appState.launchAtLoginService.requiresApproval
+                    }
+                if launchAtLoginNeedsApproval {
                     Button("Open Login Items Settings…") {
                         appState.launchAtLoginService.openSettings()
                     }
@@ -129,6 +138,7 @@ struct GeneralPane: View {
             if configPacks.isEmpty {
                 configPacks = appState.bundledConfigPacks()
             }
+            launchAtLoginNeedsApproval = appState.launchAtLoginService.requiresApproval
         }
     }
 
