@@ -64,6 +64,12 @@ final class LiveTranslationCoordinator {
     /// Maps the concrete engine request UUID for the in-flight job back to its
     /// queue dispatch id.
     private var inFlightRequest: (uuid: UUID, queueID: Int)?
+    /// The translate engine, created on first use and REUSED for every job.
+    /// Must be retained here: the completion callbacks capture self weakly, so a
+    /// per-job local engine could deallocate mid-request (no completion ever
+    /// fires → the queue slot wedges until the drain timeout). Reuse also keeps
+    /// the CLI backend from paying a full model load per chunk.
+    private var translateEngine: FileTranscriptionEngine?
     private var finishing = false
     private var drainContinuations: [CheckedContinuation<Void, Never>] = []
 
@@ -160,7 +166,8 @@ final class LiveTranslationCoordinator {
             return
         }
         inFlightRequest = (requestID, dispatched.id)
-        let engine = config.makeEngine()
+        let engine = translateEngine ?? config.makeEngine()
+        translateEngine = engine
         engine.onTranscriptionComplete = { [weak self] id, text in
             Task { @MainActor in self?.jobFinished(uuid: id, text: text, wavURL: wavURL) }
         }

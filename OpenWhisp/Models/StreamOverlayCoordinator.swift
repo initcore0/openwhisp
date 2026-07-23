@@ -175,9 +175,14 @@ final class StreamOverlayCoordinator: ObservableObject {
 
     // MARK: - Session-funnel hooks (called from AppState)
 
+    /// True once a translated segment was published in the current session —
+    /// marks it a dual-runtime translation session for final-routing above.
+    private var translatedThisSession = false
+
     /// `beginSession` consumes the pending capture request; returns whether the
     /// session that is starting is a captions capture (→ suppressed output).
     func sessionDidBegin() -> Bool {
+        translatedThisSession = false
         captureActive = captureRequested
         captureRequested = false
         return captureActive
@@ -197,14 +202,24 @@ final class StreamOverlayCoordinator: ObservableObject {
         server?.publishPartial(text)
     }
 
-    /// The session's cleaned final transcript.
+    /// The session's cleaned final transcript. In a dual-runtime translation
+    /// session the text arriving here IS the drained English translation
+    /// (AppState swapped it in completeFinalText) — route it to the TRANSLATED
+    /// track so English never lands on the original-language track at session
+    /// end. `translatedThisSession` is the tell: only dual sessions publish
+    /// translated segments.
     func publishFinal(_ text: String) {
-        server?.publishFinal(text)
+        if translatedThisSession {
+            server?.publishTranslatedFinal(text)
+        } else {
+            server?.publishFinal(text)
+        }
     }
 
     /// A translated English segment for the overlay's second caption track
     /// (dual-runtime translation). No-op when the server isn't running.
     func publishTranslatedFinal(_ text: String) {
+        translatedThisSession = true
         server?.publishTranslatedFinal(text)
     }
 }
