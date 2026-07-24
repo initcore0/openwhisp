@@ -49,6 +49,15 @@ public enum DualRuntimeTranslationPolicy {
         return true
     }
 
+    /// Whether the UI should OFFER "Translate to English" for this engine at
+    /// all: either the engine translates itself (whisper family) or the dual
+    /// path can cover it (ASR-only + audio tap). The single gate for every
+    /// offer surface (menu bar, Dictation pane) so they can never disagree.
+    public static func translationOffered(transcriptionEngine: String) -> Bool {
+        LanguageResolver.supportsTranslation(transcriptionEngine: transcriptionEngine)
+            || EngineCapabilities.capabilities(for: transcriptionEngine).providesAudioTap
+    }
+
     /// Whether the language code names English (so translating is a no-op).
     /// Uses the same base-code stripping as the Parakeet language gate so
     /// regional tags ("en-US") count.

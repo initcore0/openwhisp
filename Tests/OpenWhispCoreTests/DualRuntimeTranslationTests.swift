@@ -57,6 +57,20 @@ final class DualRuntimeTranslationTests: XCTestCase {
     // MARK: - Chunker (boundaries, caps, no sample loss)
 
     /// 0.6s speech, then 1s silence → one chunk at the silence boundary.
+    func testTranslationOfferedMatchesEitherPath() {
+        // Whisper family: translates itself. Parakeet: dual path via audio tap.
+        // Apple Speech / SpeechAnalyzer: ASR-only, no tap — the offer stays off
+        // (the menu row dims). This is the single gate every offer surface
+        // (menu bar + Dictation pane) must use — the tray-menu bug was these
+        // surfaces disagreeing.
+        XCTAssertTrue(DualRuntimeTranslationPolicy.translationOffered(
+            transcriptionEngine: EngineCapabilities.whisperKit))
+        XCTAssertTrue(DualRuntimeTranslationPolicy.translationOffered(
+            transcriptionEngine: EngineCapabilities.parakeet))
+        XCTAssertFalse(DualRuntimeTranslationPolicy.translationOffered(
+            transcriptionEngine: EngineCapabilities.appleSpeech))
+    }
+
     func testChunkerSplitsOnSilenceBoundary() {
         var chunker = TranslationChunker(
             sampleRate: 16_000, minDuration: 0.4, maxDuration: 8,

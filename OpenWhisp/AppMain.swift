@@ -331,7 +331,12 @@ class OpenWhispApp: NSObject, NSApplicationDelegate {
         // with itself between engines. Keep the row and disable it, naming the
         // reason: macOS menus dim unavailable commands rather than hiding them,
         // so the capability stays discoverable instead of looking like a bug.
-        let canTranslate = LanguageResolver.supportsTranslation(transcriptionEngine: appState.transcriptionEngine)
+        // The dual-runtime path widened this gate: an ASR-only engine that
+        // provides an audio tap (Parakeet) now translates too — its live preview
+        // stays original-language while Whisper produces the English final. Same
+        // capability test as DictationPane; only tap-less ASR engines stay dim.
+        let canTranslate = DualRuntimeTranslationPolicy.translationOffered(
+            transcriptionEngine: appState.transcriptionEngine)
         let translateItem = menuItem(
             canTranslate ? "Translate to English" : "Translate to English (needs WhisperKit)",
             symbol: "character.bubble",
