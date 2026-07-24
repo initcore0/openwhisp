@@ -1,22 +1,114 @@
 {
   "$schema": "./changelog.schema.md",
   "project": "OpenWhisp",
-  "generated": "2026-07-18",
+  "generated": "2026-07-23",
   "releases": [
     {
       "id": "2026-07",
       "title": "July 2026",
-      "date": "2026-07-18",
-      "summary": "The headline: Parakeet — our fast, on-device realtime streaming engine — is now the default on a fresh install. Alongside it, a big batch of new features, fixes, and under-the-hood hardening, all landed on main, all covered by tests, all on your machine. New this release also includes built-in auto-update and a 28-fix stability sweep. The latest additions: per-app refine tone (casual in Slack, formal in Mail, verbatim in your terminal), a fifth transcription engine — Apple's SpeechAnalyzer on macOS 26 — and agent dictation that now knows your project's branch and file names and lets you tap to finish. Among the features: meeting mode that records a call and gives you an on-device transcript plus a local Markdown summary — now with Me/Them speaker attribution and a live talking indicator, and with a separate, optionally larger summarization model you can point at your own server — a floating Scratchpad to dictate into with no target app, quiet-dictation mode for whispering into your mic, opt-in on-device audio retention with one-click re-transcription and an auto-cleanup policy, a fully-remappable dictation trigger with a record-a-shortcut field, an AppleScript keystroke insert method and mouse-button dictation triggers, a local Usage Insights dashboard, opt-in screen-context awareness that biases transcription toward the names already on screen, batch file transcription with watch folders, hands-free (tap-to-lock) dictation, adjustable AI cleanup, voice editing, a self-learning dictionary, rich local formatting, spoken-filename @-mentions for code editors, agent-CLI cleanup, output targets that route a dictation to a file/Shortcut/webhook, first-class Modes you can invoke by name, a Rules engine that runs your own actions when a dictation finishes, and an openwhisp:// URL scheme so Raycast, Alfred, or any launcher can drive dictation.",
+      "date": "2026-07-23",
+      "summary": "The headline: live subtitles for your stream — OpenWhisp now serves a caption overlay you can drop into OBS or any streaming software, and with a translate-capable engine those captions can come out in English while you speak another language. Everything still runs on your Mac. Also in this release: Parakeet — our fast, on-device realtime streaming engine — is now the default on a fresh install. Alongside it, a big batch of new features, fixes, and under-the-hood hardening, all landed on main, all covered by tests, all on your machine. New this release also includes built-in auto-update and a 28-fix stability sweep. The latest additions: per-app refine tone (casual in Slack, formal in Mail, verbatim in your terminal), a fifth transcription engine — Apple's SpeechAnalyzer on macOS 26 — and agent dictation that now knows your project's branch and file names and lets you tap to finish. Among the features: meeting mode that records a call and gives you an on-device transcript plus a local Markdown summary — now with Me/Them speaker attribution and a live talking indicator, and with a separate, optionally larger summarization model you can point at your own server — a floating Scratchpad to dictate into with no target app, quiet-dictation mode for whispering into your mic, opt-in on-device audio retention with one-click re-transcription and an auto-cleanup policy, a fully-remappable dictation trigger with a record-a-shortcut field, an AppleScript keystroke insert method and mouse-button dictation triggers, a local Usage Insights dashboard, opt-in screen-context awareness that biases transcription toward the names already on screen, batch file transcription with watch folders, hands-free (tap-to-lock) dictation, adjustable AI cleanup, voice editing, a self-learning dictionary, rich local formatting, spoken-filename @-mentions for code editors, agent-CLI cleanup, output targets that route a dictation to a file/Shortcut/webhook, first-class Modes you can invoke by name, a Rules engine that runs your own actions when a dictation finishes, and an openwhisp:// URL scheme so Raycast, Alfred, or any launcher can drive dictation.",
       "stats": {
-        "changesShipped": 53,
-        "newFeatures": 32,
-        "testsPassing": 1713,
+        "changesShipped": 60,
+        "newFeatures": 36,
+        "testsPassing": 1870,
         "onDevicePercent": 100,
-        "newFeaturesLive": 32,
+        "newFeaturesLive": 36,
         "newFeaturesCorePending": 0
       },
       "entries": [
+        {
+          "category": "feature",
+          "headline": "Live subtitles for your stream — a caption overlay for OBS, Twitch, and any streaming software",
+          "body": "OpenWhisp can now put movie-style subtitles on your stream. Turn on the Stream Overlay and it serves a caption page from your own Mac; add that URL to OBS (or any streaming app) as a Browser source and your speech appears as captions over a transparent canvas. Lines word-wrap, older ones scroll off the top, and everything fades out after a stretch of silence. It's a local web server on loopback — nothing is uploaded, and the page is fully self-contained so OBS needs no internet.",
+          "tickets": [],
+          "prs": [
+            217
+          ],
+          "howTo": {
+            "availability": "live",
+            "summary": "Enable the overlay, then add its URL to OBS as a Browser source.",
+            "steps": [
+              "Open Settings › More features › Stream Overlay and turn on the overlay server (default port 9280).",
+              "Set the canvas to match your Browser source — 1920×1080 by default — and style the captions: font, size, text colour, background (including fully transparent), how many subtitle lines stay on screen, characters per line, and how long captions linger after you stop talking.",
+              "Click Copy URL, then in OBS add a Browser source and paste it, using the same width and height. (Preview in Browser opens it locally first if you want to check.)",
+              "Hit Start Captions. That runs a hands-free session whose transcript goes only to the overlay — nothing is typed into your apps, and long silences won't end it.",
+              "Stop Captions, Esc, or your dictation hotkey ends it."
+            ]
+          }
+        },
+        {
+          "category": "feature",
+          "headline": "Translated live subtitles — speak one language, caption your stream in English",
+          "body": "The stream overlay honours your dictation language settings, so a translate-capable engine turns your speech into English captions as you talk. Pick WhisperKit (or whisper.cpp) as the engine, switch on Translate to English, and start captions: you speak Russian, Spanish, or any supported language and your viewers read English. Like everything else, the translation runs on your Mac. (Parakeet, Apple Speech, and SpeechAnalyzer are transcription-only, so the toggle is disabled on those engines rather than silently doing nothing.)",
+          "tickets": [],
+          "prs": [
+            217
+          ],
+          "howTo": {
+            "availability": "live",
+            "summary": "Use WhisperKit with Translate to English, then start captions as usual.",
+            "steps": [
+              "In Settings › Models, pick WhisperKit (or whisper.cpp) — the engines that can translate.",
+              "In Settings › Dictation, turn on “Translate to English” and set your spoken language (or leave it on auto-detect).",
+              "Start captions from the Stream Overlay pane — your speech is captioned in English.",
+              "On transcription-only engines (Parakeet, Apple Speech, SpeechAnalyzer) the translate toggle is disabled, so captions stay in the language you spoke."
+            ]
+          }
+        },
+        {
+          "category": "feature",
+          "headline": "Custom vocabulary now biases Apple's SpeechAnalyzer too",
+          "body": "Your vocabulary terms now reach the SpeechAnalyzer engine (macOS 26) through the Speech framework's contextual-strings mechanism, so names and jargon come out spelled right there as well. Every bundled engine except Parakeet's live path can now be biased by your terms.",
+          "tickets": [
+            "MAK-84"
+          ],
+          "prs": [
+            209
+          ]
+        },
+        {
+          "category": "feature",
+          "headline": "Agents can hand OpenWhisp a file to transcribe",
+          "body": "A new openwhisp_transcribe_file tool lets a coding agent pass a local audio or video file and get the transcript back — all on-device, gated by its own consent scope like every other agent capability.",
+          "tickets": [
+            "MAK-83"
+          ],
+          "prs": [
+            212
+          ]
+        },
+        {
+          "category": "improvement",
+          "headline": "The self-learning dictionary now catches multi-word corrections",
+          "body": "When you fix a transcription by typing over it, OpenWhisp used to notice only single-word corrections. It now picks up short multi-word fixes as well, and weighs how often you've made the same correction before proposing it — so the dictionary gets smarter from the way you already work, with no telemetry.",
+          "tickets": [
+            "MAK-86"
+          ],
+          "prs": [
+            216
+          ]
+        },
+        {
+          "category": "improvement",
+          "headline": "“Nothing leaves your Mac” — now with a proof you can run yourself",
+          "body": "A new privacy page documents exactly what does and doesn't touch the network, backed by an audit script you can run against your own copy: it watches OpenWhisp's network activity while you dictate and prints a verdict. The claim is checkable, not just stated.",
+          "tickets": [
+            "MAK-78"
+          ],
+          "prs": [
+            208
+          ]
+        },
+        {
+          "category": "fix",
+          "headline": "31 verified fixes — races, silent data loss, and release builds that weren't optimised",
+          "body": "Another adversarial bug hunt: 31 confirmed issues fixed across the app, including data races, paths that could silently drop a transcript, hot-path performance, and a build flaw where release binaries were being compiled without optimisation.",
+          "tickets": [],
+          "prs": [
+            218
+          ]
+        },
         {
           "category": "feature",
           "headline": "Per-app refine tone — casual in Slack, formal in Mail, verbatim in your terminal",

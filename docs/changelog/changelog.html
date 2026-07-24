@@ -246,14 +246,14 @@
 <div class="wrap">
   <header>
     <p class="eyebrow">Shipped · July 2026</p>
-    <h1>Fifty-three ways OpenWhisp got<br><span class="accent">sharper, faster, and more yours.</span></h1>
-    <p class="lede">The headline: Parakeet — our fast, on-device realtime streaming engine — is now the default on a fresh install. Alongside it, a big batch of new features, fixes, and under-the-hood hardening, all landed on main, all covered by tests, all on your machine. New this release also includes built-in auto-update and a 28-fix stability sweep. The latest additions: per-app refine tone (casual in Slack, formal in Mail, verbatim in your terminal), a fifth transcription engine — Apple's SpeechAnalyzer on macOS 26 — and agent dictation that now knows your project's branch and file names and lets you tap to finish. Among the features: meeting mode that records a call and gives you an on-device transcript plus a local Markdown summary — now with Me/Them speaker attribution and a live talking indicator, and with a separate, optionally larger summarization model you can point at your own server — a floating Scratchpad to dictate into with no target app, quiet-dictation mode for whispering into your mic, opt-in on-device audio retention with one-click re-transcription and an auto-cleanup policy, a fully-remappable dictation trigger with a record-a-shortcut field, an AppleScript keystroke insert method and mouse-button dictation triggers, a local Usage Insights dashboard, opt-in screen-context awareness that biases transcription toward the names already on screen, batch file transcription with watch folders, hands-free (tap-to-lock) dictation, adjustable AI cleanup, voice editing, a self-learning dictionary, rich local formatting, spoken-filename @-mentions for code editors, agent-CLI cleanup, output targets that route a dictation to a file/Shortcut/webhook, first-class Modes you can invoke by name, a Rules engine that runs your own actions when a dictation finishes, and an openwhisp:// URL scheme so Raycast, Alfred, or any launcher can drive dictation.</p>
+    <h1>Sixty ways OpenWhisp got<br><span class="accent">sharper, faster, and more yours.</span></h1>
+    <p class="lede">The headline: live subtitles for your stream — OpenWhisp now serves a caption overlay you can drop into OBS or any streaming software, and with a translate-capable engine those captions can come out in English while you speak another language. Everything still runs on your Mac. Also in this release: Parakeet — our fast, on-device realtime streaming engine — is now the default on a fresh install. Alongside it, a big batch of new features, fixes, and under-the-hood hardening, all landed on main, all covered by tests, all on your machine. New this release also includes built-in auto-update and a 28-fix stability sweep. The latest additions: per-app refine tone (casual in Slack, formal in Mail, verbatim in your terminal), a fifth transcription engine — Apple's SpeechAnalyzer on macOS 26 — and agent dictation that now knows your project's branch and file names and lets you tap to finish. Among the features: meeting mode that records a call and gives you an on-device transcript plus a local Markdown summary — now with Me/Them speaker attribution and a live talking indicator, and with a separate, optionally larger summarization model you can point at your own server — a floating Scratchpad to dictate into with no target app, quiet-dictation mode for whispering into your mic, opt-in on-device audio retention with one-click re-transcription and an auto-cleanup policy, a fully-remappable dictation trigger with a record-a-shortcut field, an AppleScript keystroke insert method and mouse-button dictation triggers, a local Usage Insights dashboard, opt-in screen-context awareness that biases transcription toward the names already on screen, batch file transcription with watch folders, hands-free (tap-to-lock) dictation, adjustable AI cleanup, voice editing, a self-learning dictionary, rich local formatting, spoken-filename @-mentions for code editors, agent-CLI cleanup, output targets that route a dictation to a file/Shortcut/webhook, first-class Modes you can invoke by name, a Rules engine that runs your own actions when a dictation finishes, and an openwhisp:// URL scheme so Raycast, Alfred, or any launcher can drive dictation.</p>
   </header>
 
   <div class="stats">
-    <div class="stat"><div class="n">53</div><div class="k">changes shipped</div></div>
-    <div class="stat"><div class="n">32<small> live</small></div><div class="k">new features</div></div>
-    <div class="stat"><div class="n">1713</div><div class="k">tests passing</div></div>
+    <div class="stat"><div class="n">60</div><div class="k">changes shipped</div></div>
+    <div class="stat"><div class="n">36<small> live</small></div><div class="k">new features</div></div>
+    <div class="stat"><div class="n">1870</div><div class="k">tests passing</div></div>
     <div class="stat"><div class="n">100<small>%</small></div><div class="k">on-device</div></div>
   </div>
 
@@ -262,9 +262,68 @@
     <div class="sec-head">
       <span class="dot feature"></span>
       <h2>New features</h2>
-      <span class="count">32 live</span>
+      <span class="count">36 live</span>
     </div>
     <ul class="entries">
+      <li>
+        <details class="entry">
+          <summary>
+            <div class="sum-left">
+              <h3>Live subtitles for your stream — a caption overlay for OBS, Twitch, and any streaming software</h3>
+              <p>OpenWhisp can now put movie-style subtitles on your stream. Turn on the Stream Overlay and it serves a caption page from your own Mac; add that URL to OBS (or any streaming app) as a Browser source and your speech appears as captions over a transparent canvas. Lines word-wrap, older ones scroll off the top, and everything fades out after a stretch of silence. It's a local web server on loopback — nothing is uploaded, and the page is fully self-contained so OBS needs no internet.</p>
+            </div>
+            <div class="sum-right">
+              <span class="try">How to use<svg class="howto-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span>
+              <div class="receipts"><span class="tag pr">#217</span></div>
+            </div>
+          </summary>
+          <div class="guide">
+            <span class="avail live">Available now</span>
+            <p class="g-sum">Enable the overlay, then add its URL to OBS as a Browser source.</p>
+            <ol>
+              <li>Open Settings › More features › Stream Overlay and turn on the overlay server (default port 9280).</li>
+              <li>Set the canvas to match your Browser source — 1920×1080 by default — and style the captions: font, size, text colour, background (including fully transparent), how many subtitle lines stay on screen, characters per line, and how long captions linger after you stop talking.</li>
+              <li>Click Copy URL, then in OBS add a Browser source and paste it, using the same width and height. (Preview in Browser opens it locally first if you want to check.)</li>
+              <li>Hit Start Captions. That runs a hands-free session whose transcript goes only to the overlay — nothing is typed into your apps, and long silences won't end it.</li>
+              <li>Stop Captions, Esc, or your dictation hotkey ends it.</li>
+            </ol>
+          </div>
+        </details>
+      </li>
+      <li>
+        <details class="entry">
+          <summary>
+            <div class="sum-left">
+              <h3>Translated live subtitles — speak one language, caption your stream in English</h3>
+              <p>The stream overlay honours your dictation language settings, so a translate-capable engine turns your speech into English captions as you talk. Pick WhisperKit (or whisper.cpp) as the engine, switch on Translate to English, and start captions: you speak Russian, Spanish, or any supported language and your viewers read English. Like everything else, the translation runs on your Mac. (Parakeet, Apple Speech, and SpeechAnalyzer are transcription-only, so the toggle is disabled on those engines rather than silently doing nothing.)</p>
+            </div>
+            <div class="sum-right">
+              <span class="try">How to use<svg class="howto-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span>
+              <div class="receipts"><span class="tag pr">#217</span></div>
+            </div>
+          </summary>
+          <div class="guide">
+            <span class="avail live">Available now</span>
+            <p class="g-sum">Use WhisperKit with Translate to English, then start captions as usual.</p>
+            <ol>
+              <li>In Settings › Models, pick WhisperKit (or whisper.cpp) — the engines that can translate.</li>
+              <li>In Settings › Dictation, turn on “Translate to English” and set your spoken language (or leave it on auto-detect).</li>
+              <li>Start captions from the Stream Overlay pane — your speech is captioned in English.</li>
+              <li>On transcription-only engines (Parakeet, Apple Speech, SpeechAnalyzer) the translate toggle is disabled, so captions stay in the language you spoke.</li>
+            </ol>
+          </div>
+        </details>
+      </li>
+      <li class="entry">
+        <h3>Custom vocabulary now biases Apple's SpeechAnalyzer too</h3>
+        <p>Your vocabulary terms now reach the SpeechAnalyzer engine (macOS 26) through the Speech framework's contextual-strings mechanism, so names and jargon come out spelled right there as well. Every bundled engine except Parakeet's live path can now be biased by your terms.</p>
+        <div class="receipts"><span class="tag ticket">MAK-84</span><span class="tag pr">#209</span></div>
+      </li>
+      <li class="entry">
+        <h3>Agents can hand OpenWhisp a file to transcribe</h3>
+        <p>A new openwhisp_transcribe_file tool lets a coding agent pass a local audio or video file and get the transcript back — all on-device, gated by its own consent scope like every other agent capability.</p>
+        <div class="receipts"><span class="tag ticket">MAK-83</span><span class="tag pr">#212</span></div>
+      </li>
       <li>
         <details class="entry">
           <summary>
@@ -1100,9 +1159,14 @@
     <div class="sec-head">
       <span class="dot fix"></span>
       <h2>Fixes</h2>
-      <span class="count">12 shipped</span>
+      <span class="count">13 shipped</span>
     </div>
     <ul class="entries">
+      <li class="entry">
+        <h3>31 verified fixes — races, silent data loss, and release builds that weren't optimised</h3>
+        <p>Another adversarial bug hunt: 31 confirmed issues fixed across the app, including data races, paths that could silently drop a transcript, hot-path performance, and a build flaw where release binaries were being compiled without optimisation.</p>
+        <div class="receipts"><span class="tag pr">#218</span></div>
+      </li>
       <li class="entry">
         <h3>Custom vocabulary now works on Parakeet (files, meetings, and re-transcribes)</h3>
         <p>Custom vocabulary was silently doing nothing on Parakeet — the default engine. It now biases Parakeet's transcription of files, meetings, and history re-transcribes toward your terms (via FluidAudio's built-in keyword spotting). It's batch-only on this engine, so it doesn't apply to live dictation — the Settings footnote says so plainly — and it always fails open: if biasing can't run, you still get your transcript.</p>
@@ -1171,9 +1235,19 @@
     <div class="sec-head">
       <span class="dot improve"></span>
       <h2>Under the hood</h2>
-      <span class="count">9 shipped</span>
+      <span class="count">11 shipped</span>
     </div>
     <ul class="entries">
+      <li class="entry">
+        <h3>The self-learning dictionary now catches multi-word corrections</h3>
+        <p>When you fix a transcription by typing over it, OpenWhisp used to notice only single-word corrections. It now picks up short multi-word fixes as well, and weighs how often you've made the same correction before proposing it — so the dictionary gets smarter from the way you already work, with no telemetry.</p>
+        <div class="receipts"><span class="tag ticket">MAK-86</span><span class="tag pr">#216</span></div>
+      </li>
+      <li class="entry">
+        <h3>“Nothing leaves your Mac” — now with a proof you can run yourself</h3>
+        <p>A new privacy page documents exactly what does and doesn't touch the network, backed by an audit script you can run against your own copy: it watches OpenWhisp's network activity while you dictate and prints a verdict. The claim is checkable, not just stated.</p>
+        <div class="receipts"><span class="tag ticket">MAK-78</span><span class="tag pr">#208</span></div>
+      </li>
       <li class="entry">
         <h3>A calmer Settings — a short everyday list, power-user panes tucked away</h3>
         <p>The Settings sidebar had grown to a wall of 15 rows. It's now a short Setup section with the panes you actually touch, plus a collapsible “More features” group for the rest (it auto-opens if you deep-link into one). A few power-user controls moved out of the first-run flow too — so a fresh install can be productive without changing a single setting. Nothing was removed or renamed; your existing settings are untouched.</p>
