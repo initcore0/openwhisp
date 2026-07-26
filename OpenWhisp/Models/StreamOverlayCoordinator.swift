@@ -42,14 +42,25 @@ final class StreamOverlayCoordinator: ObservableObject {
         }
     }
     /// Display parameters of the overlay page (canvas, font, colors, lines,
-    /// wrap budget, linger). Persisted as JSON; every change restarts the
-    /// server (debounced) so the served page always reflects the saved look.
+    /// wrap budget, linger). Persisted as JSON and applied LIVE to a running
+    /// server — appearance is tunable mid-stream.
+    ///
+    /// It must never restart the server: `stopServer` ends the captions capture
+    /// session, so a restart-per-edit meant every font-size tick silently killed
+    /// the streamer's dictation. `applyLook` pushes the new look to connected
+    /// pages over SSE instead, and re-renders the served HTML for later loads.
     @Published var config: StreamOverlayConfig {
         didSet {
+            guard config != oldValue else { return }
             if let data = try? JSONEncoder().encode(config) {
                 store.set(String(decoding: data, as: UTF8.self), forKey: "streamOverlayConfig")
             }
-            refresh()
+            if let server {
+                server.applyLook(config)
+            } else {
+                // Nothing running yet — the next start bakes in the current config.
+                refresh()
+            }
         }
     }
     /// True while the overlay web server is up (drives the pane's status row).

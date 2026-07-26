@@ -33,7 +33,10 @@ final class StreamOverlayServer {
     typealias Translator = @Sendable (_ text: String, _ targetLanguage: String) async -> String?
 
     private let log = Logger(subsystem: Bundle.main.bundleIdentifier ?? "OpenWhisp", category: "StreamOverlay")
-    private let config: StreamOverlayConfig
+    /// Mutable so appearance edits can be applied LIVE (`applyLook`) instead of
+    /// restarting the listener — a restart tears down the capture session the
+    /// streamer is in the middle of.
+    private var config: StreamOverlayConfig
     private let translator: Translator?
     private var captions: StreamOverlayCaptions
 
@@ -56,6 +59,11 @@ final class StreamOverlayServer {
     /// response whenever the main thread was busy (modal dialog, long task) —
     /// the transport queue is shared by all connections. Only touched on `queue`.
     private nonisolated(unsafe) var latestFrame: String = ""
+    /// The page HTML served by `GET /`, cached on the transport queue for the
+    /// same reason as `latestFrame`. Re-rendered on `applyLook` so a browser
+    /// source reloaded after an appearance edit gets the current style baked in
+    /// (live clients get it sooner, via the `style` event). Only touched on `queue`.
+    private nonisolated(unsafe) var pageHTML: String = ""
 
     /// Cap on concurrent connections — one OBS source plus a preview tab is the
     /// real workload; the cap keeps a runaway client from accumulating sockets.
@@ -67,6 +75,10 @@ final class StreamOverlayServer {
     /// Movie-subtitle auto-hide: rearmed on every publish; fires after
     /// `lingerSeconds` without new speech and clears the overlay.
     private var lingerTimer: Timer?
+    /// The last session transcript handed to the reducer. The linger timeout
+    /// retires exactly this much, so speech that resumes after the pause shows
+    /// only the NEW words instead of replaying the utterance that just faded.
+    private var lastPublishedTranscript: String = ""
 
     init(config: StreamOverlayConfig, translator: Translator? = nil) {
         let sanitized = config.sanitized()
@@ -106,6 +118,7 @@ final class StreamOverlayServer {
             }
         }
         let html = StreamOverlayPage.html(config: config)
+        queue.async { [weak self] in self?.pageHTML = html }
         let queue = self.queue
         let log = self.log
         listener.newConnectionHandler = { [weak self] conn in
@@ -114,7 +127,11 @@ final class StreamOverlayServer {
                 return
             }
             let session = OverlayConnection(
-                connection: conn, queue: queue, log: log, html: html,
+                connection: conn, queue: queue, log: log,
+                // Read at request time (on `queue`) so a page loaded after an
+                // appearance edit is served the CURRENT look, not the look
+                // frozen at listener start.
+                html: { [weak self] in self?.pageHTML ?? html },
                 // Runs on `queue`: greet from the queue-cached frame, never by
                 // waiting on the main actor (see `latestFrame`).
                 initialFrame: { [weak self] in self?.latestFrame ?? "" },
@@ -153,6 +170,7 @@ final class StreamOverlayServer {
     /// to be worth a round trip). An empty partial (session reset) hides the
     /// captions immediately.
     func publishPartial(_ text: String) {
+        lastPublishedTranscript = text
         broadcast(captions.setText(text))
     }
 
@@ -161,6 +179,7 @@ final class StreamOverlayServer {
     /// regardless of how long each translation takes.
     func publishFinal(_ text: String) {
         guard config.translationEnabled, let translator, !config.targetLanguage.isEmpty else {
+            lastPublishedTranscript = text
             broadcast(captions.setText(text))
             return
         }
@@ -170,13 +189,61 @@ final class StreamOverlayServer {
             await previous?.value
             let translated = await translator(text, language) ?? text
             guard let self else { return }
+            // Retirement compares against what the reducer was fed, which on the
+            // translated path is the TRANSLATION, not the source transcript.
+            self.lastPublishedTranscript = translated
             self.broadcast(self.captions.setText(translated))
         }
     }
 
-    /// Clear the overlay now (capture stopped).
+    /// Clear the overlay now (capture stopped). Resets retirement too — the next
+    /// session's first words are new speech, not a continuation.
     func publishClear() {
+        lastPublishedTranscript = ""
         broadcast(captions.clear())
+    }
+
+    // MARK: - Live appearance edits
+
+    /// Apply an appearance change WITHOUT restarting the listener, so the
+    /// streamer can tune font/size/colors/wrapping while captions are running.
+    ///
+    /// Restarting was the old behavior and it stopped the capture session
+    /// (`stopServer` ends capture) — a font tweak silently killed the dictation.
+    /// Here the CSS-level fields ride a `style` SSE event to every live page,
+    /// and the wrap-level fields (`maxLines`/`charsPerLine`) are rebuilt into the
+    /// reducer and re-broadcast so the change is visible on the CURRENT text
+    /// rather than only on the next utterance.
+    ///
+    /// Returns false when the change needs a real restart (port only — the
+    /// listener is bound to it); the caller restarts in that case.
+    func applyLook(_ newConfig: StreamOverlayConfig) {
+        let sanitized = newConfig.sanitized()
+        guard sanitized != config else { return }
+        let rewrapNeeded = sanitized.maxLines != config.maxLines
+            || sanitized.charsPerLine != config.charsPerLine
+        config = sanitized
+
+        // Re-render the page for future loads (OBS "refresh browser source").
+        let html = StreamOverlayPage.html(config: sanitized)
+        let styleFrame = StreamOverlaySSE.styleFrame(sanitized)
+        queue.async { [weak self] in
+            guard let self else { return }
+            self.pageHTML = html
+            for (_, conn) in self.connections { conn.sendEvent(styleFrame) }
+        }
+
+        guard rewrapNeeded else { return }
+        // Rebuild the reducer at the new geometry, carrying the retirement mark
+        // and revision so a rewrap can neither resurrect faded speech nor emit a
+        // frame the page will discard as stale.
+        let wasVisible = !captions.snapshot.lines.isEmpty
+        captions = captions.resized(
+            maxLines: sanitized.maxLines, charsPerLine: sanitized.charsPerLine)
+        // Only re-show while captions are actually on screen; rewrapping during
+        // the silent gap would flash the faded text back up.
+        guard wasVisible else { return }
+        broadcast(captions.setText(lastPublishedTranscript))
     }
 
     private func broadcast(_ snapshot: StreamOverlayCaptions.Snapshot) {
@@ -191,7 +258,11 @@ final class StreamOverlayServer {
             ) { [weak self] _ in
                 Task { @MainActor in
                     guard let self, self.isRunning else { return }
-                    self.broadcast(self.captions.clear())
+                    // RETIRE, don't just clear: the engine's transcript keeps
+                    // growing across the pause, so without marking this text as
+                    // spent the next partial would replay the utterance that
+                    // just faded out. Retiring makes resumed speech start clean.
+                    self.broadcast(self.captions.retire(upTo: self.lastPublishedTranscript))
                 }
             }
         }
@@ -213,7 +284,9 @@ private final class OverlayConnection {
     private let connection: NWConnection
     private let queue: DispatchQueue
     private let log: Logger
-    private let html: String
+    /// Returns the page HTML to serve; called on the transport queue at request
+    /// time so appearance edits reach newly loaded pages.
+    private let html: () -> String
     /// Returns the latest cached SSE frame; called on the transport queue.
     private let initialFrame: () -> String
     private let onClosed: (OverlayConnection) -> Void
@@ -227,7 +300,8 @@ private final class OverlayConnection {
     private static let maxHeadBytes = 16 * 1024
 
     init(
-        connection: NWConnection, queue: DispatchQueue, log: Logger, html: String,
+        connection: NWConnection, queue: DispatchQueue, log: Logger,
+        html: @escaping () -> String,
         initialFrame: @escaping () -> String,
         onClosed: @escaping (OverlayConnection) -> Void
     ) {
@@ -309,7 +383,7 @@ private final class OverlayConnection {
         let path = parts[1].split(separator: "?").first.map(String.init) ?? "/"
         switch path {
         case "/":
-            respond(status: "200 OK", contentType: "text/html; charset=utf-8", body: html)
+            respond(status: "200 OK", contentType: "text/html; charset=utf-8", body: html())
         case "/healthz":
             respond(status: "200 OK", contentType: "text/plain", body: "ok\n")
         case "/events":

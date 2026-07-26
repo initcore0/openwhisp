@@ -55,6 +55,35 @@ enum OverlayPhase: Equatable {
     }
 }
 
+/// Pure decision for whether the floating LOCAL dictation overlay (the on-screen
+/// pill) is shown for a session at all. Distinct from `OverlayPhase`, which says
+/// what an already-visible overlay communicates.
+///
+/// Foundation-only so it lives in OpenWhispCore and is unit-tested independently
+/// of AppKit — the show call site is `AppState.beginSession`.
+enum OverlayVisibilityPolicy {
+    /// Whether to show the local overlay when a session begins.
+    ///
+    /// - Parameters:
+    ///   - setting: the user's `showOverlay` preference.
+    ///   - isAgentSession: an agent initiated this session. Forces the overlay on
+    ///     regardless of the setting — agent microphone use is never invisible.
+    ///   - isCaptionsCapture: this is a stream-overlay captions capture. Forces
+    ///     the overlay OFF, outranking the agent rule: the captions are already
+    ///     rendered as subtitles in the stream, and the floating pill would sit
+    ///     in the middle of the screen the streamer is broadcasting.
+    static func showsLocalOverlay(
+        setting: Bool,
+        isAgentSession: Bool,
+        isCaptionsCapture: Bool
+    ) -> Bool {
+        // Captions capture wins over the agent force-show: an agent-driven
+        // capture session is still going out on stream.
+        if isCaptionsCapture { return false }
+        return setting || isAgentSession
+    }
+}
+
 /// Pure decision for whether the rotating first-run discoverability hint may be
 /// shown in the overlay right now (MAK-25). This is the LIVE-state suppression that
 /// must layer on top of `HintRotation` (which decides *which* hint and whether the
