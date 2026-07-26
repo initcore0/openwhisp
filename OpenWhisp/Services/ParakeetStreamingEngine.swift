@@ -333,7 +333,7 @@ final class ParakeetStreamingEngine: StreamingTranscriptionEngine {
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             // finish() decodes a ZERO-PADDED final window with the right-context
             // holdback disabled, so the RNNT decoder runs into digital silence and
-            // reliably appends a stray "You" (or "Thank you"). Strip it here — on
+            // reliably appends a stray "You". Strip it here — on
             // the final only, since the artifact is produced by that final flush
             // and never appears in a partial. See ParakeetTailHallucination for
             // the guards that keep a legitimate "…up to you" intact.

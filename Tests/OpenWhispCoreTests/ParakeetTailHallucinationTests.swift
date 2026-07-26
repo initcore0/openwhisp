@@ -33,21 +33,27 @@ final class ParakeetTailHallucinationTests: XCTestCase {
             "Can you review the PR?")
     }
 
-    /// Multi-token artifacts must be matched whole — stripping only the "you"
-    /// of "Thank you" would leave a dangling "Thank".
-    func testStripsMultiTokenArtifactWhole() {
-        XCTAssertEqual(
-            ParakeetTailHallucination.strip(from: "That covers everything. Thank you"),
-            "That covers everything.")
-    }
-
-    func testStripsThanksForWatching() {
-        XCTAssertEqual(
-            ParakeetTailHallucination.strip(from: "And that's the summary. Thanks for watching"),
-            "And that's the summary.")
-    }
-
     // MARK: - The guard: never eat real speech
+
+    /// A standalone "Thank you" after a finished sentence is a genuine dictation
+    /// closer (emails: "Please send the report. Thank you") that guard 3 cannot
+    /// distinguish from an artifact — so it must NOT be in the phrase list, and
+    /// the bare-"you" rule must not chew into it (guard 3 rejects: "Thank" is
+    /// not terminal punctuation).
+    func testKeepsStandaloneThankYouAfterASentence() {
+        let text = "That covers everything. Thank you"
+        XCTAssertEqual(ParakeetTailHallucination.strip(from: text), text)
+    }
+
+    /// Same reasoning: "Thanks for watching" / "Bye" are genuinely dictated
+    /// sign-offs (a streamer's outro, a chat message). Only the observed
+    /// Parakeet artifact — a bare "You" — is ever stripped.
+    func testKeepsGenuineSignOffPhrases() {
+        let outro = "And that's the summary. Thanks for watching"
+        XCTAssertEqual(ParakeetTailHallucination.strip(from: outro), outro)
+        let chat = "See you at five. Bye"
+        XCTAssertEqual(ParakeetTailHallucination.strip(from: chat), chat)
+    }
 
     /// The critical false-positive case. "you" here is the object of the real
     /// final clause; the preceding token is a plain word, not a sentence end.

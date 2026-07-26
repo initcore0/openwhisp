@@ -35,19 +35,26 @@ import Foundation
 /// Guard 3 is what makes this safe: "It's up to you." keeps its "you" (preceded
 /// by "to"), while "Let's ship it. You" loses the stray tail.
 ///
+/// Guard 3 does NOT protect phrases that are genuinely dictated as their own
+/// closing sentence — "Please send the report. Thank you" or "See you at five.
+/// Bye" end in terminal punctuation + a standalone closer exactly like the
+/// artifact would. So the phrase list holds ONLY what Parakeet has actually
+/// been observed to emit on silence (a bare "You"), not the Whisper folklore
+/// family ("Thank you." / "Thanks for watching.") — those are common REAL
+/// dictation endings (emails, chat sign-offs), and stripping them would
+/// silently delete the user's words. If another artifact is ever observed,
+/// it needs a discriminator stronger than guard 3 before joining the list.
+///
 /// Pure + Foundation-only so `swift test` covers it directly.
 public enum ParakeetTailHallucination {
 
     /// Phrases Parakeet emits when decoding trailing zero-padding. Lowercased,
     /// punctuation-free; matched against the final token(s) of the transcript.
-    /// Kept deliberately short — every entry is a real-word phrase, so each one
-    /// added is new risk of eating genuine speech.
+    /// ONLY observed artifacts belong here — every entry is a real-word phrase
+    /// guard 3 can't always distinguish from genuine speech, so each addition
+    /// is new risk of eating the user's words (see the type comment).
     static let artifactPhrases: Set<String> = [
         "you",
-        "thank you",
-        "thanks for watching",
-        "thank you for watching",
-        "bye",
     ]
 
     /// Sentence-ending punctuation that marks the preceding speech as closed.
@@ -70,8 +77,9 @@ public enum ParakeetTailHallucination {
         let tokens = trimmed.split(separator: " ", omittingEmptySubsequences: true).map(String.init)
         guard tokens.count >= 2 else { return text }
 
-        // Try the longest phrases first so "thank you" wins over a bare "you"
-        // (otherwise "…done. Thank you" would strip to a dangling "Thank").
+        // Try the longest phrases first so a multi-token phrase would win over
+        // its own last word (a bare-"you" match inside "…done. Thank you" is
+        // then rejected by guard 3 — "Thank" isn't terminal punctuation).
         let maxPhraseTokens = artifactPhrases.map { $0.split(separator: " ").count }.max() ?? 1
 
         for phraseLength in stride(from: min(maxPhraseTokens, tokens.count - 1), through: 1, by: -1) {
