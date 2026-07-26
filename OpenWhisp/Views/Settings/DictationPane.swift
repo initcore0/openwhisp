@@ -140,9 +140,13 @@ struct DictationPane: View {
                         .foregroundStyle(.orange)
                 }
 
-                // Whisper engines only — Apple Speech, SpeechAnalyzer and Parakeet
-                // are ASR-only and don't translate (capability-gated).
-                if LanguageResolver.supportsTranslation(transcriptionEngine: appState.transcriptionEngine) {
+                // Offered when the engine translates natively (whisper family)
+                // OR the on-device text path covers it (Apple Translation,
+                // macOS 15+; the final transcript is translated as text). The
+                // SAME predicate as the menu-bar row (`translationOffered`),
+                // so the two surfaces can't disagree. Only macOS 14 with an
+                // ASR-only engine keeps today's absent toggle.
+                if appState.translationOffered {
                     SubtitledToggle(
                         "Translate to English",
                         subtitle: "Speech in any language comes out as English text.",

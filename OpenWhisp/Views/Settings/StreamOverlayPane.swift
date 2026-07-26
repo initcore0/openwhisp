@@ -18,6 +18,7 @@ struct StreamOverlayPane: View {
             if overlay.enabled {
                 captureSection
                 serverSection
+                translationSection
                 displaySection
             }
         }
@@ -123,6 +124,58 @@ struct StreamOverlayPane: View {
         Binding(
             get: { overlay.port },
             set: { overlay.port = min(max($0, 1_024), 65_535) })
+    }
+
+    // MARK: Translation
+
+    /// Translated subtitles: each finalized caption line runs through Apple's
+    /// on-device Translation framework (macOS 15+) into the chosen language
+    /// before it is shown. Live partials stay in the spoken language (they
+    /// change too fast to be worth a round trip), and a failed translation
+    /// shows the original line — captions are never dropped. On macOS 14 the
+    /// controls are replaced by an availability note.
+    private var translationSection: some View {
+        Section {
+            if AppleTextTranslation.isSupported {
+                Toggle("Translate subtitles", isOn: translationEnabledBinding)
+
+                if overlay.config.translationEnabled {
+                    Picker(selection: configBinding(\.targetLanguage)) {
+                        ForEach(Self.targetLanguages, id: \.self) { code in
+                            Text(LanguageResolver.displayName(for: code)).tag(code)
+                        }
+                    } label: {
+                        Label("Subtitle language", systemImage: "captions.bubble")
+                    }
+
+                    SettingsCallout(.info, "Runs on-device with Apple's translation. macOS may ask to download the language once; until the download finishes, subtitles show in the spoken language.")
+                }
+            } else {
+                SettingsFootnote("Translated subtitles need macOS 15 or later.")
+            }
+        } header: {
+            Text("Translation")
+        }
+    }
+
+    /// Overlay subtitle languages offered (matches the app's language list).
+    /// The config stores any BCP-47-ish tag; this picker just curates the
+    /// common ones.
+    private static let targetLanguages = [
+        "en", "es", "fr", "de", "it", "pt", "ja", "zh", "ko", "ru", "ar",
+    ]
+
+    /// Enabling with no target yet picks English so the toggle visibly does
+    /// something (the server treats an empty target as pass-through).
+    private var translationEnabledBinding: Binding<Bool> {
+        Binding(
+            get: { overlay.config.translationEnabled },
+            set: {
+                overlay.config.translationEnabled = $0
+                if $0 && overlay.config.targetLanguage.isEmpty {
+                    overlay.config.targetLanguage = "en"
+                }
+            })
     }
 
     // MARK: Display
