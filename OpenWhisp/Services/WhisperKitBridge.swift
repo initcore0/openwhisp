@@ -30,6 +30,58 @@ public enum WhisperKitTaskMapper {
     }
 }
 
+/// The streaming-decode invariant that keeps long dictations from truncating at
+/// Whisper's 30 s window. Pure + public so `swift test` can pin it without
+/// linking WhisperKit (the real `DecodingOptions` live behind `#if WHISPERKIT`).
+///
+/// **The failure this encodes.** `AudioStreamTranscriber` re-decodes a growing
+/// buffer clipped from `lastConfirmedSegmentEndSeconds`, and each pass is capped
+/// at `windowSamples` (480_000 = 30 s @ 16 kHz). That is only sustainable while
+/// the confirmed end keeps ADVANCING. It advances only when segments get promoted
+/// to `confirmedSegments`, which happens only when
+/// `segments.count > requiredSegmentsForConfirmation`.
+///
+/// With `withoutTimestamps = true` the decoder emits `<|notimestamps|>`, so
+/// `SegmentSeeker` finds no consecutive-timestamp pairs and lumps the entire
+/// window into ONE segment — `1 > 2` is false, nothing is ever confirmed, the
+/// clip point stays pinned at 0, and every decode re-reads the FIRST 30 s of
+/// audio forever. Past ~30 s the transcript froze and later speech was dropped.
+public enum WhisperKitStreamingDecodePolicy {
+    /// WhisperKit's fixed encoder window: 30 s @ 16 kHz. The hard ceiling on a
+    /// single decode pass, and therefore on a session whose clip point is stuck.
+    public static let windowSamples = 480_000
+    public static let sampleRate = 16_000
+
+    /// `AudioStreamTranscriber`'s default `requiredSegmentsForConfirmation`. We
+    /// don't override it at the call site, so this is the live value.
+    public static let requiredSegmentsForConfirmation = 2
+
+    /// Segments a window yields, given whether timestamp tokens were emitted.
+    /// Without timestamps the seeker can't split, so the window is one segment.
+    public static func segmentsPerWindow(timestampsEmitted: Bool) -> Int {
+        timestampsEmitted ? requiredSegmentsForConfirmation + 1 : 1
+    }
+
+    /// Whether a window's segments can be promoted to `confirmedSegments` —
+    /// i.e. whether the decode window will advance past this point at all.
+    public static func advancesConfirmedEnd(timestampsEmitted: Bool) -> Bool {
+        segmentsPerWindow(timestampsEmitted: timestampsEmitted) > requiredSegmentsForConfirmation
+    }
+
+    /// The longest dictation that survives with a given timestamp setting.
+    /// `nil` = unbounded (the confirmed end advances with the speech).
+    public static func maxTranscribableSeconds(timestampsEmitted: Bool) -> Double? {
+        guard !advancesConfirmedEnd(timestampsEmitted: timestampsEmitted) else { return nil }
+        return Double(windowSamples) / Double(sampleRate)
+    }
+
+    /// The value `makeStreamHandle` MUST pass for `withoutTimestamps` on the
+    /// streaming path. False — timestamps are what let segments confirm. The
+    /// preview stays clean via `skipSpecialTokens`, which filters every token
+    /// `>= specialTokenBegin` (timestamps included) out of the decoded text.
+    public static let withoutTimestamps = false
+}
+
 #if WHISPERKIT
 import WhisperKit
 import CoreML
@@ -268,9 +320,25 @@ enum WhisperKitBridge {
             // Streaming segment text is the RAW token stream unless we ask for clean
             // output: strip the special tokens (<|startoftranscript|>, <|en|>, …) and
             // the per-segment timestamp markers. Without this the preview shows token
-            // soup instead of words.
+            // soup instead of words. This alone is what keeps the preview clean —
+            // `skipSpecialTokens` filters every token >= specialTokenBegin (timestamp
+            // tokens included) out of the decoded text, so it does NOT depend on
+            // `withoutTimestamps`.
             skipSpecialTokens: true,
-            withoutTimestamps: true,
+            // MUST stay false on the streaming path. `withoutTimestamps: true` makes
+            // the decoder emit <|notimestamps|> and produce no timestamp tokens at
+            // all; SegmentSeeker then finds no consecutive-timestamp pairs and lumps
+            // the whole window into ONE segment. AudioStreamTranscriber only promotes
+            // segments to `confirmedSegments` when `segments.count >
+            // requiredSegmentsForConfirmation` (2), so a single segment is NEVER
+            // confirmed — `lastConfirmedSegmentEndSeconds` stays pinned at 0, the
+            // realtime loop's `clipTimestamps = [0]` re-decodes from time zero every
+            // pass, and `segmentSize = min(windowSamples, …)` truncates that to
+            // Whisper's 30 s window. Result: past ~30 s of continuous dictation the
+            // transcript froze and every later word was silently dropped (and the
+            // re-decode cost grew without bound). Emitting timestamps lets segments
+            // split and confirm, so the window advances with the speech.
+            withoutTimestamps: WhisperKitStreamingDecodePolicy.withoutTimestamps,
             // Vocabulary bias terms (MAK-69), nil when none.
             promptTokens: streamPromptTokens
         )

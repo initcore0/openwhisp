@@ -331,7 +331,14 @@ final class ParakeetStreamingEngine: StreamingTranscriptionEngine {
             // the final transcript.
             let final = try await session.finish()
                 .trimmingCharacters(in: .whitespacesAndNewlines)
-            deliverFinal?(final.isEmpty ? lastPartial : final)
+            // finish() decodes a ZERO-PADDED final window with the right-context
+            // holdback disabled, so the RNNT decoder runs into digital silence and
+            // reliably appends a stray "You". Strip it here — on
+            // the final only, since the artifact is produced by that final flush
+            // and never appears in a partial. See ParakeetTailHallucination for
+            // the guards that keep a legitimate "…up to you" intact.
+            let deartifacted = ParakeetTailHallucination.strip(from: final)
+            deliverFinal?(deartifacted.isEmpty ? lastPartial : deartifacted)
         } catch {
             NSLog("[Parakeet] finish error: %@", error.localizedDescription)
             // Fall back to the last partial rather than erroring the session —
