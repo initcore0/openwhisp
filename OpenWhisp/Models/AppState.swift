@@ -3877,9 +3877,9 @@ class AppState: ObservableObject {
         isArming = true
         statusMessage = "Starting..."
         startElapsedTimer()
-        // Agent-initiated sessions ALWAYS show the overlay (regardless of the
-        // user's showOverlay setting) so agent microphone use is never invisible.
-        if showOverlay || sessionInitiator.isAgent {
+        // Agent sessions force the overlay on; a captions capture forces it off
+        // (it would sit in the middle of the streamed screen) — OverlayVisibilityPolicy.
+        if OverlayVisibilityPolicy.showsLocalOverlay(setting: showOverlay, isAgentSession: sessionInitiator.isAgent, isCaptionsCapture: streamOverlay.captureActive) {
             overlayController?.show()
             overlayIsVisible = true
         }

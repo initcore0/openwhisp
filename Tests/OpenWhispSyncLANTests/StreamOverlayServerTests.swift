@@ -149,9 +149,110 @@ final class StreamOverlayServerTests: XCTestCase {
         XCTAssertTrue(client.wait { $0.contains("\"lines\":[\"like in the\",\"movies now\"]") },
                       "windowed frame missing: \(client.received.suffix(400))")
 
-        // After lingerSeconds of silence the overlay hides itself.
-        XCTAssertTrue(client.wait(timeout: 5) { $0.contains("\"lines\":[]") },
+        // After lingerSeconds of silence the overlay hides itself. Matched by
+        // revision: the seed greeting is an empty frame too, so a bare
+        // `"lines":[]` would pass before the linger timer ever fired.
+        XCTAssertTrue(client.wait(timeout: 5) { $0.contains("\"lines\":[],\"revision\":2") },
                       "auto-hide frame missing: \(client.received.suffix(400))")
+    }
+
+    /// The reported bug, end to end: after the silence auto-hide, resuming speech
+    /// re-showed the utterance that had just faded. The engine keeps growing the
+    /// same session transcript, so the auto-hide must RETIRE it, not just blank
+    /// the screen.
+    @MainActor
+    func testResumingAfterAutoHideShowsOnlyTheNewWords() throws {
+        var config = StreamOverlayConfig()
+        config.lingerSeconds = 1
+        let (server, port) = try startServer(config: config)
+        defer { server.stop() }
+
+        let client = RawClient(port: port)
+        defer { client.close() }
+        client.send("GET /events HTTP/1.1\r\n\r\n")
+        XCTAssertTrue(client.wait { $0.contains("text/event-stream") })
+
+        server.publishPartial("hello there friends")
+        XCTAssertTrue(client.wait { $0.contains("\"lines\":[\"hello there friends\"]") })
+        // Silence: the overlay hides AND retires what was on screen. Match the
+        // auto-hide by its REVISION — the seed greeting is also an empty frame,
+        // and matching that would race ahead of the linger timer.
+        XCTAssertTrue(client.wait(timeout: 5) { $0.contains("\"lines\":[],\"revision\":2") },
+                      "auto-hide frame missing: \(client.received.suffix(400))")
+
+        // Speech resumes — the engine's transcript still carries the old words.
+        server.publishPartial("hello there friends welcome back")
+        XCTAssertTrue(client.wait { $0.contains("\"lines\":[\"welcome back\"]") },
+                      "resumed speech should show ONLY new words, got: \(client.received.suffix(400))")
+        XCTAssertFalse(
+            client.received.contains("\"lines\":[\"hello there friends welcome back\"]"),
+            "the faded utterance must never be replayed")
+    }
+
+    /// The second reported bug: editing the appearance restarted the server,
+    /// which stopped the capture session. Appearance now applies LIVE — the
+    /// listener keeps running (same bound port, same SSE connection) and the
+    /// page receives a `style` event.
+    @MainActor
+    func testApplyLookRestylesLiveWithoutRestartingTheServer() throws {
+        let (server, port) = try startServer(
+            config: StreamOverlayConfig(fontSize: 48, textColor: "#FFFFFF"))
+        defer { server.stop() }
+
+        let client = RawClient(port: port)
+        defer { client.close() }
+        client.send("GET /events HTTP/1.1\r\n\r\n")
+        XCTAssertTrue(client.wait { $0.contains("text/event-stream") })
+        server.publishPartial("captions running")
+        XCTAssertTrue(client.wait { $0.contains("captions running") })
+
+        var edited = StreamOverlayConfig()
+        edited.fontSize = 96
+        edited.textColor = "#FF0000"
+        server.applyLook(edited)
+
+        // The SAME connection receives the restyle — no restart, no dropped client.
+        XCTAssertTrue(client.wait { $0.contains("event: style") && $0.contains("\"fontSize\":96") },
+                      "style event missing: \(client.received.suffix(400))")
+        XCTAssertEqual(server.boundPort, port, "the listener must not be rebound")
+        XCTAssertTrue(server.isRunning)
+
+        // A page loaded AFTER the edit gets the new look baked in.
+        let fresh = RawClient(port: port)
+        defer { fresh.close() }
+        fresh.send("GET / HTTP/1.1\r\n\r\n")
+        XCTAssertTrue(fresh.wait { $0.contains("</html>") })
+        XCTAssertTrue(fresh.received.contains("font-size: 96px"),
+                      "re-rendered page should carry the edited look")
+        XCTAssertTrue(fresh.received.contains("color: #FF0000"))
+    }
+
+    /// A live wrap edit re-shows the CURRENT text at the new geometry (so the
+    /// streamer sees the effect immediately) without resurrecting retired speech.
+    @MainActor
+    func testApplyLookRewrapsTheTextOnScreen() throws {
+        var config = StreamOverlayConfig()
+        config.maxLines = 3
+        config.charsPerLine = 40
+        config.lingerSeconds = 30      // keep it on screen for the whole test
+        let (server, port) = try startServer(config: config)
+        defer { server.stop() }
+
+        let client = RawClient(port: port)
+        defer { client.close() }
+        client.send("GET /events HTTP/1.1\r\n\r\n")
+        XCTAssertTrue(client.wait { $0.contains("text/event-stream") })
+
+        server.publishPartial("subtitles behave like in the movies now")
+        XCTAssertTrue(client.wait { $0.contains("subtitles behave like in the movies") })
+
+        var edited = config
+        edited.maxLines = 2
+        edited.charsPerLine = 16
+        server.applyLook(edited)
+
+        XCTAssertTrue(client.wait { $0.contains("\"lines\":[\"like in the\",\"movies now\"]") },
+                      "rewrapped frame missing: \(client.received.suffix(400))")
     }
 
     @MainActor

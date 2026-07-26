@@ -6,8 +6,9 @@ import AppKit
 /// source (or opens it in a browser) and every dictation shows up as subtitles.
 ///
 /// The look (canvas, font, colors, line count) maps 1:1 onto
-/// `StreamOverlayConfig`; edits restart the server (debounced in AppState) so
-/// the served page always matches what this pane shows.
+/// `StreamOverlayConfig`; edits apply LIVE to the running server (pushed to open
+/// pages over SSE) so they can be tuned mid-stream without interrupting a
+/// captions capture. Only the port restarts the server.
 struct StreamOverlayPane: View {
     @ObservedObject var overlay: StreamOverlayCoordinator
 
@@ -68,7 +69,7 @@ struct StreamOverlayPane: View {
         } header: {
             Text("Captions")
         } footer: {
-            Text("Runs hands-free until you stop it — nothing is typed into your apps, and the transcript only feeds the overlay. Long silences don't end it. Esc or the dictation hotkey also stop it.")
+            Text("Runs hands-free until you stop it — nothing is typed into your apps, and the transcript only feeds the overlay. The floating dictation overlay stays hidden so it can't show up on your stream. Long silences don't end it. Esc or the dictation hotkey also stop it.")
                 .font(.caption)
                 .foregroundColor(.secondary)
         }
@@ -190,7 +191,7 @@ struct StreamOverlayPane: View {
         } header: {
             Text("Appearance")
         } footer: {
-            Text("Behaves like movie subtitles: speech shows as up to the configured number of wrapped lines, older lines scroll off the top as you keep talking, and everything fades out after silence.")
+            Text("Behaves like movie subtitles: speech shows as up to the configured number of wrapped lines, older lines scroll off the top as you keep talking, and everything disappears after silence — when you speak again only the new words appear. These settings apply instantly, so you can tune them while captions are running.")
                 .font(.caption)
                 .foregroundColor(.secondary)
         }
