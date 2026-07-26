@@ -215,8 +215,9 @@ final class StreamOverlayServer {
     /// reducer and re-broadcast so the change is visible on the CURRENT text
     /// rather than only on the next utterance.
     ///
-    /// Returns false when the change needs a real restart (port only — the
-    /// listener is bound to it); the caller restarts in that case.
+    /// The port is not part of `StreamOverlayConfig` — it lives on the
+    /// coordinator, whose `port.didSet` still does a full (debounced) restart,
+    /// since the listener is bound to it.
     func applyLook(_ newConfig: StreamOverlayConfig) {
         let sanitized = newConfig.sanitized()
         guard sanitized != config else { return }
