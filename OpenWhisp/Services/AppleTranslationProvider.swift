@@ -203,6 +203,9 @@ final class AppleTranslationProvider: ObservableObject {
             pending.removeFirst()
             do {
                 let response = try await session.translate(request.text)
+                // Clear the sticky error on success so a LATER failure's status
+                // ("Kept original text — …") can't cite a stale cause.
+                lastError = nil
                 request.finish(returning: response.targetText)
             } catch {
                 lastError = error.localizedDescription
