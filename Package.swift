@@ -43,6 +43,7 @@ let package = Package(
                 "ParakeetLanguageGate.swift",
                 "ParakeetLanguageHint.swift",
                 "ParakeetVocabularyPrompt.swift",
+                "ParakeetTailHallucination.swift",
                 "AgentContextVocabulary.swift",
                 "ParakeetDownloadState.swift",
                 "AgentEouAutoStop.swift",
