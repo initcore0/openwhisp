@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import NaturalLanguage
 import SwiftUI
 #if canImport(Translation)
 import Translation
@@ -14,8 +15,9 @@ import Translation
 /// this string into that language, or tell me you couldn't".
 ///
 /// Contract (the never-lose-text rule): `translate` returns the translation or
-/// nil. It NEVER throws and NEVER hangs — every request carries a watchdog
-/// timeout — and every caller falls back to the ORIGINAL text on nil.
+/// nil. It NEVER throws and NEVER hangs — missing-asset and unsupported pairs
+/// fail FAST (the framework itself hangs on them), everything else carries a
+/// watchdog timeout — and every caller falls back to the ORIGINAL text on nil.
 enum AppleTextTranslation {
 
     /// Whether the on-device text-translation path exists on this OS. The app's
@@ -29,13 +31,22 @@ enum AppleTextTranslation {
     }
 
     /// Translate `text` into `targetLanguage` (a BCP-47-ish tag: "en", "es",
-    /// "pt-BR"). Nil when the OS can't translate text, on any framework error
-    /// (missing language assets, unsupported pairing), or on timeout.
+    /// "pt-BR"). `sourceHint` is the language the text is (probably) in — pass
+    /// the session's language setting; nil/"auto"/empty falls back to on-device
+    /// detection over the text itself (NLLanguageRecognizer). The source is
+    /// ALWAYS resolved to an explicit language before the framework sees it: a
+    /// nil-source `TranslationSession.Configuration` is broken in practice —
+    /// `prepareTranslation` fails with `unableToIdentifyLanguage` and
+    /// `translate` then hangs past any deadline (observed on macOS 26).
+    ///
+    /// Nil when the OS can't translate text, the pair is unsupported, language
+    /// assets still need their one-time download (which this call kicks off),
+    /// any framework error, or timeout.
     @MainActor
-    static func translate(_ text: String, to targetLanguage: String) async -> String? {
+    static func translate(_ text: String, from sourceHint: String?, to targetLanguage: String) async -> String? {
         #if canImport(Translation)
         guard #available(macOS 15.0, *) else { return nil }
-        return await AppleTranslationProvider.shared.translate(text, to: targetLanguage)
+        return await AppleTranslationProvider.shared.translate(text, from: sourceHint, to: targetLanguage)
         #else
         return nil
         #endif
@@ -55,11 +66,13 @@ enum AppleTextTranslation {
     /// The stream-overlay server's injected `Translator` closure, or nil when
     /// this OS can't translate text. The server already treats a nil result as
     /// "keep the original caption line" — the same never-lose-text fallback.
+    /// No source hint here: caption lines are detected per-line (the overlay
+    /// doesn't know the session language).
     @MainActor
     static func overlayTranslator() -> (@Sendable (String, String) async -> String?)? {
         guard isSupported else { return nil }
         return { text, target in
-            await translate(text, to: target)
+            await translate(text, from: nil, to: target)
         }
     }
 }
@@ -76,12 +89,19 @@ enum AppleTextTranslation {
 /// `TranslationSession.Configuration` (re)triggers the modifier; its action
 /// hands us a live session, which we hold inside the action (`serve`) and use
 /// to drain a MainActor request queue until SwiftUI cancels the action (next
-/// configuration change / teardown).
+/// configuration change / teardown). The invisible anchor is proven to fire
+/// (harness-tested): translation works headless as long as the pair's language
+/// assets are INSTALLED.
 ///
-/// The configuration always uses a nil SOURCE language so the framework
-/// auto-detects what was dictated; only the target is pinned. When a queued
-/// request wants a different target than the live session, the provider swaps
-/// the configuration and lets the replacement session serve it.
+/// **Missing assets are the sharp edge.** For a merely `supported` (not
+/// installed) pair, `prepareTranslation`/`translate` hang indefinitely from an
+/// invisible window — the consent sheet has nowhere to present. So `translate`
+/// pre-checks `LanguageAvailability` and fails FAST on such pairs, while
+/// kicking off a one-time visible consent flow: the anchor window becomes a
+/// small centered panel for the duration of `prepareTranslation` (the system
+/// download sheet presents from it), then goes invisible again. Once the user
+/// approves and the download lands, the pair reads `.installed` and every later
+/// request translates headless.
 @available(macOS 15.0, *)
 @MainActor
 final class AppleTranslationProvider: ObservableObject {
@@ -89,15 +109,18 @@ final class AppleTranslationProvider: ObservableObject {
     static let shared = AppleTranslationProvider()
 
     /// Per-request deadline. Generous because the first translation after a
-    /// configuration change can include model load — and, when language assets
-    /// are missing, the framework's download flow. Callers show "Translating…"
-    /// while they wait; on timeout the request resolves nil and the caller
-    /// keeps the original text (never a hang, never a loss).
+    /// configuration change includes model load (~2.5s measured). Callers show
+    /// "Translating…" while they wait; on timeout the request resolves nil and
+    /// the caller keeps the original text (never a hang, never a loss).
     static let requestTimeout: TimeInterval = 12
 
     /// Drives the anchor's `.translationTask`. Nil until the first request;
-    /// replaced (→ session restart) when the target language changes.
+    /// replaced (→ session restart) when the language pair changes.
     @Published private(set) var configuration: TranslationSession.Configuration?
+
+    /// True while the anchor window is on screen hosting the one-time language
+    /// download consent; drives the anchor view's visible body.
+    @Published private(set) var presentingDownload = false
 
     /// Last framework error, for status surfaces.
     private(set) var lastError: String?
@@ -106,11 +129,13 @@ final class AppleTranslationProvider: ObservableObject {
     /// can race to finish it exactly once (MainActor-confined — no lock).
     private final class Request {
         let text: String
+        let source: String
         let target: String
         private var continuation: CheckedContinuation<String?, Never>?
 
-        init(text: String, target: String) {
+        init(text: String, source: String, target: String) {
             self.text = text
+            self.source = source
             self.target = target
         }
 
@@ -134,30 +159,61 @@ final class AppleTranslationProvider: ObservableObject {
     /// (not a single slot) so a cancelled loop's late wake can never strand the
     /// replacement loop's continuation.
     private var parked: [CheckedContinuation<Void, Never>] = []
-    /// The target language of the live/incoming configuration.
-    private var currentTarget: String?
+    /// The language pair of the live/incoming configuration.
+    private var currentPair: (source: String, target: String)?
     /// The invisible SwiftUI anchor hosting `.translationTask`.
     private var anchorWindow: NSWindow?
+    /// Pairs whose asset-download consent was already kicked off this app run —
+    /// the visible consent window appears at most once per pair per launch.
+    private var downloadsStarted: Set<String> = []
 
     // MARK: - Public API
 
     /// Translate `text` into `targetLanguage`. Nil on any failure or timeout —
-    /// callers keep the original text.
-    func translate(_ text: String, to targetLanguage: String) async -> String? {
-        let target = Self.normalizedTarget(targetLanguage)
+    /// callers keep the original text. See `AppleTextTranslation.translate`.
+    func translate(_ text: String, from sourceHint: String?, to targetLanguage: String) async -> String? {
+        let target = Self.normalizedTag(targetLanguage)
         guard !target.isEmpty, !text.isEmpty else { return nil }
-        ensureAnchor()
-        retarget(target)
+        guard let source = Self.resolveSource(hint: sourceHint, text: text) else {
+            lastError = "Couldn't identify the dictated language"
+            return nil
+        }
+        // Same language → nothing to translate; the original IS the result.
+        if Self.baseCode(source) == Self.baseCode(target) { return text }
 
-        let request = Request(text: text, target: target)
+        // Fail FAST when the pair can't serve, instead of letting the request
+        // ride the watchdog: the framework hangs (not errors) on not-installed
+        // pairs, and 12 silent seconds per dictation reads as "broken".
+        switch await LanguageAvailability().status(
+            from: Locale.Language(identifier: source),
+            to: Locale.Language(identifier: target)) {
+        case .installed:
+            break
+        case .supported:
+            // Assets exist but need their one-time download. Kick off the
+            // visible consent flow and resolve this request as untranslated;
+            // once the download lands, the next dictation translates normally.
+            lastError = "\(source)→\(target) needs a one-time language download — approve the prompt"
+            beginAssetDownload(source: source, target: target)
+            return nil
+        case .unsupported:
+            lastError = "\(source)→\(target) isn't supported by macOS translation"
+            return nil
+        @unknown default:
+            break
+        }
+
+        ensureAnchor()
+        retarget(source: source, target: target)
+
+        let request = Request(text: text, source: source, target: target)
         return await withCheckedContinuation { (c: CheckedContinuation<String?, Never>) in
             request.adopt(c)
             pending.append(request)
             wakeAllParked()
             // Watchdog: no session may ever strand a dictation. If nothing
-            // serves this request in time (assets missing and the download
-            // prompt unanswered, framework stall), fail it — the caller falls
-            // back to the original text.
+            // serves this request in time (framework stall), fail it — the
+            // caller falls back to the original text.
             Task { @MainActor [weak self] in
                 try? await Task.sleep(nanoseconds: UInt64(Self.requestTimeout * 1_000_000_000))
                 guard !request.isFinished else { return }
@@ -176,28 +232,29 @@ final class AppleTranslationProvider: ObservableObject {
     /// action; the session is only valid inside it, so the loop holds it here
     /// until SwiftUI cancels the action (configuration change / teardown).
     func serve(_ session: TranslationSession) async {
-        // Surface the download flow once per session: when language assets are
-        // missing this asks the OS to fetch them (it can present a consent
-        // prompt). Failure is non-fatal — translate calls below just fail and
-        // callers keep their original text.
+        // For installed pairs this is a fast no-op; for a download-consent
+        // session (anchor presented) it shows the system download sheet and
+        // returns once the assets land (or the user declines).
         do {
             try await session.prepareTranslation()
             lastError = nil
         } catch {
             lastError = "Language assets not ready: \(error.localizedDescription)"
         }
+        if presentingDownload { retractAnchor() }
 
         while !Task.isCancelled {
             guard let request = pending.first else {
                 await parkUntilWork()
                 continue
             }
-            guard request.target == currentTarget else {
-                // Queued for a different target (dictation wants "en" while the
-                // overlay wants "es"). Swap the configuration — SwiftUI cancels
+            guard let pair = currentPair,
+                  request.source == pair.source, request.target == pair.target else {
+                // Queued for a different pair (dictation wants ru→en while the
+                // overlay wants en→es). Swap the configuration — SwiftUI cancels
                 // THIS action and starts a fresh session that serves it. The
                 // request stays queued; its watchdog still bounds the wait.
-                retarget(request.target)
+                retarget(source: request.source, target: request.target)
                 return
             }
             pending.removeFirst()
@@ -238,16 +295,68 @@ final class AppleTranslationProvider: ObservableObject {
         for waiter in waiters { waiter.resume() }
     }
 
+    // MARK: - Language-asset download (the one visible moment)
+
+    /// Present the anchor and point the configuration at `pair` so the
+    /// replacement session's `prepareTranslation` can show the system download
+    /// consent from a REAL window. Once per pair per app run.
+    private func beginAssetDownload(source: String, target: String) {
+        let key = "\(source)→\(target)"
+        guard !downloadsStarted.contains(key) else { return }
+        downloadsStarted.insert(key)
+        ensureAnchor()
+        presentAnchor()
+        if let pair = currentPair, pair.source == source, pair.target == target,
+           var live = configuration {
+            // Same pair as the live session: invalidate to force a fresh action
+            // (a new-but-equal configuration value may not re-trigger it).
+            live.invalidate()
+            configuration = live
+        } else {
+            currentPair = (source, target)
+            configuration = TranslationSession.Configuration(
+                source: Locale.Language(identifier: source),
+                target: Locale.Language(identifier: target))
+        }
+    }
+
+    /// Turn the invisible anchor into a small centered panel that can host the
+    /// system download sheet.
+    private func presentAnchor() {
+        guard let window = anchorWindow, !presentingDownload else { return }
+        presentingDownload = true
+        window.styleMask = [.titled]
+        window.title = "OpenWhisp — Translation"
+        window.alphaValue = 1
+        window.level = .floating
+        window.setContentSize(NSSize(width: 380, height: 96))
+        window.center()
+        window.orderFrontRegardless()
+        NSApp.activate()
+    }
+
+    /// Return the anchor to its invisible resting state.
+    private func retractAnchor() {
+        presentingDownload = false
+        guard let window = anchorWindow else { return }
+        window.styleMask = [.borderless]
+        window.alphaValue = 0
+        window.level = .init(rawValue: NSWindow.Level.normal.rawValue - 1)
+        window.setFrame(NSRect(x: -4000, y: -4000, width: 1, height: 1), display: false)
+        window.orderBack(nil)
+    }
+
     // MARK: - Configuration / anchor plumbing
 
-    /// Point the anchor's configuration at `target` (nil SOURCE — the framework
-    /// auto-detects the dictated language). No-op when already there, so a
-    /// stream of same-target requests keeps one long-lived session.
-    private func retarget(_ target: String) {
-        guard currentTarget != target || configuration == nil else { return }
-        currentTarget = target
+    /// Point the anchor's configuration at the EXPLICIT `source`→`target` pair.
+    /// No-op when already there, so a stream of same-pair requests keeps one
+    /// long-lived session. Never nil-source (see `AppleTextTranslation.translate`).
+    private func retarget(source: String, target: String) {
+        if let pair = currentPair, pair.source == source, pair.target == target,
+           configuration != nil { return }
+        currentPair = (source, target)
         configuration = TranslationSession.Configuration(
-            source: nil,
+            source: Locale.Language(identifier: source),
             target: Locale.Language(identifier: target))
     }
 
@@ -255,7 +364,8 @@ final class AppleTranslationProvider: ObservableObject {
     /// click-through, offscreen 1×1 window whose content view carries the
     /// `.translationTask` modifier. It must be ordered into the window list so
     /// SwiftUI mounts the view (and with it the task); it is never key, never
-    /// visible, and lives for the app's lifetime.
+    /// visible (except during a download consent), and lives for the app's
+    /// lifetime.
     private func ensureAnchor() {
         guard anchorWindow == nil else { return }
         let host = NSHostingView(rootView: TranslationAnchorView(provider: self))
@@ -277,26 +387,64 @@ final class AppleTranslationProvider: ObservableObject {
         anchorWindow = window
     }
 
+    // MARK: - Language tags
+
+    /// The session's language when it names one, else on-device detection over
+    /// the text itself. Never returns "auto"; nil when even detection can't
+    /// name a language (caller fails fast with a clear status).
+    static func resolveSource(hint: String?, text: String) -> String? {
+        if let hint {
+            let tag = normalizedTag(hint)
+            if !tag.isEmpty, tag.lowercased() != "auto" { return tag }
+        }
+        let recognizer = NLLanguageRecognizer()
+        recognizer.processString(text)
+        return recognizer.dominantLanguage?.rawValue
+    }
+
     /// "pt-BR"-style tag the framework accepts: trimmed, underscores dashed.
-    private static func normalizedTarget(_ tag: String) -> String {
+    private static func normalizedTag(_ tag: String) -> String {
         tag.trimmingCharacters(in: .whitespacesAndNewlines)
             .replacingOccurrences(of: "_", with: "-")
+    }
+
+    /// "pt" from "pt-BR" — for the same-language no-op check.
+    static func baseCode(_ tag: String) -> String {
+        tag.split(separator: "-").first.map { String($0).lowercased() } ?? tag.lowercased()
     }
 }
 
 /// The invisible SwiftUI view that owns the `.translationTask`. Re-runs its
 /// action whenever the provider publishes a new configuration; with a nil
-/// configuration the framework runs nothing.
+/// configuration the framework runs nothing. During a language-asset download
+/// consent it shows a small explanatory panel (the window is visible then);
+/// the rest of the time it's a 1×1 clear pixel.
 @available(macOS 15.0, *)
 private struct TranslationAnchorView: View {
     @ObservedObject var provider: AppleTranslationProvider
 
     var body: some View {
-        Color.clear
-            .frame(width: 1, height: 1)
+        content
             .translationTask(provider.configuration) { session in
                 await provider.serve(session)
             }
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        if provider.presentingDownload {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Preparing on-device translation")
+                    .font(.headline)
+                Text("macOS may ask to download a translation language. Approve it once — dictations translate from then on.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(16)
+            .frame(width: 380)
+        } else {
+            Color.clear.frame(width: 1, height: 1)
+        }
     }
 }
 

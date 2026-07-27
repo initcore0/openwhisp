@@ -4157,13 +4157,10 @@ class AppState: ObservableObject {
         statusMessage = "Inserted: \(text.prefix(40))..."
     }
 
-    /// Session-final choke point (every dictation path funnels here). When the
-    /// text-translation path is armed — translate on, non-English spoken
-    /// language, ASR-only engine, macOS 15+ (`TextTranslationPolicy`) — the
-    /// final transcript is first translated ON-DEVICE as text, then delivered
-    /// through the normal flow, exactly as if the engine had translated it.
-    /// On ANY failure or timeout the ORIGINAL transcript is delivered unchanged
-    /// — the fallback is always "untranslated", never "lost".
+    /// Session-final choke point (every dictation path funnels here). When
+    /// `TextTranslationPolicy` arms the text path, the final transcript is
+    /// translated ON-DEVICE as text before delivery; on ANY failure or timeout
+    /// the ORIGINAL transcript is delivered unchanged (untranslated, never lost).
     ///
     /// Mid-refine finals skip translation on purpose: their tail is a spoken
     /// INSTRUCTION and `instructionSuffix` subtracts `refineContentSnapshot`
@@ -4179,8 +4176,10 @@ class AppState: ObservableObject {
         // the translation is in flight causes this continuation to be ignored —
         // same fence as every other async completion in this file.
         let sessionID = activeSessionID
+        // Source hint: the session language ("auto" → provider-side detection).
+        let sourceHint = language
         Task { @MainActor [weak self] in
-            let translated = await AppleTextTranslation.translate(text, to: "en")
+            let translated = await AppleTextTranslation.translate(text, from: sourceHint, to: "en")
             guard let self, sessionID == self.activeSessionID else { return }
             if translated == nil {
                 self.translationStatus = AppleTextTranslation.lastError.map {
