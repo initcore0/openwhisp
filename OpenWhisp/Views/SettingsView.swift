@@ -184,7 +184,7 @@ struct SettingsView: View {
         case .profiles:  ProfilesPane(appState: appState)
         case .agentBridge: AgentBridgePane(appState: appState)
         case .sync:      SyncPane(appState: appState)
-        case .streamOverlay: StreamOverlayPane(overlay: appState.streamOverlay)
+        case .streamOverlay: StreamOverlayPane(overlay: appState.streamOverlay, dictationLanguage: appState.language)
         case .privacy:   PrivacyPane(appState: appState)
         case .advanced:  AdvancedPane(appState: appState)
         }

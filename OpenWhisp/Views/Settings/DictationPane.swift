@@ -152,6 +152,14 @@ struct DictationPane: View {
                         subtitle: "Speech in any language comes out as English text.",
                         isOn: $appState.translateToEnglish
                     )
+                    // Text-path sessions need the pair's language assets on
+                    // disk; this row shows their state and owns the download
+                    // (dictations never pop the consent sheet themselves).
+                    // Native-translate engines (whisper family) need no assets.
+                    if appState.translateToEnglish,
+                       !LanguageResolver.supportsTranslation(transcriptionEngine: appState.transcriptionEngine) {
+                        TranslationAssetStatusView(sourceTag: appState.language, targetTag: "en")
+                    }
                 }
             } header: {
                 Text("Language")

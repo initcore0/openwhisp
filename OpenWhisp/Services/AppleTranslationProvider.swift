@@ -75,6 +75,43 @@ enum AppleTextTranslation {
             await translate(text, from: nil, to: target)
         }
     }
+
+    /// Asset state of one source→target pair, for the Settings status rows
+    /// (`TranslationAssetStatusView`). Exists unconditionally (macOS 14 renders
+    /// the rows too — as "unavailable").
+    enum AssetStatus: Equatable {
+        /// Language assets are on disk — translation works right now.
+        case installed
+        /// The pair is supported but its assets need a one-time download.
+        case needsDownload
+        /// macOS translation can't do this pair at all.
+        case unsupported
+        /// No answer possible: macOS 14, or no concrete source ("auto").
+        case unavailable
+    }
+
+    /// Current asset state of `sourceTag`→`targetTag`. "auto"/empty source →
+    /// `.unavailable` (no concrete pair to check — assets resolve on first use).
+    @MainActor
+    static func assetStatus(from sourceTag: String, to targetTag: String) async -> AssetStatus {
+        #if canImport(Translation)
+        guard #available(macOS 15.0, *) else { return .unavailable }
+        return await AppleTranslationProvider.shared.assetStatus(from: sourceTag, to: targetTag)
+        #else
+        return .unavailable
+        #endif
+    }
+
+    /// Kick off the one-time language-asset download for `sourceTag`→`targetTag`
+    /// (presents the system consent sheet). User-initiated only — the Settings
+    /// Download button; dictations never pop UI on their own.
+    @MainActor
+    static func requestAssetDownload(from sourceTag: String, to targetTag: String) {
+        #if canImport(Translation)
+        guard #available(macOS 15.0, *) else { return }
+        AppleTranslationProvider.shared.requestDownload(from: sourceTag, to: targetTag)
+        #endif
+    }
 }
 
 #if canImport(Translation)
@@ -163,9 +200,6 @@ final class AppleTranslationProvider: ObservableObject {
     private var currentPair: (source: String, target: String)?
     /// The invisible SwiftUI anchor hosting `.translationTask`.
     private var anchorWindow: NSWindow?
-    /// Pairs whose asset-download consent was already kicked off this app run —
-    /// the visible consent window appears at most once per pair per launch.
-    private var downloadsStarted: Set<String> = []
 
     // MARK: - Public API
 
@@ -190,14 +224,14 @@ final class AppleTranslationProvider: ObservableObject {
         case .installed:
             break
         case .supported:
-            // Assets exist but need their one-time download. Kick off the
-            // visible consent flow and resolve this request as untranslated;
-            // once the download lands, the next dictation translates normally.
-            lastError = "\(source)→\(target) needs a one-time language download — approve the prompt"
-            beginAssetDownload(source: source, target: target)
+            // Assets exist but need their one-time download. Fail fast and
+            // point at Settings — mid-dictation is the wrong moment to pop a
+            // consent sheet (a surprise window over whatever the user is
+            // dictating into). The Settings row owns the download flow.
+            lastError = "\(Self.pairName(source, target)) isn't downloaded — Settings → Dictation has the download"
             return nil
         case .unsupported:
-            lastError = "\(source)→\(target) isn't supported by macOS translation"
+            lastError = "\(Self.pairName(source, target)) isn't supported by macOS translation"
             return nil
         @unknown default:
             break
@@ -295,15 +329,39 @@ final class AppleTranslationProvider: ObservableObject {
         for waiter in waiters { waiter.resume() }
     }
 
-    // MARK: - Language-asset download (the one visible moment)
+    // MARK: - Language-asset status + download (the one visible moment)
 
-    /// Present the anchor and point the configuration at `pair` so the
+    /// Asset state of one pair, for the Settings status rows. See
+    /// `AppleTextTranslation.assetStatus`.
+    func assetStatus(from sourceTag: String, to targetTag: String) async -> AppleTextTranslation.AssetStatus {
+        let source = Self.normalizedTag(sourceTag)
+        let target = Self.normalizedTag(targetTag)
+        guard !source.isEmpty, source.lowercased() != "auto", !target.isEmpty else {
+            return .unavailable
+        }
+        // Same language: nothing to download, translation is a no-op pass-through.
+        if Self.baseCode(source) == Self.baseCode(target) { return .installed }
+        switch await LanguageAvailability().status(
+            from: Locale.Language(identifier: source),
+            to: Locale.Language(identifier: target)) {
+        case .installed: return .installed
+        case .supported: return .needsDownload
+        case .unsupported: return .unsupported
+        @unknown default: return .unavailable
+        }
+    }
+
+    /// USER-INITIATED download flow (the Settings row's Download button):
+    /// present the anchor and point the configuration at the pair so the
     /// replacement session's `prepareTranslation` can show the system download
-    /// consent from a REAL window. Once per pair per app run.
-    private func beginAssetDownload(source: String, target: String) {
-        let key = "\(source)→\(target)"
-        guard !downloadsStarted.contains(key) else { return }
-        downloadsStarted.insert(key)
+    /// consent from a REAL window. The Settings row polls `assetStatus` and
+    /// flips to Installed when the download lands.
+    func requestDownload(from sourceTag: String, to targetTag: String) {
+        let source = Self.normalizedTag(sourceTag)
+        let target = Self.normalizedTag(targetTag)
+        guard !source.isEmpty, source.lowercased() != "auto", !target.isEmpty,
+              Self.baseCode(source) != Self.baseCode(target),
+              !presentingDownload else { return }
         ensureAnchor()
         presentAnchor()
         if let pair = currentPair, pair.source == source, pair.target == target,
@@ -411,6 +469,11 @@ final class AppleTranslationProvider: ObservableObject {
     /// "pt" from "pt-BR" — for the same-language no-op check.
     static func baseCode(_ tag: String) -> String {
         tag.split(separator: "-").first.map { String($0).lowercased() } ?? tag.lowercased()
+    }
+
+    /// "Russian → English" — status text uses names, not tags.
+    static func pairName(_ source: String, _ target: String) -> String {
+        "\(LanguageResolver.displayName(for: source)) → \(LanguageResolver.displayName(for: target))"
     }
 }
 

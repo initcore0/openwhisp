@@ -11,6 +11,10 @@ import AppKit
 /// captions capture. Only the port restarts the server.
 struct StreamOverlayPane: View {
     @ObservedObject var overlay: StreamOverlayCoordinator
+    /// The dictation language setting — the best proxy for what a captions
+    /// capture will hear, so the translation section can show a concrete
+    /// asset-status row ("auto" shows the download-on-first-use note instead).
+    var dictationLanguage: String = "auto"
 
     var body: some View {
         Form {
@@ -148,7 +152,12 @@ struct StreamOverlayPane: View {
                         Label("Subtitle language", systemImage: "captions.bubble")
                     }
 
-                    SettingsCallout(.info, "Runs on-device with Apple's translation. macOS may ask to download the language once; until the download finishes, subtitles show in the spoken language.")
+                    TranslationAssetStatusView(
+                        sourceTag: dictationLanguage,
+                        targetTag: overlay.config.targetLanguage,
+                        autoNote: "Auto Detect: the spoken language is detected per caption, and its translation pack downloads on first use — until then those lines show untranslated. Pick a dictation language in the Dictation pane to download ahead of time.")
+
+                    SettingsCallout(.info, "Runs on-device with Apple's translation. Until a language pack is downloaded, subtitles show in the spoken language.")
                 }
             } else {
                 SettingsFootnote("Translated subtitles need macOS 15 or later.")
