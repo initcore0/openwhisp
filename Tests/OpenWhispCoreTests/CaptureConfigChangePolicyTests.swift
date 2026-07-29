@@ -2,7 +2,8 @@ import XCTest
 @testable import OpenWhispCore
 
 /// Pins the gates for the mid-session `AVAudioEngineConfigurationChange`
-/// recovery (Parakeet streaming): a live session restarts capture; a stale or
+/// recovery shared by ALL streaming capture engines (Parakeet, WhisperKit,
+/// Apple Speech, SpeechAnalyzer): a live session restarts capture; a stale or
 /// stopped session ignores the notification. Without the restart, a device
 /// disconnect/format renegotiation leaves the session showing "Listening…"
 /// while capturing NOTHING — words are silently lost for the session's

@@ -20,7 +20,10 @@ import Speech
 /// All Speech-framework calls are behind `if #available(macOS 26, *)`, so the
 /// type compiles and links on macOS 14/15 — where the engine is hidden and, if
 /// reached, `start()` throws an unavailability error.
-final class SpeechAnalyzerStreamingEngine: StreamingTranscriptionEngine {
+// NSObject so the AVAudioEngineConfigurationChange observer can be
+// selector-based (the block API takes a hard `@Sendable` closure whose captures
+// here are non-Sendable) — same shape as ParakeetStreamingEngine.
+final class SpeechAnalyzerStreamingEngine: NSObject, StreamingTranscriptionEngine {
     var onPartial: ((String) -> Void)?
     var onFinal: ((String) -> Void)?
     var onError: ((String) -> Void)?
@@ -43,6 +46,16 @@ final class SpeechAnalyzerStreamingEngine: StreamingTranscriptionEngine {
     @MainActor private var lastVolatile = ""
     @MainActor private var finalDelivered = false
     @MainActor private var generation = 0
+
+    /// What the mid-session configuration-change restart needs to rebuild capture
+    /// into the live analyzer stream (see `armConfigChangeObserver`). Non-nil
+    /// exactly while the observer is armed; cleared on every teardown path.
+    @MainActor private var restartContext: RestartContext?
+
+    private struct RestartContext {
+        let continuation: AsyncStream<AVAudioPCMBuffer>.Continuation
+        let myGeneration: Int
+    }
 
     func selectDevice(_ deviceID: String) {
         MainActor.assumeIsolated { selectedDeviceID = deviceID }
@@ -81,32 +94,7 @@ final class SpeechAnalyzerStreamingEngine: StreamingTranscriptionEngine {
             throw SpeechAnalyzerBridge.BridgeError.unavailableOS
         }
 
-        let engine = AVAudioEngine()
-        let input = engine.inputNode
-
-        // Route to the pinned input device BEFORE reading the format (same policy
-        // as AppleSpeechEngine — a disconnected pinned device falls back to the
-        // system default; a connected one that fails to route is a hard error).
-        switch AudioInputRoutingPolicy.decide(
-            microphoneID: selectedDeviceID,
-            deviceResolved: AudioInputRouter.canResolve(uid: selectedDeviceID)
-        ) {
-        case .systemDefault:
-            break
-        case .useDevice(let uid):
-            guard let device = AudioInputRouter.resolve(uid: uid),
-                  AudioInputRouter.apply(device, to: engine) else {
-                throw SpeechAnalyzerBridge.BridgeError.unsupportedLocale(
-                    AudioInputRoutingPolicy.unresolvedMessage(uid: uid))
-            }
-        case .fallbackToDefault(let uid):
-            NSLog("[SpeechAnalyzerStreamingEngine] pinned mic '%@' disconnected — capturing system default", uid)
-        }
-
-        let micFormat = input.outputFormat(forBus: 0)
-        guard micFormat.sampleRate > 0, micFormat.channelCount > 0 else {
-            throw SpeechAnalyzerBridge.BridgeError.unsupportedLocale("no audio input device")
-        }
+        let (engine, micFormat) = try makeRoutedEngine()
 
         // RAW mic-buffer stream: the tap pushes untouched mic-format buffers; the
         // recognition task converts each to the ANALYZER'S required format before
@@ -117,11 +105,6 @@ final class SpeechAnalyzerStreamingEngine: StreamingTranscriptionEngine {
         // (The file path is immune: `analyzeSequence(from: AVAudioFile)` converts
         // internally.)
         let (rawStream, continuation) = AsyncStream.makeStream(of: AVAudioPCMBuffer.self)
-
-        input.installTap(onBus: 0, bufferSize: 4096, format: micFormat) { [weak self] buffer, _ in
-            continuation.yield(buffer)
-            self?.publishLevel(from: buffer)
-        }
 
         // Drive the analyzer on a detached task; hop to the main actor to publish
         // partial/final under the generation fence.
@@ -146,19 +129,23 @@ final class SpeechAnalyzerStreamingEngine: StreamingTranscriptionEngine {
                 else {
                     throw SpeechAnalyzerBridge.BridgeError.noResult
                 }
-                let converter: AVAudioConverter?
-                if analyzerFormat == micFormat {
-                    converter = nil // already compatible; feed as-is
-                } else {
-                    guard let c = AVAudioConverter(from: micFormat, to: analyzerFormat) else {
-                        throw SpeechAnalyzerBridge.BridgeError.unsupportedLocale(
-                            "mic format \(micFormat) can't convert to the analyzer format")
-                    }
-                    converter = c
+                // Fail fast when the start-time mic format can't reach the
+                // analyzer format at all — feeding unconverted audio would trap
+                // the framework (see the raw-stream comment above).
+                if analyzerFormat != micFormat,
+                   AVAudioConverter(from: micFormat, to: analyzerFormat) == nil {
+                    throw SpeechAnalyzerBridge.BridgeError.unsupportedLocale(
+                        "mic format \(micFormat) can't convert to the analyzer format")
                 }
+                // Per-buffer ADAPTIVE conversion, not one converter pinned to
+                // `micFormat`: after a mid-session capture restart (see
+                // `armConfigChangeObserver`) the replacement device's format
+                // usually differs, and a converter pinned to the start-time
+                // format would reject — drop — every buffer from the new device:
+                // capture restarted, transcript still silently dead.
+                let converter = AdaptiveFormatConverter(analyzerFormat: analyzerFormat)
                 let inputStream = rawStream.compactMap { buffer -> AnalyzerInput? in
-                    guard let converter else { return AnalyzerInput(buffer: buffer) }
-                    guard let converted = Self.convert(buffer, with: converter, to: analyzerFormat)
+                    guard let converted = converter.convert(buffer)
                     else { return nil } // drop an unconvertible buffer, never trap
                     return AnalyzerInput(buffer: converted)
                 }
@@ -197,9 +184,9 @@ final class SpeechAnalyzerStreamingEngine: StreamingTranscriptionEngine {
             }
         }
 
-        audioEngine = engine
-        engine.prepare()
-        try engine.start()
+        try startCapture(
+            engine: engine, format: micFormat,
+            continuation: continuation, myGeneration: myGeneration)
         // Model load can lag the tap install; onStarted signals genuine capture.
         // The tap is installed and the engine is running, so fire it now.
         onStarted?()
@@ -208,10 +195,166 @@ final class SpeechAnalyzerStreamingEngine: StreamingTranscriptionEngine {
         #endif
     }
 
-    #if compiler(>=6.2)
+    /// Build a fresh AVAudioEngine routed to the pinned (or default) input and
+    /// return it with its tap format. Shared by session start and the
+    /// mid-session configuration-change restart. Same policy as
+    /// AppleSpeechEngine: a disconnected pinned device falls back to the system
+    /// default; a connected one that fails to route is a hard error.
+    @MainActor
+    private func makeRoutedEngine() throws -> (AVAudioEngine, AVAudioFormat) {
+        let engine = AVAudioEngine()
+        let input = engine.inputNode
+
+        // Route BEFORE reading the format (the format follows the device).
+        switch AudioInputRoutingPolicy.decide(
+            microphoneID: selectedDeviceID,
+            deviceResolved: AudioInputRouter.canResolve(uid: selectedDeviceID)
+        ) {
+        case .systemDefault:
+            break
+        case .useDevice(let uid):
+            guard let device = AudioInputRouter.resolve(uid: uid),
+                  AudioInputRouter.apply(device, to: engine) else {
+                throw SpeechAnalyzerBridge.BridgeError.unsupportedLocale(
+                    AudioInputRoutingPolicy.unresolvedMessage(uid: uid))
+            }
+        case .fallbackToDefault(let uid):
+            NSLog("[SpeechAnalyzerStreamingEngine] pinned mic '%@' disconnected — capturing system default", uid)
+        }
+
+        let micFormat = input.outputFormat(forBus: 0)
+        guard micFormat.sampleRate > 0, micFormat.channelCount > 0 else {
+            throw SpeechAnalyzerBridge.BridgeError.unsupportedLocale("no audio input device")
+        }
+        return (engine, micFormat)
+    }
+
+    /// Install the tap on `engine`, start it, and arm the configuration-change
+    /// observer. Shared by session start and the mid-session restart — both
+    /// yield into the SAME raw-buffer stream, so the analyzer sees one
+    /// continuous sample sequence (the adaptive converter absorbs a format
+    /// change across the restart).
+    @MainActor
+    private func startCapture(
+        engine: AVAudioEngine,
+        format: AVAudioFormat,
+        continuation: AsyncStream<AVAudioPCMBuffer>.Continuation,
+        myGeneration: Int
+    ) throws {
+        engine.inputNode.installTap(onBus: 0, bufferSize: 4096, format: format) { [weak self] buffer, _ in
+            continuation.yield(buffer)
+            self?.publishLevel(from: buffer)
+        }
+        audioEngine = engine
+        engine.prepare()
+        try engine.start()
+        armConfigChangeObserver(for: engine, continuation: continuation, myGeneration: myGeneration)
+    }
+
+    /// Converts tap buffers to the analyzer's required format, REBUILDING the
+    /// converter whenever the incoming format changes (a mid-session capture
+    /// restart lands on a device with a different native format).
+    ///
+    /// `@unchecked Sendable` because the `compactMap` transform that owns it is
+    /// `@Sendable`: the mutable converter is touched only from the recognition
+    /// task's SEQUENTIAL stream consumption (one buffer at a time, in order),
+    /// so there is no concurrent access to lock against.
+    private final class AdaptiveFormatConverter: @unchecked Sendable {
+        private let analyzerFormat: AVAudioFormat
+        private var converter: AVAudioConverter?
+
+        init(analyzerFormat: AVAudioFormat) {
+            self.analyzerFormat = analyzerFormat
+        }
+
+        /// nil when the buffer can't be represented in the analyzer format
+        /// (converter build or conversion failure) — the caller drops it.
+        func convert(_ buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
+            if buffer.format == analyzerFormat { return buffer } // feed as-is
+            if converter == nil || converter?.inputFormat != buffer.format {
+                converter = AVAudioConverter(from: buffer.format, to: analyzerFormat)
+            }
+            guard let converter else { return nil }
+            return SpeechAnalyzerStreamingEngine.convert(buffer, with: converter, to: analyzerFormat)
+        }
+    }
+
+    /// Watch for the input device disconnecting / switching / renegotiating its
+    /// format mid-session. AVAudioEngine STOPS rendering when that happens, so
+    /// without this the session keeps showing "Listening…" while capturing
+    /// nothing — every word after the change is silently lost. Capture is
+    /// REBUILT onto the same raw-buffer stream: the analyzer keeps everything
+    /// already captured and the dictation continues, losing only the glitch
+    /// itself. Rebuild failure (e.g. no input device left) surfaces on the
+    /// session error path. Same pattern as ParakeetStreamingEngine.
+    @MainActor
+    private func armConfigChangeObserver(
+        for engine: AVAudioEngine,
+        continuation: AsyncStream<AVAudioPCMBuffer>.Continuation,
+        myGeneration: Int
+    ) {
+        removeConfigChangeObserver()
+        restartContext = RestartContext(continuation: continuation, myGeneration: myGeneration)
+        // Selector-based on purpose: the block observer API takes a hard
+        // `@Sendable` closure, and every capture it needs (self, the
+        // continuation) is non-Sendable — the selector target keeps the compile
+        // warning-free and the context lives in `restartContext` instead.
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(inputConfigurationDidChange(_:)),
+            name: .AVAudioEngineConfigurationChange,
+            object: engine)
+    }
+
+    @MainActor
+    private func removeConfigChangeObserver() {
+        NotificationCenter.default.removeObserver(
+            self, name: .AVAudioEngineConfigurationChange, object: nil)
+        restartContext = nil
+    }
+
+    /// Fires on the notification-posting thread; hop to the main actor where
+    /// the session state lives. Same hop shape as the result callbacks.
+    @objc private func inputConfigurationDidChange(_ note: Notification) {
+        DispatchQueue.main.async {
+            MainActor.assumeIsolated { self.handleInputConfigurationChange() }
+        }
+    }
+
+    @MainActor
+    private func handleInputConfigurationChange() {
+        // Same session fence as the result hops: a stop or a newer session owns
+        // the mic now — touch nothing. This engine has no didStop flag;
+        // `finalDelivered` is its "session over" marker (a cancel bumps the
+        // generation instead). Teardown also clears the context.
+        guard let context = restartContext, CaptureConfigChangePolicy.action(
+            generationMatches: generation == context.myGeneration,
+            didStop: finalDelivered
+        ) == .restartCapture else { return }
+        NSLog("[SpeechAnalyzerStreamingEngine] input device configuration changed — restarting capture")
+        removeConfigChangeObserver()
+        // The session fence held, so audioEngine is the engine the observer was
+        // armed for (re-arms replace the observer and the context together).
+        if let stale = audioEngine {
+            stale.inputNode.removeTap(onBus: 0)
+            stale.stop()
+        }
+        audioEngine = nil
+        do {
+            let (fresh, format) = try makeRoutedEngine()
+            try startCapture(
+                engine: fresh, format: format,
+                continuation: context.continuation, myGeneration: context.myGeneration)
+        } catch {
+            onError?(CaptureConfigChangePolicy.restartFailedMessage(
+                underlying: error.localizedDescription))
+        }
+    }
+
     /// Convert one mic-format buffer to the analyzer's required format. Returns
     /// nil (caller drops the buffer) on any conversion failure — a dropped chunk
     /// degrades the transcript; an unconverted chunk traps the Speech framework.
+    /// (Plain AVFoundation, so it compiles on every toolchain — no compiler gate.)
     private static func convert(
         _ buffer: AVAudioPCMBuffer, with converter: AVAudioConverter, to format: AVAudioFormat
     ) -> AVAudioPCMBuffer? {
@@ -233,7 +376,6 @@ final class SpeechAnalyzerStreamingEngine: StreamingTranscriptionEngine {
         guard conversionError == nil, out.frameLength > 0 else { return nil }
         return out
     }
-    #endif
 
     /// Append a finalized segment to the running transcript and return the whole.
     @MainActor
@@ -262,6 +404,7 @@ final class SpeechAnalyzerStreamingEngine: StreamingTranscriptionEngine {
 
     @MainActor
     private func runStop(cancel: Bool) {
+        removeConfigChangeObserver()
         if let audioEngine {
             audioEngine.inputNode.removeTap(onBus: 0)
             audioEngine.stop()
