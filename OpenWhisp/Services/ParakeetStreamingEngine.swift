@@ -21,7 +21,7 @@ import AVFoundation
 /// **Build:** real implementation only under `#if PARAKEET` (build.sh
 /// PARAKEET=1); otherwise a stub that reports unavailability, so the default
 /// build is unaffected. See docs/PARAKEET.md.
-final class ParakeetStreamingEngine: StreamingTranscriptionEngine {
+final class ParakeetStreamingEngine: NSObject, StreamingTranscriptionEngine {
     var onPartial: ((String) -> Void)?
     var onFinal: ((String) -> Void)?
     var onError: ((String) -> Void)?
@@ -48,6 +48,7 @@ final class ParakeetStreamingEngine: StreamingTranscriptionEngine {
 
     init(variantID: String = ParakeetCatalog.defaultVariantID) {
         self.variantID = ParakeetCatalog.normalize(variantID)
+        super.init()
     }
 
 #if PARAKEET
@@ -67,6 +68,16 @@ final class ParakeetStreamingEngine: StreamingTranscriptionEngine {
     /// exists ONLY so teardown (runStop / feed-loop error) can finish() it.
     @MainActor private var feedContinuation: AsyncStream<AVAudioPCMBuffer>.Continuation?
     @MainActor private var feedTask: Task<Void, Never>?
+    /// What the config-change restart needs to rebuild capture into the live
+    /// session (see `armConfigChangeObserver`). Non-nil exactly while the
+    /// observer is armed; cleared on every teardown path.
+    @MainActor private var restartContext: RestartContext?
+
+    private struct RestartContext {
+        let continuation: AsyncStream<AVAudioPCMBuffer>.Continuation
+        let callbacks: SessionCallbacks
+        let myGeneration: Int
+    }
 
     @MainActor private var lastPartial = ""
     @MainActor private var didStop = false
@@ -140,34 +151,14 @@ final class ParakeetStreamingEngine: StreamingTranscriptionEngine {
                 return
             }
 
-            let engine = AVAudioEngine()
-            let input = engine.inputNode
-
-            // Route to the selected input device BEFORE reading the format.
-            // A pinned but disconnected device falls back to the system default;
-            // a connected device that fails to route stays a hard error (same
-            // policy as Apple Speech).
-            switch AudioInputRoutingPolicy.decide(
-                microphoneID: selectedDeviceID,
-                deviceResolved: AudioInputRouter.canResolve(uid: selectedDeviceID)
-            ) {
-            case .systemDefault:
-                break
-            case .useDevice(let uid):
-                guard let device = AudioInputRouter.resolve(uid: uid),
-                      AudioInputRouter.apply(device, to: engine) else {
-                    callbacks.error?(AudioInputRoutingPolicy.unresolvedMessage(uid: uid))
-                    return
-                }
-            case .fallbackToDefault(let uid):
-                NSLog("[ParakeetStreamingEngine] pinned mic '%@' disconnected — capturing system default", uid)
-            }
-
-            let format = input.outputFormat(forBus: 0)
-            // 0 Hz / 0 ch (no input device) would make installTap raise an ObjC
-            // NSException that Swift can't catch — guard it out.
-            guard format.sampleRate > 0, format.channelCount > 0 else {
-                callbacks.error?("No audio input device available.")
+            // Route + format-check BEFORE the (potentially slow) model load, so a
+            // missing input device fails fast instead of after a first-run download.
+            let engine: AVAudioEngine
+            let format: AVAudioFormat
+            do {
+                (engine, format) = try makeRoutedEngine()
+            } catch let setupError as CaptureSetupError {
+                callbacks.error?(setupError.message)
                 return
             }
 
@@ -241,6 +232,7 @@ final class ParakeetStreamingEngine: StreamingTranscriptionEngine {
                         // The consumer is dead — tear the mic down too, or the
                         // tap keeps the mic hot and the continuation buffers
                         // yielded audio unbounded until the next session.
+                        self.removeConfigChangeObserver()
                         if let audioEngine = self.audioEngine {
                             audioEngine.inputNode.removeTap(onBus: 0)
                             audioEngine.stop()
@@ -253,18 +245,10 @@ final class ParakeetStreamingEngine: StreamingTranscriptionEngine {
                 }
             }
 
-            // The tap closure runs on an audio thread but touches no session
-            // state — AsyncStream.Continuation.yield is Sendable + thread-safe,
-            // so it yields straight from the audio thread (no main-actor hop
-            // per buffer) and publishes a level.
-            input.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
-                continuation.yield(buffer)
-                self?.publishLevel(from: buffer)
-            }
-
-            audioEngine = engine
-            engine.prepare()
-            try engine.start()
+            try startCapture(
+                engine: engine, format: format,
+                continuation: continuation, callbacks: callbacks,
+                myGeneration: myGeneration)
             // Tap installed + AVAudioEngine running: audio is flowing into the
             // feed stream. Everything above (model load/first-run download,
             // reset, callback wiring) was the arming gap this signal closes.
@@ -273,6 +257,152 @@ final class ParakeetStreamingEngine: StreamingTranscriptionEngine {
             NSLog("[Parakeet] start error: %@", error.localizedDescription)
             guard !didStop else { return }
             callbacks.error?("Parakeet streaming failed: \(error.localizedDescription)")
+        }
+    }
+
+    /// Setup failure with a user-facing message (routing refused, no input
+    /// device). `LocalizedError` so a generic `localizedDescription` still
+    /// reads as the message.
+    private struct CaptureSetupError: Error, LocalizedError {
+        let message: String
+        var errorDescription: String? { message }
+    }
+
+    /// Build a fresh AVAudioEngine routed to the pinned (or default) input and
+    /// return it with its tap format. Shared by session start and the
+    /// mid-session configuration-change restart.
+    @MainActor
+    private func makeRoutedEngine() throws -> (AVAudioEngine, AVAudioFormat) {
+        let engine = AVAudioEngine()
+        let input = engine.inputNode
+
+        // Route to the selected input device BEFORE reading the format.
+        // A pinned but disconnected device falls back to the system default;
+        // a connected device that fails to route stays a hard error (same
+        // policy as Apple Speech).
+        switch AudioInputRoutingPolicy.decide(
+            microphoneID: selectedDeviceID,
+            deviceResolved: AudioInputRouter.canResolve(uid: selectedDeviceID)
+        ) {
+        case .systemDefault:
+            break
+        case .useDevice(let uid):
+            guard let device = AudioInputRouter.resolve(uid: uid),
+                  AudioInputRouter.apply(device, to: engine) else {
+                throw CaptureSetupError(message: AudioInputRoutingPolicy.unresolvedMessage(uid: uid))
+            }
+        case .fallbackToDefault(let uid):
+            NSLog("[ParakeetStreamingEngine] pinned mic '%@' disconnected — capturing system default", uid)
+        }
+
+        let format = input.outputFormat(forBus: 0)
+        // 0 Hz / 0 ch (no input device) would make installTap raise an ObjC
+        // NSException that Swift can't catch — guard it out.
+        guard format.sampleRate > 0, format.channelCount > 0 else {
+            throw CaptureSetupError(message: "No audio input device available.")
+        }
+        return (engine, format)
+    }
+
+    /// Install the feed tap on `engine`, start it, and arm the
+    /// configuration-change observer. Shared by session start and the
+    /// mid-session restart — both feed the SAME continuation, so the decode
+    /// session sees one continuous sample stream.
+    @MainActor
+    private func startCapture(
+        engine: AVAudioEngine,
+        format: AVAudioFormat,
+        continuation: AsyncStream<AVAudioPCMBuffer>.Continuation,
+        callbacks: SessionCallbacks,
+        myGeneration: Int
+    ) throws {
+        // The tap closure runs on an audio thread but touches no session
+        // state — AsyncStream.Continuation.yield is Sendable + thread-safe,
+        // so it yields straight from the audio thread (no main-actor hop
+        // per buffer) and publishes a level.
+        engine.inputNode.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
+            continuation.yield(buffer)
+            self?.publishLevel(from: buffer)
+        }
+        audioEngine = engine
+        engine.prepare()
+        try engine.start()
+        armConfigChangeObserver(
+            for: engine, continuation: continuation,
+            callbacks: callbacks, myGeneration: myGeneration)
+    }
+
+    /// Watch for the input device disconnecting / switching / renegotiating its
+    /// format mid-session. AVAudioEngine STOPS rendering when that happens, so
+    /// without this the session keeps showing "Listening…" while capturing
+    /// nothing — every word after the change is silently lost (AudioRecorder
+    /// has the same observer; the streaming engines lacked it). Unlike the
+    /// recorder's fail-only handling, capture is REBUILT onto the same feed
+    /// stream: the decode session keeps everything already captured and the
+    /// dictation continues, losing only the glitch itself. Rebuild failure
+    /// (e.g. no input device left) surfaces on the session error path.
+    @MainActor
+    private func armConfigChangeObserver(
+        for engine: AVAudioEngine,
+        continuation: AsyncStream<AVAudioPCMBuffer>.Continuation,
+        callbacks: SessionCallbacks,
+        myGeneration: Int
+    ) {
+        removeConfigChangeObserver()
+        restartContext = RestartContext(
+            continuation: continuation, callbacks: callbacks, myGeneration: myGeneration)
+        // Selector-based on purpose: the block observer API takes a hard
+        // `@Sendable` closure, and every capture it needs (self, the session
+        // callbacks) is non-Sendable — the selector target keeps the compile
+        // warning-free and the context lives in `restartContext` instead.
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(inputConfigurationDidChange(_:)),
+            name: .AVAudioEngineConfigurationChange,
+            object: engine)
+    }
+
+    @MainActor
+    private func removeConfigChangeObserver() {
+        NotificationCenter.default.removeObserver(
+            self, name: .AVAudioEngineConfigurationChange, object: nil)
+        restartContext = nil
+    }
+
+    /// Fires on the notification-posting thread; hop to the main actor where
+    /// the session state lives. Same hop shape as the partial callback.
+    @objc private func inputConfigurationDidChange(_ note: Notification) {
+        DispatchQueue.main.async {
+            MainActor.assumeIsolated { self.handleInputConfigurationChange() }
+        }
+    }
+
+    @MainActor
+    private func handleInputConfigurationChange() {
+        // Same session fence as the partial/EOU hops: a stop or a newer session
+        // owns the mic now — touch nothing. (Teardown also clears the context.)
+        guard let context = restartContext, CaptureConfigChangePolicy.action(
+            generationMatches: generation == context.myGeneration,
+            didStop: didStop
+        ) == .restartCapture else { return }
+        NSLog("[Parakeet] input device configuration changed — restarting capture")
+        removeConfigChangeObserver()
+        // The session fence held, so audioEngine is the engine the observer was
+        // armed for (re-arms replace the observer and the context together).
+        if let stale = audioEngine {
+            stale.inputNode.removeTap(onBus: 0)
+            stale.stop()
+        }
+        audioEngine = nil
+        do {
+            let (fresh, format) = try makeRoutedEngine()
+            try startCapture(
+                engine: fresh, format: format,
+                continuation: context.continuation, callbacks: context.callbacks,
+                myGeneration: context.myGeneration)
+        } catch {
+            context.callbacks.error?(CaptureConfigChangePolicy.restartFailedMessage(
+                underlying: error.localizedDescription))
         }
     }
 
@@ -308,6 +438,7 @@ final class ParakeetStreamingEngine: StreamingTranscriptionEngine {
         // Supersede the session so late partial hops are dropped.
         generation += 1
 
+        removeConfigChangeObserver()
         if let audioEngine {
             audioEngine.inputNode.removeTap(onBus: 0)
             audioEngine.stop()
