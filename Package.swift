@@ -84,6 +84,7 @@ let package = Package(
                 "AudioCapture.swift",
                 "FileAudioCapture.swift",
                 "AudioInputRoutingPolicy.swift",
+                "CaptureConfigChangePolicy.swift",
                 "OverlayPhase.swift",
                 "LiveChunkPipeline.swift",
                 "ConfigBundle.swift",
