@@ -58,6 +58,19 @@ final class WhisperKitStreamingEngine: NSObject, StreamingTranscriptionEngine {
     // unconfirmed/hypothesis tail.
     @MainActor private var lastConfirmedText: String = ""
     @MainActor private var didFinish: Bool = false
+    /// Non-cancel stops enqueued whose `runStop` hasn't completed yet — the
+    /// engine is still working toward a genuine final (the finalizeTail
+    /// re-decode). A counter, not a bool: on a fast stop→start→stop, session
+    /// N+1's stop is already counted while session N's runStop is still queued,
+    /// and N's completion must not clear N+1's pending finalize. Mirrors
+    /// ParakeetStreamingEngine.
+    @MainActor private var pendingFinalizeStops = 0
+
+    /// True while a non-cancel stop is still flushing toward its final. Read by
+    /// AppState's stuck-session fallback; main-actor callers only.
+    var isFinalizing: Bool {
+        MainActor.assumeIsolated { pendingFinalizeStops > 0 }
+    }
     /// Whether this stream's `onStarted` already fired. AudioStreamTranscriber
     /// installs the tap inside `handle.start()`, which doesn't return until the
     /// stream ENDS — so the first state diff (they arrive per buffer, energy
@@ -213,6 +226,11 @@ final class WhisperKitStreamingEngine: NSObject, StreamingTranscriptionEngine {
             // final with the successor's sessionID, straight through AppState's
             // session fence.
             let final = self.onFinal
+            // Report "finalizing" from ENQUEUE until runStop completes, so the
+            // stuck-session fallback (StreamingRoutePolicy.runStopFallback) keeps
+            // waiting for the genuine final instead of completing the session
+            // with the stale last partial while finalizeTail decodes the tail.
+            if !cancel { self.pendingFinalizeStops += 1 }
             // Strong capture (see start): teardown must run even if the caller drops
             // its reference to this engine immediately after enqueueing the stop.
             self.lifecycle.enqueue {
@@ -226,6 +244,9 @@ final class WhisperKitStreamingEngine: NSObject, StreamingTranscriptionEngine {
     /// before any queued start proceeds.
     @MainActor
     private func runStop(cancel: Bool, final deliverFinal: ((String) -> Void)?) async {
+        // Balance stop(cancel:false)'s increment on every exit path — the
+        // fallback poll must see finalizing end even when no final is delivered.
+        defer { if !cancel { pendingFinalizeStops = max(0, pendingFinalizeStops - 1) } }
         removeConfigChangeObserver()
         let handle = transcriber
         transcriber = nil

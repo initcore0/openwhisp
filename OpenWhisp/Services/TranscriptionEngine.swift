@@ -128,6 +128,18 @@ public protocol StreamingTranscriptionEngine: AnyObject {
     /// non-default mic still recorded the built-in one.
     func selectDevice(_ deviceID: String)
 
+    /// True while a non-cancel `stop` is still actively producing the session's
+    /// genuine final — e.g. Parakeet draining its queued audio feed through the
+    /// decoder before `finish()`, or WhisperKit's `finalizeTail` re-decode. The
+    /// stuck-session fallback (`StreamingRoutePolicy.runStopFallback`) polls this
+    /// instead of firing at a fixed deadline: a long dictation's decode backlog
+    /// can outlast any fixed window, and completing the session with the stale
+    /// last partial would silently drop the tail words the engine is about to
+    /// deliver. Engines whose final is synchronous or internally guaranteed
+    /// (Apple Speech's 0.8s synthesized final, SpeechAnalyzer's stop-time
+    /// delivery) keep the default `false`.
+    var isFinalizing: Bool { get }
+
     /// Begin streaming recognition for `language` ("auto" = current locale).
     ///
     /// `prompt` carries the session's vocabulary/bias context (the same
@@ -149,6 +161,11 @@ public protocol StreamingTranscriptionEngine: AnyObject {
 }
 
 extension StreamingTranscriptionEngine {
+    /// Default: the engine's final needs no extended wait (it arrives promptly or
+    /// is internally guaranteed), so the stuck-session fallback keeps its original
+    /// single-deadline behavior.
+    public var isFinalizing: Bool { false }
+
     /// Convenience for call sites (and the test fake) that carry no bias context.
     /// Not a way to smuggle a prompt past the capability gate — it forwards the
     /// empty string, which every engine honors trivially (it's a no-op).

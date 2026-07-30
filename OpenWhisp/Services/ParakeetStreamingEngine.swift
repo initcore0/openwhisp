@@ -81,6 +81,19 @@ final class ParakeetStreamingEngine: NSObject, StreamingTranscriptionEngine {
 
     @MainActor private var lastPartial = ""
     @MainActor private var didStop = false
+    /// Non-cancel stops enqueued whose `runStop` hasn't completed yet — the
+    /// engine is still working toward a genuine final (feed drain + `finish()`
+    /// flush). A counter, not a bool: on a fast stop→start→stop, session N+1's
+    /// stop is already counted while session N's runStop is still queued, and
+    /// N's completion must not clear N+1's pending finalize.
+    @MainActor private var pendingFinalizeStops = 0
+
+    /// True while a non-cancel stop is still draining/flushing toward its final.
+    /// Read by AppState's stuck-session fallback; main-actor callers only (same
+    /// contract as `selectDevice`).
+    var isFinalizing: Bool {
+        MainActor.assumeIsolated { pendingFinalizeStops > 0 }
+    }
     /// True while a settle-check for a configuration-change notification is
     /// already scheduled — further notifications in that window coalesce into
     /// the pending check instead of stacking checks (a storm posts several).
@@ -462,6 +475,13 @@ final class ParakeetStreamingEngine: NSObject, StreamingTranscriptionEngine {
             // session's final with the successor's sessionID, straight through
             // AppState's session fence.
             let final = self.onFinal
+            // Report "finalizing" from ENQUEUE until runStop completes, so the
+            // stuck-session fallback (StreamingRoutePolicy.runStopFallback) keeps
+            // waiting for the genuine final instead of completing the session
+            // with the stale last partial while the feed drain / finish() flush
+            // runs — enqueue time matters because runStop can sit behind a slow
+            // predecessor in the chain.
+            if !cancel { self.pendingFinalizeStops += 1 }
             self.lifecycle.enqueue {
                 await self.runStop(cancel: cancel, final: final)
             }
@@ -481,6 +501,11 @@ final class ParakeetStreamingEngine: NSObject, StreamingTranscriptionEngine {
 
     @MainActor
     private func runStop(cancel: Bool, final deliverFinal: ((String) -> Void)?) async {
+        // Balance stop(cancel:false)'s increment on EVERY exit path (no-session
+        // early return, finish() error): the fallback poll must see finalizing
+        // end even when no final gets delivered — its grace poll then fires the
+        // stale-partial completion instead of wedging the session.
+        defer { if !cancel { pendingFinalizeStops = max(0, pendingFinalizeStops - 1) } }
         didStop = true
         // Supersede the session so late partial hops are dropped.
         generation += 1

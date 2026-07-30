@@ -3471,20 +3471,20 @@ class AppState: ObservableObject {
         // at the true end (insert / finishSessionUI).
         activeStreamingEngine.stop(cancel: false)
 
-        // Session-scoped fallback: a rapid follow-up session could otherwise be
-        // finalized early by THIS session's leftover timer.
-        //
-        // 2.0s (not 0.9s): AppleSpeechEngine's own 0.8s fallback guarantees a
-        // final for the Apple path, so this is a stuck-session guard (WhisperKit
-        // streaming teardown, engine deallocated) — with a wide margin so a busy
-        // main thread can't let this fire first and clobber the engine's genuine
-        // final (which arrives via an extra Task hop) with a stale partial.
+        // Session-scoped fallback (a rapid follow-up session must not be
+        // finalized by THIS session's leftover timer). Re-arming poll, not a
+        // one-shot: while the engine reports `isFinalizing` (Parakeet draining
+        // its decode backlog, WhisperKit's finalizeTail) keep waiting for the
+        // genuine final — a one-shot fired first on long dictations and its stale
+        // partial dropped the real final's tail words; see StreamingRoutePolicy.
         let sessionID = activeSessionID
+        let engine = activeStreamingEngine
         Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 2_000_000_000)
-            if sessionID == self.activeSessionID && self.isAppleSpeechSession && self.isTranscribing && !self.appleDidCompleteFinal {
-                self.handleAppleSpeechFinal(self.streamingText, sessionID: sessionID)
-            }
+            await StreamingRoutePolicy.runStopFallback(
+                isSessionStillWaiting: { sessionID == self.activeSessionID && self.isAppleSpeechSession
+                    && self.isTranscribing && !self.appleDidCompleteFinal },
+                isEngineFinalizing: { engine.isFinalizing },
+                completeFallback: { self.handleAppleSpeechFinal(self.streamingText, sessionID: sessionID) })
         }
     }
 

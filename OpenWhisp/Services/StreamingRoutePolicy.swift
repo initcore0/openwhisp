@@ -105,6 +105,77 @@ public enum StreamingRoutePolicy {
         return pendingStop ? .beginListeningThenStop : .beginListening
     }
 
+    /// Stuck-session stop-fallback poll interval (seconds). 2.0 (not 0.9):
+    /// AppleSpeechEngine's own 0.8s fallback guarantees a final for the Apple
+    /// path, so the fallback is a stuck-session guard — with a wide margin so a
+    /// busy main thread can't let it fire first and clobber the engine's genuine
+    /// final (which arrives via an extra Task hop) with a stale partial.
+    public static let stopFallbackInterval: TimeInterval = 2
+    /// Hard cap (seconds) on how long the stop fallback keeps waiting for an
+    /// engine that reports `isFinalizing`. A finalize that outlasts this is
+    /// treated as hung and the session completes with the last partial — the
+    /// stuck-session guarantee the fallback exists for. Generous on purpose: a
+    /// real decode-backlog drain is far faster than realtime (Parakeet RTFx ~5),
+    /// so only a genuine hang ever reaches it.
+    public static let stopFallbackMaxWait: TimeInterval = 30
+
+    /// The stuck-session fallback armed by a streaming stop (AppState's
+    /// `stopAppleSpeech`): if the engine's genuine final never arrives, complete
+    /// the session with the last streamed partial rather than wedging at
+    /// "Finalizing...".
+    ///
+    /// Re-arming poll loop, NOT a one-shot deadline — the one-shot was the
+    /// tail-word-loss bug: a long dictation leaves Parakeet's `runStop` draining
+    /// the queued audio feed through the decoder (then `finish()`), which can
+    /// outlast any fixed window; the timer fired first with the STALE partial,
+    /// set the did-complete flag, and the genuine final (holding the tail words)
+    /// was dropped by the completion guard. While the engine reports
+    /// `isFinalizing`, the fallback re-arms instead of firing.
+    ///
+    /// One extra GRACE poll after finalizing ends: the engine clears its
+    /// finalizing state when its stop chain returns, but the final it delivered
+    /// still rides a main-actor Task hop into the completion handler — completing
+    /// in that gap would clobber it. By the next poll the hop has long landed and
+    /// `isSessionStillWaiting` reports the session done.
+    ///
+    /// - Parameters:
+    ///   - sleep: injectable wait (tests script it; production sleeps for real).
+    ///   - isSessionStillWaiting: the caller's session fence — still the same
+    ///     session, still finalizing, no final handled yet. `false` ends the loop
+    ///     silently (the timer's job is done or moot).
+    ///   - isEngineFinalizing: the active engine's `isFinalizing`.
+    ///   - completeFallback: complete the session with the stale partial. Called
+    ///     at most once, as the loop's last act.
+    @MainActor
+    public static func runStopFallback(
+        interval: TimeInterval = stopFallbackInterval,
+        maxWait: TimeInterval = stopFallbackMaxWait,
+        sleep: (TimeInterval) async -> Void = {
+            try? await Task.sleep(nanoseconds: UInt64($0 * 1_000_000_000))
+        },
+        isSessionStillWaiting: () -> Bool,
+        isEngineFinalizing: () -> Bool,
+        completeFallback: () -> Void
+    ) async {
+        var elapsed: TimeInterval = 0
+        var wasFinalizing = false
+        while true {
+            await sleep(interval)
+            elapsed += interval
+            guard isSessionStillWaiting() else { return }
+            let finalizing = isEngineFinalizing()
+            if (finalizing || wasFinalizing) && elapsed < maxWait {
+                // `wasFinalizing` is what grants the single grace poll: it holds
+                // fire for exactly one interval after finalizing ends, then (if
+                // the final still never landed) the fallback fires after all.
+                wasFinalizing = finalizing
+                continue
+            }
+            completeFallback()
+            return
+        }
+    }
+
     /// Arming-timeout fallback (seconds): if `onStarted` hasn't fired this long
     /// after `start()` was issued, flip to Listening anyway so a signal-wiring
     /// bug can't wedge the session at "Starting…" forever. Deliberately generous
