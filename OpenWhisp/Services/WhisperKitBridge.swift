@@ -1,5 +1,6 @@
 import Foundation
 import CoreAudio   // AudioDeviceID (the input-device id threaded to AudioStreamTranscriber)
+import AVFoundation // AVAudioEngine (mid-session capture restart on the stream handle)
 
 /// Maps OpenWhisp's engine-facing language setting to WhisperKit decoding
 /// options. Mirrors `WhisperTask` (used for whisper.cpp): the shared
@@ -461,6 +462,86 @@ final class WhisperKitStreamHandle {
     /// The full assembled transcript (confirmed + unconfirmed) as of the last state.
     func fullText() -> String {
         (latest?.fullText ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    // MARK: Mid-session capture restart (AVAudioEngineConfigurationChange)
+
+    /// The `AVAudioEngine` WhisperKit's `AudioProcessor` is currently capturing
+    /// with — nil before capture starts, after stop, or on a custom (non-default)
+    /// audio processor. Exposed so the engine can arm its
+    /// `AVAudioEngineConfigurationChange` observer on the exact engine object.
+    var captureAudioEngine: AVAudioEngine? {
+        (kit.audioProcessor as? AudioProcessor)?.audioEngine
+    }
+
+    private struct CaptureRestartError: Error, LocalizedError {
+        let message: String
+        var errorDescription: String? { message }
+    }
+
+    /// Tear down the (dead) capture engine and rebuild a fresh one feeding the
+    /// SAME decode buffer. After an input-device disconnect/switch/format
+    /// renegotiation AVAudioEngine stops rendering; the realtime decode loop
+    /// keeps polling `audioSamples` regardless, so appending fresh capture there
+    /// resumes the transcript with only the glitch itself lost.
+    ///
+    /// Mirrors `AudioProcessor.setupEngine` (internal to WhisperKit) with its
+    /// public pieces: tap in the node's native format, resample to WhisperKit's
+    /// 16 kHz mono, honor input suppression, and hand the samples to
+    /// `processBuffer` — which also keeps `audioEnergy` (levels/VAD) and the
+    /// buffer callback flowing.
+    func restartCapture(inputDeviceID: AudioDeviceHandle?) throws {
+        guard let processor = kit.audioProcessor as? AudioProcessor else {
+            throw CaptureRestartError(
+                message: "capture restart requires WhisperKit's default audio processor")
+        }
+        if let stale = processor.audioEngine {
+            stale.inputNode.removeTap(onBus: 0)
+            stale.stop()
+        }
+        processor.audioEngine = nil
+
+        let engine = AVAudioEngine()
+        let input = engine.inputNode
+        // Route BEFORE reading the format (the format follows the device). The
+        // caller resolved the device under AudioInputRoutingPolicy, so a routing
+        // failure here is a hard error — never silently capture a different mic.
+        if let deviceID = inputDeviceID {
+            try input.auAudioUnit.setDeviceID(deviceID)
+        }
+        let format = input.outputFormat(forBus: 0)
+        // 0 Hz / 0 ch (no input device) would make installTap raise an ObjC
+        // NSException that Swift can't catch — guard it out.
+        guard format.sampleRate > 0, format.channelCount > 0 else {
+            throw CaptureRestartError(message: "No audio input device available.")
+        }
+        guard let desiredFormat = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: Double(WhisperKit.sampleRate),
+            channels: 1,
+            interleaved: false
+        ), let converter = AVAudioConverter(from: format, to: desiredFormat) else {
+            throw CaptureRestartError(
+                message: "mic format \(format) can't convert to WhisperKit's 16 kHz mono")
+        }
+        let bufferSize = AVAudioFrameCount(processor.minBufferLength)
+        input.installTap(onBus: 0, bufferSize: bufferSize, format: format) { [weak processor] buffer, _ in
+            guard let processor else { return }
+            var resampled = buffer
+            if !buffer.format.sampleRate.isEqual(to: Double(WhisperKit.sampleRate)) {
+                guard let converted = try? AudioProcessor.resampleBuffer(buffer, with: converter)
+                else { return } // drop an unconvertible buffer
+                resampled = converted
+            }
+            var samples = AudioProcessor.convertBufferToArray(buffer: resampled)
+            if processor.isInputSuppressed {
+                samples = [Float](repeating: 0, count: samples.count)
+            }
+            processor.processBuffer(samples)
+        }
+        engine.prepare()
+        try engine.start()
+        processor.audioEngine = engine
     }
 
     /// Ignore stop-time tails shorter than this (0.25 s @ 16 kHz): releasing the
