@@ -1,5 +1,6 @@
 import Foundation
-import CoreAudio   // AudioDeviceID (the input-device id threaded to WhisperKit)
+import CoreAudio    // AudioDeviceID (the input-device id threaded to WhisperKit)
+import AVFoundation // AVAudioEngine (config-change observer on WhisperKit's capture engine)
 
 /// Experimental real-time WhisperKit engine (streaming partials).
 ///
@@ -13,7 +14,11 @@ import CoreAudio   // AudioDeviceID (the input-device id threaded to WhisperKit)
 ///
 /// **Build:** real implementation only under `#if WHISPERKIT`; otherwise a stub
 /// that reports unavailability, so the default build is unaffected.
-final class WhisperKitStreamingEngine: StreamingTranscriptionEngine {
+///
+/// NSObject so the AVAudioEngineConfigurationChange observer can be
+/// selector-based (the block API takes a hard `@Sendable` closure whose
+/// captures here are non-Sendable) — same shape as ParakeetStreamingEngine.
+final class WhisperKitStreamingEngine: NSObject, StreamingTranscriptionEngine {
     var onPartial: ((String) -> Void)?
     var onFinal: ((String) -> Void)?
     var onError: ((String) -> Void)?
@@ -36,6 +41,7 @@ final class WhisperKitStreamingEngine: StreamingTranscriptionEngine {
 
     init(modelName: String = "openai_whisper-small") {
         self.modelName = modelName
+        super.init()
     }
 
 #if WHISPERKIT
@@ -87,6 +93,27 @@ final class WhisperKitStreamingEngine: StreamingTranscriptionEngine {
     /// re-press). See `SerialTaskChain`.
     @MainActor private let lifecycle = SerialTaskChain()
 
+    /// What the mid-session configuration-change restart needs (see
+    /// `armConfigChangeObserver`). Non-nil exactly while the observer is armed;
+    /// cleared on every teardown path. Unlike the engines that own their tap,
+    /// the capture rebuild itself lives on the stream handle
+    /// (`WhisperKitStreamHandle.restartCapture`) because the mic belongs to
+    /// WhisperKit's `AudioProcessor`.
+    @MainActor private var restartContext: RestartContext?
+
+    private struct RestartContext {
+        let callbacks: SessionCallbacks
+        let myGeneration: Int
+    }
+
+    /// True while a settle-check for a configuration-change notification is
+    /// already scheduled — further notifications in that window coalesce into
+    /// the pending check instead of stacking checks (a storm posts several).
+    @MainActor private var configChangeCheckPending = false
+    /// Capture rebuilds performed for the CURRENT capture session; reset in
+    /// `runStart`. Compared against `CaptureConfigChangePolicy.maxRestartsPerSession`.
+    @MainActor private var configRestartsThisSession = 0
+
     func start(language: String, prompt: String) throws {
         let task = WhisperKitTaskMapper.map(languageSetting: language)
         // Enqueue SYNCHRONOUSLY on the main actor so call order == enqueue order
@@ -135,34 +162,19 @@ final class WhisperKitStreamingEngine: StreamingTranscriptionEngine {
             // Resolve the selected input device. It's passed straight into
             // AudioStreamTranscriber(inputDeviceID:) (our WhisperKit fork backports
             // upstream #503), which forwards it to startRecordingLive — WhisperKit
-            // captures the chosen device directly, no system-default swap needed. A
-            // pinned but DISCONNECTED device falls back to the system default so the
-            // session can run (the AirPods-disconnect hang); a CONNECTED device that
-            // fails to resolve at application time stays a hard error.
+            // captures the chosen device directly, no system-default swap needed.
             let inputDeviceID: AudioDeviceID?
-            switch AudioInputRoutingPolicy.decide(
-                microphoneID: selectedDeviceID,
-                deviceResolved: AudioInputRouter.canResolve(uid: selectedDeviceID)
-            ) {
-            case .systemDefault:
-                inputDeviceID = nil
-            case .useDevice(let uid):
-                // Resolve to the concrete device id. A nil here (device vanished
-                // between canResolve and now) is treated as unresolved — a hard error,
-                // NOT a silent nil that would fall back to the system default.
-                guard let id = AudioInputRouter.resolve(uid: uid)?.deviceID else {
-                    callbacks.error?(AudioInputRoutingPolicy.unresolvedMessage(uid: uid))
-                    return
-                }
-                inputDeviceID = id
-            case .fallbackToDefault(let uid):
-                NSLog("[WhisperKitStreamingEngine] pinned mic '%@' disconnected — capturing system default", uid)
-                inputDeviceID = nil
+            do {
+                inputDeviceID = try resolveInputDeviceID()
+            } catch let setupError as CaptureSetupError {
+                callbacks.error?(setupError.message)
+                return
             }
 
             let kit = try await ensureLoaded()
             generation += 1
             startedNotified = false
+            configRestartsThisSession = 0
             let myGeneration = generation
             let handle = try WhisperKitBridge.makeStreamHandle(
                 kit: kit,
@@ -191,6 +203,9 @@ final class WhisperKitStreamingEngine: StreamingTranscriptionEngine {
                 } catch {
                     NSLog("[WhisperKitStream] stream error: %@", error.localizedDescription)
                     guard let self, self.transcriber === handle, !self.didFinish else { return }
+                    // The stream is dead — a config-change restart would feed a
+                    // torn-down decode loop, so disarm before erroring out.
+                    self.removeConfigChangeObserver()
                     callbacks.error?("WhisperKit streaming failed: \(error.localizedDescription)")
                 }
             }
@@ -232,6 +247,7 @@ final class WhisperKitStreamingEngine: StreamingTranscriptionEngine {
         // Balance stop(cancel:false)'s increment on every exit path — the
         // fallback poll must see finalizing end even when no final is delivered.
         defer { if !cancel { pendingFinalizeStops = max(0, pendingFinalizeStops - 1) } }
+        removeConfigChangeObserver()
         let handle = transcriber
         transcriber = nil
         didFinish = true
@@ -258,10 +274,16 @@ final class WhisperKitStreamingEngine: StreamingTranscriptionEngine {
     private func handleState(_ state: WhisperKitStreamState, callbacks: SessionCallbacks) {
         // First state diff for this stream = capture is live (tap installed,
         // buffers flowing). Fires before any partial from the same diff so the
-        // session leaves arming before text starts arriving.
+        // session leaves arming before text starts arriving. This is also the
+        // earliest moment WhisperKit's capture AVAudioEngine exists, so the
+        // configuration-change observer arms here (the caller's generation
+        // guard makes self.generation this stream's own).
         if !startedNotified {
             startedNotified = true
             callbacks.started?()
+            if let engine = transcriber?.captureAudioEngine {
+                armConfigChangeObserver(for: engine, callbacks: callbacks, myGeneration: generation)
+            }
         }
         if let level = state.peakEnergy {
             // vadLevel is the absolute-curve reading; the display level's
@@ -279,6 +301,144 @@ final class WhisperKitStreamingEngine: StreamingTranscriptionEngine {
         guard !text.isEmpty, text != lastConfirmedText else { return }
         lastConfirmedText = text
         callbacks.partial?(text)
+    }
+
+    /// Setup failure with a user-facing message (routing refused, device
+    /// vanished). `LocalizedError` so a generic `localizedDescription` still
+    /// reads as the message.
+    private struct CaptureSetupError: Error, LocalizedError {
+        let message: String
+        var errorDescription: String? { message }
+    }
+
+    /// Resolve `selectedDeviceID` to a concrete CoreAudio device id (nil =
+    /// system default). Shared by session start and the mid-session
+    /// configuration-change restart. A pinned but DISCONNECTED device falls
+    /// back to the system default so the session can run (the
+    /// AirPods-disconnect hang); a CONNECTED device that fails to resolve at
+    /// application time stays a hard error — NOT a silent nil that would fall
+    /// back to the system default.
+    @MainActor
+    private func resolveInputDeviceID() throws -> AudioDeviceID? {
+        switch AudioInputRoutingPolicy.decide(
+            microphoneID: selectedDeviceID,
+            deviceResolved: AudioInputRouter.canResolve(uid: selectedDeviceID)
+        ) {
+        case .systemDefault:
+            return nil
+        case .useDevice(let uid):
+            guard let id = AudioInputRouter.resolve(uid: uid)?.deviceID else {
+                throw CaptureSetupError(message: AudioInputRoutingPolicy.unresolvedMessage(uid: uid))
+            }
+            return id
+        case .fallbackToDefault(let uid):
+            NSLog("[WhisperKitStreamingEngine] pinned mic '%@' disconnected — capturing system default", uid)
+            return nil
+        }
+    }
+
+    /// Watch for the input device disconnecting / switching / renegotiating its
+    /// format mid-session. AVAudioEngine STOPS rendering when that happens, so
+    /// without this the session keeps showing "Listening…" while capturing
+    /// nothing — every word after the change is silently lost. Capture is
+    /// REBUILT into the same decode buffer (`WhisperKitStreamHandle.
+    /// restartCapture`): the realtime loop keeps everything already captured
+    /// and the dictation continues, losing only the glitch itself. Rebuild
+    /// failure (e.g. no input device left) surfaces on the session error path.
+    /// Same pattern as ParakeetStreamingEngine.
+    @MainActor
+    private func armConfigChangeObserver(
+        for engine: AVAudioEngine,
+        callbacks: SessionCallbacks,
+        myGeneration: Int
+    ) {
+        removeConfigChangeObserver()
+        restartContext = RestartContext(callbacks: callbacks, myGeneration: myGeneration)
+        // Selector-based on purpose: the block observer API takes a hard
+        // `@Sendable` closure, and every capture it needs (self, the session
+        // callbacks) is non-Sendable — the selector target keeps the compile
+        // warning-free and the context lives in `restartContext` instead.
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(inputConfigurationDidChange(_:)),
+            name: .AVAudioEngineConfigurationChange,
+            object: engine)
+    }
+
+    @MainActor
+    private func removeConfigChangeObserver() {
+        NotificationCenter.default.removeObserver(
+            self, name: .AVAudioEngineConfigurationChange, object: nil)
+        restartContext = nil
+    }
+
+    /// Fires on the notification-posting thread; hop to the main actor where
+    /// the session state lives. Same hop shape as the state callback.
+    @objc private func inputConfigurationDidChange(_ note: Notification) {
+        DispatchQueue.main.async {
+            MainActor.assumeIsolated { self.handleInputConfigurationChange() }
+        }
+    }
+
+    /// Do NOT restart here — schedule a settle-check instead. Restarting on
+    /// every notification was the v1.0.12 dead-mic regression (Parakeet, PR
+    /// #227): the notification also fires for changes our own teardown+rebuild
+    /// causes, so a reflexive handler loops teardown→rebuild→notification
+    /// forever and the mic never captures. The settle delay coalesces the storm
+    /// and lets the io unit finish renegotiating; the check then rebuilds only
+    /// if the capture engine actually STOPPED.
+    @MainActor
+    private func handleInputConfigurationChange() {
+        guard restartContext != nil, !configChangeCheckPending else { return }
+        configChangeCheckPending = true
+        Task { @MainActor in
+            try? await Task.sleep(
+                nanoseconds: UInt64(CaptureConfigChangePolicy.settleDelay * 1_000_000_000))
+            self.configChangeCheckPending = false
+            self.settleCheckConfigurationChange()
+        }
+    }
+
+    @MainActor
+    private func settleCheckConfigurationChange() {
+        // Same session fence as the state callback: a stop or a newer session
+        // owns the mic now — touch nothing. (Teardown also clears the context.)
+        guard let context = restartContext, let handle = transcriber else { return }
+        switch CaptureConfigChangePolicy.action(
+            generationMatches: generation == context.myGeneration,
+            didStop: didFinish,
+            engineStillRunning: handle.captureAudioEngine?.isRunning ?? false,
+            restartsUsed: configRestartsThisSession
+        ) {
+        case .ignore:
+            return
+        case .restartCapture:
+            configRestartsThisSession += 1
+            NSLog("[WhisperKitStream] capture stopped after an input configuration change — restarting (%d/%d)",
+                  configRestartsThisSession, CaptureConfigChangePolicy.maxRestartsPerSession)
+            removeConfigChangeObserver()
+            do {
+                let deviceID = try resolveInputDeviceID()
+                try handle.restartCapture(inputDeviceID: deviceID)
+                // Re-arm on the REPLACEMENT engine — the old observer died with
+                // the stale engine object.
+                if let engine = handle.captureAudioEngine {
+                    armConfigChangeObserver(
+                        for: engine, callbacks: context.callbacks, myGeneration: context.myGeneration)
+                }
+            } catch {
+                context.callbacks.error?(CaptureConfigChangePolicy.restartFailedMessage(
+                    underlying: error.localizedDescription))
+            }
+        case .giveUp:
+            NSLog("[WhisperKitStream] input device keeps stopping capture after %d rebuilds — giving up",
+                  configRestartsThisSession)
+            removeConfigChangeObserver()
+            // No engine teardown here: the capture engine is already stopped
+            // (that's what giveUp means) and the session stop that follows the
+            // error tears the stream down via the handle.
+            context.callbacks.error?(CaptureConfigChangePolicy.gaveUpMessage)
+        }
     }
 
     @discardableResult

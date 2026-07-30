@@ -2,7 +2,10 @@ import Foundation
 import AVFoundation
 import Speech
 
-final class AppleSpeechEngine: StreamingTranscriptionEngine {
+// NSObject so the AVAudioEngineConfigurationChange observer can be
+// selector-based (the block API takes a hard `@Sendable` closure whose captures
+// here are non-Sendable) — same shape as ParakeetStreamingEngine.
+final class AppleSpeechEngine: NSObject, StreamingTranscriptionEngine {
     var onPartial: ((String) -> Void)?
     var onFinal: ((String) -> Void)?
     var onError: ((String) -> Void)?
@@ -29,6 +32,13 @@ final class AppleSpeechEngine: StreamingTranscriptionEngine {
     // only value crossing threads is that immutable String.
     @MainActor private var lastPartial = ""
     @MainActor private var didStop = false
+    /// True while a settle-check for a configuration-change notification is
+    /// already scheduled — further notifications in that window coalesce into
+    /// the pending check instead of stacking checks (a storm posts several).
+    @MainActor private var configChangeCheckPending = false
+    /// Capture rebuilds performed for the CURRENT capture session; reset in
+    /// `runStart`. Compared against `CaptureConfigChangePolicy.maxRestartsPerSession`.
+    @MainActor private var configRestartsThisSession = 0
     /// True once onFinal has fired for the current session (genuine or
     /// synthesized) — the stop() fallback checks it before synthesizing.
     @MainActor private var finalDelivered = false
@@ -45,6 +55,16 @@ final class AppleSpeechEngine: StreamingTranscriptionEngine {
     /// per-engine in `start()`; no global default mutation needed because Apple
     /// Speech uses its own `AVAudioEngine` whose input node we can retarget directly.
     @MainActor private var selectedDeviceID = ""
+
+    /// What the mid-session configuration-change restart needs to rebuild capture
+    /// into the live recognition request (see `armConfigChangeObserver`). Non-nil
+    /// exactly while the observer is armed; cleared on every teardown path.
+    @MainActor private var restartContext: RestartContext?
+
+    private struct RestartContext {
+        let request: SFSpeechAudioBufferRecognitionRequest
+        let myGeneration: Int
+    }
 
     func selectDevice(_ deviceID: String) {
         // Callers are @MainActor (AppState); pinning is a plain main-actor store.
@@ -83,6 +103,7 @@ final class AppleSpeechEngine: StreamingTranscriptionEngine {
         didStop = false
         finalDelivered = false
         lastPartial = ""
+        configRestartsThisSession = 0
 
         let localeIdentifier = language == "auto" ? Locale.current.identifier : language
         let recognizer = SFSpeechRecognizer(locale: Locale(identifier: localeIdentifier))
@@ -109,46 +130,7 @@ final class AppleSpeechEngine: StreamingTranscriptionEngine {
             request.contextualStrings = contextualStrings
         }
 
-        let engine = AVAudioEngine()
-        let input = engine.inputNode
-
-        // Route to the selected input device BEFORE reading the format (the format
-        // follows the device). A CONNECTED selection whose routing fails is a hard
-        // error — never silently capture a different mic (that was the bug where
-        // picking a non-default mic still captured the built-in one). A pinned but
-        // DISCONNECTED device instead falls back to the system default so the
-        // session can run (the AirPods-disconnect hang).
-        switch AudioInputRoutingPolicy.decide(
-            microphoneID: selectedDeviceID,
-            deviceResolved: AudioInputRouter.canResolve(uid: selectedDeviceID)
-        ) {
-        case .systemDefault:
-            break                                   // input node already follows the default
-        case .useDevice(let uid):
-            // Resolved above; a nil here or a setDeviceID failure is still a hard
-            // error — don't fall through to the default node.
-            guard let device = AudioInputRouter.resolve(uid: uid),
-                  AudioInputRouter.apply(device, to: engine) else {
-                throw AppleSpeechError.unavailable(AudioInputRoutingPolicy.unresolvedMessage(uid: uid))
-            }
-        case .fallbackToDefault(let uid):
-            NSLog("[AppleSpeechEngine] pinned mic '%@' disconnected — capturing system default", uid)
-        }
-
-        let format = input.outputFormat(forBus: 0)
-        // With no input device the format is 0 Hz / 0 ch and installTap raises
-        // an ObjC NSException that Swift try/catch can't intercept (app crash).
-        guard format.sampleRate > 0, format.channelCount > 0 else {
-            throw AppleSpeechError.unavailable("No audio input device available.")
-        }
-
-        // The tap closure runs on an audio thread but touches no shared session
-        // state — it only appends the buffer to the (thread-safe) request and reads
-        // the buffer to publish a level. Nothing here races with start()/stop().
-        input.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
-            request.append(buffer)
-            self?.publishLevel(from: buffer)
-        }
+        let (engine, format) = try makeRoutedEngine()
 
         let myGeneration = generation
         recognitionTask = recognizer.recognitionTask(with: request) { [weak self] result, error in
@@ -189,16 +171,189 @@ final class AppleSpeechEngine: StreamingTranscriptionEngine {
             }
         }
 
-        audioEngine = engine
         recognitionRequest = request
         self.recognizer = recognizer
 
-        engine.prepare()
-        try engine.start()
+        try startCapture(engine: engine, format: format, request: request, myGeneration: myGeneration)
         // The tap is installed and the AVAudioEngine is running — capture is
         // live NOW. This engine's start is fully synchronous, so the signal
         // fires before runStart returns (unlike the chained engines).
         onStarted?()
+    }
+
+    /// Build a fresh AVAudioEngine routed to the pinned (or default) input and
+    /// return it with its tap format. Shared by session start and the
+    /// mid-session configuration-change restart.
+    ///
+    /// Routing happens BEFORE reading the format (the format follows the
+    /// device). A CONNECTED selection whose routing fails is a hard error —
+    /// never silently capture a different mic (that was the bug where picking a
+    /// non-default mic still captured the built-in one). A pinned but
+    /// DISCONNECTED device instead falls back to the system default so the
+    /// session can run (the AirPods-disconnect hang).
+    @MainActor
+    private func makeRoutedEngine() throws -> (AVAudioEngine, AVAudioFormat) {
+        let engine = AVAudioEngine()
+        let input = engine.inputNode
+
+        switch AudioInputRoutingPolicy.decide(
+            microphoneID: selectedDeviceID,
+            deviceResolved: AudioInputRouter.canResolve(uid: selectedDeviceID)
+        ) {
+        case .systemDefault:
+            break                                   // input node already follows the default
+        case .useDevice(let uid):
+            // Resolved above; a nil here or a setDeviceID failure is still a hard
+            // error — don't fall through to the default node.
+            guard let device = AudioInputRouter.resolve(uid: uid),
+                  AudioInputRouter.apply(device, to: engine) else {
+                throw AppleSpeechError.unavailable(AudioInputRoutingPolicy.unresolvedMessage(uid: uid))
+            }
+        case .fallbackToDefault(let uid):
+            NSLog("[AppleSpeechEngine] pinned mic '%@' disconnected — capturing system default", uid)
+        }
+
+        let format = input.outputFormat(forBus: 0)
+        // With no input device the format is 0 Hz / 0 ch and installTap raises
+        // an ObjC NSException that Swift try/catch can't intercept (app crash).
+        guard format.sampleRate > 0, format.channelCount > 0 else {
+            throw AppleSpeechError.unavailable("No audio input device available.")
+        }
+        return (engine, format)
+    }
+
+    /// Install the tap on `engine`, start it, and arm the configuration-change
+    /// observer. Shared by session start and the mid-session restart — both
+    /// append to the SAME recognition request, so the recognizer sees one
+    /// continuous audio stream.
+    @MainActor
+    private func startCapture(
+        engine: AVAudioEngine,
+        format: AVAudioFormat,
+        request: SFSpeechAudioBufferRecognitionRequest,
+        myGeneration: Int
+    ) throws {
+        // The tap closure runs on an audio thread but touches no shared session
+        // state — it only appends the buffer to the (thread-safe) request and reads
+        // the buffer to publish a level. Nothing here races with start()/stop().
+        engine.inputNode.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
+            request.append(buffer)
+            self?.publishLevel(from: buffer)
+        }
+        audioEngine = engine
+        engine.prepare()
+        try engine.start()
+        armConfigChangeObserver(for: engine, request: request, myGeneration: myGeneration)
+    }
+
+    /// Watch for the input device disconnecting / switching / renegotiating its
+    /// format mid-session. AVAudioEngine STOPS rendering when that happens, so
+    /// without this the session keeps showing "Listening…" while capturing
+    /// nothing — every word after the change is silently lost. Capture is
+    /// REBUILT onto the same recognition request: the recognizer keeps
+    /// everything already heard and the dictation continues, losing only the
+    /// glitch itself. Rebuild failure (e.g. no input device left) surfaces on
+    /// the session error path. Same pattern as ParakeetStreamingEngine.
+    @MainActor
+    private func armConfigChangeObserver(
+        for engine: AVAudioEngine,
+        request: SFSpeechAudioBufferRecognitionRequest,
+        myGeneration: Int
+    ) {
+        removeConfigChangeObserver()
+        restartContext = RestartContext(request: request, myGeneration: myGeneration)
+        // Selector-based on purpose: the block observer API takes a hard
+        // `@Sendable` closure, and every capture it needs (self, the request)
+        // is non-Sendable — the selector target keeps the compile warning-free
+        // and the context lives in `restartContext` instead.
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(inputConfigurationDidChange(_:)),
+            name: .AVAudioEngineConfigurationChange,
+            object: engine)
+    }
+
+    @MainActor
+    private func removeConfigChangeObserver() {
+        NotificationCenter.default.removeObserver(
+            self, name: .AVAudioEngineConfigurationChange, object: nil)
+        restartContext = nil
+    }
+
+    /// Fires on the notification-posting thread; hop to the main actor where
+    /// the session state lives. Same hop shape as the recognition callback.
+    @objc private func inputConfigurationDidChange(_ note: Notification) {
+        DispatchQueue.main.async {
+            MainActor.assumeIsolated { self.handleInputConfigurationChange() }
+        }
+    }
+
+    /// Do NOT restart here — schedule a settle-check instead. Restarting on
+    /// every notification was the v1.0.12 dead-mic regression (Parakeet, PR
+    /// #227): the notification also fires for changes our own teardown+rebuild
+    /// causes (on some systems capture start itself posts one), so a reflexive
+    /// handler loops teardown→rebuild→notification forever (~4/s) and the mic
+    /// never captures. The settle delay coalesces the storm and lets the io
+    /// unit finish renegotiating; the check then rebuilds only if the engine
+    /// actually STOPPED (the real device-loss case this observer exists for).
+    @MainActor
+    private func handleInputConfigurationChange() {
+        guard restartContext != nil, !configChangeCheckPending else { return }
+        configChangeCheckPending = true
+        Task { @MainActor in
+            try? await Task.sleep(
+                nanoseconds: UInt64(CaptureConfigChangePolicy.settleDelay * 1_000_000_000))
+            self.configChangeCheckPending = false
+            self.settleCheckConfigurationChange()
+        }
+    }
+
+    @MainActor
+    private func settleCheckConfigurationChange() {
+        // Same session fence as the recognition callback: a stop or a newer
+        // session owns the mic now — touch nothing. (Teardown also clears the
+        // context.)
+        guard let context = restartContext else { return }
+        switch CaptureConfigChangePolicy.action(
+            generationMatches: generation == context.myGeneration,
+            didStop: didStop,
+            engineStillRunning: audioEngine?.isRunning ?? false,
+            restartsUsed: configRestartsThisSession
+        ) {
+        case .ignore:
+            return
+        case .restartCapture:
+            configRestartsThisSession += 1
+            NSLog("[AppleSpeechEngine] capture stopped after an input configuration change — restarting (%d/%d)",
+                  configRestartsThisSession, CaptureConfigChangePolicy.maxRestartsPerSession)
+            removeConfigChangeObserver()
+            // The session fence held, so audioEngine is the engine the observer
+            // was armed for (re-arms replace the observer and context together).
+            if let stale = audioEngine {
+                stale.inputNode.removeTap(onBus: 0)
+                stale.stop()
+            }
+            audioEngine = nil
+            do {
+                let (fresh, format) = try makeRoutedEngine()
+                try startCapture(
+                    engine: fresh, format: format,
+                    request: context.request, myGeneration: context.myGeneration)
+            } catch {
+                onError?(CaptureConfigChangePolicy.restartFailedMessage(
+                    underlying: error.localizedDescription))
+            }
+        case .giveUp:
+            NSLog("[AppleSpeechEngine] input device keeps stopping capture after %d rebuilds — giving up",
+                  configRestartsThisSession)
+            removeConfigChangeObserver()
+            if let stale = audioEngine {
+                stale.inputNode.removeTap(onBus: 0)
+                stale.stop()
+            }
+            audioEngine = nil
+            onError?(CaptureConfigChangePolicy.gaveUpMessage)
+        }
     }
 
     func stop(cancel: Bool = false) {
@@ -212,6 +367,7 @@ final class AppleSpeechEngine: StreamingTranscriptionEngine {
     private func runStop(cancel: Bool) {
         didStop = true
 
+        removeConfigChangeObserver()
         if let audioEngine {
             audioEngine.inputNode.removeTap(onBus: 0)
             audioEngine.stop()
