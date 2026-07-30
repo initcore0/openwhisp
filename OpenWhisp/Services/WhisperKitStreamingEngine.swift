@@ -93,6 +93,14 @@ final class WhisperKitStreamingEngine: NSObject, StreamingTranscriptionEngine {
         let myGeneration: Int
     }
 
+    /// True while a settle-check for a configuration-change notification is
+    /// already scheduled — further notifications in that window coalesce into
+    /// the pending check instead of stacking checks (a storm posts several).
+    @MainActor private var configChangeCheckPending = false
+    /// Capture rebuilds performed for the CURRENT capture session; reset in
+    /// `runStart`. Compared against `CaptureConfigChangePolicy.maxRestartsPerSession`.
+    @MainActor private var configRestartsThisSession = 0
+
     func start(language: String, prompt: String) throws {
         let task = WhisperKitTaskMapper.map(languageSetting: language)
         // Enqueue SYNCHRONOUSLY on the main actor so call order == enqueue order
@@ -153,6 +161,7 @@ final class WhisperKitStreamingEngine: NSObject, StreamingTranscriptionEngine {
             let kit = try await ensureLoaded()
             generation += 1
             startedNotified = false
+            configRestartsThisSession = 0
             let myGeneration = generation
             let handle = try WhisperKitBridge.makeStreamHandle(
                 kit: kit,
@@ -350,28 +359,64 @@ final class WhisperKitStreamingEngine: NSObject, StreamingTranscriptionEngine {
         }
     }
 
+    /// Do NOT restart here — schedule a settle-check instead. Restarting on
+    /// every notification was the v1.0.12 dead-mic regression (Parakeet, PR
+    /// #227): the notification also fires for changes our own teardown+rebuild
+    /// causes, so a reflexive handler loops teardown→rebuild→notification
+    /// forever and the mic never captures. The settle delay coalesces the storm
+    /// and lets the io unit finish renegotiating; the check then rebuilds only
+    /// if the capture engine actually STOPPED.
     @MainActor
     private func handleInputConfigurationChange() {
+        guard restartContext != nil, !configChangeCheckPending else { return }
+        configChangeCheckPending = true
+        Task { @MainActor in
+            try? await Task.sleep(
+                nanoseconds: UInt64(CaptureConfigChangePolicy.settleDelay * 1_000_000_000))
+            self.configChangeCheckPending = false
+            self.settleCheckConfigurationChange()
+        }
+    }
+
+    @MainActor
+    private func settleCheckConfigurationChange() {
         // Same session fence as the state callback: a stop or a newer session
         // owns the mic now — touch nothing. (Teardown also clears the context.)
-        guard let context = restartContext, CaptureConfigChangePolicy.action(
+        guard let context = restartContext, let handle = transcriber else { return }
+        switch CaptureConfigChangePolicy.action(
             generationMatches: generation == context.myGeneration,
-            didStop: didFinish
-        ) == .restartCapture, let handle = transcriber else { return }
-        NSLog("[WhisperKitStream] input device configuration changed — restarting capture")
-        removeConfigChangeObserver()
-        do {
-            let deviceID = try resolveInputDeviceID()
-            try handle.restartCapture(inputDeviceID: deviceID)
-            // Re-arm on the REPLACEMENT engine — the old observer died with the
-            // stale engine object.
-            if let engine = handle.captureAudioEngine {
-                armConfigChangeObserver(
-                    for: engine, callbacks: context.callbacks, myGeneration: context.myGeneration)
+            didStop: didFinish,
+            engineStillRunning: handle.captureAudioEngine?.isRunning ?? false,
+            restartsUsed: configRestartsThisSession
+        ) {
+        case .ignore:
+            return
+        case .restartCapture:
+            configRestartsThisSession += 1
+            NSLog("[WhisperKitStream] capture stopped after an input configuration change — restarting (%d/%d)",
+                  configRestartsThisSession, CaptureConfigChangePolicy.maxRestartsPerSession)
+            removeConfigChangeObserver()
+            do {
+                let deviceID = try resolveInputDeviceID()
+                try handle.restartCapture(inputDeviceID: deviceID)
+                // Re-arm on the REPLACEMENT engine — the old observer died with
+                // the stale engine object.
+                if let engine = handle.captureAudioEngine {
+                    armConfigChangeObserver(
+                        for: engine, callbacks: context.callbacks, myGeneration: context.myGeneration)
+                }
+            } catch {
+                context.callbacks.error?(CaptureConfigChangePolicy.restartFailedMessage(
+                    underlying: error.localizedDescription))
             }
-        } catch {
-            context.callbacks.error?(CaptureConfigChangePolicy.restartFailedMessage(
-                underlying: error.localizedDescription))
+        case .giveUp:
+            NSLog("[WhisperKitStream] input device keeps stopping capture after %d rebuilds — giving up",
+                  configRestartsThisSession)
+            removeConfigChangeObserver()
+            // No engine teardown here: the capture engine is already stopped
+            // (that's what giveUp means) and the session stop that follows the
+            // error tears the stream down via the handle.
+            context.callbacks.error?(CaptureConfigChangePolicy.gaveUpMessage)
         }
     }
 

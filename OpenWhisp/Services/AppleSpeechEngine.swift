@@ -32,6 +32,13 @@ final class AppleSpeechEngine: NSObject, StreamingTranscriptionEngine {
     // only value crossing threads is that immutable String.
     @MainActor private var lastPartial = ""
     @MainActor private var didStop = false
+    /// True while a settle-check for a configuration-change notification is
+    /// already scheduled — further notifications in that window coalesce into
+    /// the pending check instead of stacking checks (a storm posts several).
+    @MainActor private var configChangeCheckPending = false
+    /// Capture rebuilds performed for the CURRENT capture session; reset in
+    /// `runStart`. Compared against `CaptureConfigChangePolicy.maxRestartsPerSession`.
+    @MainActor private var configRestartsThisSession = 0
     /// True once onFinal has fired for the current session (genuine or
     /// synthesized) — the stop() fallback checks it before synthesizing.
     @MainActor private var finalDelivered = false
@@ -96,6 +103,7 @@ final class AppleSpeechEngine: NSObject, StreamingTranscriptionEngine {
         didStop = false
         finalDelivered = false
         lastPartial = ""
+        configRestartsThisSession = 0
 
         let localeIdentifier = language == "auto" ? Locale.current.identifier : language
         let recognizer = SFSpeechRecognizer(locale: Locale(identifier: localeIdentifier))
@@ -280,32 +288,71 @@ final class AppleSpeechEngine: NSObject, StreamingTranscriptionEngine {
         }
     }
 
+    /// Do NOT restart here — schedule a settle-check instead. Restarting on
+    /// every notification was the v1.0.12 dead-mic regression (Parakeet, PR
+    /// #227): the notification also fires for changes our own teardown+rebuild
+    /// causes (on some systems capture start itself posts one), so a reflexive
+    /// handler loops teardown→rebuild→notification forever (~4/s) and the mic
+    /// never captures. The settle delay coalesces the storm and lets the io
+    /// unit finish renegotiating; the check then rebuilds only if the engine
+    /// actually STOPPED (the real device-loss case this observer exists for).
     @MainActor
     private func handleInputConfigurationChange() {
+        guard restartContext != nil, !configChangeCheckPending else { return }
+        configChangeCheckPending = true
+        Task { @MainActor in
+            try? await Task.sleep(
+                nanoseconds: UInt64(CaptureConfigChangePolicy.settleDelay * 1_000_000_000))
+            self.configChangeCheckPending = false
+            self.settleCheckConfigurationChange()
+        }
+    }
+
+    @MainActor
+    private func settleCheckConfigurationChange() {
         // Same session fence as the recognition callback: a stop or a newer
         // session owns the mic now — touch nothing. (Teardown also clears the
         // context.)
-        guard let context = restartContext, CaptureConfigChangePolicy.action(
+        guard let context = restartContext else { return }
+        switch CaptureConfigChangePolicy.action(
             generationMatches: generation == context.myGeneration,
-            didStop: didStop
-        ) == .restartCapture else { return }
-        NSLog("[AppleSpeechEngine] input device configuration changed — restarting capture")
-        removeConfigChangeObserver()
-        // The session fence held, so audioEngine is the engine the observer was
-        // armed for (re-arms replace the observer and the context together).
-        if let stale = audioEngine {
-            stale.inputNode.removeTap(onBus: 0)
-            stale.stop()
-        }
-        audioEngine = nil
-        do {
-            let (fresh, format) = try makeRoutedEngine()
-            try startCapture(
-                engine: fresh, format: format,
-                request: context.request, myGeneration: context.myGeneration)
-        } catch {
-            onError?(CaptureConfigChangePolicy.restartFailedMessage(
-                underlying: error.localizedDescription))
+            didStop: didStop,
+            engineStillRunning: audioEngine?.isRunning ?? false,
+            restartsUsed: configRestartsThisSession
+        ) {
+        case .ignore:
+            return
+        case .restartCapture:
+            configRestartsThisSession += 1
+            NSLog("[AppleSpeechEngine] capture stopped after an input configuration change — restarting (%d/%d)",
+                  configRestartsThisSession, CaptureConfigChangePolicy.maxRestartsPerSession)
+            removeConfigChangeObserver()
+            // The session fence held, so audioEngine is the engine the observer
+            // was armed for (re-arms replace the observer and context together).
+            if let stale = audioEngine {
+                stale.inputNode.removeTap(onBus: 0)
+                stale.stop()
+            }
+            audioEngine = nil
+            do {
+                let (fresh, format) = try makeRoutedEngine()
+                try startCapture(
+                    engine: fresh, format: format,
+                    request: context.request, myGeneration: context.myGeneration)
+            } catch {
+                onError?(CaptureConfigChangePolicy.restartFailedMessage(
+                    underlying: error.localizedDescription))
+            }
+        case .giveUp:
+            NSLog("[AppleSpeechEngine] input device keeps stopping capture after %d rebuilds — giving up",
+                  configRestartsThisSession)
+            removeConfigChangeObserver()
+            if let stale = audioEngine {
+                stale.inputNode.removeTap(onBus: 0)
+                stale.stop()
+            }
+            audioEngine = nil
+            onError?(CaptureConfigChangePolicy.gaveUpMessage)
         }
     }
 
