@@ -1,8 +1,9 @@
 import Foundation
 
 /// Pure decision logic for a mid-session `AVAudioEngineConfigurationChange` on a
-/// streaming capture engine (Parakeet/WhisperKit/Apple Speech own their own
-/// `AVAudioEngine` taps).
+/// streaming capture engine (Parakeet/Apple Speech/SpeechAnalyzer own their own
+/// `AVAudioEngine` taps; WhisperKit's tap lives on its `AudioProcessor`, rebuilt
+/// through `WhisperKitStreamHandle.restartCapture`).
 ///
 /// When the input device is disconnected, switched, or renegotiates its format
 /// mid-dictation, AVAudioEngine STOPS rendering. Without a reaction the session

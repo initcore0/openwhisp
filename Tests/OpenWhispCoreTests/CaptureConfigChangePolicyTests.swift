@@ -2,7 +2,8 @@ import XCTest
 @testable import OpenWhispCore
 
 /// Pins the gates for the mid-session `AVAudioEngineConfigurationChange`
-/// recovery (Parakeet streaming). Two regressions meet here:
+/// recovery shared by ALL streaming capture engines (Parakeet, WhisperKit,
+/// Apple Speech, SpeechAnalyzer). Two regressions meet here:
 ///
 /// - Without any restart, a device disconnect leaves the session showing
 ///   "Listening…" while capturing NOTHING (the pre-v1.0.12 word-loss bug).
