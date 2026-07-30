@@ -3471,28 +3471,20 @@ class AppState: ObservableObject {
         // at the true end (insert / finishSessionUI).
         activeStreamingEngine.stop(cancel: false)
 
-        // Session-scoped fallback: a rapid follow-up session could otherwise be
-        // finalized early by THIS session's leftover timer.
-        //
-        // Re-arming poll, not a one-shot deadline: while the engine reports
-        // `isFinalizing` (Parakeet draining its decode backlog, WhisperKit's
-        // finalizeTail), the fallback keeps waiting for the genuine final — a
-        // one-shot fired first on long dictations and its stale partial made the
-        // completion guard drop the real final's tail words. Interval/grace/
-        // hard-cap semantics live (tested) in StreamingRoutePolicy.
+        // Session-scoped fallback (a rapid follow-up session must not be
+        // finalized by THIS session's leftover timer). Re-arming poll, not a
+        // one-shot: while the engine reports `isFinalizing` (Parakeet draining
+        // its decode backlog, WhisperKit's finalizeTail) keep waiting for the
+        // genuine final — a one-shot fired first on long dictations and its stale
+        // partial dropped the real final's tail words; see StreamingRoutePolicy.
         let sessionID = activeSessionID
         let engine = activeStreamingEngine
         Task { @MainActor in
             await StreamingRoutePolicy.runStopFallback(
-                isSessionStillWaiting: {
-                    sessionID == self.activeSessionID && self.isAppleSpeechSession
-                        && self.isTranscribing && !self.appleDidCompleteFinal
-                },
+                isSessionStillWaiting: { sessionID == self.activeSessionID && self.isAppleSpeechSession
+                    && self.isTranscribing && !self.appleDidCompleteFinal },
                 isEngineFinalizing: { engine.isFinalizing },
-                completeFallback: {
-                    self.handleAppleSpeechFinal(self.streamingText, sessionID: sessionID)
-                }
-            )
+                completeFallback: { self.handleAppleSpeechFinal(self.streamingText, sessionID: sessionID) })
         }
     }
 
