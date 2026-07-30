@@ -148,6 +148,17 @@ public struct ScratchpadNotes: Codable, Equatable {
         return note.text
     }
 
+    /// Drop the "typed" provenance stamp from a note (no-op if unknown).
+    ///
+    /// Used by machine-authored inserts (e.g. `insertMeetingNote`) that reuse
+    /// `setText` to lay down the body: the text did not come from the user's
+    /// keyboard, so the note must not claim it was typed. Ordering (`updatedAt`) is
+    /// deliberately left alone — the note was still just touched.
+    public mutating func clearTypedProvenance(for id: UUID) {
+        guard let idx = notes.firstIndex(where: { $0.id == id }) else { return }
+        notes[idx].lastTypedAt = nil
+    }
+
     /// Delete a note by id (no-op if unknown).
     public mutating func delete(_ id: UUID) {
         notes.removeAll { $0.id == id }
