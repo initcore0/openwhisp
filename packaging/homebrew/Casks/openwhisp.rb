@@ -1,8 +1,8 @@
 # frozen_string_literal: true
 
 cask "openwhisp" do
-  version "1.0.0,155"
-  sha256 "87b6cfd09300dc9eda3889d544ff717fb1b7ccd5b1bd99216a8aa19e984dcb57"
+  version "1.0.13,168"
+  sha256 "8cb61a20a8397ff02c33c9e64668668551408a276dfb1182a4b0bf3f17195a61"
 
   # The release tag is v<shortVersion>+<build> (e.g. v1.0.0+155). Homebrew stores
   # that as version "1.0.0,155" (version,revision); the URL rebuilds the tag from
@@ -17,7 +17,7 @@ cask "openwhisp" do
   # OpenWhisp updates itself in-app via Sparkle (EdDSA-signed appcast), so Homebrew
   # should not try to manage upgrades or flag the cask as outdated.
   auto_updates true
-  depends_on macos: ">= :sonoma" # LSMinimumSystemVersion is 14.0
+  depends_on macos: :sonoma # LSMinimumSystemVersion is 14.0
 
   app "OpenWhisp.app"
 
