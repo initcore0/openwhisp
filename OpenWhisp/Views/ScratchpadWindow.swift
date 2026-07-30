@@ -79,6 +79,23 @@ final class ScratchpadWindowController: NSObject, NSWindowDelegate, NSTextViewDe
         return true
     }
 
+    /// Open a meeting's transcript + summary as a NEW editable note and focus it
+    /// (MAK-50 "Open in Scratchpad"). The body comes from the pure, unit-tested
+    /// `MeetingScratchpadExport`; this is only the persist + show shell.
+    ///
+    /// Ordering matters: the note is inserted and persisted BEFORE the panel is
+    /// shown, so `makePanel`'s first-open selection (which picks the front note)
+    /// lands on the meeting note rather than a stale one.
+    func openMeetingNote(_ meeting: Meeting) {
+        loadIfNeeded()
+        let id = notes.insertMeetingNote(meeting)
+        selectedID = id
+        persist()
+        showAndFocus()
+        reloadList()
+        showNoteInEditor(id, body: notes.note(id)?.text ?? "")
+    }
+
     // MARK: - Panel construction
 
     private func makePanel() -> NSPanel {

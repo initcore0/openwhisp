@@ -105,7 +105,12 @@ struct MeetingsPane: View {
                 MeetingRow(
                     meeting: meeting,
                     coordinator: coordinator,
-                    requestCloudConsent: { cloudConsentMeeting = meeting }
+                    requestCloudConsent: { cloudConsentMeeting = meeting },
+                    // MAK-50: hand the meeting to the Scratchpad as an editable note.
+                    // The controller owns the note model + persistence and the body
+                    // comes from the pure MeetingScratchpadExport, so nothing here
+                    // (or in AppState) needs to know the layout.
+                    openInScratchpad: { appState.scratchpadController.openMeetingNote(meeting) }
                 )
             }
         } header: {
@@ -125,6 +130,7 @@ private struct MeetingRow: View {
     let meeting: Meeting
     @ObservedObject var coordinator: MeetingPipelineCoordinator
     let requestCloudConsent: () -> Void
+    let openInScratchpad: () -> Void
     @State private var expanded = false
 
     var body: some View {
@@ -146,8 +152,18 @@ private struct MeetingRow: View {
                 Text(reason).font(.caption).foregroundStyle(.red)
             }
             if meeting.transcript != nil || meeting.summary != nil {
-                Button(expanded ? "Hide details" : "Show details") { expanded.toggle() }
-                    .buttonStyle(.borderless).font(.caption)
+                HStack(spacing: 10) {
+                    Button(expanded ? "Hide details" : "Show details") { expanded.toggle() }
+                        .buttonStyle(.borderless).font(.caption)
+                    // MAK-50: the detail view is read-only Text; this is the one
+                    // click that turns it into editable text in the Scratchpad.
+                    if hasTranscript {
+                        Button(action: openInScratchpad) {
+                            Label("Open in Scratchpad", systemImage: "note.text.badge.plus")
+                        }
+                        .buttonStyle(.borderless).font(.caption)
+                    }
+                }
             }
             if expanded {
                 if let summary = meeting.summary, !summary.isEmpty {
@@ -183,6 +199,13 @@ private struct MeetingRow: View {
                     }
                 }
             }
+            // MAK-50: gated on the transcript existing — same condition as Export,
+            // so every meeting whose transcript is readable is also editable.
+            if hasTranscript {
+                Button(action: openInScratchpad) {
+                    Label("Open in Scratchpad", systemImage: "note.text.badge.plus")
+                }
+            }
             if meeting.transcript != nil {
                 Button("Export .md…") { exportMarkdown() }
             }
@@ -199,6 +222,12 @@ private struct MeetingRow: View {
         if panel.runModal() == .OK, let url = panel.url {
             try? body.write(to: url, atomically: true, encoding: .utf8)
         }
+    }
+
+    /// Whether this meeting has transcript text to open/export. Mirrors the
+    /// core renderer's preference: either transcript field with content counts.
+    private var hasTranscript: Bool {
+        !(meeting.attributedTranscript ?? "").isEmpty || !(meeting.transcript ?? "").isEmpty
     }
 
     private var isBusy: Bool {
