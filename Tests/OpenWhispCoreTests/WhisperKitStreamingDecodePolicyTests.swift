@@ -68,4 +68,46 @@ final class WhisperKitStreamingDecodePolicyTests: XCTestCase {
         XCTAssertEqual(WhisperKitStreamingDecodePolicy.sampleRate, 16_000)
         XCTAssertEqual(WhisperKitStreamingDecodePolicy.requiredSegmentsForConfirmation, 2)
     }
+
+    // MARK: - Task-aware confirmation lag (translate latency)
+
+    /// The translate-latency fix: translate holds back only ONE segment, so the
+    /// clip point trails the speech by one segment instead of two and every
+    /// pass re-decodes (re-translates) a much shorter tail. Transcribe keeps
+    /// the upstream default — its latency was never the complaint, and the
+    /// extra held-back segment buys verbatim text more revision room.
+    func testTranslateHoldsBackOneSegmentTranscribeTwo() {
+        XCTAssertEqual(
+            WhisperKitStreamingDecodePolicy.requiredSegmentsForConfirmation(translate: true), 1,
+            "Translate re-GENERATES English for the whole unconfirmed tail every pass — "
+                + "holding back 2 segments makes passes outgrow the 1 s cadence after "
+                + "~30-40 s of continuous speech.")
+        XCTAssertEqual(
+            WhisperKitStreamingDecodePolicy.requiredSegmentsForConfirmation(translate: false),
+            WhisperKitStreamingDecodePolicy.requiredSegmentsForConfirmation,
+            "Transcribe stays on AudioStreamTranscriber's upstream default.")
+    }
+
+    /// The #222 invariant must survive the translate threshold: a timestamped
+    /// window still yields MORE segments than translate holds back, so the
+    /// confirmed end keeps advancing and dictation length stays unbounded.
+    func testTranslateThresholdStillAdvancesTheConfirmedEnd() {
+        XCTAssertGreaterThan(
+            WhisperKitStreamingDecodePolicy.segmentsPerWindow(timestampsEmitted: true),
+            WhisperKitStreamingDecodePolicy.requiredSegmentsForConfirmation(translate: true),
+            "If translate's threshold ever reaches the per-window segment count, "
+                + "confirmation stalls and translate sessions truncate at 30 s — "
+                + "the exact bug #222 fixed for transcribe.")
+    }
+
+    /// A threshold below 1 would confirm EVERY segment immediately, leaving no
+    /// unconfirmed tail at all — the decoder could never revise anything and
+    /// half-heard words would freeze into the transcript. Both tasks must hold
+    /// back at least one segment.
+    func testBothTasksHoldBackAtLeastOneSegment() {
+        XCTAssertGreaterThanOrEqual(
+            WhisperKitStreamingDecodePolicy.requiredSegmentsForConfirmation(translate: true), 1)
+        XCTAssertGreaterThanOrEqual(
+            WhisperKitStreamingDecodePolicy.requiredSegmentsForConfirmation(translate: false), 1)
+    }
 }
