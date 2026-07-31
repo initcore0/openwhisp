@@ -14,6 +14,9 @@ class OpenWhispApp: NSObject, NSApplicationDelegate {
     var onboardingWindow: NSWindow?
     var tipsWindow: NSWindow?
     var appState: AppState!
+    /// EXPERIMENTAL translation-preview panel (display-only). Retained for the
+    /// app's lifetime; it shows/hides itself from AppState's published state.
+    var translationPreview: TranslationPreviewController?
 
     /// Meeting-mode capture session (MAK-50), lazily created on Start Meeting.
     /// Held as `Any?` so this file compiles on the macOS 12 SDK path too; cast
@@ -69,6 +72,14 @@ class OpenWhispApp: NSObject, NSApplicationDelegate {
         // Stream overlay (live subtitles for OBS/Twitch): start the loopback
         // caption server if enabled.
         appState.streamOverlay.startIfEnabled()
+
+        // EXPERIMENTAL live translation preview: translates the live partial
+        // transcript while you speak and feeds it into the MAIN overlay's
+        // transcript panel (source as one dimmed line, translation as the
+        // body). Owned here (not by AppState — MAK-32 LOC ratchet); it
+        // subscribes to AppState's published transcript/session flags and arms
+        // only when its opt-in is on AND the text-translation path arms.
+        translationPreview = TranslationPreviewController(appState: appState)
 
         // Sparkle auto-update (MAK-56): start the updater. Touching `.shared`
         // constructs the SPUStandardUpdaterController and begins the scheduled

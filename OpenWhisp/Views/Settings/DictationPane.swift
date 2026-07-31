@@ -7,6 +7,12 @@ struct DictationPane: View {
 
     @State private var availableMics: [AudioDevice] = []
 
+    /// EXPERIMENTAL translation-preview opt-in. Mirrors
+    /// `TranslationPreviewController.isEnabled` (its own UserDefaults key, owned
+    /// by the controller) rather than living on AppState — AppState is under the
+    /// MAK-32 LOC ratchet and may not grow.
+    @State private var translationPreviewEnabled = TranslationPreviewController.isEnabled
+
     var body: some View {
         Form {
             Section {
@@ -159,6 +165,21 @@ struct DictationPane: View {
                     if appState.translateToEnglish,
                        !LanguageResolver.supportsTranslation(transcriptionEngine: appState.transcriptionEngine) {
                         TranslationAssetStatusView(sourceTag: appState.language, targetTag: "en")
+
+                        // EXPERIMENTAL. Shown under exactly the conditions the
+                        // text path arms (translate on + ASR-only engine), which
+                        // is precisely when the live overlay shows the SPOKEN
+                        // language and English appears only at paste — the gap
+                        // this preview fills. Display-only: it never writes into
+                        // the document.
+                        SubtitledToggle(
+                            "Live translation preview (experimental)",
+                            subtitle: "The dictation overlay shows a running English translation while you speak — your spoken words stay visible as a single line above it. Display-only — what gets pasted is unchanged. Needs the language assets above.",
+                            isOn: $translationPreviewEnabled
+                        )
+                        .onChange(of: translationPreviewEnabled) {
+                            TranslationPreviewController.isEnabled = translationPreviewEnabled
+                        }
                     }
                 }
             } header: {

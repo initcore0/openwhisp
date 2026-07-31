@@ -127,6 +127,10 @@ struct VisualEffectView: NSViewRepresentable {
 
 struct OverlayView: View {
     @ObservedObject var appState: AppState
+    /// EXPERIMENTAL live translation preview (PR #231): when its engine arms,
+    /// the transcript panel shows the spoken text as one dimmed line and the
+    /// running English translation as the body.
+    @ObservedObject private var translation = TranslationPreviewModel.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
@@ -761,6 +765,23 @@ struct OverlayView: View {
         Self.transcriptLineHeight * Self.transcriptVisibleLines
     }
 
+    /// EXPERIMENTAL translation preview (PR #231): while armed, the transcript
+    /// panel flips to source-line + translation-body — the spoken text becomes
+    /// ONE dimmed line and the body shows the running English translation
+    /// (display-only; the paste path is untouched). Refine keeps the legacy
+    /// layout: its frozen-content + instruction row semantics don't compose
+    /// with a translated body.
+    private var translationActive: Bool {
+        translation.isActive && !appState.refineArmed
+    }
+
+    /// Body text for the transcript box: the translation when the preview is
+    /// armed (ellipsis until the first result lands), else the live transcript.
+    private var transcriptBodyText: String {
+        guard translationActive else { return refineContentText ?? transcriptText }
+        return translation.translatedText.isEmpty ? "…" : translation.translatedText
+    }
+
     private var transcriptPanel: some View {
         VStack(alignment: .leading, spacing: 6) {
             if let caption = phaseCaption {
@@ -769,12 +790,33 @@ struct OverlayView: View {
                     .foregroundColor(accent.opacity(0.9))
                     .textCase(.uppercase)
             }
+            if translationActive {
+                // The ORIGINAL (spoken-language) text, one line, newest words
+                // visible — quiet, because the translation below is the payload.
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Image(systemName: "character.bubble")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundColor(.white.opacity(0.4))
+                    Text(transcriptText)
+                        .font(.system(size: 11, weight: .regular, design: .rounded))
+                        .foregroundColor(.white.opacity(0.45))
+                        .lineLimit(1)
+                        .truncationMode(.head)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    if translation.isTranslating {
+                        Text("Translating…")
+                            .font(.system(size: 9))
+                            .foregroundColor(.white.opacity(0.4))
+                    }
+                }
+                .transaction { $0.animation = nil }
+            }
             ScrollViewReader { proxy in
                 ScrollView(.vertical, showsIndicators: false) {
                     // While refining, the dictated content freezes and dims — the
                     // instruction being spoken renders in its own row below
                     // instead of streaming into this text as more dictation.
-                    Text(refineContentText ?? transcriptText)
+                    Text(transcriptBodyText)
                         .font(.system(size: 13, weight: .regular, design: .rounded))
                         .foregroundColor(.white.opacity(appState.refineArmed ? 0.5 : 0.88))
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -791,7 +833,7 @@ struct OverlayView: View {
                 // fixed-height bottom-anchored scroll already keeps the newest text
                 // visible; overflow clips cleanly at the top with no dimming.
                 .clipped()
-                .onChange(of: transcriptText) { _ in
+                .onChange(of: transcriptBodyText) {
                     // Keep the newest line pinned to the bottom, without animating
                     // (animating the scroll on every partial is itself jittery).
                     var t = Transaction()
