@@ -276,4 +276,23 @@ final class StreamOverlayServerTests: XCTestCase {
         XCTAssertTrue(client.wait { $0.contains("[es] good morning") },
                       "translated final missing: \(client.received.suffix(300))")
     }
+
+    @MainActor
+    func testFailedTranslationKeepsOriginalCaption() throws {
+        // The never-lose-text rule at the seam the app now wires live (Apple
+        // Translation returns nil on missing assets / timeout): a translator
+        // that fails must degrade to the ORIGINAL caption line, never drop it.
+        let config = StreamOverlayConfig(translationEnabled: true, targetLanguage: "es")
+        let (server, port) = try startServer(config: config, translator: { _, _ in nil })
+        defer { server.stop() }
+
+        let client = RawClient(port: port)
+        defer { client.close() }
+        client.send("GET /events HTTP/1.1\r\n\r\n")
+        XCTAssertTrue(client.wait { $0.contains("text/event-stream") })
+
+        server.publishFinal("still here")
+        XCTAssertTrue(client.wait { $0.contains("still here") },
+                      "untranslated fallback caption missing: \(client.received.suffix(300))")
+    }
 }

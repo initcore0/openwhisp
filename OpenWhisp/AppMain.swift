@@ -325,13 +325,14 @@ class OpenWhispApp: NSObject, NSApplicationDelegate {
         // Translate is its own switch now (split from the old "English —
         // translate to English" language overload).
         //
-        // Parakeet and Apple Speech are ASR-only — they have no translate task
-        // (LanguageResolver.noTranslateEngines). #175 stopped the menu offering a
-        // dead toggle there, but by hiding the row the menu silently disagreed
-        // with itself between engines. Keep the row and disable it, naming the
-        // reason: macOS menus dim unavailable commands rather than hiding them,
-        // so the capability stays discoverable instead of looking like a bug.
-        let canTranslate = LanguageResolver.supportsTranslation(transcriptionEngine: appState.transcriptionEngine)
+        // Offered when the engine translates natively (whisper family) OR the
+        // on-device text path can cover it (Apple Translation, macOS 15+) —
+        // `appState.translationOffered`, the SAME predicate the Dictation pane
+        // reads, so the two surfaces can't disagree (a past bug). Only macOS 14
+        // with an ASR-only engine still dims the row: macOS menus dim
+        // unavailable commands rather than hiding them, so the capability stays
+        // discoverable instead of looking like a bug (#175 history).
+        let canTranslate = appState.translationOffered
         let translateItem = menuItem(
             canTranslate ? "Translate to English" : "Translate to English (needs WhisperKit)",
             symbol: "character.bubble",
@@ -339,7 +340,7 @@ class OpenWhispApp: NSObject, NSApplicationDelegate {
         )
         translateItem.state = (canTranslate && appState.translateToEnglish) ? .on : .off
         if !canTranslate {
-            translateItem.toolTip = "The current engine transcribes only — it has no translation model. Switch to WhisperKit in Settings to translate."
+            translateItem.toolTip = "The current engine transcribes only, and on-device text translation needs macOS 15. Switch to WhisperKit in Settings to translate."
         }
         menu.addItem(translateItem)
 

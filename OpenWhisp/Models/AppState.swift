@@ -1657,26 +1657,55 @@ class AppState: ObservableObject {
     }
 
     /// The language of the OUTPUT text, for formatting rules (spoken
-    /// punctuation etc.): English when translating, else the spoken language.
+    /// punctuation etc.): English when translating (either the engine-level
+    /// translate or the text path), else the spoken language.
     private var outputLanguageForCleaning: String {
-        LanguageResolver.outputLanguageForCleaning(
+        TextTranslationPolicy.outputLanguageForCleaning(
             language: language,
             translateToEnglish: translateToEnglish,
-            transcriptionEngine: transcriptionEngine
+            transcriptionEngine: transcriptionEngine,
+            textTranslationAvailable: AppleTextTranslation.isSupported
         )
     }
 
-    /// The translate intent actually in effect: the stored toggle gated on the
-    /// engine's translation capability. The refine layer (cleanup prompts,
-    /// RefineOutputGuard's expected script) must key on THIS, never on the raw
-    /// `translateToEnglish` — on Parakeet/Apple Speech the transcript stays in the
-    /// spoken language (and the UI shows translate as off), so a stale stored
-    /// `true` would otherwise disarm the language guard and, in improveTranslation
-    /// mode, actively LLM-translate the dictation the engine refused to.
+    /// The translate intent actually in effect: the stored toggle gated on a
+    /// path existing that can act on it — the engine's own translate task OR
+    /// the on-device text path (macOS 15+, `TextTranslationPolicy`). The refine
+    /// layer (cleanup prompts, RefineOutputGuard's expected script) must key on
+    /// THIS, never on the raw `translateToEnglish` — on Parakeet/Apple Speech
+    /// under macOS 14 the transcript stays in the spoken language (and the UI
+    /// shows translate as dimmed), so a stale stored `true` would otherwise
+    /// disarm the language guard and, in improveTranslation mode, actively
+    /// LLM-translate the dictation no path was going to.
     var effectiveTranslateToEnglish: Bool {
-        LanguageResolver.effectiveTranslateToEnglish(
+        TextTranslationPolicy.effectiveTranslateToEnglish(
             translateToEnglish: translateToEnglish,
-            transcriptionEngine: transcriptionEngine
+            language: language,
+            transcriptionEngine: transcriptionEngine,
+            textTranslationAvailable: AppleTextTranslation.isSupported
+        )
+    }
+
+    /// Whether "Translate to English" is offerable at all for the current
+    /// engine — natively (whisper family) or via the on-device text path
+    /// (macOS 15+). The ONE predicate both offer surfaces (menu bar row,
+    /// Dictation pane toggle) read, so they can never disagree.
+    var translationOffered: Bool {
+        TextTranslationPolicy.translationOffered(
+            transcriptionEngine: transcriptionEngine,
+            textTranslationAvailable: AppleTextTranslation.isSupported
+        )
+    }
+
+    /// Whether THIS session's final transcript should be translated as text
+    /// (Apple Translation, macOS 15+) because the user wants English but the
+    /// active engine is ASR-only. Pure core decision — see TextTranslationPolicy.
+    private var shouldTextTranslateFinal: Bool {
+        TextTranslationPolicy.shouldTranslateFinal(
+            translateToEnglish: translateToEnglish,
+            language: language,
+            transcriptionEngine: transcriptionEngine,
+            textTranslationAvailable: AppleTextTranslation.isSupported
         )
     }
 
@@ -1846,9 +1875,9 @@ class AppState: ObservableObject {
         voiceEditingEnabled = settingsStore.object(forKey: "voiceEditingEnabled") as? Bool ?? true
         scriptPostProcessorEnabled = settingsStore.object(forKey: "scriptPostProcessorEnabled") as? Bool ?? false
         scriptPostProcessorPath = settingsStore.string(forKey: "scriptPostProcessorPath") ?? ""
-        outputTargetSettings = Self.loadOutputTargetSettings()
+        outputTargetSettings = SettingsBlobLoaders.outputTargetSettings()
         ruleSet = RuleStore.load()
-        screenContext = Self.loadScreenContext()
+        screenContext = SettingsBlobLoaders.screenContext()
         perAppModesEnabled = settingsStore.object(forKey: "perAppModesEnabled") as? Bool ?? false
         historyEnabled = settingsStore.object(forKey: "historyEnabled") as? Bool ?? true
         // MAK-40 raw-audio retention: opt-in (default OFF); policy defaults keep the
@@ -3033,14 +3062,7 @@ class AppState: ObservableObject {
         return ModelStorage.sorted(items)
     }
 
-    /// Base directory FluidAudio stages its CoreML model repos under
-    /// (`~/Library/Application Support/FluidAudio/Models`). Mirrors FluidAudio's
-    /// own `downloadVariant`/`defaultCacheDirectory` layout.
-    static func fluidAudioModelsDirectory() -> URL {
-        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-            .appendingPathComponent("FluidAudio", isDirectory: true)
-            .appendingPathComponent("Models", isDirectory: true)
-    }
+    static func fluidAudioModelsDirectory() -> URL { FluidAudioModelsLocator.modelsDirectory() }
 
     /// Delete a model's files. Refuses the currently-active model (removing it would
     /// force a re-download on the next dictation) — the UI disables that case, this
@@ -3149,16 +3171,7 @@ class AppState: ObservableObject {
     }
 
     /// The set of FluidAudio Models repo folders present on disk right now.
-    static func installedFluidAudioFolders() -> Set<String> {
-        let base = fluidAudioModelsDirectory()
-        let names = (try? FileManager.default.contentsOfDirectory(atPath: base.path)) ?? []
-        return Set(names.filter { name in
-            var isDir: ObjCBool = false
-            FileManager.default.fileExists(
-                atPath: base.appendingPathComponent(name).path, isDirectory: &isDir)
-            return isDir.boolValue
-        })
-    }
+    static func installedFluidAudioFolders() -> Set<String> { FluidAudioModelsLocator.installedFolders() }
 
     func warmWhisperServerIfPossible() {
         // Warm the CURRENTLY SELECTED file-transcription backend — and only that
@@ -3339,6 +3352,14 @@ class AppState: ObservableObject {
         // whisper chunked sessions. Deciding from the live @Published outputMode
         // there would paste the whole final text a second time.
         isLiveChunkSession = outputMode == "liveChunks"
+        // Text-path translation (Apple Translation, macOS 15+): the live preview
+        // stays in the spoken language, but the PASTED result is the translated
+        // FINAL — so the per-partial delta paste must not type the original
+        // language into the document first. Forcing the finalOnly-style single
+        // paste keeps "what lands in the document" and "what was translated"
+        // the same text. Capability-driven (TextTranslationPolicy), no engine
+        // names here.
+        if shouldTextTranslateFinal { isLiveChunkSession = false }
         isAppleSpeechSession = true
         // Re-bind the active engine's partial/final closures to THIS session's
         // generation so its callbacks carry `activeSessionID`. A late final from a
@@ -4136,7 +4157,40 @@ class AppState: ObservableObject {
         statusMessage = "Inserted: \(text.prefix(40))..."
     }
 
+    /// Session-final choke point (every dictation path funnels here). When
+    /// `TextTranslationPolicy` arms the text path, the final transcript is
+    /// translated ON-DEVICE as text before delivery; on ANY failure or timeout
+    /// the ORIGINAL transcript is delivered unchanged (untranslated, never lost).
+    ///
+    /// Mid-refine finals skip translation on purpose: their tail is a spoken
+    /// INSTRUCTION and `instructionSuffix` subtracts `refineContentSnapshot`
+    /// as a literal prefix, which translation would break.
     private func completeFinalText(_ text: String) {
+        guard shouldTextTranslateFinal, !text.isEmpty, refineContentSnapshot == nil else {
+            deliverFinalText(text)
+            return
+        }
+        isTranscribing = true
+        statusMessage = "Translating…"
+        // Capture the session so a cancel (Esc) or a new session started while
+        // the translation is in flight causes this continuation to be ignored —
+        // same fence as every other async completion in this file.
+        let sessionID = activeSessionID
+        // Source hint: the session language ("auto" → provider-side detection).
+        let sourceHint = language
+        Task { @MainActor [weak self] in
+            let translated = await AppleTextTranslation.translate(text, from: sourceHint, to: "en")
+            guard let self, sessionID == self.activeSessionID else { return }
+            if translated == nil {
+                self.translationStatus = AppleTextTranslation.lastError.map {
+                    "Kept original text — \($0)"
+                } ?? "Kept original text — translation unavailable"
+            }
+            self.deliverFinalText(translated ?? text)
+        }
+    }
+
+    private func deliverFinalText(_ text: String) {
         let finalText = postProcess(text, isFinalTranscript: true)
 
         // Overlay subtitle. Skipped mid-refine (spoken words there are an
@@ -4777,17 +4831,6 @@ class AppState: ObservableObject {
         settingsStore.set(data, forKey: "outputTargetSettings")
     }
 
-    /// Load the persisted output-target settings, defaulting to focused-app (today's
-    /// behavior) when absent or unreadable.
-    private static func loadOutputTargetSettings() -> OutputTargetSettings {
-        // Static (called during init before `self.settingsStore` is assigned), so
-        // it reads UserDefaults.standard directly rather than the injected seam.
-        guard let data = UserDefaults.standard.data(forKey: "outputTargetSettings"),
-              let decoded = try? JSONDecoder().decode(OutputTargetSettings.self, from: data)
-        else { return OutputTargetSettings() }
-        return decoded
-    }
-
     // MARK: - Rules engine (MAK-43)
 
     /// The app-side runner that executes planned rule actions over the existing
@@ -4836,16 +4879,6 @@ class AppState: ObservableObject {
     private func persistScreenContext(_ settings: ScreenContextSettings) {
         guard let data = try? JSONEncoder().encode(settings) else { return }
         settingsStore.set(data, forKey: "screenContextSettings")
-    }
-
-    /// Load the persisted screen-context config, defaulting to OFF (opt-in) when
-    /// absent or unreadable. Static (init-time), so it reads UserDefaults.standard
-    /// directly rather than the injected seam.
-    private static func loadScreenContext() -> ScreenContextSettings {
-        guard let data = UserDefaults.standard.data(forKey: "screenContextSettings"),
-              let decoded = try? JSONDecoder().decode(ScreenContextSettings.self, from: data)
-        else { return ScreenContextSettings.default }
-        return decoded
     }
 
     /// Capture screen context for the session that is starting, applying the full
@@ -6355,80 +6388,6 @@ class AppState: ObservableObject {
         content.sound = .default
         let req = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
         center.add(req)
-    }
-}
-
-final class ModelDownloader: NSObject, URLSessionDownloadDelegate {
-    private var continuation: CheckedContinuation<URL, Error>?
-    /// Called as bytes arrive with (totalBytesWritten, totalBytesExpectedToWrite).
-    /// `totalBytesExpectedToWrite` is `NSURLSessionTransferSizeUnknown` (-1) when
-    /// the server does not advertise a Content-Length.
-    private var progressHandler: ((Int64, Int64) -> Void)?
-
-    static func download(from url: URL, progress: ((Int64, Int64) -> Void)? = nil) async throws -> URL {
-        let downloader = ModelDownloader()
-        return try await downloader.download(from: url, progress: progress)
-    }
-
-    private func download(from url: URL, progress: ((Int64, Int64) -> Void)?) async throws -> URL {
-        try await withCheckedThrowingContinuation { continuation in
-            self.continuation = continuation
-            self.progressHandler = progress
-            let configuration = URLSessionConfiguration.default
-            configuration.timeoutIntervalForRequest = 60
-            configuration.timeoutIntervalForResource = 60 * 60
-            configuration.waitsForConnectivity = true
-            let session = URLSession(configuration: configuration, delegate: self, delegateQueue: nil)
-            session.downloadTask(with: url).resume()
-        }
-    }
-
-    func urlSession(_ session: URLSession,
-                    downloadTask: URLSessionDownloadTask,
-                    didWriteData bytesWritten: Int64,
-                    totalBytesWritten: Int64,
-                    totalBytesExpectedToWrite: Int64) {
-        progressHandler?(totalBytesWritten, totalBytesExpectedToWrite)
-    }
-
-    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
-        // URLSession delivers this for ANY completed transfer, including 404/403/5xx
-        // (the error body is what got written to disk). Installing an error page as
-        // the model file would break every subsequent transcription with no in-app
-        // recovery, so fail the download instead.
-        if let http = downloadTask.response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
-            continuation?.resume(throwing: ModelDownloadError(message: "Server returned HTTP \(http.statusCode)"))
-            continuation = nil
-            session.invalidateAndCancel()
-            return
-        }
-        do {
-            let tempURL = FileManager.default.temporaryDirectory
-                .appendingPathComponent("openwhisp-model-\(UUID().uuidString).download")
-            try? FileManager.default.removeItem(at: tempURL)
-            try FileManager.default.moveItem(at: location, to: tempURL)
-            continuation?.resume(returning: tempURL)
-        } catch {
-            continuation?.resume(throwing: error)
-        }
-        continuation = nil
-        session.invalidateAndCancel()
-    }
-
-    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-        if let error, continuation != nil {
-            continuation?.resume(throwing: error)
-            continuation = nil
-            session.invalidateAndCancel()
-        }
-    }
-}
-
-// MARK: - Helpers
-
-extension URL {
-    func createDirectories() throws {
-        try FileManager.default.createDirectory(at: self, withIntermediateDirectories: true, attributes: nil)
     }
 }
 

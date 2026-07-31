@@ -127,7 +127,12 @@ final class StreamOverlayCoordinator: ObservableObject {
     /// matches the saved look.
     private func startServer() {
         stopServer()
-        let server = StreamOverlayServer(config: config)
+        // Translated subtitles: the server's injected Translator seam gets the
+        // on-device Apple Translation text path (macOS 15+; nil on macOS 14 —
+        // finals then pass through untranslated). The server only invokes it
+        // when `config.translationEnabled` and a target language are set, and
+        // a nil result keeps the original caption line (never a lost line).
+        let server = StreamOverlayServer(config: config, translator: AppleTextTranslation.overlayTranslator())
         server.onFailure = { [weak self] message in
             guard let self, self.server === server else { return }
             self.server = nil
