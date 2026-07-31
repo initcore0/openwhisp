@@ -265,6 +265,62 @@ public enum OverlayVoiceCommandMatcher {
     }
 }
 
+/// Streaming feed for LIVE phrase counting — the piece that makes the counter
+/// tick while the streamer is still talking instead of when capture stops.
+///
+/// An open-mic overlay session delivers ONE final (at stop); everything before
+/// it is a partial transcript that GROWS (and can revise its tail). Counting
+/// raw occurrences per partial would fire again on every repeat of the same
+/// text, so this feed tracks how many normalized WORDS have already been
+/// consumed by counted matches and only counts matches that start beyond that
+/// mark — each spoken occurrence counts exactly once, the moment the full
+/// phrase first appears in the transcript.
+///
+/// Known edges, chosen deliberately:
+/// - A partial that REWRITES itself shorter clamps the consumed mark to the new
+///   length (never crashes, may in principle recount if the same phrase
+///   reappears earlier — engines grow their transcript, so this is rare).
+/// - `reset()` must be called at transcript boundaries (final published /
+///   session clear): the next session's words start from index zero.
+///
+/// Pure value type — no clock, no I/O; the server owns when to feed and reset.
+public struct OverlayCounterFeed: Equatable, Sendable {
+    /// Words of the current transcript already consumed by counted matches.
+    private var consumedWords = 0
+
+    public init() {}
+
+    /// Feed the CURRENT transcript text (partial or final). Returns how many
+    /// NEW occurrences of `phrase` appeared beyond the consumed mark, and
+    /// consumes them. Matching mirrors `OverlayVoiceCommandMatcher`:
+    /// normalized, word-boundary, non-overlapping.
+    public mutating func newOccurrences(of phrase: String, in text: String) -> Int {
+        let needle = OverlayVoiceCommandMatcher.normalize(phrase)
+        guard !needle.isEmpty else { return 0 }
+        let words = OverlayVoiceCommandMatcher.normalize(text)
+        // A rewritten/shorter partial can't keep a consumed mark past its end.
+        if consumedWords > words.count { consumedWords = words.count }
+        var count = 0
+        var i = consumedWords
+        while i + needle.count <= words.count {
+            if Array(words[i..<(i + needle.count)]) == needle {
+                count += 1
+                i += needle.count      // non-overlapping, same as the matcher
+                consumedWords = i      // consume ONLY counted matches — a
+                                       // half-spoken phrase at the tail stays
+                                       // countable when its words complete
+            } else {
+                i += 1
+            }
+        }
+        return count
+    }
+
+    /// Forget the consumed mark — call at transcript boundaries (the final was
+    /// published, or the session cleared).
+    public mutating func reset() { consumedWords = 0 }
+}
+
 /// The live state of the counter widget — the value the overlay page renders.
 ///
 /// The COUNT is state, not configuration: it is owned by the running feature and

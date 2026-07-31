@@ -461,4 +461,59 @@ final class StreamOverlayTests: XCTestCase {
         XCTAssertFalse(html.contains("</style><"))
         XCTAssertTrue(html.contains("background: #00000000"), "invalid color falls back")
     }
+
+    // MARK: - OverlayCounterFeed (live-partial counting)
+
+    /// One spoken phrase assembling across growing partials counts exactly
+    /// once, at the moment the full phrase first appears.
+    func testFeedCountsAGrowingPartialOnce() {
+        var feed = OverlayCounterFeed()
+        XCTAssertEqual(feed.newOccurrences(of: "I died again", in: "oh no I"), 0)
+        XCTAssertEqual(feed.newOccurrences(of: "I died again", in: "oh no I died"), 0)
+        XCTAssertEqual(feed.newOccurrences(of: "I died again", in: "oh no I died again"), 1)
+        // Repeats and unrelated growth never re-count the consumed match.
+        XCTAssertEqual(feed.newOccurrences(of: "I died again", in: "oh no I died again"), 0)
+        XCTAssertEqual(feed.newOccurrences(of: "I died again", in: "oh no I died again ugh"), 0)
+    }
+
+    func testFeedCountsASecondOccurrenceLater() {
+        var feed = OverlayCounterFeed()
+        XCTAssertEqual(feed.newOccurrences(of: "я снова умер", in: "ну вот я снова умер"), 1)
+        XCTAssertEqual(
+            feed.newOccurrences(of: "я снова умер", in: "ну вот я снова умер и что ж я снова умер"), 1)
+        XCTAssertEqual(
+            feed.newOccurrences(of: "я снова умер", in: "ну вот я снова умер и что ж я снова умер"), 0)
+    }
+
+    /// A rewritten/shorter partial clamps the consumed mark instead of crashing
+    /// or wedging: later matches beyond the new mark still count.
+    func testFeedSurvivesAShrinkingRewrite() {
+        var feed = OverlayCounterFeed()
+        XCTAssertEqual(feed.newOccurrences(of: "died", in: "one two three four I died"), 1)
+        XCTAssertEqual(feed.newOccurrences(of: "died", in: "one two"), 0)
+        XCTAssertEqual(feed.newOccurrences(of: "died", in: "one two but then I died"), 1)
+    }
+
+    /// `reset()` is the transcript boundary: the same words count again in the
+    /// next session's fresh transcript.
+    func testFeedResetStartsANewTranscript() {
+        var feed = OverlayCounterFeed()
+        XCTAssertEqual(feed.newOccurrences(of: "died", in: "I died"), 1)
+        feed.reset()
+        XCTAssertEqual(feed.newOccurrences(of: "died", in: "I died"), 1)
+    }
+
+    func testFeedEmptyPhraseNeverCounts() {
+        var feed = OverlayCounterFeed()
+        XCTAssertEqual(feed.newOccurrences(of: "   ", in: "anything at all"), 0)
+    }
+
+    /// A phrase half-formed at the tail is NOT consumed — its words stay
+    /// countable when the next partial completes them (consumption advances
+    /// only past counted matches).
+    func testFeedTailHalfPhraseStaysCountable() {
+        var feed = OverlayCounterFeed()
+        XCTAssertEqual(feed.newOccurrences(of: "died again", in: "I died"), 0)
+        XCTAssertEqual(feed.newOccurrences(of: "died again", in: "I died again"), 1)
+    }
 }

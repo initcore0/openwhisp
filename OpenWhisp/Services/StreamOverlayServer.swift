@@ -85,6 +85,10 @@ final class StreamOverlayServer {
     /// `onCounterChanged` so it can persist across app restarts. A config edit
     /// (relabel, move corner) must never reset it.
     private(set) var counterCount: Int
+    /// LIVE-partial dedupe for the counter (see `OverlayCounterFeed`): tracks
+    /// which words of the growing transcript already produced counted matches.
+    /// Reset at every transcript boundary (final published / session clear).
+    private var counterFeed = OverlayCounterFeed()
     /// Fired (main actor) whenever `counterCount` changes, so the owner can
     /// persist the new value and show it live in settings.
     var onCounterChanged: ((Int) -> Void)?
@@ -203,9 +207,15 @@ final class StreamOverlayServer {
     /// to be worth a round trip). An empty partial (session reset) hides the
     /// captions immediately.
     func publishPartial(_ text: String) {
+        // Voice commands are detected LIVE, on every partial: an open-mic
+        // overlay session delivers its one final only when capture STOPS, so a
+        // finals-only counter wouldn't tick until the streamer ended the
+        // session. The OverlayCounterFeed consumes counted matches, so a
+        // growing/repeating partial can never double-count one spoken phrase.
+        detectVoiceCommands(in: text, transcriptEnded: false)
+
         // Counter-only mode: nothing about the caption pipeline runs (no
-        // reducer churn, no linger timer, no SSE frames). Partials carry no
-        // voice-command work either — detection is finals-only, see publishFinal.
+        // reducer churn, no linger timer, no SSE frames).
         guard config.captionsEnabled else { return }
         lastPublishedTranscript = text
         broadcast(captions.setText(text))
@@ -213,19 +223,17 @@ final class StreamOverlayServer {
 
     /// Publish the finalized utterance. Two independent things happen here:
     ///
-    ///  1. **Voice commands** are detected on the ORIGINAL (pre-translation)
-    ///     text, synchronously, before any translation round trip. Detection is
-    ///     FINALS-ONLY on purpose: a streaming engine's partials grow and get
-    ///     revised ("I di" → "I died" → "I died again"), so counting them would
-    ///     fire several times for one spoken phrase. The tradeoff is latency —
-    ///     the counter ticks when the utterance finalizes, not the instant the
-    ///     words are said. Matching the SOURCE text (not the translation) is
-    ///     what lets a Russian streamer trigger on a Russian phrase while the
-    ///     captions go out in English.
+    ///  1. **Voice commands**: the final runs through the SAME feed the
+    ///     partials fed (catching only tail words the last partial never
+    ///     showed — everything else is already consumed), then the feed resets:
+    ///     the final ends this transcript stream, and the next session's words
+    ///     start from index zero. Detection is always on the ORIGINAL
+    ///     (pre-translation) text, so a Russian streamer triggers on a Russian
+    ///     phrase while the captions go out in English.
     ///  2. **Captions** are updated (unless captions are switched off), through
     ///     the translator when configured.
     func publishFinal(_ text: String) {
-        detectVoiceCommands(in: text)
+        detectVoiceCommands(in: text, transcriptEnded: true)
 
         guard config.captionsEnabled else { return }
         guard config.translationEnabled, let translator, !config.targetLanguage.isEmpty else {
@@ -250,6 +258,8 @@ final class StreamOverlayServer {
     /// session's first words are new speech, not a continuation.
     func publishClear() {
         lastPublishedTranscript = ""
+        // Transcript boundary: the next session's words start from index zero.
+        counterFeed.reset()
         // Even with captions off the reducer is reset, so re-enabling them
         // mid-stream never resurrects a previous session's retirement mark.
         let snapshot = captions.clear()
@@ -259,14 +269,18 @@ final class StreamOverlayServer {
 
     // MARK: - Voice commands (phrase → counter widget)
 
-    /// Count the configured trigger phrase in one finalized utterance and, if it
-    /// fired, bump the counter and push the new state to every live page.
+    /// Count NEW occurrences of the configured trigger phrase in the current
+    /// transcript text and, if any fired, bump the counter and push the new
+    /// state to every live page. `transcriptEnded` marks a transcript boundary
+    /// (a published final): the feed resets afterwards even when the counter is
+    /// disabled, so toggling it on mid-stream starts from a clean mark.
     ///
-    /// A phrase said TWICE in one final increments by two — the streamer said it
-    /// twice, and dropping the second would be a silent miscount.
-    private func detectVoiceCommands(in text: String) {
+    /// A phrase said TWICE increments by two — the streamer said it twice, and
+    /// dropping the second would be a silent miscount.
+    private func detectVoiceCommands(in text: String, transcriptEnded: Bool) {
+        defer { if transcriptEnded { counterFeed.reset() } }
         guard config.counterEnabled else { return }
-        let hits = OverlayVoiceCommandMatcher.occurrences(of: config.counterPhrase, in: text)
+        let hits = counterFeed.newOccurrences(of: config.counterPhrase, in: text)
         guard hits > 0 else { return }
         setCounter(counterCount + hits)
     }

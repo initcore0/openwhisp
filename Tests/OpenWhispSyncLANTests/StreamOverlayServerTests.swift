@@ -329,6 +329,76 @@ final class StreamOverlayServerTests: XCTestCase {
         XCTAssertTrue(client.received.contains("\"visible\":true"))
     }
 
+    /// THE live-mode wiring test (the reported bug): an open-mic overlay
+    /// session delivers its one final only when capture STOPS, so the counter
+    /// must tick on PARTIALS — exactly once per spoken occurrence even though
+    /// partials repeat and grow, and without double-counting when the final
+    /// re-delivers the same transcript at stop.
+    @MainActor
+    func testCounterTicksLiveOnGrowingPartialsWithoutDoubleCounting() throws {
+        let (server, port) = try startServer(config: counterConfig())
+        defer { server.stop() }
+
+        let client = RawClient(port: port)
+        defer { client.close() }
+        client.send("GET /events HTTP/1.1\r\n\r\n")
+        XCTAssertTrue(client.wait { $0.contains("event: counter") })
+
+        // The phrase assembles across growing partials — no tick until the
+        // full phrase is present, then exactly one.
+        server.publishPartial("oh no I")
+        server.publishPartial("oh no I died")
+        XCTAssertEqual(server.counterCount, 0, "half a phrase must not count")
+        server.publishPartial("oh no I died again")
+        XCTAssertTrue(
+            client.wait { $0.contains("\"count\":1") },
+            "counter must tick LIVE on the partial, not at capture stop: \(client.received.suffix(400))")
+
+        // The same transcript repeating (and growing with unrelated words)
+        // must not re-count the consumed occurrence.
+        server.publishPartial("oh no I died again")
+        server.publishPartial("oh no I died again let me try once more")
+        XCTAssertEqual(server.counterCount, 1)
+
+        // A SECOND spoken occurrence later in the same session counts again.
+        server.publishPartial("oh no I died again let me try once more and I died again")
+        XCTAssertTrue(client.wait { $0.contains("\"count\":2") })
+
+        // Capture stops: the final re-delivers the full transcript — already
+        // consumed, so no phantom third tick.
+        server.publishFinal("oh no I died again let me try once more and I died again")
+        XCTAssertEqual(server.counterCount, 2)
+
+        // Next session starts a fresh transcript (feed reset by the final):
+        // its first occurrence counts from word zero.
+        server.publishPartial("I died again")
+        XCTAssertTrue(client.wait { $0.contains("\"count\":3") })
+        XCTAssertEqual(server.counterCount, 3)
+    }
+
+    /// Counter-only mode must count live too: captions off suppresses the
+    /// caption pipeline, not the voice commands.
+    @MainActor
+    func testCaptionsOffStillCountsLivePartials() throws {
+        var config = counterConfig()
+        config.captionsEnabled = false
+        let (server, port) = try startServer(config: config)
+        defer { server.stop() }
+
+        let client = RawClient(port: port)
+        defer { client.close() }
+        client.send("GET /events HTTP/1.1\r\n\r\n")
+        XCTAssertTrue(client.wait { $0.contains("event: counter") })
+
+        server.publishPartial("well, I died again")
+        XCTAssertTrue(client.wait { $0.contains("\"count\":1") },
+                      "captions-off must not disable live counting: \(client.received.suffix(400))")
+        // The greeting always seeds one (empty) caption frame; the invariant is
+        // that the SPOKEN TEXT never rides a caption while captions are off.
+        XCTAssertFalse(client.received.contains("died again\""),
+                       "captions are off — the transcript must not flow as captions")
+    }
+
     /// Counter-only mode: captions off, counter live. No caption frames are
     /// broadcast at all, but the counter still increments — the scenario the
     /// feature exists for.
@@ -375,30 +445,6 @@ final class StreamOverlayServerTests: XCTestCase {
         XCTAssertTrue(client.wait { $0.contains("\"count\":2") },
                       "two occurrences should count twice: \(client.received.suffix(400))")
         XCTAssertEqual(server.counterCount, 2)
-    }
-
-    /// Partials must never count: a streaming engine grows its hypothesis, so
-    /// counting them would fire several times for one spoken phrase.
-    @MainActor
-    func testPartialsDoNotIncrementTheCounter() throws {
-        let (server, port) = try startServer(config: counterConfig())
-        defer { server.stop() }
-
-        let client = RawClient(port: port)
-        defer { client.close() }
-        client.send("GET /events HTTP/1.1\r\n\r\n")
-        XCTAssertTrue(client.wait { $0.contains("event: counter") })
-
-        // The growing hypothesis passes THROUGH the completed phrase repeatedly.
-        server.publishPartial("I died")
-        server.publishPartial("I died again")
-        server.publishPartial("I died again and")
-        XCTAssertTrue(client.wait { $0.contains("I died again and") })
-        XCTAssertEqual(server.counterCount, 0, "partials must not count")
-
-        server.publishFinal("I died again and that's it")
-        XCTAssertTrue(client.wait { $0.contains("\"count\":1") })
-        XCTAssertEqual(server.counterCount, 1, "exactly one increment for one spoken phrase")
     }
 
     /// Detection runs on the ORIGINAL text, before translation — so a Russian

@@ -76,8 +76,8 @@ struct StreamOverlayPane: View {
             // Independent of the capture session: capture is "is the mic on",
             // this is "do the words show up as subtitles". Turning it off leaves
             // a working capture that only drives voice commands (below).
-            Toggle("Show subtitles on the overlay", isOn: configBinding(\.captionsEnabled))
-                .help("Off means the overlay shows no caption text — useful when you only want voice-command widgets like the counter.")
+            Toggle("Show live transcription (subtitles) on the overlay", isOn: configBinding(\.captionsEnabled))
+                .help("Off means the overlay shows no transcription/caption text at all — useful when you only want voice-command widgets like the counter.")
         } header: {
             Text("Captions")
         } footer: {
