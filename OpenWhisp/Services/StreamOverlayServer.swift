@@ -80,12 +80,33 @@ final class StreamOverlayServer {
     /// only the NEW words instead of replaying the utterance that just faded.
     private var lastPublishedTranscript: String = ""
 
-    init(config: StreamOverlayConfig, translator: Translator? = nil) {
+    /// The voice-command counter's value. STATE, not config: the owner injects
+    /// the restored value at init and is told about every change through
+    /// `onCounterChanged` so it can persist across app restarts. A config edit
+    /// (relabel, move corner) must never reset it.
+    private(set) var counterCount: Int
+    /// Fired (main actor) whenever `counterCount` changes, so the owner can
+    /// persist the new value and show it live in settings.
+    var onCounterChanged: ((Int) -> Void)?
+    /// The most recent counter SSE frame, cached on the transport queue for the
+    /// same reason as `latestFrame` — a client connecting mid-stream must be
+    /// greeted with the CURRENT count, not a blank widget. Only touched on `queue`.
+    private nonisolated(unsafe) var latestCounterFrame: String = ""
+
+    init(config: StreamOverlayConfig, translator: Translator? = nil, counterCount: Int = 0) {
         let sanitized = config.sanitized()
         self.config = sanitized
         self.translator = translator
+        self.counterCount = max(0, counterCount)
         self.captions = StreamOverlayCaptions(
             maxLines: sanitized.maxLines, charsPerLine: sanitized.charsPerLine)
+    }
+
+    /// The counter state as the page should render it right now.
+    private var counterState: StreamOverlayCounterState {
+        StreamOverlayCounterState(
+            label: config.counterLabel, count: counterCount,
+            corner: config.counterCorner, visible: config.counterEnabled)
     }
 
     var isRunning: Bool { listener != nil }
@@ -132,9 +153,15 @@ final class StreamOverlayServer {
                 // appearance edit is served the CURRENT look, not the look
                 // frozen at listener start.
                 html: { [weak self] in self?.pageHTML ?? html },
-                // Runs on `queue`: greet from the queue-cached frame, never by
-                // waiting on the main actor (see `latestFrame`).
-                initialFrame: { [weak self] in self?.latestFrame ?? "" },
+                // Runs on `queue`: greet from the queue-cached frames, never by
+                // waiting on the main actor (see `latestFrame`). Both the
+                // captions and the counter are seeded, so a browser source added
+                // (or reconnected) mid-stream shows the running count instead of
+                // waiting for the next increment.
+                initialFrames: { [weak self] in
+                    guard let self else { return [] }
+                    return [self.latestFrame, self.latestCounterFrame].filter { !$0.isEmpty }
+                },
                 onClosed: { [weak self] closed in
                     self?.connections.removeValue(forKey: ObjectIdentifier(closed))
                 })
@@ -143,8 +170,14 @@ final class StreamOverlayServer {
         }
         // Seed the greeting cache with the current caption state so a client
         // connecting before any publish still gets a coherent (empty) snapshot.
+        // Same for the counter: its persisted value must show on a page loaded
+        // before anything is said.
         let seed = StreamOverlaySSE.frame(captions.snapshot)
-        queue.async { [weak self] in self?.latestFrame = seed }
+        let counterSeed = StreamOverlaySSE.counterFrame(counterState)
+        queue.async { [weak self] in
+            self?.latestFrame = seed
+            self?.latestCounterFrame = counterSeed
+        }
         listener.start(queue: queue)
         self.listener = listener
         log.info("stream overlay listening (loopback)")
@@ -170,14 +203,31 @@ final class StreamOverlayServer {
     /// to be worth a round trip). An empty partial (session reset) hides the
     /// captions immediately.
     func publishPartial(_ text: String) {
+        // Counter-only mode: nothing about the caption pipeline runs (no
+        // reducer churn, no linger timer, no SSE frames). Partials carry no
+        // voice-command work either — detection is finals-only, see publishFinal.
+        guard config.captionsEnabled else { return }
         lastPublishedTranscript = text
         broadcast(captions.setText(text))
     }
 
-    /// Publish the finalized utterance. Runs through the injected translator
-    /// first when the config enables translation; commits in publish order
-    /// regardless of how long each translation takes.
+    /// Publish the finalized utterance. Two independent things happen here:
+    ///
+    ///  1. **Voice commands** are detected on the ORIGINAL (pre-translation)
+    ///     text, synchronously, before any translation round trip. Detection is
+    ///     FINALS-ONLY on purpose: a streaming engine's partials grow and get
+    ///     revised ("I di" → "I died" → "I died again"), so counting them would
+    ///     fire several times for one spoken phrase. The tradeoff is latency —
+    ///     the counter ticks when the utterance finalizes, not the instant the
+    ///     words are said. Matching the SOURCE text (not the translation) is
+    ///     what lets a Russian streamer trigger on a Russian phrase while the
+    ///     captions go out in English.
+    ///  2. **Captions** are updated (unless captions are switched off), through
+    ///     the translator when configured.
     func publishFinal(_ text: String) {
+        detectVoiceCommands(in: text)
+
+        guard config.captionsEnabled else { return }
         guard config.translationEnabled, let translator, !config.targetLanguage.isEmpty else {
             lastPublishedTranscript = text
             broadcast(captions.setText(text))
@@ -200,7 +250,50 @@ final class StreamOverlayServer {
     /// session's first words are new speech, not a continuation.
     func publishClear() {
         lastPublishedTranscript = ""
-        broadcast(captions.clear())
+        // Even with captions off the reducer is reset, so re-enabling them
+        // mid-stream never resurrects a previous session's retirement mark.
+        let snapshot = captions.clear()
+        guard config.captionsEnabled else { return }
+        broadcast(snapshot)
+    }
+
+    // MARK: - Voice commands (phrase → counter widget)
+
+    /// Count the configured trigger phrase in one finalized utterance and, if it
+    /// fired, bump the counter and push the new state to every live page.
+    ///
+    /// A phrase said TWICE in one final increments by two — the streamer said it
+    /// twice, and dropping the second would be a silent miscount.
+    private func detectVoiceCommands(in text: String) {
+        guard config.counterEnabled else { return }
+        let hits = OverlayVoiceCommandMatcher.occurrences(of: config.counterPhrase, in: text)
+        guard hits > 0 else { return }
+        setCounter(counterCount + hits)
+    }
+
+    /// Reset the counter to zero (the settings pane's Reset button).
+    func resetCounter() {
+        guard counterCount != 0 else { return }
+        setCounter(0)
+    }
+
+    /// Set the counter and broadcast it. Single funnel so persistence
+    /// (`onCounterChanged`) and the wire can never drift apart.
+    private func setCounter(_ value: Int) {
+        counterCount = max(0, value)
+        onCounterChanged?(counterCount)
+        broadcastCounter()
+    }
+
+    /// Push the current counter state to live pages and refresh the greeting
+    /// cache so a client connecting next also sees it.
+    private func broadcastCounter() {
+        let frame = StreamOverlaySSE.counterFrame(counterState)
+        queue.async { [weak self] in
+            guard let self else { return }
+            self.latestCounterFrame = frame
+            for (_, conn) in self.connections { conn.sendEvent(frame) }
+        }
     }
 
     // MARK: - Live appearance edits
@@ -223,6 +316,17 @@ final class StreamOverlayServer {
         guard sanitized != config else { return }
         let rewrapNeeded = sanitized.maxLines != config.maxLines
             || sanitized.charsPerLine != config.charsPerLine
+        // The counter's rendered state is label + count + corner + visibility;
+        // the count can't change here, so any of the other three means the live
+        // pages need a fresh `counter` frame. (The corner also rides `style`,
+        // but the counter frame is what un/hides the widget.)
+        let counterWidgetChanged = sanitized.counterLabel != config.counterLabel
+            || sanitized.counterCorner != config.counterCorner
+            || sanitized.counterEnabled != config.counterEnabled
+        // Switching captions OFF mid-stream must blank whatever is on screen —
+        // the page hides the block, but a stale frame would flash back if
+        // captions are re-enabled later.
+        let captionsSwitchedOff = !sanitized.captionsEnabled && config.captionsEnabled
         config = sanitized
 
         // Re-render the page for future loads (OBS "refresh browser source").
@@ -234,7 +338,25 @@ final class StreamOverlayServer {
             for (_, conn) in self.connections { conn.sendEvent(styleFrame) }
         }
 
-        guard rewrapNeeded else { return }
+        if counterWidgetChanged { broadcastCounter() }
+
+        if captionsSwitchedOff {
+            // Clear the reducer AND the cached greeting frame directly (the
+            // normal `broadcast` path is gated on captionsEnabled, which is
+            // already false by now).
+            lastPublishedTranscript = ""
+            lingerTimer?.invalidate()
+            lingerTimer = nil
+            let cleared = StreamOverlaySSE.frame(captions.clear())
+            queue.async { [weak self] in
+                guard let self else { return }
+                self.latestFrame = cleared
+                for (_, conn) in self.connections { conn.sendEvent(cleared) }
+            }
+            return
+        }
+
+        guard rewrapNeeded, config.captionsEnabled else { return }
         // Rebuild the reducer at the new geometry, carrying the retirement mark
         // and revision so a rewrap can neither resurrect faded speech nor emit a
         // frame the page will discard as stale.
@@ -288,8 +410,9 @@ private final class OverlayConnection {
     /// Returns the page HTML to serve; called on the transport queue at request
     /// time so appearance edits reach newly loaded pages.
     private let html: () -> String
-    /// Returns the latest cached SSE frame; called on the transport queue.
-    private let initialFrame: () -> String
+    /// Returns the cached SSE frames a newly connected client is greeted with
+    /// (captions + counter); called on the transport queue.
+    private let initialFrames: () -> [String]
     private let onClosed: (OverlayConnection) -> Void
     private var closedFired = false
 
@@ -303,14 +426,14 @@ private final class OverlayConnection {
     init(
         connection: NWConnection, queue: DispatchQueue, log: Logger,
         html: @escaping () -> String,
-        initialFrame: @escaping () -> String,
+        initialFrames: @escaping () -> [String],
         onClosed: @escaping (OverlayConnection) -> Void
     ) {
         self.connection = connection
         self.queue = queue
         self.log = log
         self.html = html
-        self.initialFrame = initialFrame
+        self.initialFrames = initialFrames
         self.onClosed = onClosed
     }
 
@@ -411,12 +534,13 @@ private final class OverlayConnection {
             guard let self else { return }
             if error != nil { self.close(); return }
             // Greet the client with the current state so a source added
-            // mid-session shows the captions already on screen. Reads the
-            // queue-cached frame — never blocks on the main actor.
-            let frame = self.initialFrame()
-            if !frame.isEmpty {
+            // mid-session shows the captions already on screen and the running
+            // counter value. Reads the queue-cached frames — never blocks on the
+            // main actor.
+            let greeting = self.initialFrames().joined()
+            if !greeting.isEmpty {
                 self.connection.send(
-                    content: Data(frame.utf8),
+                    content: Data(greeting.utf8),
                     completion: .contentProcessed { _ in })
             }
         })

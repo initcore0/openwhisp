@@ -267,6 +267,192 @@ final class StreamOverlayTests: XCTestCase {
         XCTAssertTrue(html.contains("addEventListener('style'"))
     }
 
+    // MARK: - Voice-command matcher (phrase counter)
+
+    func testMatcherIgnoresCaseAndPunctuation() {
+        XCTAssertEqual(
+            OverlayVoiceCommandMatcher.occurrences(of: "I died again", in: "well, I DIED AGAIN!"), 1)
+        XCTAssertEqual(
+            OverlayVoiceCommandMatcher.occurrences(of: "i died again", in: "I died... again?"), 1)
+        // The PHRASE may be punctuated/cased too — the streamer types naturally.
+        XCTAssertEqual(
+            OverlayVoiceCommandMatcher.occurrences(of: "  I Died, Again!  ", in: "i died again"), 1)
+    }
+
+    /// The word-boundary rule, stated as the bug it prevents: a substring match
+    /// would count "died again" inside "studied again".
+    func testMatcherMatchesWholeWordsNotSubstrings() {
+        XCTAssertEqual(
+            OverlayVoiceCommandMatcher.occurrences(of: "died again", in: "I studied again today"), 0,
+            #""died again" must not match inside "studied again""#)
+        XCTAssertEqual(
+            OverlayVoiceCommandMatcher.occurrences(of: "die", in: "diet"), 0)
+        XCTAssertEqual(
+            OverlayVoiceCommandMatcher.occurrences(of: "die", in: "I die"), 1)
+        // A phrase whose words appear but not CONTIGUOUSLY doesn't count.
+        XCTAssertEqual(
+            OverlayVoiceCommandMatcher.occurrences(of: "died again", in: "died, and then later again"), 0)
+    }
+
+    func testMatcherCountsMultipleOccurrencesInOneFinal() {
+        XCTAssertEqual(
+            OverlayVoiceCommandMatcher.occurrences(
+                of: "I died again",
+                in: "I died again and then I died again, unbelievable"), 2)
+    }
+
+    /// Non-overlapping: the streamer said "ha ha" once and a half, not twice.
+    func testMatcherCountsNonOverlappingOccurrences() {
+        XCTAssertEqual(OverlayVoiceCommandMatcher.occurrences(of: "ha ha", in: "ha ha ha"), 1)
+        XCTAssertEqual(OverlayVoiceCommandMatcher.occurrences(of: "ha ha", in: "ha ha ha ha"), 2)
+    }
+
+    /// Cyrillic must behave exactly like Latin — normalization is by Unicode
+    /// character properties, not an ASCII range.
+    func testMatcherWorksForCyrillicPhrases() {
+        XCTAssertEqual(
+            OverlayVoiceCommandMatcher.occurrences(of: "я снова умер", in: "ну всё, Я СНОВА УМЕР!"), 1)
+        XCTAssertEqual(
+            OverlayVoiceCommandMatcher.occurrences(
+                of: "я снова умер", in: "я снова умер... и я снова умер"), 2)
+        // Word boundaries hold in Cyrillic too: "умер" is not "умерла".
+        XCTAssertEqual(
+            OverlayVoiceCommandMatcher.occurrences(of: "умер", in: "она умерла"), 0)
+    }
+
+    /// A half-configured counter (no phrase yet) must never fire — otherwise it
+    /// would increment on EVERY utterance.
+    func testEmptyOrWhitespacePhraseNeverMatches() {
+        XCTAssertEqual(OverlayVoiceCommandMatcher.occurrences(of: "", in: "anything at all"), 0)
+        XCTAssertEqual(OverlayVoiceCommandMatcher.occurrences(of: "   ", in: "anything at all"), 0)
+        XCTAssertEqual(OverlayVoiceCommandMatcher.occurrences(of: "!!! ...", in: "anything at all"), 0)
+        XCTAssertEqual(OverlayVoiceCommandMatcher.occurrences(of: "phrase", in: ""), 0)
+    }
+
+    func testPhraseLongerThanTextNeverMatches() {
+        XCTAssertEqual(
+            OverlayVoiceCommandMatcher.occurrences(of: "I died again for real", in: "I died again"), 0)
+    }
+
+    func testMatcherAcceptsACommandValue() {
+        let command = OverlayVoiceCommand(phrase: "I died again")
+        XCTAssertEqual(command.kind, .counter)
+        XCTAssertEqual(
+            OverlayVoiceCommandMatcher.occurrences(of: command, in: "oh no, I died again"), 1)
+    }
+
+    // MARK: - Counter config + wire
+
+    func testCounterConfigDefaultsPreserveTodaysBehavior() {
+        let c = StreamOverlayConfig()
+        XCTAssertTrue(c.captionsEnabled, "captions stay on by default")
+        XCTAssertFalse(c.counterEnabled, "the counter is opt-in")
+        XCTAssertEqual(c.counterLabel, "Counter")
+        XCTAssertEqual(c.counterCorner, .bottomRight)
+    }
+
+    /// A config saved BEFORE the counter shipped must keep showing captions —
+    /// the decodeIfPresent default is the whole backcompat story.
+    func testConfigDecodeDefaultsCaptionsOnForPreCounterConfigs() throws {
+        let old = ##"{"canvasWidth":1280,"canvasHeight":720,"fontFamily":"Menlo","fontSize":40,"backgroundColor":"#00000000","textColor":"#FFFFFF","maxLines":3,"charsPerLine":42,"lingerSeconds":4,"translationEnabled":false,"targetLanguage":""}"##
+        let decoded = try JSONDecoder().decode(StreamOverlayConfig.self, from: Data(old.utf8))
+        XCTAssertTrue(decoded.captionsEnabled)
+        XCTAssertFalse(decoded.counterEnabled)
+        XCTAssertEqual(decoded.counterLabel, "Counter")
+        XCTAssertEqual(decoded.counterCorner, .bottomRight)
+    }
+
+    func testCounterCornerIsRawValueCodable() throws {
+        var c = StreamOverlayConfig()
+        c.counterCorner = .topLeft
+        let data = try JSONEncoder().encode(c)
+        XCTAssertTrue(String(decoding: data, as: UTF8.self).contains("\"counterCorner\":\"topLeft\""))
+        XCTAssertEqual(try JSONDecoder().decode(StreamOverlayConfig.self, from: data).counterCorner, .topLeft)
+    }
+
+    func testSanitizedBoundsCounterFieldsAndKeepsSSEFramingSafe() {
+        var c = StreamOverlayConfig()
+        // A label with a raw newline would break the single-line SSE `data:` frame.
+        c.counterLabel = "Deaths\nevent: caption"
+        c.counterPhrase = String(repeating: "x", count: 500)
+        let s = c.sanitized()
+        XCTAssertFalse(s.counterLabel.contains("\n"))
+        XCTAssertEqual(s.counterPhrase.count, 200)
+
+        var blank = StreamOverlayConfig()
+        blank.counterLabel = "   "
+        XCTAssertEqual(blank.sanitized().counterLabel, "Counter", "an empty label falls back")
+    }
+
+    func testCounterSSEFrameShape() throws {
+        let frame = StreamOverlaySSE.counterFrame(StreamOverlayCounterState(
+            label: "Deaths", count: 12, corner: .topLeft, visible: true))
+        XCTAssertTrue(frame.hasPrefix("event: counter\ndata: "))
+        XCTAssertTrue(frame.hasSuffix("\n\n"))
+        let json = frame
+            .dropFirst("event: counter\ndata: ".count)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let decoded = try JSONDecoder().decode(StreamOverlayCounterState.self, from: Data(json.utf8))
+        XCTAssertEqual(decoded.label, "Deaths")
+        XCTAssertEqual(decoded.count, 12)
+        XCTAssertEqual(decoded.corner, .topLeft)
+        XCTAssertTrue(decoded.visible)
+    }
+
+    /// The style event carries the captions switch and the counter's corner, so
+    /// counter-only mode and a corner move land without an OBS source refresh.
+    func testStyleFrameCarriesCaptionsSwitchAndCounterCorner() throws {
+        var c = StreamOverlayConfig()
+        c.captionsEnabled = false
+        c.counterCorner = .topRight
+        let frame = StreamOverlaySSE.styleFrame(c)
+        let json = frame
+            .dropFirst("event: style\ndata: ".count)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let style = try JSONDecoder().decode(StreamOverlayStyle.self, from: Data(json.utf8))
+        XCTAssertFalse(style.captionsEnabled)
+        XCTAssertEqual(style.counterCorner, .topRight)
+    }
+
+    // MARK: - Counter page rendering
+
+    func testPageRendersCounterInTheConfiguredCorner() {
+        var c = StreamOverlayConfig()
+        c.counterEnabled = true
+        c.counterCorner = .topLeft
+        let html = StreamOverlayPage.html(config: c)
+        XCTAssertTrue(html.contains("id=\"counter\""))
+        XCTAssertTrue(html.contains("top: 3vh; left: 3vh;"))
+        XCTAssertTrue(html.contains("addEventListener('counter'"))
+        // The label is user text — it must land via textContent. (`innerHTML`
+        // appears nowhere as an assignment; the comments naming it are the only
+        // occurrences, so assert the safe call instead of the absent one.)
+        XCTAssertTrue(html.contains("counterEl.textContent = st.label"))
+        XCTAssertFalse(html.contains("innerHTML ="))
+        XCTAssertFalse(html.contains("innerHTML="))
+    }
+
+    func testPageHidesCaptionsWhenCaptionsAreDisabled() {
+        var c = StreamOverlayConfig()
+        c.captionsEnabled = false
+        c.counterEnabled = true
+        let html = StreamOverlayPage.html(config: c)
+        XCTAssertTrue(html.contains("<div id=\"captions\" class=\"hidden\">"),
+                      "counter-only mode must render the caption block hidden")
+        // The counter half is still fully present.
+        XCTAssertTrue(html.contains("id=\"counter\""))
+
+        let withCaptions = StreamOverlayPage.html(config: StreamOverlayConfig())
+        XCTAssertTrue(withCaptions.contains("<div id=\"captions\"></div>"))
+    }
+
+    func testCornerCSSCoversEveryCase() {
+        XCTAssertEqual(StreamOverlayPage.cornerCSS(.topLeft), "top: 3vh; left: 3vh;")
+        XCTAssertEqual(StreamOverlayPage.cornerCSS(.topRight), "top: 3vh; right: 3vh;")
+        XCTAssertEqual(StreamOverlayPage.cornerCSS(.bottomLeft), "bottom: 3vh; left: 3vh;")
+        XCTAssertEqual(StreamOverlayPage.cornerCSS(.bottomRight), "bottom: 3vh; right: 3vh;")
+    }
+
     func testPageSanitizesHostileConfig() {
         let html = StreamOverlayPage.html(config: StreamOverlayConfig(
             fontFamily: "x; } </style><script>alert(1)</script>",

@@ -73,6 +73,14 @@ final class StreamOverlayCoordinator: ObservableObject {
     /// captions-only. Consumed by `sessionDidBegin()`; read by the live-routing
     /// gate in `startDictation`.
     private(set) var captureRequested = false
+    /// The voice-command counter's live value, mirrored for the settings pane.
+    ///
+    /// STATE, not config: persisted under its own defaults key so relabeling the
+    /// counter or moving its corner never resets a streamer's tally, and the
+    /// tally survives an app restart (a stream spans launches). Written only
+    /// through the server's `onCounterChanged` callback so the wire, the
+    /// persisted value, and the UI can't drift.
+    @Published private(set) var counterCount: Int
 
     private var server: StreamOverlayServer?
     /// Debounce for config-driven restarts (a color-picker drag fires dozens of
@@ -86,6 +94,7 @@ final class StreamOverlayCoordinator: ObservableObject {
         self.app = app
         enabled = store.bool(forKey: "streamOverlayEnabled")
         port = store.object(forKey: "streamOverlayPort") as? Int ?? Self.defaultPort
+        counterCount = max(0, store.integer(forKey: "streamOverlayCounterCount"))
         if let json = store.string(forKey: "streamOverlayConfig"),
            let saved = try? JSONDecoder().decode(StreamOverlayConfig.self, from: Data(json.utf8)) {
             config = saved.sanitized()
@@ -132,7 +141,18 @@ final class StreamOverlayCoordinator: ObservableObject {
         // finals then pass through untranslated). The server only invokes it
         // when `config.translationEnabled` and a target language are set, and
         // a nil result keeps the original caption line (never a lost line).
-        let server = StreamOverlayServer(config: config, translator: AppleTextTranslation.overlayTranslator())
+        let server = StreamOverlayServer(
+            config: config,
+            translator: AppleTextTranslation.overlayTranslator(),
+            // Hand the persisted tally back so a restart (or a port change,
+            // which does restart the listener) continues the count instead of
+            // silently zeroing a streamer's death counter mid-stream.
+            counterCount: counterCount)
+        server.onCounterChanged = { [weak self] count in
+            guard let self, self.server === server else { return }
+            self.counterCount = count
+            self.store.set(count, forKey: "streamOverlayCounterCount")
+        }
         server.onFailure = { [weak self] message in
             guard let self, self.server === server else { return }
             self.server = nil
@@ -213,8 +233,24 @@ final class StreamOverlayCoordinator: ObservableObject {
         server?.publishPartial(text)
     }
 
-    /// The session's cleaned final transcript.
+    /// The session's cleaned final transcript. Also where voice commands are
+    /// detected (the server matches the trigger phrase on this text).
     func publishFinal(_ text: String) {
         server?.publishFinal(text)
+    }
+
+    // MARK: - Voice-command counter
+
+    /// Zero the counter (the pane's Reset button). Works whether or not the
+    /// server is up: with a live server the reset also reaches the overlay page,
+    /// otherwise only the persisted value is cleared and the next start picks it
+    /// up.
+    func resetCounter() {
+        if let server {
+            server.resetCounter()
+        } else {
+            counterCount = 0
+            store.set(0, forKey: "streamOverlayCounterCount")
+        }
     }
 }

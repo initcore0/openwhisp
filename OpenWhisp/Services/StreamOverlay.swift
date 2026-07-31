@@ -35,6 +35,22 @@ public struct StreamOverlayConfig: Codable, Equatable, Sendable {
     public var translationEnabled: Bool
     /// BCP-47-ish target language tag for the injected translator (e.g. "es").
     public var targetLanguage: String
+    /// Master switch for the SUBTITLE half of the overlay. Off means the page
+    /// shows no captions and the server publishes no caption frames — the
+    /// streamer who only wants voice-command widgets (the counter below) gets a
+    /// page with nothing but those. Defaults true so every existing config keeps
+    /// today's behavior.
+    public var captionsEnabled: Bool
+    /// Master switch for the voice-command phrase counter.
+    public var counterEnabled: Bool
+    /// The trigger phrase the streamer says on stream (e.g. "I died again", or
+    /// its Russian equivalent). Matched case/punctuation-insensitively on WORD
+    /// boundaries — see `OverlayVoiceCommandMatcher`.
+    public var counterPhrase: String
+    /// Label shown next to the count on the overlay (e.g. "Deaths").
+    public var counterLabel: String
+    /// Which corner of the canvas the counter block sits in.
+    public var counterCorner: StreamOverlayCorner
 
     public init(
         canvasWidth: Int = 1920,
@@ -47,7 +63,12 @@ public struct StreamOverlayConfig: Codable, Equatable, Sendable {
         charsPerLine: Int = 42,
         lingerSeconds: Int = 4,
         translationEnabled: Bool = false,
-        targetLanguage: String = ""
+        targetLanguage: String = "",
+        captionsEnabled: Bool = true,
+        counterEnabled: Bool = false,
+        counterPhrase: String = "",
+        counterLabel: String = "Counter",
+        counterCorner: StreamOverlayCorner = .bottomRight
     ) {
         self.canvasWidth = canvasWidth
         self.canvasHeight = canvasHeight
@@ -60,6 +81,11 @@ public struct StreamOverlayConfig: Codable, Equatable, Sendable {
         self.lingerSeconds = lingerSeconds
         self.translationEnabled = translationEnabled
         self.targetLanguage = targetLanguage
+        self.captionsEnabled = captionsEnabled
+        self.counterEnabled = counterEnabled
+        self.counterPhrase = counterPhrase
+        self.counterLabel = counterLabel
+        self.counterCorner = counterCorner
     }
 
     /// Backward-compatible decode: fields added after the first release fall
@@ -78,6 +104,14 @@ public struct StreamOverlayConfig: Codable, Equatable, Sendable {
         lingerSeconds = try c.decodeIfPresent(Int.self, forKey: .lingerSeconds) ?? defaults.lingerSeconds
         translationEnabled = try c.decodeIfPresent(Bool.self, forKey: .translationEnabled) ?? defaults.translationEnabled
         targetLanguage = try c.decodeIfPresent(String.self, forKey: .targetLanguage) ?? defaults.targetLanguage
+        // Added with the voice-command counter. `captionsEnabled` defaulting to
+        // TRUE is what preserves today's behavior for every already-saved config
+        // (an overlay that used to show subtitles keeps showing them).
+        captionsEnabled = try c.decodeIfPresent(Bool.self, forKey: .captionsEnabled) ?? defaults.captionsEnabled
+        counterEnabled = try c.decodeIfPresent(Bool.self, forKey: .counterEnabled) ?? defaults.counterEnabled
+        counterPhrase = try c.decodeIfPresent(String.self, forKey: .counterPhrase) ?? defaults.counterPhrase
+        counterLabel = try c.decodeIfPresent(String.self, forKey: .counterLabel) ?? defaults.counterLabel
+        counterCorner = try c.decodeIfPresent(StreamOverlayCorner.self, forKey: .counterCorner) ?? defaults.counterCorner
     }
 
     /// True iff `value` is a `#RGB`, `#RRGGBB`, or `#RRGGBBAA` hex color.
@@ -111,7 +145,149 @@ public struct StreamOverlayConfig: Codable, Equatable, Sendable {
             c.fontFamily = "sans-serif"
         }
         c.targetLanguage = String(c.targetLanguage.prefix(16).filter { $0.isLetter || $0 == "-" })
+        // Voice-command counter. The phrase is only ever compared (never
+        // rendered), so it needs no escaping — just a length bound. The LABEL is
+        // shown on the page: it travels as JSON in the SSE payload and is
+        // assigned via textContent, so markup can't execute, but control
+        // characters would corrupt the SSE framing (a raw newline ends the
+        // `data:` line). Strip those and bound the length.
+        c.counterPhrase = String(c.counterPhrase.prefix(200))
+        c.counterLabel = String(c.counterLabel.prefix(60).filter { !$0.isNewline && !$0.unicodeScalars.contains { s in s.properties.generalCategory == .control } })
+        if c.counterLabel.trimmingCharacters(in: .whitespaces).isEmpty {
+            c.counterLabel = "Counter"
+        }
         return c
+    }
+}
+
+/// Which corner of the overlay canvas a widget (currently just the counter)
+/// pins itself to. Raw-value Codable so the persisted config stays readable and
+/// tolerant — an unknown value decodes as the default via `decodeIfPresent`
+/// failure handling in the config's initializer contract.
+public enum StreamOverlayCorner: String, Codable, Equatable, Sendable, CaseIterable {
+    case topLeft
+    case topRight
+    case bottomLeft
+    case bottomRight
+
+    /// Human-readable name for settings UI.
+    public var displayName: String {
+        switch self {
+        case .topLeft: return "Top left"
+        case .topRight: return "Top right"
+        case .bottomLeft: return "Bottom left"
+        case .bottomRight: return "Bottom right"
+        }
+    }
+}
+
+// MARK: - Voice commands (phrase → overlay widget action)
+
+/// A single voice command the streamer configured. Deliberately a small open
+/// shape rather than a bare phrase string: the counter is the FIRST widget
+/// command, and a timer/soundboard/scene-switch command would slot in as another
+/// `Kind` without disturbing the matcher or the wire.
+public struct OverlayVoiceCommand: Codable, Equatable, Sendable, Identifiable {
+    /// What saying the phrase does.
+    public enum Kind: String, Codable, Equatable, Sendable {
+        /// Increment a labeled counter widget on the overlay.
+        case counter
+    }
+
+    public var id: String
+    /// The phrase to listen for, as the streamer typed it. Normalized at match
+    /// time — the streamer never has to think about case or punctuation.
+    public var phrase: String
+    public var kind: Kind
+
+    public init(id: String = UUID().uuidString, phrase: String, kind: Kind = .counter) {
+        self.id = id
+        self.phrase = phrase
+        self.kind = kind
+    }
+}
+
+/// Counts occurrences of a trigger phrase in transcribed speech.
+///
+/// **Word-sequence containment, not substring.** "I died again" must fire on
+/// "well, I DIED AGAIN!" but never on "I studied again" — a raw
+/// `text.contains(phrase)` would match the latter's "died again" inside
+/// "studied again". Both sides are normalized to a word array (lowercased,
+/// punctuation/symbols dropped, whitespace collapsed) and the phrase's words are
+/// matched as a contiguous subsequence.
+///
+/// **Script-agnostic.** Normalization uses Unicode character properties
+/// (`isLetter`/`isNumber`), not an ASCII range, so a Cyrillic phrase
+/// ("я снова умер") behaves exactly like a Latin one.
+///
+/// Pure — no state, no clock, no I/O. The server owns when to call it.
+public enum OverlayVoiceCommandMatcher {
+
+    /// Split `text` into comparable words: lowercased, with everything that is
+    /// not a letter or a number treated as a separator. Apostrophes inside a
+    /// word split it ("don't" → ["don", "t"]) which is fine and symmetrical:
+    /// both the phrase and the text go through this, so they still line up.
+    public static func normalize(_ text: String) -> [String] {
+        text.lowercased()
+            .split(whereSeparator: { !$0.isLetter && !$0.isNumber })
+            .map(String.init)
+    }
+
+    /// How many NON-OVERLAPPING times `phrase` occurs in `text`, matched on word
+    /// boundaries after normalization.
+    ///
+    /// Non-overlapping matters for repeated-word phrases: "ha ha" occurs ONCE in
+    /// "ha ha ha", not twice — the streamer said the trigger once and a half.
+    /// Returns 0 for an empty/whitespace-only/punctuation-only phrase, so a
+    /// half-configured counter can never fire on every single utterance.
+    public static func occurrences(of phrase: String, in text: String) -> Int {
+        let needle = normalize(phrase)
+        guard !needle.isEmpty else { return 0 }
+        let haystack = normalize(text)
+        guard haystack.count >= needle.count else { return 0 }
+
+        var count = 0
+        var i = 0
+        while i + needle.count <= haystack.count {
+            if Array(haystack[i..<(i + needle.count)]) == needle {
+                count += 1
+                i += needle.count      // non-overlapping: skip the whole match
+            } else {
+                i += 1
+            }
+        }
+        return count
+    }
+
+    /// Convenience for a configured command: how many times it fired in `text`.
+    public static func occurrences(of command: OverlayVoiceCommand, in text: String) -> Int {
+        occurrences(of: command.phrase, in: text)
+    }
+}
+
+/// The live state of the counter widget — the value the overlay page renders.
+///
+/// The COUNT is state, not configuration: it is owned by the running feature and
+/// persisted separately from `StreamOverlayConfig` so a config edit (relabeling,
+/// moving the corner) never resets a streamer's death count, and a restart never
+/// loses it.
+public struct StreamOverlayCounterState: Codable, Equatable, Sendable {
+    public var label: String
+    public var count: Int
+    public var corner: StreamOverlayCorner
+    /// True when the counter should be visible at all (config's `counterEnabled`).
+    public var visible: Bool
+
+    public init(
+        label: String = "Counter",
+        count: Int = 0,
+        corner: StreamOverlayCorner = .bottomRight,
+        visible: Bool = false
+    ) {
+        self.label = label
+        self.count = count
+        self.corner = corner
+        self.visible = visible
     }
 }
 
@@ -280,12 +456,26 @@ public enum StreamOverlaySSE {
         let style = StreamOverlayStyle(
             canvasWidth: c.canvasWidth, canvasHeight: c.canvasHeight,
             fontFamily: c.fontFamily, fontSize: c.fontSize,
-            backgroundColor: c.backgroundColor, textColor: c.textColor)
+            backgroundColor: c.backgroundColor, textColor: c.textColor,
+            captionsEnabled: c.captionsEnabled, counterCorner: c.counterCorner)
         guard let data = try? encoder.encode(style),
               let json = String(data: data, encoding: .utf8) else {
             return "event: style\ndata: {}\n\n"
         }
         return "event: style\ndata: \(json)\n\n"
+    }
+
+    /// Encode the voice-command counter state as an SSE `counter` event frame.
+    /// Sent on every increment, on a config edit that changes the widget's
+    /// label/corner/visibility, and as part of a new client's greeting.
+    public static func counterFrame(_ state: StreamOverlayCounterState) -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        guard let data = try? encoder.encode(state),
+              let json = String(data: data, encoding: .utf8) else {
+            return "event: counter\ndata: {}\n\n"
+        }
+        return "event: counter\ndata: \(json)\n\n"
     }
 }
 
@@ -299,10 +489,20 @@ public struct StreamOverlayStyle: Codable, Equatable, Sendable {
     public var fontSize: Int
     public var backgroundColor: String
     public var textColor: String
+    /// Whether the caption block is shown at all — a LOOK-level fact for the
+    /// page (the server separately stops publishing caption frames), so
+    /// switching to counter-only mode doesn't need an OBS source refresh.
+    public var captionsEnabled: Bool
+    /// Where the counter widget pins itself. The counter's LABEL and COUNT ride
+    /// the `counter` event (they're state, not style); only the placement is a
+    /// look change.
+    public var counterCorner: StreamOverlayCorner
 
     public init(
         canvasWidth: Int, canvasHeight: Int, fontFamily: String,
-        fontSize: Int, backgroundColor: String, textColor: String
+        fontSize: Int, backgroundColor: String, textColor: String,
+        captionsEnabled: Bool = true,
+        counterCorner: StreamOverlayCorner = .bottomRight
     ) {
         self.canvasWidth = canvasWidth
         self.canvasHeight = canvasHeight
@@ -310,12 +510,26 @@ public struct StreamOverlayStyle: Codable, Equatable, Sendable {
         self.fontSize = fontSize
         self.backgroundColor = backgroundColor
         self.textColor = textColor
+        self.captionsEnabled = captionsEnabled
+        self.counterCorner = counterCorner
     }
 }
 
 /// Generates the self-contained overlay HTML page from a config. No external
 /// assets — OBS browser sources are happiest fully offline.
 public enum StreamOverlayPage {
+    /// CSS edge offsets (`top/right/bottom/left`) pinning a widget to a corner.
+    /// Emitted as a fixed-position block so the counter is independent of the
+    /// captions' flex layout — either half can be hidden without moving the other.
+    static func cornerCSS(_ corner: StreamOverlayCorner) -> String {
+        switch corner {
+        case .topLeft: return "top: 3vh; left: 3vh;"
+        case .topRight: return "top: 3vh; right: 3vh;"
+        case .bottomLeft: return "bottom: 3vh; left: 3vh;"
+        case .bottomRight: return "bottom: 3vh; right: 3vh;"
+        }
+    }
+
     public static func html(config: StreamOverlayConfig) -> String {
         let c = config.sanitized()
         return """
@@ -354,12 +568,31 @@ public enum StreamOverlayPage {
             padding: 0.05em 0.4em;
             margin-top: 0.12em;
           }
+          /* Voice-command counter: same visual idiom as a caption line (dark
+             plate, soft shadow, config text color) but pinned to a corner and
+             laid out independently of the caption flex column, so captions-off
+             and counter-off are genuinely independent. */
+          #counter {
+            position: fixed;
+            \(cornerCSS(c.counterCorner))
+            color: \(c.textColor);
+            font-size: \(c.fontSize)px;
+            line-height: 1.25;
+            text-shadow: 0 2px 8px rgba(0,0,0,0.85);
+            background: rgba(0,0,0,0.55);
+            border-radius: 6px;
+            padding: 0.05em 0.4em;
+            white-space: nowrap;
+          }
+          .hidden { display: none !important; }
         </style>
         </head>
         <body>
-        <div id="captions"></div>
+        <div id="captions"\(c.captionsEnabled ? "" : " class=\"hidden\"")></div>
+        <div id="counter" class="hidden"></div>
         <script>
           const el = document.getElementById('captions');
+          const counterEl = document.getElementById('counter');
           let lastRevision = -1;
           const source = new EventSource('/events');
           source.addEventListener('caption', (e) => {
@@ -384,8 +617,41 @@ public enum StreamOverlayPage {
             if (typeof s.canvasHeight === 'number') document.body.style.height = s.canvasHeight + 'px';
             if (typeof s.backgroundColor === 'string') document.body.style.background = s.backgroundColor;
             if (typeof s.fontFamily === 'string') document.body.style.fontFamily = s.fontFamily;
-            if (typeof s.fontSize === 'number') el.style.fontSize = s.fontSize + 'px';
-            if (typeof s.textColor === 'string') el.style.color = s.textColor;
+            if (typeof s.fontSize === 'number') {
+              el.style.fontSize = s.fontSize + 'px';
+              counterEl.style.fontSize = s.fontSize + 'px';
+            }
+            if (typeof s.textColor === 'string') {
+              el.style.color = s.textColor;
+              counterEl.style.color = s.textColor;
+            }
+            // Captions can be switched off entirely (counter-only mode) without
+            // reloading the browser source.
+            if (typeof s.captionsEnabled === 'boolean') {
+              el.classList.toggle('hidden', !s.captionsEnabled);
+              if (!s.captionsEnabled) el.textContent = '';
+            }
+            if (typeof s.counterCorner === 'string') {
+              // Reset all four edges first so switching corners never leaves a
+              // stale offset pinning the block to two edges at once.
+              counterEl.style.top = counterEl.style.right = '';
+              counterEl.style.bottom = counterEl.style.left = '';
+              const c = s.counterCorner;
+              if (c === 'topLeft') { counterEl.style.top = '3vh'; counterEl.style.left = '3vh'; }
+              else if (c === 'topRight') { counterEl.style.top = '3vh'; counterEl.style.right = '3vh'; }
+              else if (c === 'bottomLeft') { counterEl.style.bottom = '3vh'; counterEl.style.left = '3vh'; }
+              else { counterEl.style.bottom = '3vh'; counterEl.style.right = '3vh'; }
+            }
+          });
+          // Voice-command counter: the server increments on a matching FINAL
+          // utterance and pushes the whole state, so the page is stateless and a
+          // reconnecting browser source is always correct. textContent (never
+          // innerHTML) — the label is user text.
+          source.addEventListener('counter', (e) => {
+            const st = JSON.parse(e.data);
+            counterEl.classList.toggle('hidden', !st.visible);
+            if (!st.visible) return;
+            counterEl.textContent = st.label + ': ' + st.count;
           });
         </script>
         </body>
