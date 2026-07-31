@@ -174,7 +174,7 @@ struct DictationPane: View {
                         // the document.
                         SubtitledToggle(
                             "Live translation preview (experimental)",
-                            subtitle: "Shows a second panel near the bottom of the screen with a running English translation while you speak. Display-only — what gets pasted is unchanged. Needs the language assets above.",
+                            subtitle: "The dictation overlay shows a running English translation while you speak — your spoken words stay visible as a single line above it. Display-only — what gets pasted is unchanged. Needs the language assets above.",
                             isOn: $translationPreviewEnabled
                         )
                         .onChange(of: translationPreviewEnabled) {

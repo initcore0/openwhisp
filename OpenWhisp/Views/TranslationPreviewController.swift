@@ -1,13 +1,13 @@
-import AppKit
 import Combine
-import SwiftUI
+import Foundation
 
-/// EXPERIMENTAL — the live translation-preview panel.
+/// EXPERIMENTAL — the live translation-preview engine.
 ///
-/// A second, small, DISPLAY-ONLY floating panel below the dictation overlay
-/// that shows a near-real-time English translation of what's being dictated, so
-/// the user can watch translation happen and judge its quality while speaking
-/// instead of discovering it at paste time.
+/// Feeds a near-real-time English translation of what's being dictated into
+/// the MAIN dictation overlay (no second window): while armed, OverlayView's
+/// transcript panel shows the spoken text as one dimmed line and the running
+/// translation as the body — so the user watches translation happen and judges
+/// its quality while speaking instead of discovering it at paste time.
 ///
 /// Why it exists: with an ASR-only engine (Parakeet / Apple Speech /
 /// SpeechAnalyzer) and "Translate to English" on, the shipped TEXT path
@@ -47,8 +47,7 @@ final class TranslationPreviewController {
     private static let tick: TimeInterval = 0.25
 
     private let appState: AppState
-    private let model = TranslationPreviewModel()
-    private var panel: NSPanel?
+    private let model = TranslationPreviewModel.shared
     private var cancellables = Set<AnyCancellable>()
     private var timer: Timer?
 
@@ -113,6 +112,7 @@ final class TranslationPreviewController {
         generation += 1
         currentText = ""
         lastTranslatedSource = ""
+        model.isActive = false
         model.sourceText = ""
         model.translatedText = ""
         model.isTranslating = false
@@ -151,10 +151,10 @@ final class TranslationPreviewController {
             textTranslationAvailable: AppleTextTranslation.isSupported)
 
         guard armed else {
-            hide()
+            model.isActive = false
             return
         }
-        show()
+        model.isActive = true
         model.sourceText = currentText
 
         guard TranslationPreviewPolicy.shouldFire(
@@ -196,129 +196,24 @@ final class TranslationPreviewController {
         }
     }
 
-    // MARK: - Panel
-
-    private func show() {
-        if panel == nil {
-            let size = NSSize(width: 460, height: 132)
-            let host = NSHostingController(rootView: TranslationPreviewView(model: model))
-            host.view.frame = NSRect(origin: .zero, size: size)
-            let panel = NSPanel(
-                contentRect: NSRect(origin: .zero, size: size),
-                styleMask: [.borderless, .nonactivatingPanel],
-                backing: .buffered,
-                defer: false)
-            panel.contentViewController = host
-            panel.isFloatingPanel = true
-            panel.level = .floating
-            panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
-            panel.backgroundColor = .clear
-            panel.isOpaque = false
-            // Same dark-glass commitment as the dictation overlay: the view's
-            // colors are hand-tuned for it, so don't let the system theme flip
-            // the material light under white text.
-            panel.appearance = NSAppearance(named: .vibrantDark)
-            panel.hasShadow = false
-            panel.hidesOnDeactivate = false
-            // Display-only: clicks pass straight through to whatever the user
-            // is dictating into.
-            panel.ignoresMouseEvents = true
-            panel.alphaValue = 0
-            self.panel = panel
-        }
-        position()
-        panel?.orderFrontRegardless()
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.16
-            panel?.animator().alphaValue = 1
-        }
-    }
-
-    private func hide() {
-        guard let panel else { return }
-        self.panel = nil
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.14
-            panel.animator().alphaValue = 0
-        } completionHandler: {
-            Task { @MainActor in
-                panel.orderOut(nil)
-                panel.contentViewController = nil
-            }
-        }
-    }
-
-    /// Bottom-center, BELOW the dictation overlay (which sits 140pt up), so the
-    /// two panels stack instead of overlapping.
-    private func position() {
-        guard let panel else { return }
-        let screen = NSScreen.main ?? NSScreen.screens.first
-        guard let frame = screen?.visibleFrame else { return }
-        let x = frame.midX - panel.frame.width / 2
-        let y = frame.minY + 16
-        panel.setFrameOrigin(NSPoint(x: x, y: y))
-    }
 }
 
-// MARK: - View
+// MARK: - Model (rendered by the MAIN overlay)
 
-/// Panel contents. Observed rather than passed so the controller can mutate
-/// fields without rebuilding the hosting controller.
+/// The translation state the MAIN dictation overlay renders (OverlayView's
+/// transcript panel): while `isActive`, the overlay shows the spoken text as a
+/// single dimmed line and this model's `translatedText` as the transcript body.
+/// A singleton so the engine (TranslationPreviewController) and the overlay
+/// view can share it without threading it through AppState (MAK-32 ratchet) or
+/// the overlay's construction path.
 @MainActor
 final class TranslationPreviewModel: ObservableObject {
+    static let shared = TranslationPreviewModel()
+
+    /// True while the preview is armed for a live session — the overlay flips
+    /// its transcript panel into source-line + translation-body layout.
+    @Published var isActive = false
     @Published var sourceText = ""
     @Published var translatedText = ""
     @Published var isTranslating = false
-}
-
-/// Source line over the English translation, in the same dark-glass idiom as
-/// the dictation overlay but quieter — this is a secondary, informational
-/// surface, so caption type and dimmed chrome.
-private struct TranslationPreviewView: View {
-    @ObservedObject var model: TranslationPreviewModel
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 5) {
-                // SF Symbol, never an emoji (project rule). Non-actionable
-                // label, but the panel still reads as a translation surface.
-                Image(systemName: "character.bubble")
-                    .font(.system(size: 10, weight: .semibold))
-                Text("Translation preview (beta)")
-                    .font(.caption2.weight(.semibold))
-                Spacer(minLength: 4)
-                if model.isTranslating {
-                    Text("Translating…")
-                        .font(.caption2)
-                }
-            }
-            .foregroundStyle(.white.opacity(0.5))
-
-            if !model.sourceText.isEmpty {
-                Text(model.sourceText)
-                    .font(.caption)
-                    .foregroundStyle(.white.opacity(0.45))
-                    .lineLimit(2)
-                    .truncationMode(.head)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            Text(model.translatedText.isEmpty ? "…" : model.translatedText)
-                .font(.callout)
-                .foregroundStyle(.white.opacity(0.92))
-                .lineLimit(3)
-                .truncationMode(.head)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .animation(.easeOut(duration: 0.12), value: model.translatedText)
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 11)
-        .frame(width: 460, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(Color.black.opacity(0.55))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .strokeBorder(Color.white.opacity(0.10), lineWidth: 1))
-        )
-    }
 }

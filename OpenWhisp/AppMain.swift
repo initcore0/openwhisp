@@ -73,11 +73,12 @@ class OpenWhispApp: NSObject, NSApplicationDelegate {
         // caption server if enabled.
         appState.streamOverlay.startIfEnabled()
 
-        // EXPERIMENTAL live translation preview: a display-only second panel
-        // that translates the live partial transcript while you speak. Owned
-        // here (not by AppState — MAK-32 LOC ratchet); it subscribes to
-        // AppState's published transcript/session flags and shows itself only
-        // when its own opt-in is on AND the text-translation path arms.
+        // EXPERIMENTAL live translation preview: translates the live partial
+        // transcript while you speak and feeds it into the MAIN overlay's
+        // transcript panel (source as one dimmed line, translation as the
+        // body). Owned here (not by AppState — MAK-32 LOC ratchet); it
+        // subscribes to AppState's published transcript/session flags and arms
+        // only when its opt-in is on AND the text-translation path arms.
         translationPreview = TranslationPreviewController(appState: appState)
 
         // Sparkle auto-update (MAK-56): start the updater. Touching `.shared`
