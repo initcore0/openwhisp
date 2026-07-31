@@ -39,6 +39,7 @@ let package = Package(
                 "LanguageResolver.swift",
                 "EngineCapabilities.swift",
                 "TextTranslationPolicy.swift",
+                "TranslationPreviewPolicy.swift",
                 "EnginePurposeRouter.swift",
                 "ParakeetCatalog.swift",
                 "ParakeetLanguageGate.swift",
