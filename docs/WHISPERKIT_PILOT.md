@@ -16,8 +16,11 @@ into the same session machinery as Apple Speech: live partials drive the overlay
 preview, and the full transcript is pasted on release. Key decode settings
 (`WhisperKitBridge.makeStreamHandle`):
 
-- `skipSpecialTokens: true` + `withoutTimestamps: true` — streaming segment text is
-  the raw token stream otherwise (`<|startoftranscript|>…`).
+- `skipSpecialTokens: true` — streaming segment text is the raw token stream
+  otherwise (`<|startoftranscript|>…`). `withoutTimestamps` MUST stay `false`
+  (`WhisperKitStreamingDecodePolicy.withoutTimestamps`): timestamp tokens are what
+  let segments split and confirm, advancing the decode window — suppressing them
+  truncated every dictation at 30 s (fixed in #222).
 - `detectLanguage: true` for the "auto" case — WhisperKit's prefill otherwise forces
   English, so Russian came out translated. Explicit-language / translate skip this.
 
@@ -146,8 +149,10 @@ a 16 GB Mac — `small` is the default for that reason.
 
 ## Known limitations of this pilot
 
-- **File transcription only** — no true streaming partials yet (that's the next
-  step; WhisperKit supports it via LocalAgreement).
+- ~~**File transcription only**~~ — streaming partials shipped since
+  (`WhisperKitStreamingEngine` / `AudioStreamTranscriber`); this pilot doc predates
+  them. Streaming latency is governed by the confirmation lag — see
+  `WhisperKitStreamingDecodePolicy.requiredSegmentsForConfirmation(translate:)`.
 - **Custom vocabulary prompt is not wired** for WhisperKit. WhisperKit biases via
   `promptTokens: [Int]?` (token IDs), not a plain string, so the vocabulary
   feature only affects the whisper.cpp backend in this pilot.

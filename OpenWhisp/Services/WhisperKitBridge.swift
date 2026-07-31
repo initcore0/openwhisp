@@ -53,9 +53,32 @@ public enum WhisperKitStreamingDecodePolicy {
     public static let windowSamples = 480_000
     public static let sampleRate = 16_000
 
-    /// `AudioStreamTranscriber`'s default `requiredSegmentsForConfirmation`. We
-    /// don't override it at the call site, so this is the live value.
+    /// `AudioStreamTranscriber`'s default `requiredSegmentsForConfirmation` —
+    /// the live value for plain TRANSCRIBE sessions (we don't override it).
     public static let requiredSegmentsForConfirmation = 2
+
+    /// The confirmation threshold `makeStreamHandle` passes for a session,
+    /// by task.
+    ///
+    /// This is the streaming loop's dominant latency knob: every decode pass
+    /// re-decodes from `lastConfirmedSegmentEndSeconds`, and confirmation
+    /// always holds back the newest `requiredSegmentsForConfirmation`
+    /// segments. Holding back 2 means the re-decoded tail settles at ~2–3
+    /// segments of audio; on the TRANSLATE task each of those passes also has
+    /// to re-GENERATE English for that whole tail (more tokens, lower
+    /// confidence, more fallbacks than same-language transcribe), so after
+    /// ~30–40 s of continuous speech the pass cost visibly outgrows the ≥1 s
+    /// new-audio cadence and partials start lagging.
+    ///
+    /// Translate therefore holds back only 1 segment: the clip point advances
+    /// a full segment sooner, roughly halving the steady-state re-decode
+    /// window. The cost is that a segment freezes (is confirmed) one window
+    /// earlier — an acceptable trade on the translate path, where the live
+    /// preview is already a moving translation rather than verbatim text.
+    /// Transcribe keeps the upstream default of 2.
+    public static func requiredSegmentsForConfirmation(translate: Bool) -> Int {
+        translate ? 1 : requiredSegmentsForConfirmation
+    }
 
     /// Segments a window yields, given whether timestamp tokens were emitted.
     /// Without timestamps the seeker can't split, so the window is one segment.
@@ -352,6 +375,12 @@ enum WhisperKitBridge {
             tokenizer: tokenizer,
             audioProcessor: kit.audioProcessor,
             decodingOptions: options,
+            // Task-aware confirmation lag — the streaming loop's dominant
+            // latency knob (see WhisperKitStreamingDecodePolicy): translate
+            // holds back 1 segment instead of 2 so the re-decoded tail stays
+            // short and partials keep pace past the ~30–40 s mark.
+            requiredSegmentsForConfirmation:
+                WhisperKitStreamingDecodePolicy.requiredSegmentsForConfirmation(translate: task.translate),
             useVAD: true,                 // skip silence — don't transcribe dead air
             inputDeviceID: inputDeviceID, // nil = system default (fork backport of #503)
             stateChangeCallback: { _, new in
