@@ -2201,6 +2201,15 @@ class AppState: ObservableObject {
         }
     }
 
+    /// A model load outlasted the hard cap (MAK-94): fail loudly, not forever.
+    @MainActor
+    private func failStuckModelLoad(sessionID: UUID) {
+        guard sessionID == activeSessionID, isArming, !isRecording else { return }
+        error = StreamingRoutePolicy.stuckModelLoadMessage
+        statusMessage = "Model load timed out"
+        sessionOutcome = .error(message: "model load timed out")
+        finishSessionUI()
+    }
     /// Wire the Parakeet streaming engine's EOU signal to the agent EOU auto-stop
     /// (MAK-46 Phase 5). Only the EOU variant ever fires this; the detector is only
     /// armed for an agent session with the setting on (see `armAgentEouDetector`),
@@ -3438,11 +3447,12 @@ class AppState: ObservableObject {
                 // already fired inside start() and the session is live here.
                 // Timeout fallback: if the signal never lands (wiring bug),
                 // flip anyway rather than wedging the session at "Starting…".
-                Task { @MainActor in
-                    try? await Task.sleep(
-                        nanoseconds: UInt64(StreamingRoutePolicy.captureStartTimeout * 1_000_000_000))
-                    self.handleStreamingCaptureStarted(sessionID: sessionID)
-                }
+                // Readiness-aware (MAK-94): while the model is genuinely still
+                // loading it keeps waiting instead of faking "Listening…", with
+                // a hard cap so a wedged load errors loudly. See the tracker.
+                ModelReadinessTracker.shared.runArmingTimeout(
+                    onBeginListening: { [weak self] in self?.handleStreamingCaptureStarted(sessionID: sessionID) },
+                    onStuck: { [weak self] in self?.failStuckModelLoad(sessionID: sessionID) })
             } catch {
                 self.error = error.localizedDescription
                 self.statusMessage = "Streaming Error"
@@ -6199,23 +6209,13 @@ class AppState: ObservableObject {
 
     // MARK: - Model
 
+    /// The bundled manifest when present, else the built-in catalog
+    /// (`WhisperModelCatalog.builtIn`, in OpenWhispCore).
     func availableModelsList() -> [(name: String, label: String, size: String)] {
         if let models = bundledModelManifest(), !models.isEmpty {
             return models.map { ($0.id, $0.label, $0.size) }
         }
-
-        return [
-            ("tiny",           "Tiny - fastest, lowest quality", "39 MB"),
-            ("tiny.en",        "Tiny English - fastest English", "39 MB"),
-            ("base",           "Base - fast default", "147 MB"),
-            ("base.en",        "Base English - better English default", "147 MB"),
-            ("small",          "Small - better quality", "464 MB"),
-            ("small.en",       "Small English - recommended quality", "464 MB"),
-            ("medium",         "Medium - high quality", "1.5 GB"),
-            ("medium.en",      "Medium English - high quality English", "1.5 GB"),
-            ("large-v3-turbo", "Large v3 Turbo - best speed/quality", "1.5 GB"),
-            ("large-v3",       "Large v3 - best quality, slowest", "2.9 GB")
-        ]
+        return WhisperModelCatalog.builtIn
     }
 
     /// Provision the model for the CURRENTLY SELECTED engine — and only that engine.

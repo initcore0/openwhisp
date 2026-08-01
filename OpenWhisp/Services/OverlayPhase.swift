@@ -18,6 +18,11 @@ enum OverlayPhase: Equatable {
     /// Session requested; capture not yet live. Tell the user to wait — anything
     /// said now may be dropped.
     case arming
+    /// Session requested while the engine's model is still downloading/loading
+    /// (MAK-94). A strictly more informative `.arming`: same "don't speak yet"
+    /// meaning, but it names the actual cause instead of a generic "Starting…"
+    /// that looks like a hang through a multi-second cold Parakeet load.
+    case loadingModel
     /// Capture is live and the room is quiet (the "green / ready" listening cue).
     case listening
     /// Capture is live and speech energy is present.
@@ -35,13 +40,18 @@ enum OverlayPhase: Equatable {
     ///   - isArming: a session has begun but capture isn't live yet (the gap).
     ///   - audioLevel: normalized live mic level (0–1).
     ///   - speakingThreshold: level above which we render the "speaking" cue.
+    ///   - engineIsLoadingModel: the selected engine's model is still
+    ///     downloading/loading (`EngineReadiness.isWorking`). Refines the arming
+    ///     window into `.loadingModel` so the very first press after a launch or
+    ///     update explains its own wait (MAK-94).
     static func resolve(
         hasError: Bool,
         isCapturing: Bool,
         isTranscribing: Bool,
         isArming: Bool,
         audioLevel: Float,
-        speakingThreshold: Float = 0.06
+        speakingThreshold: Float = 0.06,
+        engineIsLoadingModel: Bool = false
     ) -> OverlayPhase {
         // Error only "wins" once nothing is actively capturing/transcribing, matching
         // the prior overlay logic (a transient error mid-session shouldn't flicker red).
@@ -49,9 +59,27 @@ enum OverlayPhase: Equatable {
         if isTranscribing { return .finalizing }
         // Arming: session begun, capture not yet live. `isCapturing` going true is
         // the single signal that ends it (AppState clears isArming in lockstep).
-        if isArming, !isCapturing { return .arming }
+        // While the model is still loading, say THAT — it's the same "not capturing
+        // yet" window with an honest cause. Capture going live still ends it, so the
+        // transition into the normal listening flow is unchanged.
+        if isArming, !isCapturing { return engineIsLoadingModel ? .loadingModel : .arming }
         if audioLevel > speakingThreshold { return .speaking }
         return .listening
+    }
+
+    /// The caption the overlay shows for this phase, or nil when the phase has no
+    /// caption of its own (the existing per-phase captions in OverlayView win).
+    /// Lives here so the loading copy is pinned by a core test rather than being
+    /// a bare string in the view.
+    var loadingCaption: String? {
+        self == .loadingModel ? "Loading model…" : nil
+    }
+
+    /// True for both pre-capture phases. Call sites that previously asked
+    /// `phase == .arming` mean "capture isn't live yet" and must keep treating
+    /// `.loadingModel` the same way.
+    var isPreCapture: Bool {
+        self == .arming || self == .loadingModel
     }
 }
 
@@ -113,7 +141,7 @@ enum OverlayHintGate {
         revertActive: Bool
     ) -> Bool {
         switch phase {
-        case .arming, .finalizing, .error: return false
+        case .arming, .loadingModel, .finalizing, .error: return false
         case .listening, .speaking: break
         }
         if isTranscribing { return false }

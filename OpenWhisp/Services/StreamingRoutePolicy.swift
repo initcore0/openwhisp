@@ -184,6 +184,52 @@ public enum StreamingRoutePolicy {
     /// DOWNLOAD can outlast even this; the flip is then optimistic, which is
     /// still strictly better than the old flip-at-enqueue behavior.
     public static let captureStartTimeout: TimeInterval = 15
+
+    /// Hard cap (seconds) on the readiness-aware arming wait (MAK-94). While the
+    /// engine's model is genuinely still loading/downloading we do NOT flip to
+    /// "Listening…" at `captureStartTimeout` — that fallback exists to unstick a
+    /// signal-WIRING bug, and firing it mid-load makes the UI lie about capture
+    /// on exactly the cold-start path this feature is about. But the wait can't
+    /// be unbounded either: a wedged load must eventually fail loudly instead of
+    /// spinning forever. 120s comfortably covers a first-run ~600 MB Parakeet
+    /// fetch on a slow link plus the CoreML compile, and nothing legitimate
+    /// exceeds it.
+    public static let modelLoadArmingMaxWait: TimeInterval = 120
+
+    /// What the arming-timeout fallback should do when it fires.
+    public enum ArmingTimeoutAction: Equatable {
+        /// Flip to Listening (the original behavior): nothing says a model load
+        /// is in flight, so a missing `onStarted` is a wiring bug.
+        case beginListening
+        /// The model is still loading and we're inside the hard cap — keep the
+        /// honest loading phase and re-check after another interval. Never
+        /// claims capture that doesn't exist.
+        case keepWaiting
+        /// Still not ready past the hard cap — surface a real error rather than
+        /// spinning or faking Listening.
+        case failStuck
+    }
+
+    /// Decide the arming-timeout outcome.
+    ///
+    /// - Parameters:
+    ///   - engineIsLoadingModel: `EngineReadiness.isWorking` for the selected
+    ///     engine at the moment the timeout fires.
+    ///   - elapsed: seconds since `start()` was issued.
+    ///   - maxWait: hard cap (see `modelLoadArmingMaxWait`).
+    public static func armingTimeoutAction(
+        engineIsLoadingModel: Bool,
+        elapsed: TimeInterval,
+        maxWait: TimeInterval = modelLoadArmingMaxWait
+    ) -> ArmingTimeoutAction {
+        guard engineIsLoadingModel else { return .beginListening }
+        return elapsed >= maxWait ? .failStuck : .keepWaiting
+    }
+
+    /// User-facing message for `.failStuck`. Pinned here (not at the call site)
+    /// so a test owns the copy.
+    public static let stuckModelLoadMessage =
+        "The speech model is taking too long to load. Try again, or re-download it in Settings › Models."
 }
 
 /// Which concrete `FileTranscriptionEngine` backs a transcriptionEngine setting.

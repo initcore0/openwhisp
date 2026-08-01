@@ -61,6 +61,14 @@ class OpenWhispApp: NSObject, NSApplicationDelegate {
             requestNotifications()
         }
 
+        // Model readiness (MAK-94): touching `.shared` constructs the tracker,
+        // which attaches its callback to the Parakeet streaming engine and starts
+        // observing AppState's model signals. Constructed BEFORE the warm kick
+        // below so the very first download→load→ready transition is observed
+        // rather than missed. Owned here (not by AppState — MAK-32 LOC ratchet),
+        // the same arrangement as the translation preview further down.
+        _ = ModelReadinessTracker.shared
+
         // Provision the model for the SELECTED engine only (Parakeet by default;
         // MAK-93) — never an unconditional whisper.cpp/WhisperKit download. The
         // model download needs no permissions, so it's fine to start before
@@ -281,6 +289,22 @@ class OpenWhispApp: NSObject, NSApplicationDelegate {
             let modelStatus = NSMenuItem(title: "Model: \(appState.modelDownloadStatus)", action: nil, keyEquivalent: "")
             modelStatus.isEnabled = false
             menu.addItem(modelStatus)
+        }
+
+        // Model readiness (MAK-94): the several-second cold load of the SELECTED
+        // engine used to be completely invisible — the first dictation after a
+        // launch or update just sat there. Surface it as a disabled row while the
+        // model is downloading/loading, and name the failure when it fails. The
+        // row is nil (absent) once the engine is ready, so a healthy app shows no
+        // extra clutter. Copy comes from the tested `EngineReadiness.menuRow`.
+        if let readinessRow = ModelReadinessTracker.shared.menuRow {
+            let item = NSMenuItem(title: readinessRow, action: nil, keyEquivalent: "")
+            item.isEnabled = false
+            // SF Symbol on the row (project rule: never emoji-in-titles).
+            let symbol = ModelReadinessTracker.shared.readiness.isWorking
+                ? "arrow.triangle.2.circlepath" : "exclamationmark.triangle"
+            item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
+            menu.addItem(item)
         }
         menu.addItem(.separator())
 

@@ -34,8 +34,36 @@ final class ParakeetStreamingEngine: NSObject, StreamingTranscriptionEngine {
     /// actor. Non-EOU variants never call it.
     var onEouDetected: (() -> Void)?
 
+    /// Fires on the main actor whenever the model's readiness changes (MAK-94):
+    /// `.downloading` → `.loading` → `.ready`/`.failed`. This is the signal that
+    /// makes the previously invisible cold-start wait observable — the pre-MAK-94
+    /// code could only see "a prefetch is in flight", which conflated the
+    /// first-run download with the several-second CoreML load that happens on
+    /// EVERY launch. The owner (`ModelReadinessTracker`, outside AppState)
+    /// forwards it into a `@Published`.
+    ///
+    /// Set by whoever owns the engine instance; nil for every other caller.
+    @MainActor var onReadinessChanged: ((EngineReadiness) -> Void)?
+
+    /// Whether a loaded streaming session is resident right now — the one true
+    /// "can start capturing without waiting" signal for Parakeet.
+    @MainActor var isSessionLoaded: Bool {
+#if PARAKEET
+        session != nil
+#else
+        false
+#endif
+    }
+
     /// ParakeetCatalog variant id (see ParakeetCatalog).
     private let variantID: String
+
+    /// Emit a readiness transition to the owner (main-actor hop already implied
+    /// by the annotation). Kept tiny so both build flavors share it.
+    @MainActor
+    func reportReadiness(_ readiness: EngineReadiness) {
+        onReadinessChanged?(readiness)
+    }
 
     /// Pinned input-device UID for the next session ("" = system default).
     @MainActor private var selectedDeviceID = ""
@@ -562,13 +590,35 @@ final class ParakeetStreamingEngine: NSObject, StreamingTranscriptionEngine {
     @MainActor
     @discardableResult
     func prefetchAwaiting() async -> Bool {
+        // Already resident: nothing to wait through — say so and return, so a
+        // redundant warm (e.g. after rebuildFileEngine) can't push the UI back
+        // into a "loading" it isn't doing.
+        if session != nil {
+            reportReadiness(.ready)
+            return true
+        }
+        // MAK-94: report the phase we're about to enter. FluidAudio downloads
+        // into the variant's repo folder and only then compiles + loads the
+        // CoreML session, so "folder on disk" is the honest download/load split —
+        // and it's the LOAD that the user hits on every launch after the first.
+        // FluidAudio exposes no progress callback, hence the nil progress.
+        let onDisk = ParakeetDownloadStatePolicy.state(
+            forVariant: variantID,
+            installedFolders: FluidAudioModelsLocator.installedFolders(),
+            inFlightVariants: []
+        ) == .installed
+        reportReadiness(onDisk ? .loading : .downloading(progress: nil))
         // Route through ensureLoaded so a FAILED load clears `inFlightLoad`
         // (clearFailedLoad) before the error is swallowed — otherwise a failed
         // download poisons the cache and later prefetches no-op forever.
         do {
             _ = try await ensureLoaded()
+            // A download that just completed transitions through .loading before
+            // the session lands; emitting .ready here is the terminal edge.
+            reportReadiness(.ready)
             return true
         } catch {
+            reportReadiness(.failed(error.localizedDescription))
             return false
         }
     }
@@ -637,7 +687,14 @@ final class ParakeetStreamingEngine: NSObject, StreamingTranscriptionEngine {
     func stop(cancel: Bool) {}
 
     @discardableResult
-    func prefetchAwaiting() async -> Bool { false }
+    func prefetchAwaiting() async -> Bool {
+        // Lean build (PARAKEET=0): there is no engine to load. Report the failure
+        // so readiness settles on `.failed` instead of spinning at `.loading`.
+        await MainActor.run {
+            reportReadiness(.failed("this build was made without the Parakeet engine"))
+        }
+        return false
+    }
 
     @MainActor
     func cancelLoading() {}

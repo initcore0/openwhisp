@@ -131,6 +131,9 @@ struct OverlayView: View {
     /// the transcript panel shows the spoken text as one dimmed line and the
     /// running English translation as the body.
     @ObservedObject private var translation = TranslationPreviewModel.shared
+    /// MAK-94: the selected engine's model readiness. Drives the `.loadingModel`
+    /// phase so a hotkey press during a cold load says what it's waiting for.
+    @ObservedObject private var readiness = ModelReadinessTracker.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
@@ -150,7 +153,8 @@ struct OverlayView: View {
             return Color(red: 0.93, green: 0.42, blue: 0.86)                 // magenta: refining
         }
         switch phase {
-        case .arming:     return Color(red: 0.98, green: 0.74, blue: 0.30)   // amber: not capturing yet
+        case .arming, .loadingModel:
+                          return Color(red: 0.98, green: 0.74, blue: 0.30)   // amber: not capturing yet
         case .listening:  return Color(red: 0.80, green: 0.82, blue: 0.88)   // cool white
         case .speaking:   return Color(red: 0.35, green: 0.78, blue: 0.98)   // calm cyan-blue
         case .finalizing: return Color(red: 0.66, green: 0.55, blue: 0.98)   // violet (polishing)
@@ -164,7 +168,10 @@ struct OverlayView: View {
             isCapturing: appState.isRecording,
             isTranscribing: appState.isTranscribing,
             isArming: appState.isArming,
-            audioLevel: appState.audioLevel
+            audioLevel: appState.audioLevel,
+            // MAK-94: a press during the cold model load renders `.loadingModel`
+            // instead of a generic "Starting…" that looks like a hang.
+            engineIsLoadingModel: readiness.readiness.isWorking
         )
     }
 
@@ -184,7 +191,7 @@ struct OverlayView: View {
         // still very much a "your turn is coming" moment, so keep the amber skin.
         if appState.agentDictateReadingQuestion { return true }
         switch phase {
-        case .arming, .listening, .speaking: return true
+        case .arming, .loadingModel, .listening, .speaking: return true
         case .finalizing, .error:            return false
         }
     }
@@ -264,7 +271,7 @@ struct OverlayView: View {
               !appState.agentDictateConfirming else { return nil }
         switch phase {
         case .listening, .speaking: return "Tap key to finish"
-        case .arming, .finalizing, .error: return nil
+        case .arming, .loadingModel, .finalizing, .error: return nil
         }
     }
 
@@ -280,6 +287,9 @@ struct OverlayView: View {
     private var armingCaption: String? {
         // Suppressed while the question is being read — that state has its own cue.
         guard !appState.agentDictateReadingQuestion else { return nil }
+        // MAK-94: name the actual wait during a cold model load. The copy comes
+        // from the (tested) core phase so the view holds no loose strings.
+        if let loading = phase.loadingCaption { return loading }
         return phase == .arming ? "Starting — wait to speak" : nil
     }
 
@@ -297,7 +307,7 @@ struct OverlayView: View {
               appState.agentDictatePrompt == nil else { return false }
         switch phase {
         case .listening, .speaking: return true
-        case .arming, .finalizing, .error: return false
+        case .arming, .loadingModel, .finalizing, .error: return false
         }
     }
 

@@ -71,4 +71,22 @@ final class WhisperModelPathsTests: XCTestCase {
             XCTAssertTrue(error is ModelDownloadError)
         }
     }
+
+    // MARK: - Built-in catalog (extracted from AppState, MAK-94/MAK-32)
+
+    /// The fallback list AppState.availableModelsList() returns when no bundled
+    /// manifest overrides it. Pinned here now that it's core data.
+    func testBuiltInCatalogIsCompleteAndWellFormed() {
+        let catalog = WhisperModelCatalog.builtIn
+        XCTAssertEqual(catalog.count, 10)
+        for entry in catalog {
+            XCTAssertFalse(entry.name.isEmpty)
+            XCTAssertFalse(entry.label.isEmpty)
+            XCTAssertFalse(entry.size.isEmpty)
+        }
+        // The default model the app ships with must be offered.
+        XCTAssertTrue(catalog.contains { $0.name == "base.en" })
+        // Ids are unique (a duplicate would break the picker's selection).
+        XCTAssertEqual(Set(catalog.map(\.name)).count, catalog.count)
+    }
 }
