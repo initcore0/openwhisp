@@ -212,7 +212,8 @@ final class AppleTranslationProvider: ObservableObject {
     func translate(_ text: String, from sourceHint: String?, to targetLanguage: String) async -> String? {
         let target = Self.normalizedTag(targetLanguage)
         guard !target.isEmpty, !text.isEmpty else { return nil }
-        guard let source = Self.resolveSource(hint: sourceHint, text: text) else {
+        guard let source = await resolveSourceCheckingAssets(
+            hint: sourceHint, text: text, target: target) else {
             lastError = "Couldn't identify the dictated language"
             return nil
         }
@@ -462,6 +463,45 @@ final class AppleTranslationProvider: ObservableObject {
         let recognizer = NLLanguageRecognizer()
         recognizer.processString(text)
         return recognizer.dominantLanguage?.rawValue
+    }
+
+    /// `resolveSource`, hardened for "auto" sessions: instead of trusting the
+    /// recognizer's single top guess, rank its hypotheses and prefer the
+    /// best-confidence language whose pair with `target` is INSTALLED
+    /// (`TextTranslationPolicy.pickDetectedSource`).
+    ///
+    /// The failure this closes: on the short Cyrillic fragments the live
+    /// translation preview fires on, the top guess is often Ukrainian for
+    /// RUSSIAN speech — uk→en is typically not downloaded, so the pre-check
+    /// fail-fasted with "…isn't downloaded" while the user's real ru→en pair
+    /// was installed and working (and the session FINAL, detected over the full
+    /// text, translated fine). A concrete session-language hint still wins
+    /// outright and skips all of this.
+    private func resolveSourceCheckingAssets(
+        hint: String?, text: String, target: String
+    ) async -> String? {
+        if let hint {
+            let tag = Self.normalizedTag(hint)
+            if !tag.isEmpty, tag.lowercased() != "auto" { return tag }
+        }
+        let recognizer = NLLanguageRecognizer()
+        recognizer.processString(text)
+        let hypotheses = recognizer.languageHypotheses(withMaximum: 3)
+        guard !hypotheses.isEmpty else { return nil }
+
+        // Resolve each candidate's install state up front (async), then let the
+        // pure policy pick. The status query is cheap; at most 3 candidates.
+        var installed = Set<String>()
+        let availability = LanguageAvailability()
+        for language in hypotheses.keys {
+            let status = await availability.status(
+                from: Locale.Language(identifier: language.rawValue),
+                to: Locale.Language(identifier: target))
+            if status == .installed { installed.insert(language.rawValue) }
+        }
+        return TextTranslationPolicy.pickDetectedSource(
+            candidates: hypotheses.map { (code: $0.key.rawValue, confidence: $0.value) },
+            isPairInstalled: { installed.contains($0) })
     }
 
     /// "pt-BR"-style tag the framework accepts: trimmed, underscores dashed.
