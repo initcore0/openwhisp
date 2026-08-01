@@ -88,6 +88,29 @@ enum WhisperModelPaths {
     }
 }
 
+/// The built-in whisper.cpp GGML model catalog — the fallback list shown in
+/// Settings › Models when no bundled `models/manifest.json` overrides it.
+///
+/// Pure static data, extracted out of `AppState.availableModelsList()` (MAK-32
+/// decomposition; paid for the MAK-94 additions). AppState now delegates here
+/// and only layers the manifest override on top.
+enum WhisperModelCatalog {
+    /// (id, human label, download size) for each stock GGML model, in the order
+    /// the picker presents them (fastest → best quality).
+    static let builtIn: [(name: String, label: String, size: String)] = [
+        ("tiny",           "Tiny - fastest, lowest quality", "39 MB"),
+        ("tiny.en",        "Tiny English - fastest English", "39 MB"),
+        ("base",           "Base - fast default", "147 MB"),
+        ("base.en",        "Base English - better English default", "147 MB"),
+        ("small",          "Small - better quality", "464 MB"),
+        ("small.en",       "Small English - recommended quality", "464 MB"),
+        ("medium",         "Medium - high quality", "1.5 GB"),
+        ("medium.en",      "Medium English - high quality English", "1.5 GB"),
+        ("large-v3-turbo", "Large v3 Turbo - best speed/quality", "1.5 GB"),
+        ("large-v3",       "Large v3 - best quality, slowest", "2.9 GB")
+    ]
+}
+
 /// One row of a bundled model manifest (models/manifest.json and
 /// models/llm-manifest.json).
 struct ModelManifestEntry: Decodable {

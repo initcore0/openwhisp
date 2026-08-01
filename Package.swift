@@ -88,6 +88,7 @@ let package = Package(
                 "AudioInputRoutingPolicy.swift",
                 "CaptureConfigChangePolicy.swift",
                 "OverlayPhase.swift",
+                "EngineReadiness.swift",
                 "LiveChunkPipeline.swift",
                 "ConfigBundle.swift",
                 "BridgeWire.swift",
