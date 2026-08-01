@@ -61,9 +61,10 @@ class OpenWhispApp: NSObject, NSApplicationDelegate {
             requestNotifications()
         }
 
-        // Provision the model for the SELECTED engine only (WhisperKit by default) —
-        // not an unconditional whisper.cpp download. The model download needs no
-        // permissions, so it's fine to start before onboarding.
+        // Provision the model for the SELECTED engine only (Parakeet by default;
+        // MAK-93) — never an unconditional whisper.cpp/WhisperKit download. The
+        // model download needs no permissions, so it's fine to start before
+        // onboarding.
         appState.ensureSelectedEngineModel()
 
         // Agent Bridge (M8): start the local control-plane socket if enabled.
@@ -336,22 +337,22 @@ class OpenWhispApp: NSObject, NSApplicationDelegate {
         // Translate is its own switch now (split from the old "English —
         // translate to English" language overload).
         //
-        // Offered when the engine translates natively (whisper family) OR the
-        // on-device text path can cover it (Apple Translation, macOS 15+) —
-        // `appState.translationOffered`, the SAME predicate the Dictation pane
-        // reads, so the two surfaces can't disagree (a past bug). Only macOS 14
-        // with an ASR-only engine still dims the row: macOS menus dim
+        // The on-device text path covers EVERY engine now, so with the macOS 15
+        // floor this is effectively always offered — `appState.translationOffered`,
+        // the SAME predicate the Dictation pane reads, so the two surfaces can't
+        // disagree (a past bug). The dim branch survives only for the
+        // should-be-impossible case of no on-device translator: macOS menus dim
         // unavailable commands rather than hiding them, so the capability stays
         // discoverable instead of looking like a bug (#175 history).
         let canTranslate = appState.translationOffered
         let translateItem = menuItem(
-            canTranslate ? "Translate to English" : "Translate to English (needs WhisperKit)",
+            canTranslate ? "Translate to English" : "Translate to English (unavailable)",
             symbol: "character.bubble",
             action: canTranslate ? #selector(toggleTranslateToEnglish) : nil
         )
         translateItem.state = (canTranslate && appState.translateToEnglish) ? .on : .off
         if !canTranslate {
-            translateItem.toolTip = "The current engine transcribes only, and on-device text translation needs macOS 15. Switch to WhisperKit in Settings to translate."
+            translateItem.toolTip = "On-device text translation isn't available on this Mac."
         }
         menu.addItem(translateItem)
 

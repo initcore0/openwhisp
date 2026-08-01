@@ -137,7 +137,8 @@ final class StreamOverlayCoordinator: ObservableObject {
     private func startServer() {
         stopServer()
         // Translated subtitles: the server's injected Translator seam gets the
-        // on-device Apple Translation text path (macOS 15+; nil on macOS 14 —
+        // on-device Apple Translation text path (macOS 15+, i.e. the whole
+        // supported floor; nil only if the framework is somehow missing, and
         // finals then pass through untranslated). The server only invokes it
         // when `config.translationEnabled` and a target language are set, and
         // a nil result keeps the original caption line (never a lost line).

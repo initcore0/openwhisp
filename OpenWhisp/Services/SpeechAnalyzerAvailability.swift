@@ -3,7 +3,7 @@ import Foundation
 /// Runtime gate for the Apple SpeechAnalyzer engine (macOS 26, MAK-59).
 ///
 /// SpeechAnalyzer / SpeechTranscriber ship in the Speech framework only on
-/// macOS 26+. On macOS 14/15 the option must be hidden entirely — not offered
+/// macOS 26+. On macOS 15 the option must be hidden entirely — not offered
 /// and then failing — so this is the single place that answers "can this Mac run
 /// SpeechAnalyzer at all?".
 ///

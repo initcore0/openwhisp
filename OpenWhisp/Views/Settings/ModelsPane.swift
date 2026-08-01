@@ -25,19 +25,8 @@ struct ModelsPane: View {
     private var isSpeechAnalyzer: Bool { appState.transcriptionEngine == "speechAnalyzer" }
 
     /// SpeechAnalyzer (macOS 26, MAK-59) is offered only when the OS exposes the
-    /// API — hidden entirely on macOS 14/15 so nothing regresses there.
+    /// API — hidden entirely on macOS 15 so nothing regresses there.
     private var speechAnalyzerAvailable: Bool { SpeechAnalyzerAvailability.isSupportedOS }
-
-    /// True when Parakeet is compiled into this build (the default engine). When
-    /// it isn't (a lean `PARAKEET=0` build), WhisperKit reclaims the "Recommended"
-    /// badge so exactly one engine ever carries it.
-    private var parakeetAvailable: Bool {
-        #if PARAKEET
-        return true
-        #else
-        return false
-        #endif
-    }
 
     // The three recommended whisper.cpp tiers (redesign §4.3): one tier
     // vocabulary — Fast / Balanced / Accurate — with the model id and size as
@@ -100,8 +89,10 @@ struct ModelsPane: View {
         Section {
             // MAK-46: Parakeet is the recommended default (true streaming, ~0.3 s
             // latency with punctuation). Included in default builds; a lean
-            // PARAKEET=0 build hides the row rather than showing one that errors —
-            // WhisperKit then carries the "Recommended" badge (see below).
+            // PARAKEET=0 build hides the row rather than showing one that errors.
+            // The "Recommended" badge belongs to Parakeet ALONE — the whisper
+            // family is de-recommended (kept for compatibility), so on a lean
+            // build simply no row is badged rather than promoting a legacy engine.
             #if PARAKEET
             SelectableRow(
                 title: "Parakeet Realtime (CoreML)",
@@ -113,14 +104,13 @@ struct ModelsPane: View {
 
             SelectableRow(
                 title: "WhisperKit (CoreML)",
-                subtitle: "Optimized for Apple Silicon (GPU/Neural Engine). Streams partials in real time.",
-                badge: parakeetAvailable ? nil : "Recommended",
+                subtitle: "Legacy — slower; kept for compatibility.",
                 isSelected: isWhisperKit
             ) { appState.transcriptionEngine = "whisperKit" }
 
             SelectableRow(
                 title: "Whisper Local (whisper.cpp)",
-                subtitle: "Widest model selection. Supports live typing.",
+                subtitle: "Legacy — widest model selection, custom GGML files. Supports live typing.",
                 isSelected: isWhisperCpp
             ) { appState.transcriptionEngine = "whisper" }
 
@@ -131,7 +121,7 @@ struct ModelsPane: View {
             ) { appState.transcriptionEngine = "appleSpeech" }
 
             // MAK-59: Apple SpeechAnalyzer (macOS 26). On-device, auto-punctuating,
-            // ~2× faster than Whisper on files. Hidden on macOS 14/15 where the
+            // ~2× faster than Whisper on files. Hidden on macOS 15 where the
             // API doesn't exist.
             if speechAnalyzerAvailable {
                 SelectableRow(

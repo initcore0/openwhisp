@@ -18,7 +18,7 @@ import Foundation
 /// suppresses it for this engine).
 ///
 /// The Speech-framework calls are all behind `if #available(macOS 26, *)` via
-/// `SpeechAnalyzerBridge`, so this file compiles and runs on macOS 14/15 — where
+/// `SpeechAnalyzerBridge`, so this file compiles and runs on macOS 15 — where
 /// the engine is hidden from the picker and, if somehow reached, reports its
 /// unavailability rather than crashing.
 final class SpeechAnalyzerFileEngine: FileTranscriptionEngine {

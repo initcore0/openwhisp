@@ -22,7 +22,7 @@ OpenWhisp's hard constraints (every candidate is judged against these):
 
 | # | Candidate | On-device (Apple Silicon) | True streaming | RU incl.? | Translate→EN | Integration in a Swift `.app` | License (code / weights) | Verdict |
 |---|-----------|---------------------------|----------------|-----------|--------------|-------------------------------|--------------------------|---------|
-| 1 | **whisper-large-v3-turbo** (existing whisper.cpp) | ✅ GGML + Metal | ❌ (same chunking as today) | ✅ 99 langs | ✅ | **Trivial** — already in the manifest | MIT / MIT | **Adopt as default** |
+| 1 | **whisper-large-v3-turbo** (existing whisper.cpp) | ✅ GGML + Metal | ❌ (same chunking as today) | ✅ 99 langs | ✅ | **Trivial** — already in the manifest | MIT / MIT | ~~**Adopt as default**~~ **SUPERSEDED** — see note below |
 | 2 | **WhisperKit** (Argmax) | ✅ Swift/CoreML on ANE | ✅ LocalAgreement partials | ✅ (Whisper weights) | ✅ | **Low** — SwiftPM, ~2 lines | MIT / MIT | **Pilot for streaming** |
 | 3 | **FluidAudio + Parakeet v3** | ✅ pure-Swift CoreML/ANE | partial (sliding window + EOU) | ✅ v3: 25 langs incl. ru | ❌ ASR-only | **Low** — SwiftPM | Apache-2.0 / **CC-BY-4.0** | Strong for fast transcription; **no translate** |
 | 4 | **sherpa-onnx + T-one (RU)** | ✅ C API + Swift bindings | ✅ streaming zipformer / T-one | ✅ T-one is RU streaming | ❌ | **Medium** — native C lib + models | Apache-2.0 / **T-one Apache-2.0** | Best for low-latency **Russian** streaming |
@@ -36,6 +36,18 @@ OpenWhisp's hard constraints (every candidate is judged against these):
 | 12 | whisper_streaming (ufal, LocalAgreement) | ⚠️ Python | ✅ | ✅ | ✅ | high (Python) | MIT | **Algorithm only** — reimplement in Swift |
 | 13 | Lightning-SimulWhisper (MLX/CoreML AlignAtt) | ✅ | ✅ | ✅ | ✅ | — | **PolyForm Noncommercial — BLOCKER** | Reject (license) |
 | 14 | Moonshine | ✅ edge | partial | ❌ no Russian | ❌ | medium/high | MIT (core) | Reject (no RU) |
+
+> **⚠️ Row 1's verdict is superseded (MAK-46).** This table is a snapshot of the
+> research pass that produced it. whisper-large-v3-turbo was adopted as the
+> default at the time; **Parakeet (row 3) is the default transcription engine
+> now**, and the whole whisper family (whisper.cpp + WhisperKit) is
+> **de-recommended legacy**, kept for compatibility and custom GGML files. Two
+> things the table weighed have since stopped being whisper advantages: it wins
+> on true streaming (Parakeet delivers ~0.3 s partials — see `docs/PARAKEET.md`
+> and `docs/BENCHMARKS.md`), and the **Translate→EN column no longer
+> discriminates between engines at all** — translation moved to the on-device
+> Apple Translation *text* path, which works with every engine including the
+> ASR-only ones marked ❌ here.
 
 ## The two flagged questions
 

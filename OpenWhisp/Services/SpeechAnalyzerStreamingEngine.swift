@@ -18,7 +18,7 @@ import Speech
 /// final. Auto-punctuating and fully on-device; ASR-only (no translate).
 ///
 /// All Speech-framework calls are behind `if #available(macOS 26, *)`, so the
-/// type compiles and links on macOS 14/15 — where the engine is hidden and, if
+/// type compiles and links on macOS 15 — where the engine is hidden and, if
 /// reached, `start()` throws an unavailability error.
 // NSObject so the AVAudioEngineConfigurationChange observer can be
 // selector-based (the block API takes a hard `@Sendable` closure whose captures

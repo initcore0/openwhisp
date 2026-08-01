@@ -28,7 +28,7 @@ password leak, a hung-looking model download, and outdated Gatekeeper install do
 | Product | Model | Local? | Open? | Where it beats us | Where we beat it |
 |---|---|---|---|---|---|
 | **Wispr Flow** | Cloud, subscription (~$12–15/mo) | ❌ | ❌ | Best-in-class AI cleanup, auto-format-to-context, cross-platform (mac/win/iOS), low-latency "reads my mind" editing | Privacy (audio never leaves device), price (free), hackability |
-| **VoiceInk** ⚠️ closest rival | Local + opt. cloud LLM, lifetime license (~$19–29) *or* build free | ✅ | ✅ GPL-3.0 | More polished UI, active community, parakeet models, iOS-adjacent | **MIT** (more permissive for forks/companies), warm whisper-server HTTP mode, output-mode trifecta, voice-command meta-instructions |
+| **VoiceInk** ⚠️ closest rival | Local + opt. cloud LLM, lifetime license (~$19–29) *or* build free | ✅ | ✅ GPL-3.0 | More polished UI, active community, parakeet models, iOS-adjacent | **MIT** (more permissive for forks/companies), output-mode trifecta, voice-command meta-instructions (the warm whisper-server mode is legacy now — Parakeet's streaming default supersedes it) |
 | **Superwhisper** | Local + cloud, freemium/sub (~$8.49/mo) or lifetime (~$200) | ✅ | ❌ | Polish, "modes", **iOS app** | Free/open vs paid/closed |
 | **MacWhisper** | Local + cloud, one-time (~$59) | ✅ | ❌ | **File/meeting transcription**, diarization, subtitles | Free/open; push-to-talk dictation focus |
 | **Aqua Voice** | Cloud, sub | ❌ | ❌ | Smart voice-native editing | Privacy, price |
@@ -38,9 +38,10 @@ password leak, a hung-looking model download, and outdated Gatekeeper install do
 **Key takeaways**
 - **VoiceInk is the real comparison**, not Wispr. Our claimed differentiators
   (local, no-subscription, hackable) are *not unique vs VoiceInk*. Differentiate
-  on the margin: **MIT vs GPL**, warm `whisper-server`, the
-  preview/liveChunks/finalOnly granularity, voice commands, and a lower-level
-  config surface.
+  on the margin: **MIT vs GPL**, the preview/liveChunks/finalOnly granularity,
+  voice commands, and a lower-level config surface. (The warm `whisper-server`
+  mode no longer belongs on this list — the whisper family is de-recommended
+  legacy, and VoiceInk ships Parakeet too.)
 - **Don't chase MacWhisper's file/meeting transcription** or Superwhisper's iOS
   app — those dilute identity for a small project.
 - **Target the power/privacy/accuracy user**, not the casual one (Apple Dictation
@@ -57,7 +58,9 @@ password leak, a hung-looking model download, and outdated Gatekeeper install do
 
 ## 3. Current feature inventory (baseline)
 
-Engines: whisper.cpp (CLI + warm HTTP server) and Apple Speech · models tiny→large-v3
+Engines: Parakeet Realtime (CoreML, **default**), WhisperKit (CoreML), whisper.cpp
+(CLI + warm HTTP server), Apple Speech, and Apple SpeechAnalyzer (macOS 26) — the
+whisper family is now legacy/de-recommended · models tiny→large-v3
 · 12 languages + auto + translate-to-English · output modes preview / finalOnly /
 liveChunks · pause-based VAD · Accessibility insert + paste fallback · auto-gain ·
 SmartFormatter (caps/punct/filler/spoken-punctuation) · custom vocabulary
@@ -94,7 +97,7 @@ Found by reading the code during research, confirmed, and **all three now fixed*
 | Gap | Class | Effort | Notes |
 |---|---|---|---|
 | **Voice editing / undo** ("scratch that", edit-before-commit in the overlay) | differentiator | L | `VoiceCommandParser` only does trailing LLM transforms today. |
-| **Whisper streaming partials** | table-stakes | L | Only Apple Speech emits live partials; whisper preview shows chunked text at finalize. whisper.cpp supports streaming. |
+| **Whisper streaming partials** | table-stakes | L | ✅ Largely closed — four engines stream live partials now (Parakeet ~0.3 s, WhisperKit, Apple Speech, SpeechAnalyzer); only whisper.cpp still shows chunked preview text at finalize. |
 | **Hotkey remap + toggle / hands-free mode** | table-stakes | M | Hardcoded to Fn / Control+Space, hold-only. No remap, no toggle for long dictation. |
 | **Insert verification + secure-field** | table-stakes | M | ✅ Both done — secure-field guard (§4) and insert verification + clipboard safety net (Phase 4): AX read-back, paste preconditions, and never-lose-text fallback. |
 | **Richer formatting + deeper vocab** | nice-to-have | L | No lists/markdown/code/number formatting; casing English-only; vocab is exact-match subs and can overflow whisper's ~224-token prompt. |

@@ -12,6 +12,14 @@ import Foundation
 /// concept** — Apple Speech always transcribes in the given locale, and Parakeet
 /// is ASR-only (MAK-46) — so translation is suppressed for those engines on both
 /// derivations.
+///
+/// **Scope note.** Since translation unified on the Apple Translation text path,
+/// this type no longer decides whether a session translates — `TextTranslationPolicy`
+/// does, for every engine. What survives here is the ENGINE-CAPABILITY vocabulary
+/// (`supportsTranslation` / `noTranslateEngines`) plus the engine-native
+/// derivations, which are still the honest answer to "could this engine translate
+/// by itself?" and are used by capability tests and engine-facing code. Session
+/// policy must go through `TextTranslationPolicy`.
 public enum LanguageResolver {
     /// The transcription engine's `appleSpeech` identifier (Apple's on-device
     /// recognizer). Kept for call sites that name it directly.
@@ -44,18 +52,23 @@ public enum LanguageResolver {
         translateToEnglish && supportsTranslation(transcriptionEngine: transcriptionEngine)
     }
 
-    /// Language string to pass to `engine.start(language:)` / the file engine.
-    /// Returns the `translate-to-English` sentinel when translating (and the engine
-    /// supports it), else the spoken language ("auto" = detect).
+    /// Language string to pass to `engine.start(language:)` / the file engine:
+    /// always the spoken language ("auto" = detect).
+    ///
+    /// **Translation is no longer an engine concern.** The on-device Apple
+    /// Translation TEXT path (`TextTranslationPolicy`, macOS 15+ — the whole
+    /// supported floor) now owns translation for EVERY engine, so this never
+    /// emits the `WhisperTask.translateToEnglishSetting` sentinel and the
+    /// whisper family's native speech→English translate task is unreachable
+    /// (the mapping code stays, dormant). One translation implementation means
+    /// one behaviour to reason about: the engine always transcribes in the
+    /// spoken language and the final TEXT is translated afterwards.
     public static func engineLanguageSetting(
         language: String,
-        translateToEnglish: Bool,
-        transcriptionEngine: String
+        translateToEnglish _: Bool,
+        transcriptionEngine _: String
     ) -> String {
-        if translateToEnglish && supportsTranslation(transcriptionEngine: transcriptionEngine) {
-            return WhisperTask.translateToEnglishSetting
-        }
-        return language
+        language
     }
 
     /// Human-readable name for a spoken-language code, for menus/status rows

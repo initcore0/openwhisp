@@ -94,7 +94,7 @@ echo "Optimization: ${OPT_ARGS[*]:-'-Onone (default)'}"
 # failure branch can report.
 if xcrun swiftc \
     "${OPT_ARGS[@]+"${OPT_ARGS[@]}"}" \
-    -target arm64-apple-macosx14.0 \
+    -target arm64-apple-macosx15.0 \
     -sdk "$(xcrun --show-sdk-path --sdk macosx)" \
     -parse-as-library \
     -emit-executable \

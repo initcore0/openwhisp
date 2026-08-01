@@ -6,7 +6,7 @@ Realtime dictation that runs entirely on your device — free, open source, no a
 [![Download](https://img.shields.io/badge/Download-OpenWhisp.dmg-blue?style=for-the-badge)](../../releases/latest)
 [![License](https://img.shields.io/badge/license-MIT-green?style=for-the-badge)](LICENSE)
 
-**[openwhisp.app](https://openwhisp.app)** · macOS 14+ · Apple Silicon · signed & notarized
+**[openwhisp.app](https://openwhisp.app)** · macOS 15+ · Apple Silicon · signed & notarized
 
 <!-- HERO GIF PLACEHOLDER (MAK-26): streaming demo — words appearing ~0.3s behind
      the voice, punctuated, on-device. Drop the recorded GIF in docs/assets/ and

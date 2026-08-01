@@ -51,8 +51,10 @@ defaultTranscriptionEngine:  #if PARAKEET → "parakeet"
                              #else → "whisper"   (lean WHISPERKIT=0 build)
 ```
 
-so a lean `PARAKEET=0` build never defaults to an engine that isn't in the binary,
-and WhisperKit reclaims the **Recommended** badge in Settings › Models there.
+so a lean `PARAKEET=0` build never defaults to an engine that isn't in the binary.
+The **Recommended** badge in Settings › Models belongs to Parakeet alone — the
+whisper family is de-recommended (legacy, kept for compatibility), so on a lean
+build no engine row is badged rather than promoting one of them.
 
 **Existing installs keep the engine they were already using.** `SettingsMigration`
 v4 pins the pre-Parakeet default (`preParakeetDefaultEngine` — WhisperKit, or

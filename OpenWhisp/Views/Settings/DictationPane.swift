@@ -146,32 +146,29 @@ struct DictationPane: View {
                         .foregroundStyle(.orange)
                 }
 
-                // Offered when the engine translates natively (whisper family)
-                // OR the on-device text path covers it (Apple Translation,
-                // macOS 15+; the final transcript is translated as text). The
-                // SAME predicate as the menu-bar row (`translationOffered`),
-                // so the two surfaces can't disagree. Only macOS 14 with an
-                // ASR-only engine keeps today's absent toggle.
+                // The on-device text path (Apple Translation) covers EVERY
+                // engine, so with the macOS 15 floor this is effectively always
+                // offered. The SAME predicate as the menu-bar row
+                // (`translationOffered`), so the two surfaces can't disagree.
                 if appState.translationOffered {
                     SubtitledToggle(
                         "Translate to English",
                         subtitle: "Speech in any language comes out as English text.",
                         isOn: $appState.translateToEnglish
                     )
-                    // Text-path sessions need the pair's language assets on
-                    // disk; this row shows their state and owns the download
-                    // (dictations never pop the consent sheet themselves).
-                    // Native-translate engines (whisper family) need no assets.
-                    if appState.translateToEnglish,
-                       !LanguageResolver.supportsTranslation(transcriptionEngine: appState.transcriptionEngine) {
+                    // Every translated session is a text-path session now, so
+                    // whenever the toggle is on the pair's language assets must
+                    // be on disk. This row shows their state and owns the
+                    // download (dictations never pop the consent sheet
+                    // themselves).
+                    if appState.translateToEnglish {
                         TranslationAssetStatusView(sourceTag: appState.language, targetTag: "en")
 
                         // EXPERIMENTAL. Shown under exactly the conditions the
-                        // text path arms (translate on + ASR-only engine), which
-                        // is precisely when the live overlay shows the SPOKEN
-                        // language and English appears only at paste — the gap
-                        // this preview fills. Display-only: it never writes into
-                        // the document.
+                        // text path arms (translate on), which is precisely when
+                        // the live overlay shows the SPOKEN language and English
+                        // appears only at paste — the gap this preview fills.
+                        // Display-only: it never writes into the document.
                         SubtitledToggle(
                             "Live translation preview (experimental)",
                             subtitle: "The dictation overlay shows a running English translation while you speak — your spoken words stay visible as a single line above it. Display-only — what gets pasted is unchanged. Needs the language assets above.",

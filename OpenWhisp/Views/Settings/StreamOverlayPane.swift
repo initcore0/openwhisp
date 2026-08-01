@@ -134,7 +134,7 @@ struct StreamOverlayPane: View {
         } header: {
             Text("Voice Commands")
         } footer: {
-            Text("Say the phrase while captions are capturing and the counter ticks up. It counts when the sentence finishes, so there's a short delay after you speak, and saying it twice in one sentence counts twice. The count is kept when you restart OpenWhisp — use Reset to start a new stream at zero.")
+            Text("Say the phrase while captions are capturing and the counter ticks up live — each spoken occurrence counts exactly once, the moment the full phrase is transcribed. The count is kept when you restart OpenWhisp — use Reset to start a new stream at zero.")
                 .font(.caption)
                 .foregroundColor(.secondary)
         }
@@ -196,8 +196,8 @@ struct StreamOverlayPane: View {
     /// on-device Translation framework (macOS 15+) into the chosen language
     /// before it is shown. Live partials stay in the spoken language (they
     /// change too fast to be worth a round trip), and a failed translation
-    /// shows the original line — captions are never dropped. On macOS 14 the
-    /// controls are replaced by an availability note.
+    /// shows the original line — captions are never dropped. If the framework
+    /// is unavailable, the controls are replaced by an availability note.
     private var translationSection: some View {
         Section {
             if AppleTextTranslation.isSupported {
