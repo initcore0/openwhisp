@@ -61,9 +61,10 @@ class OpenWhispApp: NSObject, NSApplicationDelegate {
             requestNotifications()
         }
 
-        // Provision the model for the SELECTED engine only (WhisperKit by default) —
-        // not an unconditional whisper.cpp download. The model download needs no
-        // permissions, so it's fine to start before onboarding.
+        // Provision the model for the SELECTED engine only (Parakeet by default;
+        // MAK-93) — never an unconditional whisper.cpp/WhisperKit download. The
+        // model download needs no permissions, so it's fine to start before
+        // onboarding.
         appState.ensureSelectedEngineModel()
 
         // Agent Bridge (M8): start the local control-plane socket if enabled.

@@ -134,7 +134,7 @@ struct StreamOverlayPane: View {
         } header: {
             Text("Voice Commands")
         } footer: {
-            Text("Say the phrase while captions are capturing and the counter ticks up. It counts when the sentence finishes, so there's a short delay after you speak, and saying it twice in one sentence counts twice. The count is kept when you restart OpenWhisp — use Reset to start a new stream at zero.")
+            Text("Say the phrase while captions are capturing and the counter ticks up live — each spoken occurrence counts exactly once, the moment the full phrase is transcribed. The count is kept when you restart OpenWhisp — use Reset to start a new stream at zero.")
                 .font(.caption)
                 .foregroundColor(.secondary)
         }
