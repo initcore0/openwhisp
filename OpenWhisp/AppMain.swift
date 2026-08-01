@@ -268,8 +268,16 @@ class OpenWhispApp: NSObject, NSApplicationDelegate {
             menu.addItem(item)
         }
 
-        // Only show the model line while it's downloading / not yet installed.
-        if appState.isModelDownloading || !appState.modelDownloadStatus.hasPrefix("Installed") {
+        // Only show the model line while a GGML download is in flight, or when
+        // whisper.cpp is the SELECTED engine and its model isn't installed.
+        // `modelDownloadStatus` is whisper.cpp-only state (same gate onboarding
+        // uses): before MAK-93 an unconditional launch-time ensureModelExists()
+        // always flipped it to "Installed…", which is what used to hide this
+        // row on non-whisper engines — with that call gone, an ungated row
+        // showed a stale "Model: Not checked" to Parakeet users.
+        if appState.isModelDownloading
+            || (appState.transcriptionEngine == "whisper"
+                && !appState.modelDownloadStatus.hasPrefix("Installed")) {
             let modelStatus = NSMenuItem(title: "Model: \(appState.modelDownloadStatus)", action: nil, keyEquivalent: "")
             modelStatus.isEnabled = false
             menu.addItem(modelStatus)
