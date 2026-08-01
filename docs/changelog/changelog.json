@@ -1,22 +1,118 @@
 {
   "$schema": "./changelog.schema.md",
   "project": "OpenWhisp",
-  "generated": "2026-07-23",
+  "generated": "2026-08-01",
   "releases": [
     {
       "id": "2026-07",
       "title": "July 2026",
-      "date": "2026-07-23",
-      "summary": "The headline: live subtitles for your stream — OpenWhisp now serves a caption overlay you can drop into OBS or any streaming software, and with a translate-capable engine those captions can come out in English while you speak another language. Everything still runs on your Mac. Also in this release: Parakeet — our fast, on-device realtime streaming engine — is now the default on a fresh install. Alongside it, a big batch of new features, fixes, and under-the-hood hardening, all landed on main, all covered by tests, all on your machine. New this release also includes built-in auto-update and a 28-fix stability sweep. The latest additions: per-app refine tone (casual in Slack, formal in Mail, verbatim in your terminal), a fifth transcription engine — Apple's SpeechAnalyzer on macOS 26 — and agent dictation that now knows your project's branch and file names and lets you tap to finish. Among the features: meeting mode that records a call and gives you an on-device transcript plus a local Markdown summary — now with Me/Them speaker attribution and a live talking indicator, and with a separate, optionally larger summarization model you can point at your own server — a floating Scratchpad to dictate into with no target app, quiet-dictation mode for whispering into your mic, opt-in on-device audio retention with one-click re-transcription and an auto-cleanup policy, a fully-remappable dictation trigger with a record-a-shortcut field, an AppleScript keystroke insert method and mouse-button dictation triggers, a local Usage Insights dashboard, opt-in screen-context awareness that biases transcription toward the names already on screen, batch file transcription with watch folders, hands-free (tap-to-lock) dictation, adjustable AI cleanup, voice editing, a self-learning dictionary, rich local formatting, spoken-filename @-mentions for code editors, agent-CLI cleanup, output targets that route a dictation to a file/Shortcut/webhook, first-class Modes you can invoke by name, a Rules engine that runs your own actions when a dictation finishes, and an openwhisp:// URL scheme so Raycast, Alfred, or any launcher can drive dictation.",
+      "date": "2026-08-01",
+      "summary": "The headline: dictate in one language and get another — on-device translation, powered by Apple's own Translation framework, now works with every transcription engine (including the default), with an experimental live preview so you can watch it happen while you speak. macOS 15 is the new minimum. Also in this release: live subtitles for your stream — OpenWhisp now serves a caption overlay you can drop into OBS or any streaming software, and with a translate-capable engine those captions can come out in English while you speak another language. Everything still runs on your Mac. Also in this release: Parakeet — our fast, on-device realtime streaming engine — is now the default on a fresh install. Alongside it, a big batch of new features, fixes, and under-the-hood hardening, all landed on main, all covered by tests, all on your machine. New this release also includes built-in auto-update and a 28-fix stability sweep. The latest additions: per-app refine tone (casual in Slack, formal in Mail, verbatim in your terminal), a fifth transcription engine — Apple's SpeechAnalyzer on macOS 26 — and agent dictation that now knows your project's branch and file names and lets you tap to finish. Among the features: meeting mode that records a call and gives you an on-device transcript plus a local Markdown summary — now with Me/Them speaker attribution and a live talking indicator, and with a separate, optionally larger summarization model you can point at your own server — a floating Scratchpad to dictate into with no target app, quiet-dictation mode for whispering into your mic, opt-in on-device audio retention with one-click re-transcription and an auto-cleanup policy, a fully-remappable dictation trigger with a record-a-shortcut field, an AppleScript keystroke insert method and mouse-button dictation triggers, a local Usage Insights dashboard, opt-in screen-context awareness that biases transcription toward the names already on screen, batch file transcription with watch folders, hands-free (tap-to-lock) dictation, adjustable AI cleanup, voice editing, a self-learning dictionary, rich local formatting, spoken-filename @-mentions for code editors, agent-CLI cleanup, output targets that route a dictation to a file/Shortcut/webhook, first-class Modes you can invoke by name, a Rules engine that runs your own actions when a dictation finishes, and an openwhisp:// URL scheme so Raycast, Alfred, or any launcher can drive dictation.",
       "stats": {
-        "changesShipped": 60,
-        "newFeatures": 36,
-        "testsPassing": 1870,
+        "changesShipped": 67,
+        "newFeatures": 40,
+        "testsPassing": 2009,
         "onDevicePercent": 100,
-        "newFeaturesLive": 36,
+        "newFeaturesLive": 40,
         "newFeaturesCorePending": 0
       },
       "entries": [
+        {
+          "category": "feature",
+          "headline": "Translate as you dictate — on-device, in any app, with no cloud",
+          "body": "Speak Russian, Spanish, French, or any supported language and get English text out — translated entirely on your Mac by Apple's own Translation framework. Turn on “Translate to English” in Settings › Dictation, download the language pair once, and every dictation lands translated. It works with whichever transcription engine you use, including Parakeet, because OpenWhisp translates the text rather than asking the speech engine to do it. The rule underneath: if translation can't run for any reason, you get your original words — never nothing.",
+          "tickets": [
+            "MAK-88",
+            "MAK-89"
+          ],
+          "prs": [
+            223,
+            233
+          ],
+          "howTo": {
+            "availability": "live",
+            "summary": "Turn on Translate to English, download the language pair, and dictate.",
+            "steps": [
+              "Open Settings › Dictation and switch on “Translate to English”.",
+              "A row below shows the language pair's status — click through to download it if it isn't on your Mac yet (it takes a few minutes, and the row updates when it's ready).",
+              "Set your spoken language, or leave it on Auto Detect.",
+              "Dictate as usual — the text that lands in your app is English.",
+              "If the language pair isn't downloaded, or translation fails for any reason, your dictation is inserted untranslated rather than lost."
+            ]
+          }
+        },
+        {
+          "category": "feature",
+          "headline": "Watch the translation happen — a live preview while you speak",
+          "body": "Translation used to be invisible until the moment text landed in your app: the overlay showed your spoken words, and English only appeared at paste. An experimental preview closes that gap — the dictation overlay now shows a running English translation as you talk, with your spoken words kept on a single dimmed line above it. You can judge the translation while you're still speaking instead of discovering it afterwards. It's display-only: what actually gets pasted is unchanged.",
+          "tickets": [],
+          "prs": [
+            231,
+            235
+          ],
+          "howTo": {
+            "availability": "live",
+            "summary": "Switch on “Live translation preview (experimental)” under Translate to English.",
+            "steps": [
+              "Turn on “Translate to English” in Settings › Dictation and make sure the language pair is downloaded.",
+              "Switch on “Live translation preview (experimental)” just below it. It's off by default — each session it's on does extra on-device translation work while you speak.",
+              "Dictate: the overlay shows the running English translation, your spoken text stays visible as a single line above, and a quiet “Translating…” indicator appears while a request is in flight.",
+              "The preview never writes into your document — the pasted result comes from the normal translation path."
+            ]
+          }
+        },
+        {
+          "category": "improvement",
+          "headline": "macOS 15 is the new minimum — and every engine can translate now",
+          "body": "OpenWhisp now requires macOS 15 (Sequoia) or later. That floor is what lets on-device translation work the same way for every transcription engine: translation moved off the speech engines and onto Apple's text translation, so Parakeet — the default, fastest engine — can translate too, which it never could before. The whisper.cpp and WhisperKit engines are still included and still work; they're simply no longer the recommended picks.",
+          "tickets": [
+            "MAK-90",
+            "MAK-91",
+            "MAK-93"
+          ],
+          "prs": [
+            233
+          ]
+        },
+        {
+          "category": "fix",
+          "headline": "Russian is no longer mistaken for Ukrainian mid-sentence",
+          "body": "With Auto Detect on, the live translation preview would sometimes claim your language pair wasn't downloaded — because on short Cyrillic fragments the language detector's first guess for Russian speech is often Ukrainian, and that pair genuinely wasn't installed. Detection now prefers the best-confidence language whose pair you actually have downloaded, so the preview stops reporting a problem that isn't there.",
+          "tickets": [],
+          "prs": [
+            235
+          ]
+        },
+        {
+          "category": "feature",
+          "headline": "Open a meeting transcript or summary in the Scratchpad",
+          "body": "Meeting transcripts and summaries were read-only. One click now opens either as an editable note in the floating Scratchpad, so you can clean it up, annotate it, or dictate additions straight into it.",
+          "tickets": [],
+          "prs": [
+            229
+          ]
+        },
+        {
+          "category": "feature",
+          "headline": "Voice-command counter for the stream overlay",
+          "body": "For streamers who want overlay widgets rather than captions: configure a trigger phrase and the overlay keeps a live count of how many times you say it — driven entirely by your voice, rendered on the same local caption page.",
+          "tickets": [],
+          "prs": [
+            232
+          ]
+        },
+        {
+          "category": "fix",
+          "headline": "Swapping headphones mid-dictation no longer kills the mic",
+          "body": "Changing your input device while dictating — plugging in headphones, switching to a different mic — could silently stop capture on several engines, and on Parakeet a config-change loop could kill the mic outright. Capture now restarts cleanly on a device change across every engine, and a slow engine finishing its final words no longer gets cut off, so trailing words stop going missing.",
+          "tickets": [],
+          "prs": [
+            224,
+            225,
+            226,
+            227
+          ]
+        },
         {
           "category": "feature",
           "headline": "Live subtitles for your stream — a caption overlay for OBS, Twitch, and any streaming software",

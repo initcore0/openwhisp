@@ -246,14 +246,14 @@
 <div class="wrap">
   <header>
     <p class="eyebrow">Shipped · July 2026</p>
-    <h1>Sixty ways OpenWhisp got<br><span class="accent">sharper, faster, and more yours.</span></h1>
-    <p class="lede">The headline: live subtitles for your stream — OpenWhisp now serves a caption overlay you can drop into OBS or any streaming software, and with a translate-capable engine those captions can come out in English while you speak another language. Everything still runs on your Mac. Also in this release: Parakeet — our fast, on-device realtime streaming engine — is now the default on a fresh install. Alongside it, a big batch of new features, fixes, and under-the-hood hardening, all landed on main, all covered by tests, all on your machine. New this release also includes built-in auto-update and a 28-fix stability sweep. The latest additions: per-app refine tone (casual in Slack, formal in Mail, verbatim in your terminal), a fifth transcription engine — Apple's SpeechAnalyzer on macOS 26 — and agent dictation that now knows your project's branch and file names and lets you tap to finish. Among the features: meeting mode that records a call and gives you an on-device transcript plus a local Markdown summary — now with Me/Them speaker attribution and a live talking indicator, and with a separate, optionally larger summarization model you can point at your own server — a floating Scratchpad to dictate into with no target app, quiet-dictation mode for whispering into your mic, opt-in on-device audio retention with one-click re-transcription and an auto-cleanup policy, a fully-remappable dictation trigger with a record-a-shortcut field, an AppleScript keystroke insert method and mouse-button dictation triggers, a local Usage Insights dashboard, opt-in screen-context awareness that biases transcription toward the names already on screen, batch file transcription with watch folders, hands-free (tap-to-lock) dictation, adjustable AI cleanup, voice editing, a self-learning dictionary, rich local formatting, spoken-filename @-mentions for code editors, agent-CLI cleanup, output targets that route a dictation to a file/Shortcut/webhook, first-class Modes you can invoke by name, a Rules engine that runs your own actions when a dictation finishes, and an openwhisp:// URL scheme so Raycast, Alfred, or any launcher can drive dictation.</p>
+    <h1>Sixty-seven ways OpenWhisp got<br><span class="accent">sharper, faster, and more yours.</span></h1>
+    <p class="lede">The headline: dictate in one language and get another — on-device translation, powered by Apple's own Translation framework, now works with every transcription engine (including the default), with an experimental live preview so you can watch it happen while you speak. macOS 15 is the new minimum. Also in this release: live subtitles for your stream — OpenWhisp now serves a caption overlay you can drop into OBS or any streaming software, and with a translate-capable engine those captions can come out in English while you speak another language. Everything still runs on your Mac. Also in this release: Parakeet — our fast, on-device realtime streaming engine — is now the default on a fresh install. Alongside it, a big batch of new features, fixes, and under-the-hood hardening, all landed on main, all covered by tests, all on your machine. New this release also includes built-in auto-update and a 28-fix stability sweep. The latest additions: per-app refine tone (casual in Slack, formal in Mail, verbatim in your terminal), a fifth transcription engine — Apple's SpeechAnalyzer on macOS 26 — and agent dictation that now knows your project's branch and file names and lets you tap to finish. Among the features: meeting mode that records a call and gives you an on-device transcript plus a local Markdown summary — now with Me/Them speaker attribution and a live talking indicator, and with a separate, optionally larger summarization model you can point at your own server — a floating Scratchpad to dictate into with no target app, quiet-dictation mode for whispering into your mic, opt-in on-device audio retention with one-click re-transcription and an auto-cleanup policy, a fully-remappable dictation trigger with a record-a-shortcut field, an AppleScript keystroke insert method and mouse-button dictation triggers, a local Usage Insights dashboard, opt-in screen-context awareness that biases transcription toward the names already on screen, batch file transcription with watch folders, hands-free (tap-to-lock) dictation, adjustable AI cleanup, voice editing, a self-learning dictionary, rich local formatting, spoken-filename @-mentions for code editors, agent-CLI cleanup, output targets that route a dictation to a file/Shortcut/webhook, first-class Modes you can invoke by name, a Rules engine that runs your own actions when a dictation finishes, and an openwhisp:// URL scheme so Raycast, Alfred, or any launcher can drive dictation.</p>
   </header>
 
   <div class="stats">
-    <div class="stat"><div class="n">60</div><div class="k">changes shipped</div></div>
-    <div class="stat"><div class="n">36<small> live</small></div><div class="k">new features</div></div>
-    <div class="stat"><div class="n">1870</div><div class="k">tests passing</div></div>
+    <div class="stat"><div class="n">67</div><div class="k">changes shipped</div></div>
+    <div class="stat"><div class="n">40<small> live</small></div><div class="k">new features</div></div>
+    <div class="stat"><div class="n">2009</div><div class="k">tests passing</div></div>
     <div class="stat"><div class="n">100<small>%</small></div><div class="k">on-device</div></div>
   </div>
 
@@ -262,9 +262,68 @@
     <div class="sec-head">
       <span class="dot feature"></span>
       <h2>New features</h2>
-      <span class="count">36 live</span>
+      <span class="count">40 live</span>
     </div>
     <ul class="entries">
+      <li>
+        <details class="entry">
+          <summary>
+            <div class="sum-left">
+              <h3>Translate as you dictate — on-device, in any app, with no cloud</h3>
+              <p>Speak Russian, Spanish, French, or any supported language and get English text out — translated entirely on your Mac by Apple's own Translation framework. Turn on “Translate to English” in Settings › Dictation, download the language pair once, and every dictation lands translated. It works with whichever transcription engine you use, including Parakeet, because OpenWhisp translates the text rather than asking the speech engine to do it. The rule underneath: if translation can't run for any reason, you get your original words — never nothing.</p>
+            </div>
+            <div class="sum-right">
+              <span class="try">How to use<svg class="howto-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span>
+              <div class="receipts"><span class="tag ticket">MAK-88</span><span class="tag ticket">MAK-89</span><span class="tag pr">#223</span><span class="tag pr">#233</span></div>
+            </div>
+          </summary>
+          <div class="guide">
+            <span class="avail live">Available now</span>
+            <p class="g-sum">Turn on Translate to English, download the language pair, and dictate.</p>
+            <ol>
+              <li>Open Settings › Dictation and switch on “Translate to English”.</li>
+              <li>A row below shows the language pair's status — click through to download it if it isn't on your Mac yet (it takes a few minutes, and the row updates when it's ready).</li>
+              <li>Set your spoken language, or leave it on Auto Detect.</li>
+              <li>Dictate as usual — the text that lands in your app is English.</li>
+              <li>If the language pair isn't downloaded, or translation fails for any reason, your dictation is inserted untranslated rather than lost.</li>
+            </ol>
+          </div>
+        </details>
+      </li>
+      <li>
+        <details class="entry">
+          <summary>
+            <div class="sum-left">
+              <h3>Watch the translation happen — a live preview while you speak</h3>
+              <p>Translation used to be invisible until the moment text landed in your app: the overlay showed your spoken words, and English only appeared at paste. An experimental preview closes that gap — the dictation overlay now shows a running English translation as you talk, with your spoken words kept on a single dimmed line above it. You can judge the translation while you're still speaking instead of discovering it afterwards. It's display-only: what actually gets pasted is unchanged.</p>
+            </div>
+            <div class="sum-right">
+              <span class="try">How to use<svg class="howto-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span>
+              <div class="receipts"><span class="tag pr">#231</span><span class="tag pr">#235</span></div>
+            </div>
+          </summary>
+          <div class="guide">
+            <span class="avail live">Available now</span>
+            <p class="g-sum">Switch on “Live translation preview (experimental)” under Translate to English.</p>
+            <ol>
+              <li>Turn on “Translate to English” in Settings › Dictation and make sure the language pair is downloaded.</li>
+              <li>Switch on “Live translation preview (experimental)” just below it. It's off by default — each session it's on does extra on-device translation work while you speak.</li>
+              <li>Dictate: the overlay shows the running English translation, your spoken text stays visible as a single line above, and a quiet “Translating…” indicator appears while a request is in flight.</li>
+              <li>The preview never writes into your document — the pasted result comes from the normal translation path.</li>
+            </ol>
+          </div>
+        </details>
+      </li>
+      <li class="entry">
+        <h3>Open a meeting transcript or summary in the Scratchpad</h3>
+        <p>Meeting transcripts and summaries were read-only. One click now opens either as an editable note in the floating Scratchpad, so you can clean it up, annotate it, or dictate additions straight into it.</p>
+        <div class="receipts"><span class="tag pr">#229</span></div>
+      </li>
+      <li class="entry">
+        <h3>Voice-command counter for the stream overlay</h3>
+        <p>For streamers who want overlay widgets rather than captions: configure a trigger phrase and the overlay keeps a live count of how many times you say it — driven entirely by your voice, rendered on the same local caption page.</p>
+        <div class="receipts"><span class="tag pr">#232</span></div>
+      </li>
       <li>
         <details class="entry">
           <summary>
@@ -1159,9 +1218,19 @@
     <div class="sec-head">
       <span class="dot fix"></span>
       <h2>Fixes</h2>
-      <span class="count">13 shipped</span>
+      <span class="count">15 shipped</span>
     </div>
     <ul class="entries">
+      <li class="entry">
+        <h3>Russian is no longer mistaken for Ukrainian mid-sentence</h3>
+        <p>With Auto Detect on, the live translation preview would sometimes claim your language pair wasn't downloaded — because on short Cyrillic fragments the language detector's first guess for Russian speech is often Ukrainian, and that pair genuinely wasn't installed. Detection now prefers the best-confidence language whose pair you actually have downloaded, so the preview stops reporting a problem that isn't there.</p>
+        <div class="receipts"><span class="tag pr">#235</span></div>
+      </li>
+      <li class="entry">
+        <h3>Swapping headphones mid-dictation no longer kills the mic</h3>
+        <p>Changing your input device while dictating — plugging in headphones, switching to a different mic — could silently stop capture on several engines, and on Parakeet a config-change loop could kill the mic outright. Capture now restarts cleanly on a device change across every engine, and a slow engine finishing its final words no longer gets cut off, so trailing words stop going missing.</p>
+        <div class="receipts"><span class="tag pr">#224</span><span class="tag pr">#225</span><span class="tag pr">#226</span><span class="tag pr">#227</span></div>
+      </li>
       <li class="entry">
         <h3>31 verified fixes — races, silent data loss, and release builds that weren't optimised</h3>
         <p>Another adversarial bug hunt: 31 confirmed issues fixed across the app, including data races, paths that could silently drop a transcript, hot-path performance, and a build flaw where release binaries were being compiled without optimisation.</p>
@@ -1235,9 +1304,14 @@
     <div class="sec-head">
       <span class="dot improve"></span>
       <h2>Under the hood</h2>
-      <span class="count">11 shipped</span>
+      <span class="count">12 shipped</span>
     </div>
     <ul class="entries">
+      <li class="entry">
+        <h3>macOS 15 is the new minimum — and every engine can translate now</h3>
+        <p>OpenWhisp now requires macOS 15 (Sequoia) or later. That floor is what lets on-device translation work the same way for every transcription engine: translation moved off the speech engines and onto Apple's text translation, so Parakeet — the default, fastest engine — can translate too, which it never could before. The whisper.cpp and WhisperKit engines are still included and still work; they're simply no longer the recommended picks.</p>
+        <div class="receipts"><span class="tag ticket">MAK-90</span><span class="tag ticket">MAK-91</span><span class="tag ticket">MAK-93</span><span class="tag pr">#233</span></div>
+      </li>
       <li class="entry">
         <h3>The self-learning dictionary now catches multi-word corrections</h3>
         <p>When you fix a transcription by typing over it, OpenWhisp used to notice only single-word corrections. It now picks up short multi-word fixes as well, and weighs how often you've made the same correction before proposing it — so the dictionary gets smarter from the way you already work, with no telemetry.</p>
