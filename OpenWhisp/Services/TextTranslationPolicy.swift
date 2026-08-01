@@ -108,4 +108,45 @@ public enum TextTranslationPolicy {
     private static func isEnglish(_ language: String) -> Bool {
         ParakeetLanguageHint.baseCode(from: language) == "en"
     }
+
+    /// Pick the detected source language for an "auto" session from the
+    /// recognizer's RANKED hypotheses, preferring a language whose translation
+    /// pair is actually usable.
+    ///
+    /// Why not just the top guess: on short Cyrillic fragments (exactly what
+    /// the live translation preview fires on early in an utterance),
+    /// `NLLanguageRecognizer`'s dominant language is often Ukrainian or
+    /// Bulgarian for RUSSIAN speech. If that mis-guess's pair isn't installed,
+    /// the provider fail-fasts with a "…isn't downloaded" error even though the
+    /// user's real pair (ru→en) is installed and working — the bug this exists
+    /// to fix. Preferring the best-confidence candidate with an INSTALLED pair
+    /// self-corrects the mis-detection without ever popping a download prompt.
+    ///
+    /// Rules (pinned by tests):
+    /// - Candidates are considered in descending confidence order.
+    /// - Only candidates at or above `confidenceFloor` may be promoted by the
+    ///   installed-pair preference — a barely-plausible language must not win
+    ///   just because its assets happen to be installed.
+    /// - The first eligible candidate whose pair is installed wins; if none is
+    ///   installed, the top candidate wins unchanged (the provider's fail-fast
+    ///   then names the honest top guess).
+    /// - Empty candidates → nil (caller reports "couldn't identify").
+    public static func pickDetectedSource(
+        candidates: [(code: String, confidence: Double)],
+        isPairInstalled: (String) -> Bool
+    ) -> String? {
+        let ranked = candidates.sorted { $0.confidence > $1.confidence }
+        guard let top = ranked.first else { return nil }
+        for candidate in ranked where candidate.confidence >= confidenceFloor {
+            if isPairInstalled(candidate.code) { return candidate.code }
+        }
+        return top.code
+    }
+
+    /// Minimum recognizer confidence for a candidate to be promoted over the
+    /// top guess by the installed-pair preference. Low enough that the common
+    /// short-Cyrillic case (uk ~0.5 / ru ~0.3) promotes Russian; high enough
+    /// that installed-pair noise at a few percent confidence can't hijack the
+    /// detection.
+    public static let confidenceFloor = 0.15
 }

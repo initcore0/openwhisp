@@ -211,4 +211,61 @@ final class TextTranslationPolicyTests: XCTestCase {
             transcriptionEngine: EngineCapabilities.parakeet,
             textTranslationAvailable: true), "auto")
     }
+
+    // MARK: - pickDetectedSource (auto-session mis-detection self-correction)
+
+    /// THE bug this exists for: short Cyrillic fragments detect as Ukrainian
+    /// (top) with Russian second; uk→en isn't installed, ru→en is. The
+    /// installed pair must win — otherwise the live preview fail-fasts with
+    /// "isn't downloaded" while the user's real pair works.
+    func testInstalledRunnerUpBeatsUninstalledTopGuess() {
+        XCTAssertEqual(
+            TextTranslationPolicy.pickDetectedSource(
+                candidates: [("uk", 0.55), ("ru", 0.35), ("bg", 0.10)],
+                isPairInstalled: { $0 == "ru" }),
+            "ru")
+    }
+
+    func testInstalledTopGuessWinsOutright() {
+        XCTAssertEqual(
+            TextTranslationPolicy.pickDetectedSource(
+                candidates: [("ru", 0.7), ("uk", 0.3)],
+                isPairInstalled: { $0 == "ru" || $0 == "uk" }),
+            "ru")
+    }
+
+    /// No installed pair anywhere → the honest top guess is returned unchanged,
+    /// so the provider's fail-fast names the language detection actually chose.
+    func testNoInstalledPairFallsBackToTopGuess() {
+        XCTAssertEqual(
+            TextTranslationPolicy.pickDetectedSource(
+                candidates: [("uk", 0.6), ("ru", 0.4)],
+                isPairInstalled: { _ in false }),
+            "uk")
+    }
+
+    /// A barely-plausible candidate must not be promoted just because its
+    /// assets are installed — below the confidence floor the top guess stands.
+    func testBelowFloorCandidateCannotHijackDetection() {
+        XCTAssertEqual(
+            TextTranslationPolicy.pickDetectedSource(
+                candidates: [("uk", 0.9), ("de", TextTranslationPolicy.confidenceFloor - 0.01)],
+                isPairInstalled: { $0 == "de" }),
+            "uk")
+    }
+
+    /// Candidates arrive unordered from the recognizer's dictionary — the pick
+    /// must rank by confidence itself.
+    func testUnorderedCandidatesAreRankedByConfidence() {
+        XCTAssertEqual(
+            TextTranslationPolicy.pickDetectedSource(
+                candidates: [("ru", 0.2), ("uk", 0.5), ("sr", 0.3)],
+                isPairInstalled: { $0 == "ru" || $0 == "sr" }),
+            "sr", "higher-confidence installed candidate wins over lower")
+    }
+
+    func testEmptyCandidatesReturnNil() {
+        XCTAssertNil(TextTranslationPolicy.pickDetectedSource(
+            candidates: [], isPairInstalled: { _ in true }))
+    }
 }
