@@ -61,9 +61,11 @@ final class StreamOverlayServerTests: XCTestCase {
     @MainActor
     private func startServer(
         config: StreamOverlayConfig = StreamOverlayConfig(),
-        translator: StreamOverlayServer.Translator? = nil
+        translator: StreamOverlayServer.Translator? = nil,
+        counterCount: Int = 0
     ) throws -> (StreamOverlayServer, UInt16) {
-        let server = StreamOverlayServer(config: config, translator: translator)
+        let server = StreamOverlayServer(
+            config: config, translator: translator, counterCount: counterCount)
         try server.start()
         let deadline = Date().addingTimeInterval(5)
         while server.boundPort == nil && Date() < deadline {
@@ -275,6 +277,309 @@ final class StreamOverlayServerTests: XCTestCase {
         server.publishFinal("good morning")
         XCTAssertTrue(client.wait { $0.contains("[es] good morning") },
                       "translated final missing: \(client.received.suffix(300))")
+    }
+
+    // MARK: - Voice-command counter (the wiring reality check)
+
+    /// A counter config the tests share: trigger phrase, label, corner.
+    private func counterConfig(
+        phrase: String = "I died again",
+        captionsEnabled: Bool = true
+    ) -> StreamOverlayConfig {
+        var config = StreamOverlayConfig()
+        config.counterEnabled = true
+        config.counterPhrase = phrase
+        config.counterLabel = "Deaths"
+        config.counterCorner = .topRight
+        config.captionsEnabled = captionsEnabled
+        return config
+    }
+
+    /// THE wiring test: a matching FINAL on the real publish path that a live
+    /// session uses must emit a `counter` SSE frame with count=1 — and a
+    /// non-matching final must emit nothing.
+    @MainActor
+    func testMatchingFinalIncrementsTheCounterOverSSE() throws {
+        let (server, port) = try startServer(config: counterConfig())
+        defer { server.stop() }
+
+        let client = RawClient(port: port)
+        defer { client.close() }
+        client.send("GET /events HTTP/1.1\r\n\r\n")
+        // The greeting seeds the counter at its persisted value (0 here).
+        XCTAssertTrue(client.wait { $0.contains("event: counter") && $0.contains("\"count\":0") },
+                      "counter greeting missing: \(client.received.prefix(400))")
+
+        // A final with no trigger phrase must NOT bump the counter.
+        server.publishFinal("chat, what do you think of this build")
+        XCTAssertTrue(client.wait { $0.contains("this build") }, "caption should still flow")
+        XCTAssertFalse(client.received.contains("\"count\":1"),
+                       "a non-matching final must not increment: \(client.received.suffix(400))")
+        XCTAssertEqual(server.counterCount, 0)
+
+        // The real thing: the streamer says the phrase.
+        server.publishFinal("oh no, I died again!")
+        XCTAssertTrue(
+            client.wait { $0.contains("event: counter") && $0.contains("\"count\":1") },
+            "counter frame missing after a matching final: \(client.received.suffix(500))")
+        XCTAssertEqual(server.counterCount, 1)
+        // The frame carries what the page renders.
+        XCTAssertTrue(client.received.contains("\"label\":\"Deaths\""))
+        XCTAssertTrue(client.received.contains("\"corner\":\"topRight\""))
+        XCTAssertTrue(client.received.contains("\"visible\":true"))
+    }
+
+    /// THE live-mode wiring test (the reported bug): an open-mic overlay
+    /// session delivers its one final only when capture STOPS, so the counter
+    /// must tick on PARTIALS — exactly once per spoken occurrence even though
+    /// partials repeat and grow, and without double-counting when the final
+    /// re-delivers the same transcript at stop.
+    @MainActor
+    func testCounterTicksLiveOnGrowingPartialsWithoutDoubleCounting() throws {
+        let (server, port) = try startServer(config: counterConfig())
+        defer { server.stop() }
+
+        let client = RawClient(port: port)
+        defer { client.close() }
+        client.send("GET /events HTTP/1.1\r\n\r\n")
+        XCTAssertTrue(client.wait { $0.contains("event: counter") })
+
+        // The phrase assembles across growing partials — no tick until the
+        // full phrase is present, then exactly one.
+        server.publishPartial("oh no I")
+        server.publishPartial("oh no I died")
+        XCTAssertEqual(server.counterCount, 0, "half a phrase must not count")
+        server.publishPartial("oh no I died again")
+        XCTAssertTrue(
+            client.wait { $0.contains("\"count\":1") },
+            "counter must tick LIVE on the partial, not at capture stop: \(client.received.suffix(400))")
+
+        // The same transcript repeating (and growing with unrelated words)
+        // must not re-count the consumed occurrence.
+        server.publishPartial("oh no I died again")
+        server.publishPartial("oh no I died again let me try once more")
+        XCTAssertEqual(server.counterCount, 1)
+
+        // A SECOND spoken occurrence later in the same session counts again.
+        server.publishPartial("oh no I died again let me try once more and I died again")
+        XCTAssertTrue(client.wait { $0.contains("\"count\":2") })
+
+        // Capture stops: the final re-delivers the full transcript — already
+        // consumed, so no phantom third tick.
+        server.publishFinal("oh no I died again let me try once more and I died again")
+        XCTAssertEqual(server.counterCount, 2)
+
+        // Next session starts a fresh transcript (feed reset by the final):
+        // its first occurrence counts from word zero.
+        server.publishPartial("I died again")
+        XCTAssertTrue(client.wait { $0.contains("\"count\":3") })
+        XCTAssertEqual(server.counterCount, 3)
+    }
+
+    /// Counter-only mode must count live too: captions off suppresses the
+    /// caption pipeline, not the voice commands.
+    @MainActor
+    func testCaptionsOffStillCountsLivePartials() throws {
+        var config = counterConfig()
+        config.captionsEnabled = false
+        let (server, port) = try startServer(config: config)
+        defer { server.stop() }
+
+        let client = RawClient(port: port)
+        defer { client.close() }
+        client.send("GET /events HTTP/1.1\r\n\r\n")
+        XCTAssertTrue(client.wait { $0.contains("event: counter") })
+
+        server.publishPartial("well, I died again")
+        XCTAssertTrue(client.wait { $0.contains("\"count\":1") },
+                      "captions-off must not disable live counting: \(client.received.suffix(400))")
+        // The greeting always seeds one (empty) caption frame; the invariant is
+        // that the SPOKEN TEXT never rides a caption while captions are off.
+        XCTAssertFalse(client.received.contains("died again\""),
+                       "captions are off — the transcript must not flow as captions")
+    }
+
+    /// Counter-only mode: captions off, counter live. No caption frames are
+    /// broadcast at all, but the counter still increments — the scenario the
+    /// feature exists for.
+    @MainActor
+    func testCounterStillCountsWithCaptionsDisabled() throws {
+        let (server, port) = try startServer(config: counterConfig(captionsEnabled: false))
+        defer { server.stop() }
+
+        let client = RawClient(port: port)
+        defer { client.close() }
+        client.send("GET /events HTTP/1.1\r\n\r\n")
+        XCTAssertTrue(client.wait { $0.contains("event: counter") })
+
+        server.publishPartial("I died ag")
+        server.publishFinal("I died again")
+        XCTAssertTrue(client.wait { $0.contains("\"count\":1") },
+                      "counter must work with captions off: \(client.received.suffix(400))")
+        // Not one word of the transcript went out as a caption.
+        XCTAssertFalse(client.received.contains("I died again"),
+                       "captions are off — no caption text may be broadcast: \(client.received.suffix(500))")
+        XCTAssertFalse(client.received.contains("I died ag"))
+
+        // And the served page renders the captions block hidden.
+        let page = RawClient(port: port)
+        defer { page.close() }
+        page.send("GET / HTTP/1.1\r\n\r\n")
+        XCTAssertTrue(page.wait { $0.contains("</html>") })
+        XCTAssertTrue(page.received.contains("<div id=\"captions\" class=\"hidden\">"))
+    }
+
+    /// Saying the phrase twice in one utterance counts twice — dropping the
+    /// second would be a silent miscount.
+    @MainActor
+    func testRepeatedPhraseInOneFinalCountsTwice() throws {
+        let (server, port) = try startServer(config: counterConfig())
+        defer { server.stop() }
+
+        let client = RawClient(port: port)
+        defer { client.close() }
+        client.send("GET /events HTTP/1.1\r\n\r\n")
+        XCTAssertTrue(client.wait { $0.contains("event: counter") })
+
+        server.publishFinal("I died again and then I died again")
+        XCTAssertTrue(client.wait { $0.contains("\"count\":2") },
+                      "two occurrences should count twice: \(client.received.suffix(400))")
+        XCTAssertEqual(server.counterCount, 2)
+    }
+
+    /// Detection runs on the ORIGINAL text, before translation — so a Russian
+    /// streamer triggers on a Russian phrase while captions go out translated.
+    @MainActor
+    func testCounterMatchesSourceTextNotTheTranslation() throws {
+        var config = counterConfig(phrase: "я снова умер")
+        config.translationEnabled = true
+        config.targetLanguage = "en"
+        let (server, port) = try startServer(config: config, translator: { _, _ in "I died again" })
+        defer { server.stop() }
+
+        let client = RawClient(port: port)
+        defer { client.close() }
+        client.send("GET /events HTTP/1.1\r\n\r\n")
+        XCTAssertTrue(client.wait { $0.contains("event: counter") })
+
+        server.publishFinal("ну всё, я снова умер!")
+        XCTAssertTrue(client.wait { $0.contains("\"count\":1") },
+                      "Cyrillic trigger on the source text missed: \(client.received.suffix(500))")
+        XCTAssertTrue(client.wait { $0.contains("I died again") }, "the caption is still translated")
+    }
+
+    /// A page connecting mid-stream must be greeted with the RUNNING count, not
+    /// a blank widget — and the persisted value must survive a restart.
+    @MainActor
+    func testNewClientIsGreetedWithTheCurrentCount() throws {
+        let (server, port) = try startServer(config: counterConfig(), counterCount: 41)
+        defer { server.stop() }
+
+        server.publishFinal("I died again")
+        XCTAssertEqual(server.counterCount, 42, "the restored count continues, it doesn't restart")
+
+        let latecomer = RawClient(port: port)
+        defer { latecomer.close() }
+        latecomer.send("GET /events HTTP/1.1\r\n\r\n")
+        XCTAssertTrue(
+            latecomer.wait { $0.contains("event: counter") && $0.contains("\"count\":42") },
+            "a client connecting mid-stream must see the running count: \(latecomer.received.prefix(600))")
+    }
+
+    /// The owner persists through `onCounterChanged`; reset zeroes both the
+    /// value and the live pages.
+    @MainActor
+    func testResetZeroesTheCounterAndNotifiesTheOwner() throws {
+        let (server, port) = try startServer(config: counterConfig(), counterCount: 7)
+        defer { server.stop() }
+
+        var persisted: [Int] = []
+        server.onCounterChanged = { persisted.append($0) }
+
+        let client = RawClient(port: port)
+        defer { client.close() }
+        client.send("GET /events HTTP/1.1\r\n\r\n")
+        XCTAssertTrue(client.wait { $0.contains("\"count\":7") })
+
+        server.publishFinal("I died again")
+        XCTAssertTrue(client.wait { $0.contains("\"count\":8") })
+        server.resetCounter()
+        XCTAssertTrue(client.wait { $0.contains("\"count\":0") },
+                      "reset must reach the page: \(client.received.suffix(400))")
+        XCTAssertEqual(server.counterCount, 0)
+        XCTAssertEqual(persisted, [8, 0], "every change is handed to the owner to persist")
+    }
+
+    /// A disabled counter never fires, whatever is said.
+    @MainActor
+    func testDisabledCounterNeverIncrements() throws {
+        var config = counterConfig()
+        config.counterEnabled = false
+        let (server, port) = try startServer(config: config)
+        defer { server.stop() }
+
+        let client = RawClient(port: port)
+        defer { client.close() }
+        client.send("GET /events HTTP/1.1\r\n\r\n")
+        XCTAssertTrue(client.wait { $0.contains("text/event-stream") })
+
+        server.publishFinal("I died again")
+        XCTAssertTrue(client.wait { $0.contains("I died again") }, "captions still flow")
+        XCTAssertEqual(server.counterCount, 0)
+        XCTAssertFalse(client.received.contains("\"count\":1"))
+    }
+
+    /// Relabeling / moving the counter applies LIVE (same rule as the caption
+    /// look) and must NOT reset the tally.
+    @MainActor
+    func testApplyLookUpdatesTheCounterWidgetWithoutResettingTheCount() throws {
+        let (server, port) = try startServer(config: counterConfig(), counterCount: 3)
+        defer { server.stop() }
+
+        let client = RawClient(port: port)
+        defer { client.close() }
+        client.send("GET /events HTTP/1.1\r\n\r\n")
+        XCTAssertTrue(client.wait { $0.contains("\"count\":3") })
+
+        var edited = counterConfig()
+        edited.counterLabel = "Deaths this stream"
+        edited.counterCorner = .bottomLeft
+        server.applyLook(edited)
+
+        XCTAssertTrue(
+            client.wait { $0.contains("\"label\":\"Deaths this stream\"") && $0.contains("\"corner\":\"bottomLeft\"") },
+            "relabel/move must reach live pages: \(client.received.suffix(500))")
+        XCTAssertEqual(server.counterCount, 3, "a config edit must never reset the tally")
+    }
+
+    /// Switching captions OFF mid-stream blanks what's on screen and stops
+    /// caption frames, while the counter keeps working.
+    @MainActor
+    func testApplyLookCanTurnCaptionsOffMidStream() throws {
+        var config = counterConfig()
+        config.lingerSeconds = 30      // don't let the auto-hide do the blanking
+        let (server, port) = try startServer(config: config)
+        defer { server.stop() }
+
+        let client = RawClient(port: port)
+        defer { client.close() }
+        client.send("GET /events HTTP/1.1\r\n\r\n")
+        XCTAssertTrue(client.wait { $0.contains("text/event-stream") })
+
+        server.publishPartial("captions running here")
+        XCTAssertTrue(client.wait { $0.contains("captions running here") })
+
+        var edited = config
+        edited.captionsEnabled = false
+        server.applyLook(edited)
+        XCTAssertTrue(client.wait { $0.contains("\"lines\":[]") },
+                      "turning captions off must blank the screen: \(client.received.suffix(400))")
+
+        // Nothing further is captioned, but the counter still counts.
+        server.publishFinal("I died again")
+        XCTAssertTrue(client.wait { $0.contains("\"count\":1") })
+        XCTAssertFalse(client.received.contains("\"lines\":[\"I died again\"]"),
+                       "no caption frames after captions were switched off")
     }
 
     @MainActor

@@ -22,6 +22,7 @@ struct StreamOverlayPane: View {
             if overlay.enabled {
                 captureSection
                 serverSection
+                voiceCommandsSection
                 translationSection
                 displaySection
             }
@@ -71,10 +72,69 @@ struct StreamOverlayPane: View {
                     .disabled(!overlay.running)
                 }
             }
+
+            // Independent of the capture session: capture is "is the mic on",
+            // this is "do the words show up as subtitles". Turning it off leaves
+            // a working capture that only drives voice commands (below).
+            Toggle("Show live transcription (subtitles) on the overlay", isOn: configBinding(\.captionsEnabled))
+                .help("Off means the overlay shows no transcription/caption text at all — useful when you only want voice-command widgets like the counter.")
         } header: {
             Text("Captions")
         } footer: {
             Text("Runs hands-free until you stop it — nothing is typed into your apps, and the transcript only feeds the overlay. The floating dictation overlay stays hidden so it can't show up on your stream. Long silences don't end it. Esc or the dictation hotkey also stop it.")
+                .font(.caption)
+                .foregroundColor(.secondary)
+        }
+    }
+
+    // MARK: Voice commands
+
+    /// Voice commands drive overlay WIDGETS instead of captions: say a phrase on
+    /// stream and something on the overlay reacts. The first (and for now only)
+    /// command is a phrase counter — "I died again" → Deaths: 12.
+    private var voiceCommandsSection: some View {
+        Section {
+            Toggle("Count a phrase", isOn: configBinding(\.counterEnabled))
+
+            if overlay.config.counterEnabled {
+                TextField("Trigger phrase", text: configBinding(\.counterPhrase),
+                          prompt: Text("I died again"))
+                    .help("Said on stream, this phrase bumps the counter. Capitalization and punctuation don't matter; any language works.")
+
+                TextField("Counter label", text: configBinding(\.counterLabel),
+                          prompt: Text("Deaths"))
+                    .help("Shown next to the number on the overlay, e.g. “Deaths: 12”.")
+
+                Picker(selection: configBinding(\.counterCorner)) {
+                    ForEach(StreamOverlayCorner.allCases, id: \.self) { corner in
+                        Text(corner.displayName).tag(corner)
+                    }
+                } label: {
+                    Label("Corner", systemImage: "square.on.square.dashed")
+                }
+
+                HStack {
+                    Label("Current count", systemImage: "number.circle")
+                    Spacer()
+                    Text("\(overlay.counterCount)")
+                        .font(.system(.title3, design: .rounded))
+                        .monospacedDigit()
+                    Button {
+                        overlay.resetCounter()
+                    } label: {
+                        Label("Reset", systemImage: "arrow.counterclockwise")
+                    }
+                    .disabled(overlay.counterCount == 0)
+                }
+
+                if overlay.config.counterPhrase.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    SettingsCallout(.warning, "Set a trigger phrase — an empty phrase never counts.")
+                }
+            }
+        } header: {
+            Text("Voice Commands")
+        } footer: {
+            Text("Say the phrase while captions are capturing and the counter ticks up. It counts when the sentence finishes, so there's a short delay after you speak, and saying it twice in one sentence counts twice. The count is kept when you restart OpenWhisp — use Reset to start a new stream at zero.")
                 .font(.caption)
                 .foregroundColor(.secondary)
         }

@@ -230,6 +230,10 @@ final class SettingsStoreTests: XCTestCase {
         "spokenPunctuationEnabled",
         // Stream overlay (live subtitles for OBS/Twitch) — added with the feature.
         "streamOverlayConfig",
+        // The voice-command counter's TALLY. Deliberately its own key rather
+        // than a field inside streamOverlayConfig: it is state, not settings, so
+        // editing the overlay's config never touches it.
+        "streamOverlayCounterCount",
         "streamOverlayEnabled",
         "streamOverlayPort",
         "summaryLLMEndpoint",
