@@ -59,17 +59,23 @@ final class TranslationPreviewPolicyTests: XCTestCase {
 
     /// Arming is delegated to `TextTranslationPolicy.shouldTranslateFinal`, so
     /// every reason THAT path stays dark also darkens the preview: translate
-    /// off, English speech, no macOS 15 translator, or an engine that already
-    /// translates natively (whisper — its live text is English already).
+    /// off, English speech, or no on-device text translator.
     func testArmingMirrorsTextTranslationPolicy() {
         XCTAssertFalse(armed(translate: false), "translate toggle off")
         XCTAssertFalse(armed(language: "en"), "English speech is a no-op")
         XCTAssertFalse(armed(language: "en-US"), "regional English too")
-        XCTAssertFalse(armed(available: false), "macOS 14 has no text translator")
-        XCTAssertFalse(armed(engine: EngineCapabilities.whisperKit),
-                       "native-translate engine already streams English")
+        XCTAssertFalse(armed(available: false), "no on-device text translator")
         // "auto" is not English — the speaker may be dictating anything.
         XCTAssertTrue(armed(language: "auto"))
+    }
+
+    /// The preview now arms on the whisper family too. Since translation moved
+    /// to the TEXT path, whisper streams live partials in the SPOKEN language
+    /// and English appears only at paste — exactly the gap this preview fills.
+    /// (It previously stayed dark here, when whisper translated natively.)
+    func testArmsForWhisperFamilyNowThatTranslationIsTextPath() {
+        XCTAssertTrue(armed(engine: EngineCapabilities.whisperKit))
+        XCTAssertTrue(armed(engine: EngineCapabilities.whisperCpp))
     }
 
     // MARK: - Throttle (shouldFire)

@@ -1644,10 +1644,10 @@ class AppState: ObservableObject {
         return "\(trigger) to insert - Esc to cancel"
     }
 
-    /// The engine-facing language setting: the user's spoken language, or the
-    /// translate-to-English sentinel when translation is on. Apple Speech has
-    /// no translate concept, so it always gets the plain language (used as a
-    /// locale hint).
+    /// The engine-facing language setting: always the user's spoken language
+    /// (a locale hint; "auto" = detect). Translation is not an engine concern
+    /// any more — the Apple Translation TEXT path owns it for every engine, so
+    /// no translate sentinel is ever emitted (see `LanguageResolver`).
     var engineLanguageSetting: String {
         LanguageResolver.engineLanguageSetting(
             language: language,
@@ -1657,8 +1657,8 @@ class AppState: ObservableObject {
     }
 
     /// The language of the OUTPUT text, for formatting rules (spoken
-    /// punctuation etc.): English when translating (either the engine-level
-    /// translate or the text path), else the spoken language.
+    /// punctuation etc.): English when the translate text path is in effect,
+    /// else the spoken language.
     private var outputLanguageForCleaning: String {
         TextTranslationPolicy.outputLanguageForCleaning(
             language: language,
@@ -1668,15 +1668,14 @@ class AppState: ObservableObject {
         )
     }
 
-    /// The translate intent actually in effect: the stored toggle gated on a
-    /// path existing that can act on it — the engine's own translate task OR
-    /// the on-device text path (macOS 15+, `TextTranslationPolicy`). The refine
-    /// layer (cleanup prompts, RefineOutputGuard's expected script) must key on
-    /// THIS, never on the raw `translateToEnglish` — on Parakeet/Apple Speech
-    /// under macOS 14 the transcript stays in the spoken language (and the UI
-    /// shows translate as dimmed), so a stale stored `true` would otherwise
-    /// disarm the language guard and, in improveTranslation mode, actively
-    /// LLM-translate the dictation no path was going to.
+    /// The translate intent actually in effect: the stored toggle gated on the
+    /// text path being able to act on it (`TextTranslationPolicy`, which owns
+    /// translation for every engine now). The refine layer (cleanup prompts,
+    /// RefineOutputGuard's expected script) must key on THIS, never the raw
+    /// `translateToEnglish` — when the source is already English, or no
+    /// translator exists, the transcript stays in the spoken language, so a
+    /// stale stored `true` would disarm the language guard and, in
+    /// improveTranslation mode, LLM-translate a dictation no path was going to.
     var effectiveTranslateToEnglish: Bool {
         TextTranslationPolicy.effectiveTranslateToEnglish(
             translateToEnglish: translateToEnglish,
@@ -1686,10 +1685,10 @@ class AppState: ObservableObject {
         )
     }
 
-    /// Whether "Translate to English" is offerable at all for the current
-    /// engine — natively (whisper family) or via the on-device text path
-    /// (macOS 15+). The ONE predicate both offer surfaces (menu bar row,
-    /// Dictation pane toggle) read, so they can never disagree.
+    /// Whether "Translate to English" is offerable at all — an OS question now
+    /// (the text path covers every engine). The ONE predicate both offer
+    /// surfaces (menu bar row, Dictation pane toggle) read, so they can never
+    /// disagree.
     var translationOffered: Bool {
         TextTranslationPolicy.translationOffered(
             transcriptionEngine: transcriptionEngine,
@@ -1698,8 +1697,7 @@ class AppState: ObservableObject {
     }
 
     /// Whether THIS session's final transcript should be translated as text
-    /// (Apple Translation, macOS 15+) because the user wants English but the
-    /// active engine is ASR-only. Pure core decision — see TextTranslationPolicy.
+    /// (Apple Translation). Engine-independent — see TextTranslationPolicy.
     private var shouldTextTranslateFinal: Bool {
         TextTranslationPolicy.shouldTranslateFinal(
             translateToEnglish: translateToEnglish,
@@ -1930,7 +1928,9 @@ class AppState: ObservableObject {
         // the persisted onboarding flag. (Input Monitoring reports asynchronously
         // via onPermissionStateChanged above.)
         refreshPermissionBanners()
-        ensureModelExists()
+        // NO ensureModelExists() here — provisioning is engine-aware
+        // (`ensureSelectedEngineModel()`, from AppMain), so a fresh install
+        // fetches only the SELECTED engine's model (MAK-93).
         warmWhisperServerIfPossible()
         // MAK-40: enforce the retention policy on launch (age cap may have elapsed
         // while the app was closed) — a no-op when retention is off.

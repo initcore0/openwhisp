@@ -21,8 +21,11 @@ import Translation
 enum AppleTextTranslation {
 
     /// Whether the on-device text-translation path exists on this OS. The app's
-    /// deployment target is macOS 14; there this is false and the feature is
-    /// simply unavailable (offer gates dim, sessions never arm the text path).
+    /// deployment target is macOS 15, so in practice this is always true — the
+    /// check is kept as cheap belt-and-braces (and so the `Translation` import
+    /// stays optional for lean/host builds). If it ever answers false, the
+    /// feature degrades quietly: offer gates dim, sessions never arm the text
+    /// path, and no text is lost.
     static var isSupported: Bool {
         #if canImport(Translation)
         if #available(macOS 15.0, *) { return true }
@@ -77,8 +80,8 @@ enum AppleTextTranslation {
     }
 
     /// Asset state of one source→target pair, for the Settings status rows
-    /// (`TranslationAssetStatusView`). Exists unconditionally (macOS 14 renders
-    /// the rows too — as "unavailable").
+    /// (`TranslationAssetStatusView`). Exists unconditionally, so the rows can
+    /// render an "unavailable" state even where the framework is missing.
     enum AssetStatus: Equatable {
         /// Language assets are on disk — translation works right now.
         case installed
@@ -86,7 +89,8 @@ enum AppleTextTranslation {
         case needsDownload
         /// macOS translation can't do this pair at all.
         case unsupported
-        /// No answer possible: macOS 14, or no concrete source ("auto").
+        /// No answer possible: no text translator on this OS, or no concrete
+        /// source ("auto").
         case unavailable
     }
 

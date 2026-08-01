@@ -2,14 +2,16 @@ import XCTest
 @testable import OpenWhispCore
 
 /// The arm/offer decisions for the on-device TEXT translation path (Apple
-/// Translation, macOS 15+): translate the session's FINAL transcript as text
-/// when the user wants English but the active engine is ASR-only. Replaces the
-/// retired dual-runtime approach (PR #219) — one ASR runtime, no audio tap,
-/// and on failure the ORIGINAL text is kept, never lost.
+/// Translation, macOS 15+), which now owns translation for EVERY engine: the
+/// session's FINAL transcript is translated as text after the engine produced
+/// it. Replaces the retired dual-runtime approach (PR #219) — one ASR runtime,
+/// no audio tap, and on failure the ORIGINAL text is kept, never lost.
 ///
-/// Everything is asserted engine-by-engine over `allEngineIDs` so a future
-/// engine can't silently fall in a gap between the engine-level translate path
-/// and the text path.
+/// The old "exactly one of {engine-native, text} arms" complement contract is
+/// GONE: engine-native translate is retired (dormant, see `WhisperTask`), so the
+/// text path is the only path. These tests pin the replacement contract —
+/// **engine-independence** — by asserting engine-by-engine over `allEngineIDs`
+/// that the decision does not vary with the engine at all.
 final class TextTranslationPolicyTests: XCTestCase {
 
     private let allEngines = EngineCapabilities.allEngineIDs
@@ -25,14 +27,35 @@ final class TextTranslationPolicyTests: XCTestCase {
 
     // MARK: - shouldTranslateFinal
 
-    /// The recovered combination: translate on + non-English + ASR-only engine
-    /// + macOS 15 text translator → the text path runs. All three ASR-only
-    /// engines, because the text path needs no audio tap.
-    func testArmsForEveryASROnlyEngine() {
-        for engine in [EngineCapabilities.parakeet,
-                       EngineCapabilities.appleSpeech,
-                       EngineCapabilities.speechAnalyzer] {
+    /// THE CONTRACT: translate on + non-English + a text translator → the text
+    /// path runs, for EVERY engine including the whisper family that could once
+    /// translate natively. No audio tap is involved, so the engine is irrelevant.
+    func testArmsForEveryEngine() {
+        for engine in allEngines {
             XCTAssertTrue(shouldRun(engine: engine), "text path should arm for \(engine)")
+        }
+    }
+
+    /// Engine-independence, stated directly: across the whole input cross
+    /// product the answer never varies with the engine. This is what replaces
+    /// the retired "exact complements" contract — a new engine cannot fall in a
+    /// gap because there is no per-engine branch left to fall through.
+    func testDecisionIsIndependentOfEngine() {
+        for translate in [true, false] {
+            for language in ["ru", "en", "en-US", "auto", "ja"] {
+                for available in [true, false] {
+                    let expected = shouldRun(
+                        translate: translate, language: language,
+                        engine: EngineCapabilities.parakeet, available: available)
+                    for engine in allEngines {
+                        XCTAssertEqual(
+                            shouldRun(translate: translate, language: language,
+                                      engine: engine, available: available),
+                            expected,
+                            "\(engine)/\(language)/translate=\(translate)/available=\(available) must match every other engine")
+                    }
+                }
+            }
         }
     }
 
@@ -54,31 +77,42 @@ final class TextTranslationPolicyTests: XCTestCase {
         XCTAssertFalse(shouldRun(language: "en_GB"))
     }
 
-    /// Engines that translate natively keep the engine-level path — the text
-    /// path must never double-translate.
-    func testDoesNotArmForNativeTranslateEngines() {
-        XCTAssertFalse(shouldRun(engine: EngineCapabilities.whisperCpp))
-        XCTAssertFalse(shouldRun(engine: EngineCapabilities.whisperKit))
+    /// The whisper family now goes through the TEXT path like everyone else —
+    /// its native translate task is retired. Previously these two asserted the
+    /// opposite (the engine-level path owned them).
+    func testArmsForWhisperFamilyToo() {
+        XCTAssertTrue(shouldRun(engine: EngineCapabilities.whisperCpp))
+        XCTAssertTrue(shouldRun(engine: EngineCapabilities.whisperKit))
     }
 
-    /// macOS 14: the framework doesn't exist — the session behaves exactly as
-    /// before this feature (transcript stays in the spoken language).
+    /// No on-device translator → nothing translates, for every engine. Below the
+    /// macOS 15 floor this is unreachable in the shipping app; it stays pinned
+    /// as the belt-and-braces degradation (transcript kept in the spoken
+    /// language, never dropped).
     func testDoesNotArmWhenTextTranslationUnavailable() {
-        XCTAssertFalse(shouldRun(available: false))
+        for engine in allEngines {
+            XCTAssertFalse(shouldRun(engine: engine, available: false),
+                "\(engine) must not arm without a text translator")
+        }
     }
 
-    /// THE COMPLEMENT CONTRACT: for every engine, exactly one translate path
-    /// arms when the user wants English with a non-English language on
-    /// macOS 15+ — the engine-level one (`effectiveTranslateToEnglish` via
-    /// LanguageResolver) or the text path. Never both (double translation),
-    /// never neither (the silent-drop bug this feature removes).
-    func testExactlyOnePathArmsPerEngine() {
+    /// The engine-native translate task must be UNREACHABLE: the resolver never
+    /// emits the whisper sentinel, whatever the engine or translate flag. This
+    /// is the other half of "the text path owns translation" — if this
+    /// regresses, whisper sessions would translate twice.
+    func testEngineSentinelIsNeverEmitted() {
         for engine in allEngines {
-            let engineLevel = LanguageResolver.effectiveTranslateToEnglish(
-                translateToEnglish: true, transcriptionEngine: engine)
-            let textPath = shouldRun(engine: engine)
-            XCTAssertTrue(engineLevel != textPath,
-                "engine \(engine): engine-level=\(engineLevel) text-path=\(textPath) — exactly one must arm")
+            for translate in [true, false] {
+                for language in ["ru", "en", "auto"] {
+                    let setting = LanguageResolver.engineLanguageSetting(
+                        language: language, translateToEnglish: translate,
+                        transcriptionEngine: engine)
+                    XCTAssertEqual(setting, language,
+                        "\(engine)/\(language)/translate=\(translate): engine must get the plain language")
+                    XCTAssertNotEqual(setting, WhisperTask.translateToEnglishSetting,
+                        "\(engine): the engine-native translate sentinel is retired")
+                }
+            }
         }
     }
 
@@ -95,15 +129,15 @@ final class TextTranslationPolicyTests: XCTestCase {
         }
     }
 
-    /// Without it (macOS 14), the offer collapses to today's engine-level rule
-    /// — ASR-only engines keep the dimmed/absent toggle.
-    func testOfferMatchesEngineCapabilityWhenTextPathUnavailable() {
+    /// Without a text translator NO engine offers it — including the whisper
+    /// family, whose native task is retired. (Unreachable at the macOS 15 floor;
+    /// pinned so the offer gate can't quietly resurrect engine capability.)
+    func testNoEngineOffersTranslateWithoutTextPath() {
         for engine in allEngines {
-            XCTAssertEqual(
+            XCTAssertFalse(
                 TextTranslationPolicy.translationOffered(
                     transcriptionEngine: engine, textTranslationAvailable: false),
-                LanguageResolver.supportsTranslation(transcriptionEngine: engine),
-                "\(engine): macOS 14 offer must equal the engine-level rule")
+                "\(engine): the offer is an OS question now, not an engine one")
         }
     }
 
@@ -122,36 +156,34 @@ final class TextTranslationPolicyTests: XCTestCase {
             textTranslationAvailable: true), "en")
     }
 
-    /// Without the text path, both derivations are byte-identical to the
-    /// LanguageResolver originals for every engine — macOS 14 behavior is
-    /// unchanged by this feature.
-    func testDerivationsMatchLanguageResolverWhenUnavailable() {
+    /// Without a text translator NOTHING translates: both derivations report
+    /// "no translation in effect" and pass the spoken language through, for
+    /// every engine. The whisper family no longer gets an exemption here — that
+    /// is precisely the retired engine-native path.
+    func testDerivationsReportNoTranslationWhenUnavailable() {
         for engine in allEngines {
             for translate in [true, false] {
                 for language in ["ru", "en", "auto"] {
-                    XCTAssertEqual(
+                    XCTAssertFalse(
                         TextTranslationPolicy.effectiveTranslateToEnglish(
                             translateToEnglish: translate, language: language,
                             transcriptionEngine: engine, textTranslationAvailable: false),
-                        LanguageResolver.effectiveTranslateToEnglish(
-                            translateToEnglish: translate, transcriptionEngine: engine),
                         "\(engine)/\(language)/translate=\(translate)")
                     XCTAssertEqual(
                         TextTranslationPolicy.outputLanguageForCleaning(
                             language: language, translateToEnglish: translate,
                             transcriptionEngine: engine, textTranslationAvailable: false),
-                        LanguageResolver.outputLanguageForCleaning(
-                            language: language, translateToEnglish: translate,
-                            transcriptionEngine: engine),
+                        language,
                         "\(engine)/\(language)/translate=\(translate)")
                 }
             }
         }
     }
 
-    /// The engine-level translate on whisper engines is unaffected by the text
-    /// path being available — no double counting, same "en" output language.
-    func testNativeEnginesUnchangedByAvailability() {
+    /// With the text path available, the whisper family behaves like every other
+    /// engine: translation in effect and English output language — reached via
+    /// the TEXT path, not the engine's own task.
+    func testWhisperFamilyTranslatesViaTextPath() {
         for engine in [EngineCapabilities.whisperCpp, EngineCapabilities.whisperKit] {
             XCTAssertTrue(TextTranslationPolicy.effectiveTranslateToEnglish(
                 translateToEnglish: true, language: "ru",
@@ -159,6 +191,11 @@ final class TextTranslationPolicyTests: XCTestCase {
             XCTAssertEqual(TextTranslationPolicy.outputLanguageForCleaning(
                 language: "ru", translateToEnglish: true,
                 transcriptionEngine: engine, textTranslationAvailable: true), "en")
+            // ...and the engine itself is told the plain spoken language.
+            XCTAssertEqual(
+                LanguageResolver.engineLanguageSetting(
+                    language: "ru", translateToEnglish: true, transcriptionEngine: engine),
+                "ru")
         }
     }
 

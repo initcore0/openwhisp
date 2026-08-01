@@ -13,11 +13,15 @@ final class LanguageResolverTests: XCTestCase {
             "fr")
     }
 
-    func testTranslateReturnsSentinelForWhisper() {
-        XCTAssertEqual(
-            LanguageResolver.engineLanguageSetting(
-                language: "fr", translateToEnglish: true, transcriptionEngine: "whisperKit"),
-            WhisperTask.translateToEnglishSetting)
+    /// The engine NEVER gets the translate sentinel any more: translation
+    /// unified on the Apple Translation text path, so whisperKit — the one
+    /// engine that used to receive it — is handed the plain spoken language and
+    /// its native translate task is dormant.
+    func testTranslateNeverReturnsSentinelForWhisper() {
+        let setting = LanguageResolver.engineLanguageSetting(
+            language: "fr", translateToEnglish: true, transcriptionEngine: "whisperKit")
+        XCTAssertEqual(setting, "fr")
+        XCTAssertNotEqual(setting, WhisperTask.translateToEnglishSetting)
     }
 
     func testAppleSpeechNeverTranslates() {

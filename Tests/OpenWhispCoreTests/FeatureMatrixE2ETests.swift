@@ -65,14 +65,17 @@ final class FeatureMatrixE2ETests: XCTestCase {
 
     // MARK: - (1) LanguageResolver — engine language setting matrix
 
-    /// translateToEnglish && engine != appleSpeech → the translate sentinel is what
-    /// the engine is told to do; the plain language never reaches the engine.
-    func testEngineLanguageIsTranslateSentinelWhenTranslatingOnWhisper() {
+    /// Translation moved to the Apple Translation TEXT path for EVERY engine, so
+    /// the whisper family's native translate task is retired (dormant): even
+    /// with translateToEnglish ON, whisperKit is handed the plain spoken
+    /// language and the sentinel is never emitted. (This test previously
+    /// asserted the opposite — the sentinel WAS the whisper contract.)
+    func testEngineLanguageIsPlainLanguageEvenWhenTranslatingOnWhisper() {
         let setting = LanguageResolver.engineLanguageSetting(
             language: "de", translateToEnglish: true, transcriptionEngine: "whisperKit")
-        XCTAssertEqual(setting, WhisperTask.translateToEnglishSetting)
-        XCTAssertEqual(setting, "translate-en")
-        XCTAssertNotEqual(setting, "de", "spoken language must not be handed to the engine when translating")
+        XCTAssertEqual(setting, "de")
+        XCTAssertNotEqual(setting, WhisperTask.translateToEnglishSetting,
+                          "engine-native translate is retired — the text path owns translation")
     }
 
     /// No translate → the plain spoken language flows straight through to the engine,
@@ -97,17 +100,18 @@ final class FeatureMatrixE2ETests: XCTestCase {
         XCTAssertNotEqual(setting, WhisperTask.translateToEnglishSetting)
     }
 
-    /// The whole cross product in one table, so a rule change that breaks any cell
-    /// (translate-suppression for appleSpeech, sentinel for the rest) fails loudly.
+    /// The whole cross product in one table. The rule is now uniform: the engine
+    /// ALWAYS gets the plain spoken language, whatever the translate flag —
+    /// translation happens on the text afterwards. A cell regressing to the
+    /// retired sentinel fails loudly.
     func testEngineLanguageMatrixAcrossEnginesAndTranslateFlag() {
-        let sentinel = WhisperTask.translateToEnglishSetting
         let cases: [(engine: String, translate: Bool, language: String, expected: String)] = [
-            ("whisperKit", true,  "de",   sentinel),
+            ("whisperKit", true,  "de",   "de"),      // text path owns translate
             ("whisperKit", false, "de",   "de"),
-            ("whisperKit", true,  "auto", sentinel),
-            ("appleSpeech", true,  "de",   "de"),     // suppressed
+            ("whisperKit", true,  "auto", "auto"),    // text path owns translate
+            ("appleSpeech", true,  "de",   "de"),
             ("appleSpeech", false, "de",   "de"),
-            ("appleSpeech", true,  "auto", "auto"),   // suppressed
+            ("appleSpeech", true,  "auto", "auto"),
         ]
         for c in cases {
             XCTAssertEqual(
@@ -138,18 +142,20 @@ final class FeatureMatrixE2ETests: XCTestCase {
             "de")
     }
 
-    /// End-to-end: the two resolver derivations agree on the same rule. When
-    /// translating on a whisper engine, the engine is told "translate-en" AND the
-    /// cleaner is told "en" — the output-language derivation must never leak the
-    /// spoken locale that the engine derivation is hiding.
+    /// End-to-end: the two derivations describe the SPLIT the text path creates.
+    /// Translating on a whisper engine, the engine is told the spoken language
+    /// "ja" (it just transcribes) while the cleaner is told "en", because by the
+    /// time formatting runs the text HAS been translated. The cleaning language
+    /// must come from `TextTranslationPolicy` — the engine-capability-based
+    /// `LanguageResolver.outputLanguageForCleaning` is not the session rule.
     func testResolverDerivationsAgreeWhenTranslating() {
         let engineSetting = LanguageResolver.engineLanguageSetting(
             language: "ja", translateToEnglish: true, transcriptionEngine: "whisperKit")
-        let cleanLang = LanguageResolver.outputLanguageForCleaning(
-            language: "ja", translateToEnglish: true, transcriptionEngine: "whisperKit")
-        XCTAssertEqual(engineSetting, WhisperTask.translateToEnglishSetting)
-        XCTAssertEqual(cleanLang, "en")
-        XCTAssertNotEqual(cleanLang, "ja")
+        let cleanLang = TextTranslationPolicy.outputLanguageForCleaning(
+            language: "ja", translateToEnglish: true, transcriptionEngine: "whisperKit",
+            textTranslationAvailable: true)
+        XCTAssertEqual(engineSetting, "ja", "the engine transcribes in the spoken language")
+        XCTAssertEqual(cleanLang, "en", "the cleaner sees already-translated English text")
     }
 
     // MARK: - (2) Same fixture, different profiles → different behavior
@@ -229,18 +235,20 @@ final class FeatureMatrixE2ETests: XCTestCase {
 
     /// The translate profile and the plain-German profile are BOTH consistent from
     /// engine setting through to cleaned output for the same audio: translate →
-    /// engine sees the sentinel and the cleaner formats as English; German → engine
-    /// sees "de" and the cleaner skips English caps. One assertion chain covers the
-    /// whole multilingual seam on a single fixture.
+    /// the engine still transcribes "de" (the TEXT path translates afterwards) and
+    /// the cleaner formats as English; German → engine sees "de" and the cleaner
+    /// skips English caps. One assertion chain covers the whole multilingual seam
+    /// on a single fixture.
     func testTranslateVsGermanProfileConsistentEngineToOutput() throws {
         let transcript = "i wrote it down"
 
         // Translate profile.
         let tEngine = LanguageResolver.engineLanguageSetting(
             language: "de", translateToEnglish: true, transcriptionEngine: "whisperKit")
-        let tClean = LanguageResolver.outputLanguageForCleaning(
-            language: "de", translateToEnglish: true, transcriptionEngine: "whisperKit")
-        XCTAssertEqual(tEngine, WhisperTask.translateToEnglishSetting)
+        let tClean = TextTranslationPolicy.outputLanguageForCleaning(
+            language: "de", translateToEnglish: true, transcriptionEngine: "whisperKit",
+            textTranslationAvailable: true)
+        XCTAssertEqual(tEngine, "de", "the engine transcribes in the spoken language")
         var tCfg = TranscriptCleaner.Config.plain
         tCfg.language = tClean; tCfg.smartFormattingEnabled = true
         let tText = try driveCleaned(fixture: "plain_speech.wav", transcript: transcript, config: tCfg)
@@ -248,8 +256,9 @@ final class FeatureMatrixE2ETests: XCTestCase {
         // Plain German profile.
         let gEngine = LanguageResolver.engineLanguageSetting(
             language: "de", translateToEnglish: false, transcriptionEngine: "whisperKit")
-        let gClean = LanguageResolver.outputLanguageForCleaning(
-            language: "de", translateToEnglish: false, transcriptionEngine: "whisperKit")
+        let gClean = TextTranslationPolicy.outputLanguageForCleaning(
+            language: "de", translateToEnglish: false, transcriptionEngine: "whisperKit",
+            textTranslationAvailable: true)
         XCTAssertEqual(gEngine, "de")
         var gCfg = TranscriptCleaner.Config.plain
         gCfg.language = gClean; gCfg.smartFormattingEnabled = true

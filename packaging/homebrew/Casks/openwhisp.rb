@@ -17,7 +17,7 @@ cask "openwhisp" do
   # OpenWhisp updates itself in-app via Sparkle (EdDSA-signed appcast), so Homebrew
   # should not try to manage upgrades or flag the cask as outdated.
   auto_updates true
-  depends_on macos: :sonoma # LSMinimumSystemVersion is 14.0
+  depends_on macos: :sequoia # LSMinimumSystemVersion is 15.0
 
   app "OpenWhisp.app"
 

@@ -196,8 +196,8 @@ struct StreamOverlayPane: View {
     /// on-device Translation framework (macOS 15+) into the chosen language
     /// before it is shown. Live partials stay in the spoken language (they
     /// change too fast to be worth a round trip), and a failed translation
-    /// shows the original line — captions are never dropped. On macOS 14 the
-    /// controls are replaced by an availability note.
+    /// shows the original line — captions are never dropped. If the framework
+    /// is unavailable, the controls are replaced by an availability note.
     private var translationSection: some View {
         Section {
             if AppleTextTranslation.isSupported {

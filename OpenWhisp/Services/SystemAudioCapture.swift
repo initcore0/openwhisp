@@ -11,10 +11,11 @@ import CoreMedia
 /// ## Why ScreenCaptureKit / min-OS
 /// `SCStreamConfiguration.capturesAudio` + `excludesCurrentProcessAudio` are
 /// macOS 13.0+ (verified in the local SDK header `SCStream.h`). The app targets
-/// macOS 14.0 (Info.plist `LSMinimumSystemVersion`), so audio-only SCK capture is
+/// macOS 15.0 (Info.plist `LSMinimumSystemVersion`), so audio-only SCK capture is
 /// always available. NOTE: SCK's *microphone* output type (`SCStreamOutputType
-/// .microphone`) is 15.0+, so we do NOT use it — the mic leg is a separate
-/// AVAudioEngine tap (see `MeetingMicCapture`) to keep the 14.0 floor.
+/// .microphone`) is 15.0+ and now within the floor, but we still do NOT use it —
+/// the mic leg stays a separate AVAudioEngine tap (see `MeetingMicCapture`),
+/// which is the shape the rest of the capture stack is built around.
 ///
 /// SCK requires a stream even for audio-only capture; we attach the smallest
 /// legal video config (1×1, a slow frame interval) to a display filter and only

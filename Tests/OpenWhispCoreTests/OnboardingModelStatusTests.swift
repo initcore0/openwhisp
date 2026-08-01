@@ -36,6 +36,63 @@ final class OnboardingModelStatusTests: XCTestCase {
         )
     }
 
+    // MARK: - Fresh install provisions PARAKEET ONLY (MAK-93)
+
+    /// A fresh install shows ONE download — the selected (default) engine's.
+    /// AppState's launch used to also fire an unconditional whisper.cpp
+    /// `ensureModelExists()`, so a new Mac fetched a GGML `.bin` for an engine
+    /// the user never chose, on top of the Parakeet model. That call is gone;
+    /// provisioning routes through the engine-aware `ensureSelectedEngineModel()`.
+    ///
+    /// The pure half of that guarantee, pinned here: with the Parakeet default
+    /// selected, the step's state is driven ONLY by the Parakeet signals — the
+    /// whisper.cpp and WhisperKit inputs cannot move it. If a stray whisper
+    /// download ever gets kicked off again, it cannot masquerade as onboarding
+    /// progress, and "ready" still means the Parakeet model specifically.
+    func testFreshInstallDefaultEngineIgnoresWhisperFamilySignals() {
+        // Every combination of whisper.cpp / WhisperKit noise, including a
+        // full-blown in-flight download and a failure, on a fresh (nothing
+        // installed) Parakeet default.
+        for whisperCppDownloading in [true, false] {
+            for whisperKitDownloading in [true, false] {
+                for failed in [true, false] {
+                    XCTAssertEqual(
+                        status(engine: "parakeet",
+                               parakeetInFlight: true,
+                               whisperCppDownloading: whisperCppDownloading,
+                               whisperCppProgress: 0.5,
+                               whisperCppFailed: failed,
+                               whisperKitStaged: true,
+                               whisperKitDownloading: whisperKitDownloading,
+                               whisperKitProgress: 0.5,
+                               whisperKitFailed: failed),
+                        .downloading(progress: nil),
+                        "Parakeet progress must not be reported via whisper-family signals")
+                    // ...and readiness means PARAKEET is on disk, never a staged
+                    // WhisperKit model.
+                    XCTAssertEqual(
+                        status(engine: "parakeet",
+                               parakeetInstalled: true,
+                               whisperCppDownloading: whisperCppDownloading,
+                               whisperCppFailed: failed,
+                               whisperKitStaged: true,
+                               whisperKitDownloading: whisperKitDownloading,
+                               whisperKitFailed: failed),
+                        .ready)
+                }
+            }
+        }
+    }
+
+    /// A staged WhisperKit model is NOT a substitute for the selected engine's:
+    /// with Parakeet selected and nothing Parakeet-side on disk, onboarding must
+    /// still report a download rather than a false "ready".
+    func testStagedWhisperKitModelDoesNotSatisfyParakeetDefault() {
+        XCTAssertEqual(
+            status(engine: "parakeet", whisperKitStaged: true),
+            .downloading(progress: nil))
+    }
+
     // MARK: - Parakeet (the default)
 
     func testParakeetInstalledIsReady() {

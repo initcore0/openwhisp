@@ -29,7 +29,7 @@ public enum EngineCapabilities {
     /// (MAK-59). ASR-only (no translate), auto-punctuating, ~2× faster than
     /// Whisper on the file path. Distinct from `appleSpeech` (the legacy
     /// SFSpeechRecognizer engine): SpeechAnalyzer is a separate framework API,
-    /// hidden entirely on macOS 14/15 where the symbols don't exist.
+    /// hidden entirely on macOS 15 where the symbols don't exist.
     public static let speechAnalyzer = "speechAnalyzer"
 
     /// Every engine id the app can be set to, in a stable display order. The
@@ -148,10 +148,13 @@ public enum EngineCapabilities {
     ///     batch only (`.batchOnly`, MAK-71): rescoring needs the full log-prob
     ///     matrix over complete audio, and FluidAudio documents weak streaming
     ///     support. Streaming partials yes; word timestamps yes. Language coverage
-    ///     is per-variant, and the multilingual variant is the app default, so the
-    ///     coarse table declares `.multilingual`; the English-only variants are
-    ///     refused at start-time by `ParakeetLanguageGate` (which has the variant
-    ///     in hand). NB: FluidAudio's own `CustomVocabulary.md` documents a
+    ///     is per-variant: a multilingual variant EXISTS and is user-selectable,
+    ///     but the app default (`ParakeetCatalog.defaultVariantID` =
+    ///     `parakeet-unified-320ms`) is **English-only**. This coarse table rates
+    ///     the ENGINE's capability, not the default variant's, hence
+    ///     `.multilingual`; the real per-session gate is `ParakeetLanguageGate`,
+    ///     which has the variant in hand and refuses a non-English language on an
+    ///     English-only variant at start-time. NB: FluidAudio's own `CustomVocabulary.md` documents a
     ///     `transcribe(_:customVocabulary:)` call that **does not exist** — read
     ///     the source, not the doc.
     ///   - **appleSpeech** — ASR-only. Biases via

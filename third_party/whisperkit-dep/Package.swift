@@ -1,4 +1,7 @@
-// swift-tools-version:5.9
+// swift-tools-version:6.0
+// (6.0 is required for `.macOS(.v15)` — `.v15` is only available in
+// PackageDescription 6.0+. The repo's toolchain floor is already Xcode 16 /
+// Swift 6 tools, so this costs nothing; see CLAUDE.md.)
 import PackageDescription
 
 // Helper package whose ONLY purpose is to resolve + build WhisperKit so the
@@ -7,7 +10,7 @@ import PackageDescription
 // WhisperKit module + static libs under .build. See docs/WHISPERKIT_PILOT.md.
 let package = Package(
     name: "WhisperKitDep",
-    platforms: [.macOS(.v14)],
+    platforms: [.macOS(.v15)],
     products: [
         .library(name: "WhisperKitDep", type: .static, targets: ["WhisperKitDep"])
     ],

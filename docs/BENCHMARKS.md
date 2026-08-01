@@ -18,9 +18,15 @@ where latency matters.**
   dictation* feel realtime (0.32 s partial latency, see below); its batch/file
   path keeps utterance-onset words and covers 25 European languages. The default
   transcription engine on a fresh install (`docs/PARAKEET.md`).
-- **WhisperKit (OpenAI Whisper, CoreML/ANE)** — the broadest language coverage
-  and the translate task; heavier per-file cost, model chosen by the user
-  (tiny…large-v3-turbo).
+- **WhisperKit (OpenAI Whisper, CoreML/ANE)** — nominally the broadest language
+  coverage; heavier per-file cost, model chosen by the user
+  (tiny…large-v3-turbo). **Legacy/de-recommended.** Three caveats on that
+  coverage claim: (1) it is **unmeasured here** — every fixture on this page is
+  English, so nothing below tests any other language; (2) the app's language
+  picker caps *every* engine at 12 languages + auto, so the extra coverage is
+  not reachable from the UI; (3) the translate task it used to own is **no
+  longer an engine feature at all** — translation runs on the Apple Translation
+  *text* path for every engine, so it is not a WhisperKit differentiator.
 
 This page measures **file-transcription speed and accuracy only.** Streaming
 latency — the number that actually decides the dictation feel — needs a live-mic
@@ -132,7 +138,7 @@ reference words; the empty silence reference contributes 0 edits / 0 words):
 | Engine | Model / variant | Mean × realtime | Aggregate WER | Notes |
 |---|---|---:|---:|---|
 | SpeechAnalyzer | SpeechTranscriber (system) | 22.44x | 16.7% | no bundled model to download; clean auto-punctuation; only engine that returns true empty on silence |
-| WhisperKit | openai_whisper-small | 6.62x | 22.2% | broadest languages + translate; heavier per file; raw output emits `[BLANK_AUDIO]` on silence (the app's TranscriptCleaner strips it — the 100% silence WER is that raw marker, not a real error) |
+| WhisperKit | openai_whisper-small | 6.62x | 22.2% | legacy; nominally broadest languages, but **unmeasured** (all fixtures are English) and the UI caps every engine at 12 languages — and translate is now engine-independent (text path), not a WhisperKit feature; heavier per file; raw output emits `[BLANK_AUDIO]` on silence (the app's TranscriptCleaner strips it — the 100% silence WER is that raw marker, not a real error) |
 | Parakeet | TDT v3 (batch/file) | 27.38x | 22.2% | fastest file throughput of the three; keeps utterance-onset words ("The …"); 25 European languages; first run downloads ~600 MB; hallucinates "Thank you." on pure silence (see below) |
 
 Reading the numbers honestly:

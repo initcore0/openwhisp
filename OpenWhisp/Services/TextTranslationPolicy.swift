@@ -3,33 +3,36 @@ import Foundation
 /// Should a dictation session translate its final TEXT — on-device, after the
 /// ASR engine produced it?
 ///
-/// The text path exists for one gap in the capability matrix: a user who wants
-/// "Translate to English" while dictating with a fast streaming engine that
-/// cannot itself translate (Parakeet, Apple Speech, SpeechAnalyzer — ASR-only,
-/// see `EngineCapabilities.translation`). Historically that combination silently
-/// gated translation OFF (`LanguageResolver.effectiveTranslateToEnglish` returns
-/// false there). The text path recovers it WITHOUT a second ASR runtime (the
-/// mistake of the retired dual-runtime approach, PR #219): the engine keeps
-/// driving the live preview in the spoken language, and the session's FINAL
-/// transcript is translated as text (Apple's Translation framework, macOS 15+)
-/// before it is pasted. No audio tap, so it works identically for every
-/// streaming engine.
+/// **The text path owns translation for EVERY engine.** It started as a patch
+/// for one gap in the capability matrix — a user who wanted "Translate to
+/// English" on a fast streaming engine that cannot itself translate (Parakeet,
+/// Apple Speech, SpeechAnalyzer — ASR-only, see `EngineCapabilities.translation`)
+/// — and then, with the macOS floor at 15, became the single implementation:
+/// every engine transcribes in the spoken language and the session's FINAL
+/// transcript is translated as text (Apple's Translation framework) before it is
+/// pasted. No audio tap and no second ASR runtime (the mistake of the retired
+/// dual-runtime approach, PR #219), so it behaves identically everywhere.
+///
+/// The whisper family's native speech→English translate task is consequently
+/// **retired (dormant)**: `LanguageResolver.engineLanguageSetting` no longer
+/// emits the `WhisperTask.translateToEnglishSetting` sentinel, so nothing
+/// reaches it. `WhisperTask` / `WhisperKitTaskMapper` still compile and are
+/// still unit-tested — the mapping is correct, merely unreachable — which keeps
+/// re-arming it a one-line change rather than an archaeology project. The old
+/// "the two paths are exact complements" contract is therefore GONE: there is
+/// one path, and asking the engine whether it could translate is no longer part
+/// of the session decision.
 ///
 /// This is the single, pure, unit-tested predicate that decides whether to arm
-/// that path — a capability question, never an engine-name check at the call
-/// site (the rule this repo keeps re-learning):
+/// it — a capability question about the OS, never an engine-name check at the
+/// call site (the rule this repo keeps re-learning):
 ///
 ///   1. the user asked to translate (`translateToEnglish`),
 ///   2. the OS has an on-device text translator (`textTranslationAvailable` —
-///      macOS 15+; the app itself still runs on macOS 14, where the feature is
-///      simply unavailable),
+///      macOS 15+, i.e. the whole supported floor; the flag stays as cheap
+///      belt-and-braces rather than a real branch in the product),
 ///   3. the spoken language is NOT already English (en→en is a no-op; "auto"
-///      qualifies — the speaker may be dictating a non-English language),
-///   4. the active engine CANNOT translate natively — otherwise the normal
-///      engine-level translate path already owns it. Deliberately the same
-///      predicate the engine-level path arms on
-///      (`LanguageResolver.supportsTranslation`), so the two paths are exact
-///      complements: no session ever translates twice or falls in the gap.
+///      qualifies — the speaker may be dictating a non-English language).
 ///
 /// **The fallback is always "leave the text untranslated", never "lose text":**
 /// when the translator fails or times out, the caller pastes the ORIGINAL
@@ -37,61 +40,55 @@ import Foundation
 public enum TextTranslationPolicy {
 
     /// Whether the text-translation path should run on this session's final
-    /// transcript.
+    /// transcript. Engine-independent: the engine's own translate capability is
+    /// deliberately NOT consulted (see the type comment — the text path owns
+    /// every engine now).
     public static func shouldTranslateFinal(
         translateToEnglish: Bool,
         language: String,
-        transcriptionEngine: String,
+        transcriptionEngine _: String,
         textTranslationAvailable: Bool
     ) -> Bool {
         guard translateToEnglish, textTranslationAvailable else { return false }
         // English source → nothing to translate. "auto" is not English.
-        if isEnglish(language) { return false }
-        // The engine translates itself → the engine-level path owns it.
-        if LanguageResolver.supportsTranslation(transcriptionEngine: transcriptionEngine) {
-            return false
-        }
-        return true
+        return !isEnglish(language)
     }
 
-    /// Whether the UI should OFFER "Translate to English" for this engine at
-    /// all: either the engine translates natively (whisper family) or the text
-    /// path can cover it (macOS 15+). The single gate for every offer surface
-    /// (menu bar, Dictation pane) so they can never disagree — a past bug was
-    /// exactly those two surfaces drifting apart.
+    /// Whether the UI should OFFER "Translate to English" at all. Now purely an
+    /// OS question — the text path covers every engine — so the offer is on
+    /// wherever the on-device translator exists (macOS 15+, the whole supported
+    /// floor). The single gate for every offer surface (menu bar, Dictation
+    /// pane) so they can never disagree — a past bug was exactly those two
+    /// surfaces drifting apart.
     public static func translationOffered(
-        transcriptionEngine: String,
+        transcriptionEngine _: String,
         textTranslationAvailable: Bool
     ) -> Bool {
-        LanguageResolver.supportsTranslation(transcriptionEngine: transcriptionEngine)
-            || textTranslationAvailable
+        textTranslationAvailable
     }
 
-    /// The translate intent actually IN EFFECT for a session, counting BOTH
-    /// paths: the engine-level translate (whisper family) and the text path.
+    /// The translate intent actually IN EFFECT for a session. With translation
+    /// unified on the text path this is exactly `shouldTranslateFinal` — the
+    /// engine-native disjunct is gone because that path is unreachable.
     /// Downstream consumers that describe the session's OUTPUT — refine prompts,
-    /// `RefineOutputGuard.expectedCleanupScript` — must key on this, not on
-    /// `LanguageResolver.effectiveTranslateToEnglish` alone: when the text path
-    /// arms, the final transcript the refine layer sees IS English.
+    /// `RefineOutputGuard.expectedCleanupScript` — must key on this, never on
+    /// the raw stored toggle: when the text path does not arm (English source,
+    /// or no translator), the transcript stays in the spoken language.
     public static func effectiveTranslateToEnglish(
         translateToEnglish: Bool,
         language: String,
         transcriptionEngine: String,
         textTranslationAvailable: Bool
     ) -> Bool {
-        LanguageResolver.effectiveTranslateToEnglish(
+        shouldTranslateFinal(
             translateToEnglish: translateToEnglish,
-            transcriptionEngine: transcriptionEngine)
-            || shouldTranslateFinal(
-                translateToEnglish: translateToEnglish,
-                language: language,
-                transcriptionEngine: transcriptionEngine,
-                textTranslationAvailable: textTranslationAvailable)
+            language: language,
+            transcriptionEngine: transcriptionEngine,
+            textTranslationAvailable: textTranslationAvailable)
     }
 
-    /// Language of the OUTPUT text for formatting rules — the text-path-aware
-    /// superset of `LanguageResolver.outputLanguageForCleaning`: English when
-    /// either translate path is in effect, else the spoken language.
+    /// Language of the OUTPUT text for formatting rules: English when the
+    /// translate path is in effect, else the spoken language.
     public static func outputLanguageForCleaning(
         language: String,
         translateToEnglish: Bool,
