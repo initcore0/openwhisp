@@ -113,12 +113,16 @@ enum MemeRenderer {
 
         // The classic look is a black OUTLINE around white glyphs. A negative
         // `.strokeWidth` tells AppKit to stroke AND fill (a positive value strokes
-        // only, which would render hollow letters).
+        // only, which would render hollow letters). CRUCIALLY the value is a
+        // PERCENTAGE of the font size, not points — scaling it by the font size
+        // double-scaled it to ~12%, thick enough that neighboring glyphs' black
+        // outlines swallowed each other's white interiors (the unreadable-blob
+        // bug). ~4% is the classic meme outline weight at any size.
         let attributes: [NSAttributedString.Key: Any] = [
             .font: font,
             .foregroundColor: NSColor.white,
             .strokeColor: NSColor.black,
-            .strokeWidth: -CGFloat(fit.fontSize) * 0.14,
+            .strokeWidth: -4.0,
             .paragraphStyle: style,
         ]
 
