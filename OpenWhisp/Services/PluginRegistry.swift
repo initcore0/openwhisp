@@ -39,12 +39,16 @@ public enum PluginRegistry {
     public static let memeGenerator = PluginManifest(
         id: "meme-generator",
         name: "Meme Generator",
-        version: "0.1.0",
+        version: "0.3.0",
         summary: "Dictate a meme description — the AI picks a template and writes the captions.",
         symbol: "photo.badge.plus",
         entry: .builtIn,
-        // Template images are downloaded from imgflip's public, key-less catalog.
-        // Captions are rendered locally, so no text ever leaves the Mac.
-        networkHosts: ["api.imgflip.com", "i.imgflip.com"]
+        // Template images are downloaded from two public, key-less catalogs. Captions
+        // are rendered LOCALLY, so no text ever leaves the Mac — note memegen.link
+        // also offers server-side captioning by URL and this plugin deliberately does
+        // not use it. Templates the user imports themselves need no network at all.
+        networkHosts: [
+            "api.imgflip.com", "i.imgflip.com", "api.memegen.link",
+        ]
     )
 }

@@ -318,4 +318,15 @@ final class PluginSystemTests: XCTestCase {
         XCTAssertNotNil(PluginRegistry.memeGenerator.networkDisclosure)
         XCTAssertTrue(PluginRegistry.memeGenerator.networkHosts.contains("api.imgflip.com"))
     }
+
+    /// v3 added a SECOND template provider, so the disclosure had to grow with it.
+    /// A plugin that quietly contacts a host it never declared is precisely the
+    /// failure the `networkHosts` label exists to prevent, and the pane renders this
+    /// list verbatim — so the new host is pinned rather than left to review.
+    func testMemeGeneratorDeclaresTheMemegenProviderItAdded() {
+        XCTAssertTrue(PluginRegistry.memeGenerator.networkHosts.contains("api.memegen.link"))
+        XCTAssertEqual(
+            PluginRegistry.memeGenerator.networkDisclosure,
+            "Connects to api.imgflip.com, i.imgflip.com, api.memegen.link when you use it.")
+    }
 }

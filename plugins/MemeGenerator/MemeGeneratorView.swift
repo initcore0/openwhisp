@@ -1,23 +1,36 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
-/// The Meme Generator plugin's window content (spike).
+/// The Meme Generator plugin's window content (spike v3).
 ///
 /// Voice-first by construction: the description field is the first responder when the
 /// window opens, so pressing the dictation hotkey and speaking lands the words here
-/// with no typing and no clicking. "As fast as possible" is the whole point.
+/// with no typing and no clicking.
 ///
-/// ## v2 — "AI makes its best guess, human makes it perfect"
+/// ## v3 layout — toward the imgflip.com editor shape
 ///
-/// Three surfaces sit between the model's answer and the finished meme:
+/// The owner asked for the familiar meme-editor arrangement, and for everything local
+/// to feel instant. The window is now three columns:
 ///
-/// * **The candidate strip** — the model's ranked template picks as thumbnails. The
-///   best one auto-renders; clicking another re-renders the SAME captions onto it.
-/// * **Browse all** — a searchable grid of the whole corpus, so the user can override
-///   the model entirely. This is the honest answer when the corpus doesn't contain
-///   what they asked for.
-/// * **The editor** — every caption is a draggable box over the preview, with text,
-///   size and font controls in a side panel.
+/// ```
+/// ┌──────────────┬─────────────────────────┬──────────────┐
+/// │ TEMPLATES    │        CANVAS           │  TEXT BOXES  │
+/// │ search +     │   (the rendered meme,   │  add/delete, │
+/// │ browse grid  │    drag the captions)   │  text, size, │
+/// │ + import     │                         │  width, font │
+/// └──────────────┴─────────────────────────┴──────────────┘
+/// ```
+///
+/// * **Left** — template search and browse are PROMINENT rather than behind a sheet,
+///   because picking the template is the decision the corpus expansion exists to
+///   serve. Import lives here too (button, drag-drop, or ⌘V).
+/// * **Center** — the canvas, with the description and Generate above it.
+/// * **Right** — per-box controls, with **Add text always visible** (feedback #4:
+///   deleting the last box used to remove the only way to add one back).
+///
+/// Nothing local shows a spinner: switching templates, editing text, dragging a box,
+/// and searching are all synchronous re-renders.
 struct MemeGeneratorView: View {
 
     @ObservedObject var model: MemeGeneratorModel
@@ -25,46 +38,156 @@ struct MemeGeneratorView: View {
     /// Focuses the description editor on open so a dictation lands immediately.
     @FocusState private var descriptionFocused: Bool
 
-    /// Whether the Browse-all grid is showing.
-    @State private var isBrowsing = false
+    /// True while a drag of image files is hovering the template column.
+    @State private var isDropTargeted = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            header
-            descriptionEditor
-            controls
-            if !model.status.isEmpty { statusLine }
-            if !model.candidates.isEmpty { candidateStrip }
+        HSplitView {
+            templateColumn
+                .frame(minWidth: 240, idealWidth: 280, maxWidth: 380)
 
-            HStack(alignment: .top, spacing: 12) {
-                preview
-                if !model.boxes.isEmpty { editorPanel }
+            VStack(alignment: .leading, spacing: 10) {
+                descriptionEditor
+                controls
+                statusLine
+                if !model.candidates.isEmpty { candidateStrip }
+                canvas
+            }
+            .padding(12)
+            .frame(minWidth: 380)
+
+            editorPanel
+                .frame(minWidth: 230, idealWidth: 250, maxWidth: 320)
+        }
+        .frame(minWidth: 980, minHeight: 660)
+        .onAppear { descriptionFocused = true }
+    }
+
+    // MARK: - Left column: templates
+
+    private var templateColumn: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Templates").font(.headline)
+                Spacer()
+                Menu {
+                    Button("Import images…") { importViaPanel() }
+                    Button("Paste image") { model.importFromPasteboard() }
+                    Divider()
+                    Button("Show library in Finder") { revealLibrary() }
+                } label: {
+                    Label("Import", systemImage: "plus.rectangle.on.folder")
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                .help("Add your own image as a template")
+            }
+
+            TextField("Search all templates", text: $model.searchText)
+                .textFieldStyle(.roundedBorder)
+
+            // The corpus is the feature — say how big it is and where it came from.
+            HStack(spacing: 4) {
+                Text(model.catalog.isEmpty
+                     ? "No templates loaded."
+                     : "\(model.searchResults.count) of \(model.catalog.count) templates")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                if model.catalogFailed {
+                    Button("Retry") { model.openCatalog(forceRefresh: true) }
+                        .buttonStyle(.link)
+                        .font(.caption)
+                }
+            }
+
+            templateGrid
+        }
+        .padding(12)
+        .background(isDropTargeted ? Color.accentColor.opacity(0.12) : Color.clear)
+        .overlay {
+            if isDropTargeted {
+                RoundedRectangle(cornerRadius: 8)
+                    .strokeBorder(Color.accentColor, style: StrokeStyle(lineWidth: 2, dash: [6, 4]))
+                    .padding(4)
             }
         }
-        .padding(16)
-        .frame(minWidth: 760, minHeight: 640)
-        .onAppear { descriptionFocused = true }
-        .sheet(isPresented: $isBrowsing) {
-            BrowseAllSheet(model: model, isPresented: $isBrowsing)
+        // Drag any image file onto the column to make it a template. The most direct
+        // path from "I have a meme picture" to "it's in my corpus".
+        .onDrop(of: [.fileURL], isTargeted: $isDropTargeted) { providers in
+            handleDrop(providers)
         }
     }
 
-    private var header: some View {
-        HStack(spacing: 8) {
-            Image(systemName: PluginRegistry.memeGenerator.symbol)
-                .foregroundStyle(.secondary)
-            Text("Describe the meme out loud — the model proposes templates and writes the captions. Then edit anything.")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+    @ViewBuilder
+    private var templateGrid: some View {
+        let columns = [GridItem(.adaptive(minimum: 104), spacing: 8)]
+
+        if model.catalog.isEmpty {
+            emptyTemplatesHint
+        } else if model.searchResults.isEmpty {
+            // The honest no-match state, unchanged from v2: never a substitution.
+            VStack(spacing: 6) {
+                Image(systemName: "magnifyingglass")
+                    .font(.title).foregroundStyle(.tertiary)
+                Text("No template matches \"\(model.searchText)\".")
+                    .font(.caption)
+                    .multilineTextAlignment(.center)
+                    .foregroundStyle(.secondary)
+                Text("Import your own image to add it to the corpus.")
+                    .font(.caption2)
+                    .multilineTextAlignment(.center)
+                    .foregroundStyle(.tertiary)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            ScrollView {
+                LazyVGrid(columns: columns, spacing: 8) {
+                    ForEach(model.searchResults) { template in
+                        TemplateThumbnail(
+                            template: template,
+                            isSelected: template.id == model.selectedTemplate?.id,
+                            width: 104)
+                        .onTapGesture { model.select(template: template) }
+                        .contextMenu {
+                            if template.source == .userLibrary {
+                                Button("Delete from my library", role: .destructive) {
+                                    model.deleteUserTemplate(template)
+                                }
+                            }
+                        }
+                    }
+                }
+                .padding(.vertical, 2)
+            }
         }
     }
+
+    private var emptyTemplatesHint: some View {
+        VStack(spacing: 8) {
+            Image(systemName: "photo.on.rectangle.angled")
+                .font(.largeTitle).foregroundStyle(.tertiary)
+            Text(model.catalogFailed
+                 ? "Couldn't reach the template services."
+                 : "Loading templates…")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text("Drag an image here, or use Import — your own templates work offline.")
+                .font(.caption2)
+                .multilineTextAlignment(.center)
+                .foregroundStyle(.tertiary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(.horizontal, 8)
+    }
+
+    // MARK: - Center column
 
     private var descriptionEditor: some View {
         VStack(alignment: .leading, spacing: 4) {
             TextEditor(text: $model.description)
                 .font(.body)
-                .frame(minHeight: 54, maxHeight: 80)
+                .frame(minHeight: 50, maxHeight: 72)
                 .overlay(
                     RoundedRectangle(cornerRadius: 6)
                         .stroke(Color.secondary.opacity(0.3)))
@@ -72,7 +195,7 @@ struct MemeGeneratorView: View {
                 .overlay(alignment: .topLeading) {
                     // TextEditor has no placeholder; this is the standard workaround.
                     if model.description.isEmpty {
-                        Text("e.g. \"distracted boyfriend, but he's looking at Rust and his girlfriend is Python\"")
+                        Text("Describe the meme out loud — dictate into this window.")
                             .font(.body)
                             .foregroundStyle(.tertiary)
                             .padding(.top, 8)
@@ -80,10 +203,6 @@ struct MemeGeneratorView: View {
                             .allowsHitTesting(false)
                     }
                 }
-
-            Text("Dictate into this window and your words land here.")
-                .font(.caption)
-                .foregroundStyle(.tertiary)
         }
     }
 
@@ -92,23 +211,18 @@ struct MemeGeneratorView: View {
             Button {
                 model.generate()
             } label: {
-                Label(model.isBusy ? "Generating…" : "Generate",
-                      systemImage: "wand.and.stars")
+                Label(model.isBusy ? "Generating…" : "Generate", systemImage: "wand.and.stars")
             }
             .keyboardShortcut(.return, modifiers: .command)
             .disabled(!model.canGenerate)
+            .help(model.generateBlockedReason ?? "Ask the model for templates and captions")
 
+            // The escape hatch v2 lacked entirely. Only shown while something is
+            // actually in flight, so it never reads as a dead control.
             if model.isBusy {
                 ProgressView().controlSize(.small)
-            }
-
-            // Always available (it loads the catalog on demand), so the user is never
-            // stuck with the model's idea of which templates exist.
-            Button {
-                model.loadCatalogIfNeeded()
-                isBrowsing = true
-            } label: {
-                Label("Browse all…", systemImage: "square.grid.2x2")
+                Button("Cancel") { model.cancelGeneration() }
+                    .keyboardShortcut(.cancelAction)
             }
 
             Spacer()
@@ -129,28 +243,31 @@ struct MemeGeneratorView: View {
         }
     }
 
+    @ViewBuilder
     private var statusLine: some View {
-        HStack(alignment: .top, spacing: 6) {
-            // A fallback is called out with a symbol as well as words — the owner's
-            // complaint was that the substitution was invisible.
-            if model.didFallBack {
-                Image(systemName: "exclamationmark.triangle")
-                    .foregroundStyle(.orange)
+        if !model.status.isEmpty {
+            HStack(alignment: .top, spacing: 6) {
+                // A fallback is called out with a symbol as well as words — the
+                // owner's complaint was that the substitution was invisible.
+                if model.didFallBack || model.catalogFailed {
+                    Image(systemName: "exclamationmark.triangle")
+                        .foregroundStyle(.orange)
+                }
+                Text(model.status)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer()
             }
-            Text(model.status)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
-    // MARK: - Candidate strip
-
-    /// The model's ranked picks. Clicking one re-renders the same captions onto it.
+    /// The model's ranked picks. Clicking one re-renders the same captions onto it —
+    /// instantly, and even while a generation is still running.
     private var candidateStrip: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(model.candidatesAreFallback
-                 ? "Nothing in the corpus matched — closest and most popular instead:"
+                 ? "Nothing matched — closest and most popular instead:"
                  : "The model's picks, best first:")
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -161,7 +278,7 @@ struct MemeGeneratorView: View {
                         TemplateThumbnail(
                             template: template,
                             isSelected: template.id == model.selectedTemplate?.id,
-                            width: 96)
+                            width: 88)
                         .onTapGesture { model.select(template: template) }
                     }
                 }
@@ -170,19 +287,15 @@ struct MemeGeneratorView: View {
         }
     }
 
-    // MARK: - Preview + editor overlay
-
     @ViewBuilder
-    private var preview: some View {
+    private var canvas: some View {
         if let meme = model.meme {
             // The base image is the RENDERED meme (captions already burned in by the
             // same code path the export uses, so this is genuinely WYSIWYG). The
             // overlaid boxes are invisible drag handles positioned by the same
-            // normalized coordinates, which is why a handle always sits exactly on
-            // the text it moves.
+            // normalized coordinates.
             GeometryReader { geo in
-                let fitted = Self.fittedRect(
-                    imageSize: meme.size, in: geo.size)
+                let fitted = Self.fittedRect(imageSize: meme.size, in: geo.size)
 
                 ZStack(alignment: .topLeading) {
                     Image(nsImage: meme)
@@ -211,9 +324,11 @@ struct MemeGeneratorView: View {
                         Image(systemName: "photo")
                             .font(.largeTitle)
                             .foregroundStyle(.tertiary)
-                        Text("Your meme will appear here.")
+                        Text("Pick a template on the left, or describe a meme and press Generate.")
                             .font(.callout)
+                            .multilineTextAlignment(.center)
                             .foregroundStyle(.tertiary)
+                            .padding(.horizontal, 24)
                     })
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
@@ -237,39 +352,98 @@ struct MemeGeneratorView: View {
             width: size.width, height: size.height)
     }
 
-    // MARK: - Editor side panel
+    // MARK: - Right column: the box editor
 
     private var editorPanel: some View {
         VStack(alignment: .leading, spacing: 10) {
+            // "Add text" is ALWAYS here — outside every conditional. v2 rendered this
+            // whole panel only when `boxes` was non-empty, so deleting the last box
+            // removed the only control that could add one back (feedback #4).
             HStack {
                 Text("Text boxes").font(.headline)
                 Spacer()
                 Button {
                     model.addBox()
                 } label: {
-                    Image(systemName: "plus")
+                    Label("Add text", systemImage: "plus")
                 }
-                .help("Add a text box")
+                .help("Add a caption box")
             }
 
-            // The box list doubles as the selector for the controls below.
-            ForEach(model.boxes) { box in
-                BoxRow(model: model, box: box)
-            }
-
-            Divider()
-
-            if let selected = model.selectedBox {
-                BoxControls(model: model, box: selected)
+            if model.boxes.isEmpty {
+                VStack(spacing: 6) {
+                    Image(systemName: "textformat")
+                        .font(.title).foregroundStyle(.tertiary)
+                    Text("No caption boxes.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Text("Press Add text to put a caption on the meme.")
+                        .font(.caption2)
+                        .multilineTextAlignment(.center)
+                        .foregroundStyle(.tertiary)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 12)
             } else {
-                Text("Select a text box to edit it.")
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
+                ForEach(model.boxes) { box in
+                    BoxRow(model: model, box: box)
+                }
+
+                Divider()
+
+                if let selected = model.selectedBox {
+                    BoxControls(model: model, box: selected)
+                } else {
+                    Text("Select a text box to edit it.")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                }
             }
 
             Spacer()
         }
-        .frame(width: 240)
+        .padding(12)
+    }
+
+    // MARK: - Import
+
+    private func importViaPanel() {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = false
+        panel.allowedContentTypes = [.png, .jpeg, .gif, .heic, .tiff, .bmp, .webP]
+        panel.message = "Choose images to add as meme templates."
+        guard panel.runModal() == .OK else { return }
+        model.importTemplates(from: panel.urls)
+    }
+
+    private func handleDrop(_ providers: [NSItemProvider]) -> Bool {
+        // Resolve every provider, then import once: importing per-callback would
+        // reload the library N times and race the status line.
+        let group = DispatchGroup()
+        var urls: [URL] = []
+        let lock = NSLock()
+
+        for provider in providers {
+            group.enter()
+            _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                if let url, MemeUserLibrary.isAcceptedImage(fileName: url.lastPathComponent) {
+                    lock.lock(); urls.append(url); lock.unlock()
+                }
+                group.leave()
+            }
+        }
+
+        group.notify(queue: .main) {
+            guard !urls.isEmpty else { return }
+            model.importTemplates(from: urls)
+        }
+        return true
+    }
+
+    private func revealLibrary() {
+        let directory = MemeLibraryStore.templatesDirectory
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        NSWorkspace.shared.activateFileViewerSelecting([directory])
     }
 
     /// Share the rendered PNG through the system picker. Writes to a temp file first
@@ -296,8 +470,7 @@ struct MemeGeneratorView: View {
 /// Deliberately NOT a second copy of the text: drawing the caption again in SwiftUI
 /// would mean two renderers to keep in agreement, and they would drift (different
 /// wrapping, different outline). Instead the burned-in render IS the visual, and this
-/// is a positioned outline the user grabs. The tradeoff is that the handle is a
-/// rectangle rather than glyph-tight, which is fine at spike quality.
+/// is a positioned outline the user grabs.
 private struct DragHandle: View {
 
     @ObservedObject var model: MemeGeneratorModel
@@ -311,8 +484,6 @@ private struct DragHandle: View {
     @State private var dragOffset: CGSize = .zero
 
     var body: some View {
-        // Height comes from the same lineHeightRatio the renderer uses; the handle is
-        // sized for a single line, which is enough to grab. Width follows the box.
         let width = canvas.width * box.widthShare
         let height = max(24, canvas.height * box.fontSizeShare * MemeCaptionLayout.lineHeightRatio)
         let x = canvas.minX + canvas.width * box.centerX + dragOffset.width
@@ -459,105 +630,40 @@ private struct BoxControls: View {
     }
 }
 
-// MARK: - Browse all
-
-/// A searchable grid over the WHOLE catalog.
-///
-/// The honest override: when the model's picks are all wrong — or the meme the user
-/// wanted simply isn't in imgflip's top 100 — this is where they say so themselves.
-/// The search is local, case-insensitive and pure (`MemeTemplateMatcher.search`), and
-/// crucially it does NOT fall back: an empty result stays empty and says why.
-private struct BrowseAllSheet: View {
-    @ObservedObject var model: MemeGeneratorModel
-    @Binding var isPresented: Bool
-
-    private let columns = [GridItem(.adaptive(minimum: 120), spacing: 10)]
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Text("Browse templates").font(.headline)
-                Spacer()
-                Button("Done") { isPresented = false }
-                    .keyboardShortcut(.cancelAction)
-            }
-
-            TextField("Search templates", text: $model.searchText)
-                .textFieldStyle(.roundedBorder)
-
-            // State the corpus plainly. This is the sentence that would have saved
-            // the "yoda meme" session.
-            Text("This is imgflip's public top-100 template list — \(model.catalog.count) templates. "
-                 + "If what you want isn't here, it isn't in the corpus.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-
-            if model.catalog.isEmpty {
-                ProgressView("Loading templates…")
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if model.searchResults.isEmpty {
-                VStack(spacing: 6) {
-                    Image(systemName: "magnifyingglass")
-                        .font(.largeTitle).foregroundStyle(.tertiary)
-                    Text("No template matches \"\(model.searchText)\".")
-                        .foregroundStyle(.secondary)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                ScrollView {
-                    LazyVGrid(columns: columns, spacing: 10) {
-                        ForEach(model.searchResults) { template in
-                            TemplateThumbnail(
-                                template: template,
-                                isSelected: template.id == model.selectedTemplate?.id,
-                                width: 120)
-                            .onTapGesture {
-                                model.select(template: template)
-                                isPresented = false
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        .padding(16)
-        .frame(width: 640, height: 560)
-    }
-}
-
 // MARK: - Thumbnail
 
-/// A template preview image plus its name.
+/// A template preview image plus its name and source badge.
 ///
-/// `AsyncImage` rather than the plugin's own `MemeTemplateService.fetchImage`: the
-/// grid can show 100 of these, and `AsyncImage` already handles per-view cancellation
-/// and URLCache reuse. It's the same imgflip CDN GET either way — still no upload.
+/// Loads from the on-disk thumbnail cache first so a second open of the window paints
+/// instantly and works with the network off; `AsyncImage` is the fallback for a
+/// template whose thumbnail hasn't been cached yet. User-library templates are
+/// `file:` URLs, which `AsyncImage` handles natively — one code path, three sources.
 private struct TemplateThumbnail: View {
     let template: MemeTemplate
     let isSelected: Bool
     let width: CGFloat
 
     var body: some View {
-        VStack(spacing: 4) {
-            AsyncImage(url: URL(string: template.url)) { phase in
-                switch phase {
-                case .success(let image):
-                    image.resizable().scaledToFill()
-                case .failure:
-                    Image(systemName: "photo")
-                        .foregroundStyle(.tertiary)
-                default:
-                    ProgressView().controlSize(.small)
+        VStack(spacing: 3) {
+            thumbnailImage
+                .frame(width: width, height: width * 0.75)
+                .clipped()
+                .background(Color.secondary.opacity(0.1))
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6)
+                        .stroke(isSelected ? Color.accentColor : Color.clear, lineWidth: 3))
+                .overlay(alignment: .topTrailing) {
+                    // The user's own templates are badged so a mixed grid is legible
+                    // at a glance — "which of these are mine" is the question a merged
+                    // corpus creates.
+                    if template.source == .userLibrary {
+                        Image(systemName: "person.crop.circle.fill")
+                            .font(.caption2)
+                            .foregroundStyle(.white, Color.accentColor)
+                            .padding(3)
+                    }
                 }
-            }
-            .frame(width: width, height: width * 0.75)
-            .clipped()
-            .background(Color.secondary.opacity(0.1))
-            .clipShape(RoundedRectangle(cornerRadius: 6))
-            .overlay(
-                RoundedRectangle(cornerRadius: 6)
-                    .stroke(isSelected ? Color.accentColor : Color.clear, lineWidth: 3))
 
             Text(template.name)
                 .font(.caption2)
@@ -567,6 +673,24 @@ private struct TemplateThumbnail: View {
                 .frame(width: width)
         }
         .contentShape(Rectangle())
-        .help(template.name)
+        .help("\(template.name) — \(template.source.label)")
+    }
+
+    @ViewBuilder
+    private var thumbnailImage: some View {
+        if let cached = MemeLibraryStore.cachedThumbnail(for: template.id) {
+            Image(nsImage: cached).resizable().scaledToFill()
+        } else {
+            AsyncImage(url: URL(string: template.url)) { phase in
+                switch phase {
+                case .success(let image):
+                    image.resizable().scaledToFill()
+                case .failure:
+                    Image(systemName: "photo").foregroundStyle(.tertiary)
+                default:
+                    ProgressView().controlSize(.small)
+                }
+            }
+        }
     }
 }

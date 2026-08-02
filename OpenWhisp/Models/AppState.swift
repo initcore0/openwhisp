@@ -385,8 +385,7 @@ class AppState: ObservableObject {
                 // First enable with the built-in provider should work with zero
                 // setup: provision the model if it isn't on disk yet (no-ops and
                 // warms when it is).
-                if llmProvider == "bundled" { ensureLLMModelExists() }
-                else { warmLlamaServerIfPossible() }
+                if llmProvider == "bundled" { ensureLLMModelExists() } else { warmLlamaServerIfPossible() }
             } else {
                 llamaEngine?.stopServer()
             }
@@ -443,10 +442,8 @@ class AppState: ObservableObject {
                 // Provision/warm only when AI cleanup is actually on — switching
                 // the provider (or Reset All Settings) with cleanup off must not
                 // kick off a model download behind the user's back.
-                if openAIEnhancementEnabled {
-                    ensureLLMModelExists()
-                    warmLlamaServerIfPossible()
-                }
+                // `ensureLLMModelExists` warms on completion, so it is the only call.
+                if openAIEnhancementEnabled { ensureLLMModelExists() }
             } else {
                 // Free the ~0.7-1.5 GB the built-in LLM holds when it's not the
                 // active provider.
@@ -2786,22 +2783,25 @@ class AppState: ObservableObject {
         cachedBundledLLMManifest
     }
 
-    /// True when a resident whisper.cpp server is held in memory at the same time
-    /// the built-in LLM would run. Both load a model, so on small-RAM Macs they
-    /// can race for memory. (WhisperKit/AppleSpeech keep no resident server.)
+    /// True when a resident whisper.cpp server is held in memory at the same time the
+    /// built-in LLM would run. (WhisperKit/AppleSpeech keep no resident server.)
     private var whisperServerResident: Bool {
         transcriptionEngine == "whisper" && whisperBackend == "serverAPI"
     }
 
     /// Start the bundled llama-server if the built-in provider is the active,
     /// enabled, downloaded one. Idempotent (the engine no-ops if already healthy).
-    func warmLlamaServerIfPossible() {
-        guard llmProvider == "bundled",
-              openAIEnhancementEnabled,
-              bundledLLMModelInstalled else { return }
+    /// `provider` defaults to the global cleanup one; a caller with its OWN resolved
+    /// provider passes it (the MAK-53 split `ensureBundledLLMReady` already makes) so
+    /// a surface resolved to `bundled` still warms when cleanup uses something else.
+    /// The cleanup on/off toggle then gates only the implicit, global case.
+    func warmLlamaServerIfPossible(provider explicitProvider: String? = nil) {
+        let provider = explicitProvider ?? llmProvider
+        guard provider == "bundled", bundledLLMModelInstalled else { return }
+        guard explicitProvider != nil || openAIEnhancementEnabled else { return }
         let engine = ensureLlamaEngine()
         // Shorter idle teardown when a whisper-server is also resident, to relieve
-        // dual-engine memory pressure sooner.
+        // dual-engine memory pressure sooner (small-RAM Macs run both models).
         engine.idleTimeout = whisperServerResident ? 30 : 90
         engine.ensureRunning(modelPath: selectedLLMModelPath()) { _ in }
     }

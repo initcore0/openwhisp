@@ -33,6 +33,14 @@ final class MemeGeneratorWindowController: NSWindowController, NSWindowDelegate,
             rootView: MemeGeneratorView(model: model))
         window.delegate = self
         wireAI()
+
+        // v3: warm the LLM and open the template catalog the moment the window
+        // exists, NOT on the first Generate. The owner's report — "first Generate
+        // fails: network error and model loading" — was a request hitting a
+        // llama-server that hadn't started yet; the request surfaced connection-
+        // refused as a network error. Doing this work at open turns that failure
+        // into a brief, honest "Preparing model…".
+        model.windowDidOpen()
     }
 
     // MARK: - LLM seam
@@ -64,7 +72,15 @@ final class MemeGeneratorWindowController: NSWindowController, NSWindowDelegate,
                     }
                 }
             },
-            resolveModel: { ScratchpadWindowController.resolvedAIModel() })
+            resolveModel: { ScratchpadWindowController.resolvedAIModel() },
+            // Start the bundled llama-server WITHOUT running a completion, passing
+            // the plugin's RESOLVED provider: the global `warmLlamaServerIfPossible()`
+            // only fires when Settings → Cleanup is itself set to the bundled
+            // provider, so a plugin resolved to bundled would otherwise never warm.
+            // Same MAK-53 split `ensureBundledLLMReady(provider:)` already makes.
+            warm: { resolved in
+                AppState.shared.warmLlamaServerIfPossible(provider: resolved.provider)
+            })
     }
 
     // MARK: - PluginDictationSink
