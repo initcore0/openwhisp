@@ -38,4 +38,23 @@ public enum ScratchpadFilter {
             return ScratchpadTags.note(note, hasTag: wantedTag)
         }
     }
+
+    /// Every occurrence of `query` in `text`, case-insensitively, as character
+    /// ranges — the editor highlights these so a filtered-to note shows WHERE
+    /// the match is (the reported gap: global search found the note, but a long
+    /// meeting transcript gave no clue where the word was). Non-overlapping,
+    /// left-to-right; diacritic-sensitive on purpose (matches the visible text
+    /// the way the find bar does). Empty/whitespace query → no ranges.
+    public static func matchRanges(of query: String, in text: String) -> [Range<String.Index>] {
+        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !needle.isEmpty else { return [] }
+        var ranges: [Range<String.Index>] = []
+        var from = text.startIndex
+        while from < text.endIndex,
+              let r = text.range(of: needle, options: .caseInsensitive, range: from..<text.endIndex) {
+            ranges.append(r)
+            from = r.upperBound
+        }
+        return ranges
+    }
 }

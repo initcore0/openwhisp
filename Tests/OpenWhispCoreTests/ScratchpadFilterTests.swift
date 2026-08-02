@@ -124,4 +124,33 @@ final class ScratchpadFilterTests: XCTestCase {
         let notes = [note("has #work here")]
         XCTAssertEqual(ScratchpadFilter.filtered(notes: notes, query: "#work").count, 1)
     }
+
+    // MARK: - matchRanges (in-editor highlight of the global query)
+
+    func testMatchRangesFindsAllCaseInsensitiveOccurrences() {
+        let text = "Parakeet is a parakeet. PARAKEET!"
+        let ranges = ScratchpadFilter.matchRanges(of: "parakeet", in: text)
+        XCTAssertEqual(ranges.count, 3)
+        XCTAssertEqual(ranges.map { String(text[$0]) }, ["Parakeet", "parakeet", "PARAKEET"])
+    }
+
+    func testMatchRangesCyrillic() {
+        let text = "Идея: записать идею про идеи"
+        XCTAssertEqual(ScratchpadFilter.matchRanges(of: "идея", in: text).count, 1)
+        XCTAssertEqual(ScratchpadFilter.matchRanges(of: "иде", in: text).count, 3)
+    }
+
+    func testMatchRangesNonOverlappingLeftToRight() {
+        // "aaa" in "aaaa" matches once (consumed), not twice overlapping.
+        XCTAssertEqual(ScratchpadFilter.matchRanges(of: "aaa", in: "aaaa").count, 1)
+    }
+
+    func testMatchRangesEmptyOrWhitespaceQueryYieldsNothing() {
+        XCTAssertTrue(ScratchpadFilter.matchRanges(of: "", in: "anything").isEmpty)
+        XCTAssertTrue(ScratchpadFilter.matchRanges(of: "   ", in: "anything").isEmpty)
+    }
+
+    func testMatchRangesNoMatch() {
+        XCTAssertTrue(ScratchpadFilter.matchRanges(of: "zebra", in: "parakeet").isEmpty)
+    }
 }
