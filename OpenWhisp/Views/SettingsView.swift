@@ -179,7 +179,20 @@ struct SettingsView: View {
         case .output:    OutputPane(appState: appState)
         case .rules:     RulesPane(appState: appState)
         case .modes:     ModesPane(appState: appState)
-        case .files:     FileTranscriptionPane(coordinator: appState.fileCoordinator)
+        case .files:
+            // MAK-98: hand a completed job's transcript to the Scratchpad as an
+            // editable note. The controller owns the note model + persistence and
+            // the body comes from the pure FileTranscriptScratchpadExport, so
+            // nothing here (or in AppState) needs to know the layout.
+            FileTranscriptionPane(
+                coordinator: appState.fileCoordinator,
+                openInScratchpad: { job in
+                    appState.scratchpadController.openFileTranscript(
+                        fileName: job.displayName,
+                        date: job.addedAt,
+                        duration: job.durationSeconds,
+                        transcript: job.fullText)
+                })
         case .meetings:  MeetingsPane(appState: appState, coordinator: appState.meetingCoordinator)
         case .profiles:  ProfilesPane(appState: appState)
         case .agentBridge: AgentBridgePane(appState: appState)

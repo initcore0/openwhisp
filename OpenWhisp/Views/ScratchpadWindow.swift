@@ -29,6 +29,78 @@ final class ScratchpadWindowController: NSObject, NSWindowDelegate {
 
     override init() {
         super.init()
+        wireAI()
+    }
+
+    // MARK: - AI seam (MAK-99)
+
+    /// Wire the pad's AI actions to the app's LLM, mirroring how AppState wires
+    /// `MeetingPipelineCoordinator`'s summarize closures (MAK-53).
+    ///
+    /// Two closures, both re-evaluated per call so a mid-session settings change
+    /// lands: a `() -> Resolved` model resolver, and the round-trip itself. The
+    /// model never sees AppState, so it stays trivially stubbable in tests — and
+    /// AppState gains no lines (the MAK-32 ratchet), because the override's storage
+    /// lives on this controller's own defaults keys rather than as new `@Published`
+    /// properties there.
+    ///
+    /// `AppState.summarizeResolved` is reused as the round-trip: it already takes a
+    /// `Resolved`, brackets the bundled engine on the RESOLVED provider, busy-rejects
+    /// while dictating, fails closed on agent-CLI, and delivers exactly once. It is
+    /// not meeting-specific — only its call site was.
+    private func wireAI() {
+        model.configureAI(
+            call: { instruction, input, resolved in
+                try await withCheckedThrowingContinuation { cont in
+                    Task { @MainActor in
+                        AppState.shared.summarizeResolved(
+                            text: input, instruction: instruction, resolved: resolved
+                        ) { result in
+                            switch result {
+                            case .success(let out): cont.resume(returning: out)
+                            case .failure(let err): cont.resume(throwing: err)
+                            }
+                        }
+                    }
+                }
+            },
+            resolveModel: { Self.resolvedAIModel() })
+    }
+
+    // MARK: - Model override storage (MAK-99)
+
+    /// The pad's persisted AI model override. Stored on `ScratchpadAIModel`'s own
+    /// UserDefaults keys and owned HERE rather than on AppState — the
+    /// `TranslationPreviewController` pattern, kept because AppState is at its
+    /// MAK-32 LOC budget.
+    static var overrideProvider: String {
+        get { UserDefaults.standard.string(forKey: ScratchpadAIModel.providerKey) ?? ScratchpadAIModel.useDefaultID }
+        set { UserDefaults.standard.set(newValue, forKey: ScratchpadAIModel.providerKey) }
+    }
+
+    static var overrideModel: String {
+        get { UserDefaults.standard.string(forKey: ScratchpadAIModel.modelKey) ?? "" }
+        set { UserDefaults.standard.set(newValue, forKey: ScratchpadAIModel.modelKey) }
+    }
+
+    static var overrideEndpoint: String {
+        get { UserDefaults.standard.string(forKey: ScratchpadAIModel.endpointKey) ?? "" }
+        set { UserDefaults.standard.set(newValue, forKey: ScratchpadAIModel.endpointKey) }
+    }
+
+    /// Resolve the pad's effective provider/model/endpoint: the override when set,
+    /// else the user's current cleanup/refine settings. The decision itself is the
+    /// pure, tested `ScratchpadAIModel.resolve` (which reuses the MAK-53 resolver);
+    /// this only reads the two sides of it off the app.
+    static func resolvedAIModel() -> SummaryModelResolver.Resolved {
+        let app = AppState.shared
+        return ScratchpadAIModel.resolve(
+            override: .init(provider: overrideProvider, model: overrideModel, endpoint: overrideEndpoint),
+            cleanupProvider: app.llmProvider,
+            cleanupModel: app.llmModel,
+            cleanupEndpoint: app.llmProvider == "local"
+                ? app.localLLMBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+                : "")
     }
 
     // MARK: - Show / focus
@@ -67,6 +139,23 @@ final class ScratchpadWindowController: NSObject, NSWindowDelegate {
     func openMeetingNote(_ meeting: Meeting) {
         model.loadIfNeeded()
         model.insertMeetingNote(meeting)
+        showAndFocus()
+    }
+
+    /// Open a completed file transcription as a NEW editable note and focus it
+    /// (MAK-98 "Open in Scratchpad" for transcribed audio/video files). The body
+    /// comes from the pure, unit-tested `FileTranscriptScratchpadExport`; this is
+    /// only the persist + show shell, and the same insert-before-show ordering the
+    /// meeting path uses applies.
+    ///
+    /// Takes primitives rather than the queue job so this seam has no dependency on
+    /// the file-transcription types.
+    func openFileTranscript(
+        fileName: String, date: Date, duration: TimeInterval, transcript: String
+    ) {
+        model.loadIfNeeded()
+        model.insertFileTranscriptNote(
+            fileName: fileName, date: date, duration: duration, transcript: transcript)
         showAndFocus()
     }
 
@@ -131,5 +220,8 @@ final class ScratchpadWindowController: NSObject, NSWindowDelegate {
         // Flush the debounced write: any edit still inside the coalescing window
         // must hit disk now. The model stays in memory so re-opening is instant.
         model.flush()
+        // MAK-99: a closed pad must never be re-opened by a late AI result landing
+        // in it. The request finishes; its result is discarded.
+        model.cancelAIAction()
     }
 }

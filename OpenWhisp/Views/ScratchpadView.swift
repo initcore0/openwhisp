@@ -14,6 +14,8 @@ struct ScratchpadView: View {
     @ObservedObject var model: ScratchpadModel
     @FocusState private var searchFocused: Bool
     @State private var pendingDelete: ScratchpadNote?
+    /// Whether the AI model-override popover is showing (MAK-99).
+    @State private var showsAISettings = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -69,6 +71,8 @@ struct ScratchpadView: View {
 
             exportMenu
 
+            aiMenu
+
             Spacer()
 
             searchField
@@ -97,6 +101,62 @@ struct ScratchpadView: View {
         .help("Export this note (⌘E)")
         .keyboardShortcut("e", modifiers: .command)
         .disabled(model.selectedNote == nil)
+    }
+
+    // MARK: - AI actions (MAK-99)
+
+    /// The AI actions menu, plus a spinner while a request runs. One action in
+    /// flight at a time — the whole control disables while busy, and it is disabled
+    /// on an empty note (there is nothing to format or summarize).
+    @ViewBuilder
+    private var aiMenu: some View {
+        if model.aiBusyAction != nil {
+            HStack(spacing: 5) {
+                ProgressView().controlSize(.small)
+                Text(model.aiBusyAction?.busyLabel ?? "")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .fixedSize()
+            .help("An AI action is running — one at a time")
+        } else {
+            Menu {
+                ForEach(ScratchpadAI.Action.allCases, id: \.self) { action in
+                    Button {
+                        run(action)
+                    } label: {
+                        Label(action.title, systemImage: action.systemImage)
+                    }
+                }
+                Divider()
+                Button {
+                    showsAISettings = true
+                } label: {
+                    Label("AI model…", systemImage: "gearshape")
+                }
+            } label: {
+                Label("AI actions", systemImage: "wand.and.stars")
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .help(model.aiAvailable
+                  ? "Format or summarize this note with the LLM"
+                  : "Set up an LLM in Settings → Cleanup to use AI actions")
+            .disabled(!model.canRunAIAction)
+            .popover(isPresented: $showsAISettings, arrowEdge: .bottom) {
+                ScratchpadAISettingsView()
+            }
+        }
+    }
+
+    /// Kick off an action, handing the destructive one an undo-registering applier
+    /// so the whole transform is a single ⌘Z away.
+    private func run(_ action: ScratchpadAI.Action) {
+        // Formatting rewrites the note; showing the result means leaving preview.
+        if action.isDestructive { model.showsPreview = false }
+        model.runAIAction(action, applyInPlace: { newText in
+            ScratchpadTextEditor.replaceTextUndoably(in: model.liveEditorTextView, with: newText)
+        })
     }
 
     private var searchField: some View {
@@ -241,6 +301,17 @@ struct ScratchpadView: View {
                     .foregroundStyle(.secondary)
             }
             Spacer()
+            // MAK-99: the AI action's outcome. A rejected result reads
+            // "Kept original — <reason>" and the note is untouched.
+            if !model.aiStatus.isEmpty {
+                Label(model.aiStatus, systemImage: model.aiStatus.hasPrefix("Kept original")
+                      ? "exclamationmark.triangle" : "checkmark.circle")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .help(model.aiStatus)
+            }
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 5)
@@ -395,6 +466,37 @@ struct ScratchpadTextEditor: NSViewRepresentable {
     var onTextViewReady: (NSTextView) -> Void = { _ in }
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    /// Replace the whole note text THROUGH the text view's undo-registering path
+    /// (MAK-99), so an AI transform is a single ⌘Z away.
+    ///
+    /// Why this and not a direct `textView.string = new` or a model write: assigning
+    /// `string` bypasses `NSTextView`'s undo coalescing entirely — the transform
+    /// would be irreversible, which is unacceptable for an action that overwrites
+    /// text the user dictated. Going through
+    /// `shouldChangeText` → `replaceCharacters` → `didChangeText` makes AppKit
+    /// register the edit on the view's own undo manager as ONE group, and posts the
+    /// change notification that drives `applyEdit` (so persistence and the note list
+    /// update exactly as they would for a paste).
+    ///
+    /// Returns false when there is no live editor to drive (preview mode, closed
+    /// panel) or when the text view refuses the edit; the caller then falls back to
+    /// a direct model write rather than dropping the result.
+    @discardableResult
+    static func replaceTextUndoably(in textView: NSTextView?, with newText: String) -> Bool {
+        guard let textView, textView.window != nil else { return false }
+        let full = NSRange(location: 0, length: (textView.string as NSString).length)
+        guard textView.shouldChangeText(in: full, replacementString: newText) else { return false }
+        // Name the undo group so ⌘Z reads "Undo Format as Markdown" in the Edit menu.
+        textView.undoManager?.setActionName("Format as Markdown")
+        textView.textStorage?.replaceCharacters(in: full, with: newText)
+        textView.didChangeText()
+        // Put the caret at the start rather than leaving it past the end of what is
+        // now different text.
+        textView.setSelectedRange(NSRange(location: 0, length: 0))
+        textView.scrollRangeToVisible(NSRange(location: 0, length: 0))
+        return true
+    }
 
     func makeNSView(context: Context) -> NSScrollView {
         let textView = NSTextView()
@@ -579,6 +681,73 @@ struct MarkdownPreviewView: View {
         case 3:  return 15
         default: return 13
         }
+    }
+}
+
+// MARK: - AI model override (MAK-99)
+
+/// The Scratchpad's AI model picker, shown as a gear popover from the AI menu.
+///
+/// It lives IN the pad rather than in a Settings pane because it configures a
+/// control that is also in the pad — you pick the model from the same menu you run
+/// the action from. The choices and their wording mirror the MAK-53 meeting
+/// summarization override (Settings → Meetings) exactly, and the resolution is the
+/// same pure `SummaryModelResolver` decision.
+///
+/// State is read/written through `ScratchpadWindowController`'s static accessors,
+/// which own the UserDefaults keys — AppState is at its MAK-32 LOC budget and must
+/// not grow.
+struct ScratchpadAISettingsView: View {
+    @State private var provider = ScratchpadWindowController.overrideProvider
+    @State private var model = ScratchpadWindowController.overrideModel
+    @State private var endpoint = ScratchpadWindowController.overrideEndpoint
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label("AI model for this Scratchpad", systemImage: "wand.and.stars")
+                .font(.headline)
+
+            Picker("Model", selection: $provider) {
+                ForEach(ScratchpadAIModel.offeredProviders, id: \.self) { id in
+                    Text(ScratchpadAIModel.label(for: id)).tag(id)
+                }
+            }
+            .onChange(of: provider) { ScratchpadWindowController.overrideProvider = provider }
+
+            if provider != ScratchpadAIModel.useDefaultID {
+                TextField("Model", text: $model, prompt: Text(modelPlaceholder))
+                    .onChange(of: model) { ScratchpadWindowController.overrideModel = model }
+                if provider == "local" {
+                    TextField("Server URL", text: $endpoint,
+                              prompt: Text("http://localhost:8080/v1"))
+                        .onChange(of: endpoint) { ScratchpadWindowController.overrideEndpoint = endpoint }
+                }
+            }
+
+            Text(footnote)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(14)
+        .frame(width: 340)
+    }
+
+    /// Show what the resolver WOULD pick, so "empty means default" is visible
+    /// rather than mysterious (the MeetingsPane trick).
+    private var modelPlaceholder: String {
+        let resolved = ScratchpadWindowController.resolvedAIModel()
+        return resolved.model.isEmpty ? "Server / provider default" : resolved.model
+    }
+
+    private var footnote: String {
+        let resolved = ScratchpadWindowController.resolvedAIModel()
+        let privacy = resolved.isLocal
+            ? "Notes stay on this Mac."
+            : "Note text is sent to this cloud provider when you run an action."
+        return "Dictation cleanup favors a small, fast model. Scratchpad actions run "
+            + "only when you ask, over a whole note, so they can afford a larger one. "
+            + privacy
     }
 }
 

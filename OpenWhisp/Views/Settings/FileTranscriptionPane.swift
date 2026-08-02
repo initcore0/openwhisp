@@ -6,6 +6,10 @@ import UniformTypeIdentifiers
 /// and manage auto-transcribe watch folders.
 struct FileTranscriptionPane: View {
     @ObservedObject var coordinator: FileTranscriptionCoordinator
+    /// MAK-98: hand a completed job's transcript to the Scratchpad as an editable
+    /// note. Injected as a closure (the MeetingsPane pattern) so neither this pane
+    /// nor its rows need an AppState reference — the call site owns that hop.
+    var openInScratchpad: (FileTranscriptionJob) -> Void = { _ in }
 
     var body: some View {
         Form {
@@ -52,7 +56,9 @@ struct FileTranscriptionPane: View {
                 Text("No files queued.").foregroundStyle(.secondary)
             } else {
                 ForEach(coordinator.queue.jobs) { job in
-                    JobRow(job: job, coordinator: coordinator)
+                    JobRow(
+                        job: job, coordinator: coordinator,
+                        openInScratchpad: { openInScratchpad(job) })
                 }
                 if coordinator.queue.doneCount + coordinator.queue.failedCount > 0 {
                     Button("Clear finished") { coordinator.clearFinished() }
@@ -126,6 +132,8 @@ struct FileTranscriptionPane: View {
 private struct JobRow: View {
     let job: FileTranscriptionJob
     @ObservedObject var coordinator: FileTranscriptionCoordinator
+    /// MAK-98: open this job's transcript in the Scratchpad as an editable note.
+    let openInScratchpad: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -141,6 +149,15 @@ private struct JobRow: View {
                         Button("Export .txt") { coordinator.export(job.id, format: .txt) }
                         Button("Export .srt") { coordinator.export(job.id, format: .srt) }
                         Button("Export .vtt") { coordinator.export(job.id, format: .vtt) }
+                        // MAK-98: gated on the transcript existing — same condition
+                        // as the inline button below, so every job whose transcript
+                        // is readable is also editable.
+                        if hasTranscript {
+                            Divider()
+                            Button(action: openInScratchpad) {
+                                Label("Open in Scratchpad", systemImage: "note.text.badge.plus")
+                            }
+                        }
                     } label: {
                         Label("Export", systemImage: "square.and.arrow.up")
                     }.fixedSize()
@@ -152,14 +169,28 @@ private struct JobRow: View {
                 } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary) }
                     .buttonStyle(.borderless)
             }
-            if job.stage == .done, !job.fullText.isEmpty {
+            if hasTranscript {
                 Text(job.fullText).font(.caption).foregroundStyle(.secondary).lineLimit(3)
+                // MAK-98: the preview above is a read-only 3-line clip; this is the
+                // one click that turns the whole transcript into editable text in
+                // the Scratchpad (where it can be re-dictated into and refined).
+                Button(action: openInScratchpad) {
+                    Label("Open in Scratchpad", systemImage: "note.text.badge.plus")
+                }
+                .buttonStyle(.borderless).font(.caption)
             }
             if job.stage == .failed, let err = job.errorMessage {
                 Text(err).font(.caption).foregroundStyle(.red)
             }
         }
         .padding(.vertical, 2)
+    }
+
+    /// MAK-98 gate: a finished job that actually produced text. Keys on the REAL
+    /// transcript (`fullText`, the joined chunk texts) — a `.done` job whose chunks
+    /// all came back blank has nothing to open.
+    private var hasTranscript: Bool {
+        job.stage == .done && !job.fullText.isEmpty
     }
 
     private var subtitle: String {
