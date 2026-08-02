@@ -381,6 +381,28 @@ class OpenWhispApp: NSObject, NSApplicationDelegate {
         // Floating Scratchpad (MAK-49): a target-free surface to dictate into.
         menu.addItem(menuItem("Scratchpad", symbol: "note.text", action: #selector(openScratchpad), keyEquivalent: "s"))
 
+        // Plugins (spike/plugin-system): one row per ENABLED plugin, folded into a
+        // submenu so an optional feature never crowds the main menu. Absent entirely
+        // when nothing is enabled — which is the default.
+        let activePlugins = PluginHost.shared.activePlugins
+        if !activePlugins.isEmpty {
+            let pluginsItem = NSMenuItem(title: "Plugins", action: nil, keyEquivalent: "")
+            pluginsItem.image = NSImage(
+                systemSymbolName: "puzzlepiece.extension", accessibilityDescription: nil)
+            let submenu = NSMenu()
+            for plugin in activePlugins {
+                let item = menuItem(
+                    plugin.manifest.name,
+                    symbol: plugin.manifest.symbol,
+                    action: #selector(openPlugin(_:)))
+                item.representedObject = plugin.id
+                item.target = self
+                submenu.addItem(item)
+            }
+            pluginsItem.submenu = submenu
+            menu.addItem(pluginsItem)
+        }
+
         menu.addItem(.separator())
 
         // Quick mid-use toggles only. Engine, live-chunk plumbing, etc. live in
@@ -586,6 +608,13 @@ class OpenWhispApp: NSObject, NSApplicationDelegate {
     }
 
     @objc private func openScratchpad() { appState.openScratchpad() }
+
+    /// Open an enabled plugin's window. The id rides on `representedObject` so one
+    /// selector serves every plugin row (the host re-checks enabled+runnable).
+    @objc private func openPlugin(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String else { return }
+        PluginHost.shared.open(pluginID: id)
+    }
     @objc private func startDictation() { appState.startDictation() }
     @objc private func stopDictation()  { appState.stopDictation() }
     @objc private func cancelDictation() { appState.cancelDictation() }

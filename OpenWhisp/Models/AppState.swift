@@ -4659,14 +4659,14 @@ class AppState: ObservableObject {
         let pastesWholeOnce = !isLiveChunkSession || isPreviewSession
         if pastesWholeOnce {
             let insertion = addTrailingSpace ? "\(text) " : text
-            // Scratchpad (MAK-49): when our own floating pad is the frontmost key
-            // window, the user is dictating INTO it with no other target. The
-            // focused-app insert path can't serve this (its paste fallback
-            // deliberately declines when OUR app is frontmost), so append straight
-            // into the active note's model + text view instead. This is the
-            // target-free capture the pad exists for; it never touches the
-            // clipboard and always lands the text.
-            if scratchpadController.appendDictationIfKey(text) {
+            // Scratchpad (MAK-49) / plugin windows (spike/plugin-system): when one of
+            // OUR windows is the frontmost key window, the user is dictating INTO it
+            // with no other target. The focused-app insert path can't serve this (its
+            // paste fallback deliberately declines when OUR app is frontmost), so
+            // append straight into that window instead — target-free capture that
+            // never touches the clipboard and always lands the text. Only one window
+            // can be key, so at most one of these accepts.
+            if scratchpadController.appendDictationIfKey(text) || PluginHost.shared.appendDictationIfKey(text) {
                 lastInsertedIntoFocusedApp = nil
             } else {
             // Output target (MAK-11..14): when the user has selected AND configured a
@@ -4717,14 +4717,14 @@ class AppState: ObservableObject {
                 router.route(payload) { _ in }
             }
             } // end: not routed to the Scratchpad
-        } else if scratchpadController.appendDictationIfKey(text) {
-            // Scratchpad (MAK-49) in liveChunks mode: the per-chunk live pastes all
-            // fell back to the clipboard because OUR pad is frontmost (the focused-app
-            // insert declines when OpenWhisp is key), so NOTHING landed in the note.
-            // Route the WHOLE session text into the active note once here — the honest
-            // completion-time fix for the data loss (per-chunk live typing into the pad
-            // is out of scope). Skip the clipboard-only finish below entirely; the pad
-            // owns the text and never touches the clipboard.
+        } else if scratchpadController.appendDictationIfKey(text) || PluginHost.shared.appendDictationIfKey(text) {
+            // Scratchpad (MAK-49) / plugin window in liveChunks mode: the per-chunk
+            // live pastes all fell back to the clipboard because OUR window is
+            // frontmost (the focused-app insert declines when OpenWhisp is key), so
+            // NOTHING landed in it. Route the WHOLE session text there once here —
+            // the honest completion-time fix for the data loss (per-chunk live typing
+            // is out of scope). Skip the clipboard-only finish below; the window owns
+            // the text and never touches the clipboard.
             lastInsertedIntoFocusedApp = nil
         } else {
             // liveChunks: the text was already pasted incrementally (no trailing space).

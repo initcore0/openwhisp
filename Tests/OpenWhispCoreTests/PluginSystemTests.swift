@@ -107,6 +107,46 @@ final class PluginSystemTests: XCTestCase {
         XCTAssertEqual(merged[0].manifest.name, "Real")
     }
 
+    // MARK: - Providers (hot-swap seam)
+
+    /// The host enumerates an ordered provider list, so the compile-time registry is
+    /// just one source among others — the seam a real installation path plugs into
+    /// without changing the host.
+    func testProvidersAreMergedInOrder() {
+        let merged = PluginDiscovery.merge(providers: [
+            .init(source: .builtIn) { [self.manifest(id: "b", name: "Bravo")] },
+            .init(source: .external) { [self.manifest(id: "a", name: "Alpha")] },
+        ])
+        XCTAssertEqual(merged.map(\.id), ["a", "b"])
+    }
+
+    /// Providers are passed in DESCENDING trust order, so a lower-trust source can
+    /// never shadow a higher-trust one.
+    func testEarlierProviderWinsIDCollision() {
+        let merged = PluginDiscovery.merge(providers: [
+            .init(source: .builtIn) { [self.manifest(id: "x", name: "Trusted")] },
+            .init(source: .external) { [self.manifest(id: "x", name: "Untrusted")] },
+        ])
+        XCTAssertEqual(merged.count, 1)
+        XCTAssertEqual(merged[0].manifest.name, "Trusted")
+        XCTAssertEqual(merged[0].source, .builtIn)
+    }
+
+    /// A provider is re-invoked on every merge, which is what lets a filesystem-backed
+    /// source pick up an installed plugin without a rebuild.
+    func testProviderIsReEvaluatedOnEachMerge() {
+        var available: [PluginManifest] = []
+        let provider = PluginDiscovery.Provider(source: .external) { available }
+
+        XCTAssertEqual(PluginDiscovery.merge(providers: [provider]).count, 0)
+        available = [manifest(id: "installed-later")]
+        XCTAssertEqual(PluginDiscovery.merge(providers: [provider]).map(\.id), ["installed-later"])
+    }
+
+    func testMergeWithNoProvidersIsEmpty() {
+        XCTAssertEqual(PluginDiscovery.merge(providers: []).count, 0)
+    }
+
     func testInvalidManifestsAreDroppedFromMerge() {
         let merged = PluginDiscovery.merge(
             builtIn: [manifest(id: "..", name: "Traversal"), manifest(id: "ok")],

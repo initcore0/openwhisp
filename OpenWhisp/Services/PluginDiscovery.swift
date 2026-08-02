@@ -65,25 +65,46 @@ public enum PluginDiscovery {
             .appendingPathComponent("Plugins", isDirectory: true)
     }
 
-    /// Merge built-in and external manifests into the host's plugin list.
+    /// One source of plugin manifests.
+    ///
+    /// The host enumerates an ORDERED list of these rather than knowing about any
+    /// particular source, so the compile-time registry is just one provider among
+    /// others. This is the seam that keeps the design honest about being
+    /// hot-swappable: adding a real installation path (a downloaded bundle
+    /// directory, a per-user plugins folder, an out-of-process helper that
+    /// advertises itself) means adding a provider, not changing the host.
+    public struct Provider: Sendable {
+        public let source: Source
+        /// Produce the manifests this source currently offers. Called on every
+        /// `reload`, so a provider backed by the filesystem picks up installs
+        /// without an app restart.
+        public let manifests: @Sendable () -> [PluginManifest]
+
+        public init(source: Source, manifests: @escaping @Sendable () -> [PluginManifest]) {
+            self.source = source
+            self.manifests = manifests
+        }
+    }
+
+    /// Merge an ordered list of providers into the host's plugin list.
     ///
     /// - Invalid manifests are dropped (a plugin with no name/symbol or a
     ///   traversal-shaped id is not listable).
-    /// - Built-in beats external on id collision.
+    /// - **Later providers lose an id collision to earlier ones.** Callers pass
+    ///   providers in DESCENDING trust order, so a lower-trust source can never
+    ///   shadow a higher-trust one — the property that stops a writable directory
+    ///   from substituting code into an app holding Accessibility + mic rights.
     /// - Result is sorted by display name, then id, so the pane's order is stable
     ///   across launches and independent of filesystem enumeration order.
-    public static func merge(
-        builtIn: [PluginManifest],
-        external: [PluginManifest]
-    ) -> [Discovered] {
+    public static func merge(providers: [Provider]) -> [Discovered] {
         var byID: [String: Discovered] = [:]
 
-        // External first so a built-in with the same id overwrites it.
-        for manifest in external where manifest.isValid {
-            byID[manifest.id] = Discovered(manifest: manifest, source: .external)
-        }
-        for manifest in builtIn where manifest.isValid {
-            byID[manifest.id] = Discovered(manifest: manifest, source: .builtIn)
+        for provider in providers {
+            for manifest in provider.manifests() where manifest.isValid {
+                // First provider to claim an id keeps it.
+                guard byID[manifest.id] == nil else { continue }
+                byID[manifest.id] = Discovered(manifest: manifest, source: provider.source)
+            }
         }
 
         return byID.values.sorted {
@@ -92,6 +113,17 @@ public enum PluginDiscovery {
             }
             return $0.manifest.id < $1.manifest.id
         }
+    }
+
+    /// Convenience for the two sources the spike has, in trust order.
+    public static func merge(
+        builtIn: [PluginManifest],
+        external: [PluginManifest]
+    ) -> [Discovered] {
+        merge(providers: [
+            Provider(source: .builtIn) { builtIn },
+            Provider(source: .external) { external },
+        ])
     }
 
     /// Read every `<dir>/<id>/manifest.json` under an external plugins directory.

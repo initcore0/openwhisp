@@ -140,4 +140,32 @@ public enum MemeCaptionLayout {
     public static func minimumFontSize(imageHeight: Double) -> Double {
         max(8, imageHeight * 0.04)
     }
+
+    // MARK: - Export naming
+
+    /// A PNG filename derived from the captions, so saved memes are findable later
+    /// rather than a wall of `meme.png`, `meme-1.png`.
+    ///
+    /// Slugified conservatively: non-alphanumerics collapse to single hyphens, so a
+    /// caption in any script degrades to something a filesystem is happy with, and
+    /// an all-punctuation caption still yields a usable `meme.png`.
+    public static func suggestedFileName(topText: String, bottomText: String) -> String {
+        let joined = [topText, bottomText]
+            .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+            .joined(separator: " ")
+
+        let slug = joined
+            .folding(options: [.diacriticInsensitive], locale: Locale(identifier: "en_US"))
+            .lowercased()
+            .map { $0.isLetter || $0.isNumber ? $0 : "-" }
+            .reduce(into: "") { partial, char in
+                // Collapse runs of separators instead of emitting `a---b`.
+                if char == "-", partial.last == "-" { return }
+                partial.append(char)
+            }
+            .trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+            .prefix(48)
+
+        return (slug.isEmpty ? "meme" : String(slug)) + ".png"
+    }
 }
