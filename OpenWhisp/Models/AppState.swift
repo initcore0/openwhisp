@@ -4167,14 +4167,11 @@ class AppState: ObservableObject {
         statusMessage = "Inserted: \(text.prefix(40))..."
     }
 
-    /// Session-final choke point (every dictation path funnels here). When
-    /// `TextTranslationPolicy` arms the text path, the final transcript is
-    /// translated ON-DEVICE as text before delivery; on ANY failure or timeout
-    /// the ORIGINAL transcript is delivered unchanged (untranslated, never lost).
-    ///
-    /// Mid-refine finals skip translation on purpose: their tail is a spoken
-    /// INSTRUCTION and `instructionSuffix` subtracts `refineContentSnapshot`
-    /// as a literal prefix, which translation would break.
+    /// Session-final choke point (every dictation path funnels here). When the
+    /// text path arms, the final is translated on-device before delivery; any
+    /// failure delivers the (substituted) transcript unchanged — never lost.
+    /// Mid-refine finals skip translation: `instructionSuffix` subtracts
+    /// `refineContentSnapshot` as a literal prefix, which translation breaks.
     private func completeFinalText(_ text: String) {
         guard shouldTextTranslateFinal, !text.isEmpty, refineContentSnapshot == nil else {
             deliverFinalText(text)
@@ -4182,21 +4179,24 @@ class AppState: ObservableObject {
         }
         isTranscribing = true
         statusMessage = "Translating…"
-        // Capture the session so a cancel (Esc) or a new session started while
-        // the translation is in flight causes this continuation to be ignored —
-        // same fence as every other async completion in this file.
-        let sessionID = activeSessionID
-        // Source hint: the session language ("auto" → provider-side detection).
-        let sourceHint = language
+        // Substitutions key on what the engine HEARD (spoken language) — run them
+        // BEFORE translation or a source-language rule can never fire (MAK-95);
+        // fired IDs recorded here (the later postProcess sees only English).
+        let cleaner = TranscriptCleaner(config: transcriptCleanerConfig)
+        sessionFiredSubstitutionIDs.formUnion(cleaner.firedSubstitutionIDs(inRawTranscript: text))
+        let prepared = cleaner.substitutionsApplied(toRawTranscript: text)
+        let sessionID = activeSessionID  // fence: cancel/new session ignores this continuation
+        let sourceHint = language        // "auto" → provider-side detection
         Task { @MainActor [weak self] in
-            let translated = await AppleTextTranslation.translate(text, from: sourceHint, to: "en")
+            let translated = await AppleTextTranslation.translate(prepared, from: sourceHint, to: "en")
             guard let self, sessionID == self.activeSessionID else { return }
             if translated == nil {
                 self.translationStatus = AppleTextTranslation.lastError.map {
                     "Kept original text — \($0)"
                 } ?? "Kept original text — translation unavailable"
             }
-            self.deliverFinalText(translated ?? text)
+            // Fallback keeps the SUBSTITUTED transcript (never-lose-text).
+            self.deliverFinalText(translated ?? prepared)
         }
     }
 

@@ -123,9 +123,27 @@ public struct TranscriptCleaner {
         return sub.firedSubstitutionIDs(in: normalized)
     }
 
+    /// ONLY the vocabulary substitutions, applied to the raw transcript — the
+    /// pre-translation pass for text-path translate sessions (MAK-95).
+    ///
+    /// Substitution rules key on what the engine actually HEARD, in the SPOKEN
+    /// language ("пара кит" → "parakeet"). On a translate session the final is
+    /// translated before the normal `clean` runs, so by then the mishearing has
+    /// been mashed into arbitrary English and a source-language rule can never
+    /// fire. This runs the substitutions (and nothing else — formatting rules
+    /// target the OUTPUT language) on the raw text so the corrected transcript
+    /// is what gets translated. Text unchanged when vocabulary is off / no
+    /// rules / the transcript is ignorable.
+    public func substitutionsApplied(toRawTranscript text: String) -> String {
+        guard let sub = vocabularyStage,
+              let normalized = preVocabularyNormalized(text) else { return text }
+        return sub.apply(to: normalized)
+    }
+
     /// Steps 1–2 of `clean`: whitespace/marker normalization + the ignorable
     /// guard, i.e. exactly the text the vocabulary stage runs against. Nil when
-    /// the transcript is ignorable. Shared by `clean` and
+    /// the transcript is ignorable. Shared by `clean`,
+    /// `substitutionsApplied(toRawTranscript:)`, and
     /// `firedSubstitutionIDs(inRawTranscript:)` so they can never disagree.
     private func preVocabularyNormalized(_ text: String) -> String? {
         // 1) Normalize whitespace and strip whisper's leading space / stray quotes,

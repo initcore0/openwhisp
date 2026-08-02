@@ -198,4 +198,61 @@ final class VocabularyTests: XCTestCase {
         XCTAssertTrue(fired.isEmpty)
         XCTAssertEqual(v.incrementingUsage(of: fired), v)   // unchanged
     }
+
+    // MARK: - Pre-translation substitution pass (MAK-95)
+
+    private func cleaner(substitutions: [Vocabulary.Substitution], enabled: Bool = true) -> TranscriptCleaner {
+        TranscriptCleaner(config: .init(
+            language: "en",
+            customVocabularyEnabled: enabled,
+            substitutions: substitutions,
+            smartFormattingEnabled: false,
+            fillerRemovalEnabled: false,
+            spokenPunctuationEnabled: false,
+            normalizeNumbers: false,
+            normalizeCurrency: false,
+            spokenListsEnabled: false,
+            basicMarkdownEnabled: false,
+            fileTaggingEnabled: false))
+    }
+
+    /// THE translate-session bug: substitutions key on the SPOKEN language, so
+    /// the pre-translation pass must rewrite the raw (e.g. Cyrillic) transcript
+    /// — after translation the mishearing is gone and the rule can never fire.
+    func testPreTranslationPassSubstitutesSourceLanguageMishearing() {
+        let c = cleaner(substitutions: [
+            .init(from: "пара кит", to: "parakeet"),
+        ])
+        XCTAssertEqual(
+            c.substitutionsApplied(toRawTranscript: "мой любимый пара кит поёт"),
+            "мой любимый parakeet поёт")
+    }
+
+    /// ONLY substitutions run pre-translation — formatting rules target the
+    /// OUTPUT language and must not touch the source text.
+    func testPreTranslationPassAppliesNothingButSubstitutions() {
+        let c = cleaner(substitutions: [])
+        XCTAssertEqual(
+            c.substitutionsApplied(toRawTranscript: "ну эм пара кит"),
+            "ну эм пара кит", "no rules → text passes through untouched")
+    }
+
+    func testPreTranslationPassRespectsVocabularyToggle() {
+        let c = cleaner(
+            substitutions: [.init(from: "пара кит", to: "parakeet")],
+            enabled: false)
+        XCTAssertEqual(
+            c.substitutionsApplied(toRawTranscript: "пара кит"),
+            "пара кит", "vocabulary off → substitutions must not run")
+    }
+
+    /// The pre-translation pass and `firedSubstitutionIDs` see the same
+    /// normalized text — a rule that rewrote the transcript is always counted.
+    func testPreTranslationPassAgreesWithFiredIDs() {
+        let sub = Vocabulary.Substitution(from: "пара кит", to: "parakeet")
+        let c = cleaner(substitutions: [sub])
+        let raw = "  пара   кит  "   // messy whitespace — normalization shared
+        XCTAssertEqual(c.substitutionsApplied(toRawTranscript: raw), "parakeet")
+        XCTAssertEqual(c.firedSubstitutionIDs(inRawTranscript: raw), [sub.id])
+    }
 }
