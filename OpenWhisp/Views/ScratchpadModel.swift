@@ -6,8 +6,8 @@ import Combine
 /// The `ScratchpadWindowController` stays a thin AppKit shell (panel lifecycle +
 /// the AppState-facing dictation seam); everything the UI binds to lives here, and
 /// every non-trivial *rule* it applies lives in OpenWhispCore (`ScratchpadText`,
-/// `ScratchpadPersistencePolicy`, and — as the later phases land — the preview,
-/// export, filter and tag types) where `swift test` covers it.
+/// `ScratchpadPersistencePolicy`, `MarkdownPreviewRenderer`, `ScratchpadExport`,
+/// `ScratchpadFilter`, `ScratchpadTags`) where `swift test` covers it.
 ///
 /// ## Persistence (the MAK-95 perf fix)
 ///
@@ -102,13 +102,14 @@ final class ScratchpadModel: ObservableObject {
 
     // MARK: - Derived (filtered) list — P3
 
-    /// The notes the list actually shows. P3 (MAK-97) narrows this by the search
-    /// query and tag filter; until then it is the full set.
-    var visibleNotes: [ScratchpadNote] { notes }
+    /// The notes the list actually shows: the full set narrowed by the search query
+    /// and the tag filter, in the store's order.
+    var visibleNotes: [ScratchpadNote] {
+        ScratchpadFilter.filtered(notes: notes, query: searchQuery, tag: tagFilter)
+    }
 
     /// Every tag across all notes with its note count, for the tag-filter menu.
-    /// Populated in P3 (MAK-97).
-    var allTags: [(tag: String, count: Int)] { [] }
+    var allTags: [(tag: String, count: Int)] { ScratchpadTags.tagCounts(in: notes) }
 
     /// True when a filter is narrowing the list (drives the "clear filters" affordance).
     var isFiltering: Bool {

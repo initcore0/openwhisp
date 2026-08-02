@@ -267,12 +267,11 @@ struct ScratchpadView: View {
 
 // MARK: - List row
 
-/// One note in the sidebar: stripped title, relative date, origin glyph and a
-/// two-line stripped snippet. P3 (MAK-97) adds derived #tag chips, highlighting
-/// whichever tag is the active filter.
+/// One note in the sidebar: stripped title, relative date, origin glyph, a
+/// two-line stripped snippet, and up to three derived #tag chips.
 private struct ScratchpadRow: View {
     let note: ScratchpadNote
-    /// The tag currently filtering the list, so its chip can be highlighted (P3).
+    /// The tag currently filtering the list, so its chip can be highlighted.
     let activeTag: String?
 
     private static let relativeFormatter: RelativeDateTimeFormatter = {
@@ -305,9 +304,36 @@ private struct ScratchpadRow: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
             }
-            // P3 (MAK-97) adds derived #tag chips here.
+            tagChips
         }
         .padding(.vertical, 2)
+    }
+
+    /// Up to three derived #tag chips, with a "+N" overflow. The chip matching the
+    /// active filter is highlighted so it's clear why the row is in the list.
+    @ViewBuilder
+    private var tagChips: some View {
+        let tags = ScratchpadTags.tags(in: note)
+        if !tags.isEmpty {
+            HStack(spacing: 3) {
+                ForEach(tags.prefix(3), id: \.self) { tag in
+                    Text("#\(tag)")
+                        .font(.system(size: 9))
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 1)
+                        .background(
+                            Capsule().fill(tag == activeTag
+                                           ? Color.accentColor.opacity(0.25)
+                                           : Color.secondary.opacity(0.15))
+                        )
+                }
+                if tags.count > 3 {
+                    Text("+\(tags.count - 3)")
+                        .font(.system(size: 9))
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
     }
 }
 

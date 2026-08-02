@@ -101,6 +101,8 @@ let package = Package(
                 "ScratchpadPersistencePolicy.swift",
                 "MarkdownPreviewRenderer.swift",
                 "ScratchpadExport.swift",
+                "ScratchpadTags.swift",
+                "ScratchpadFilter.swift",
                 "MeetingScratchpadExport.swift",
                 "DictationSession.swift",
                 "AgentSessionFinish.swift",
