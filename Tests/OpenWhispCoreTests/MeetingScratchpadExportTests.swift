@@ -44,7 +44,7 @@ final class MeetingScratchpadExportTests: XCTestCase {
     func testFullNoteLayoutHeaderSummaryThenTranscript() {
         let note = text(meeting(duration: 750, transcript: "We shipped it.", summary: "## Decisions\nShip on Friday."))
         XCTAssertEqual(note, """
-        Meeting — 1970-01-12 13:46 · 12m 30s
+        # Meeting — 1970-01-12 13:46 · 12m 30s
 
         ## Summary
 
@@ -108,7 +108,7 @@ final class MeetingScratchpadExportTests: XCTestCase {
     func testWholeMeetingEmptyStillProducesAUsableNote() {
         let note = text(meeting(duration: 0, transcript: nil, summary: nil, status: .recorded))
         XCTAssertEqual(note, """
-        Meeting — 1970-01-12 13:46
+        # Meeting — 1970-01-12 13:46
 
         ## Transcript
 
@@ -118,11 +118,25 @@ final class MeetingScratchpadExportTests: XCTestCase {
 
     // MARK: - Header + duration label
 
-    func testHeaderIsTheFirstLineAndBecomesTheNoteTitle() {
+    func testHeaderIsTheFirstLineAndBecomesTheNoteTitle() throws {
         var notes = ScratchpadNotes()
         let id = notes.insertMeetingNote(meeting(duration: 61, transcript: "hi"), now: t0, formatter: fixedFormatter)
-        let note = try! XCTUnwrap(notes.note(id))
-        XCTAssertEqual(note.displayTitle, "Meeting — 1970-01-12 13:46 · 1m 1s")
+        let note = try XCTUnwrap(notes.note(id))
+        // `displayTitle` is the RAW first line (the persisted-format-adjacent
+        // contract) — it keeps the H1 marker...
+        XCTAssertEqual(note.displayTitle, "# Meeting — 1970-01-12 13:46 · 1m 1s")
+        // ...while the sidebar title strips it, so the list stays clean (MAK-96).
+        XCTAssertEqual(ScratchpadText.listTitle(for: note.text),
+                       "Meeting — 1970-01-12 13:46 · 1m 1s")
+    }
+
+    /// The meeting header renders as an H1 in the preview — the unification with
+    /// `MeetingPipelineCoordinator.exportMarkdown` that MAK-96 pins.
+    func testMeetingHeaderRendersAsH1InThePreview() throws {
+        let blocks = MarkdownPreviewRenderer.render(text(meeting(duration: 61, transcript: "hi")))
+        let first = try XCTUnwrap(blocks.first)
+        XCTAssertEqual(first.kind, .heading(level: 1))
+        XCTAssertEqual(first.plain, "Meeting — 1970-01-12 13:46 · 1m 1s")
     }
 
     func testZeroDurationOmitsTheDurationSuffix() {

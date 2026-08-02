@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import UniformTypeIdentifiers
 
 /// The Scratchpad's SwiftUI content (MAK-95/96/97), hosted in the same floating
 /// `NSPanel` the pad has always used. Layout: a toolbar, then a sidebar note list
@@ -78,17 +79,24 @@ struct ScratchpadView: View {
         .padding(.vertical, 7)
     }
 
-    /// Export. Wired to real .md/.txt save panels in P2 (MAK-96); present from P1
-    /// so the toolbar layout and the ⌘E shortcut are settled.
+    /// Export is a menu, not a bare button: ⌘E fires the default (.md save), and the
+    /// menu also carries .txt and the clipboard route.
     private var exportMenu: some View {
-        Button {
-            // P2 (MAK-96) attaches the save panel here.
+        Menu {
+            Button("Export as Markdown (.md)…") { export(.md) }
+            Button("Export as Plain Text (.txt)…") { export(.txt) }
+            Divider()
+            Button("Copy as Markdown") { copyAsMarkdown() }
         } label: {
             Label("Export", systemImage: "square.and.arrow.up")
+        } primaryAction: {
+            export(.md)
         }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
         .help("Export this note (⌘E)")
         .keyboardShortcut("e", modifiers: .command)
-        .disabled(true)
+        .disabled(model.selectedNote == nil)
     }
 
     private var searchField: some View {
@@ -140,6 +148,10 @@ struct ScratchpadView: View {
                     ScratchpadRow(note: note, activeTag: model.tagFilter)
                         .tag(note.id)
                         .contextMenu {
+                            Button("Export as Markdown (.md)…") { export(.md, note: note) }
+                            Button("Export as Plain Text (.txt)…") { export(.txt, note: note) }
+                            Button("Copy as Markdown") { copyAsMarkdown(note: note) }
+                            Divider()
                             Button("Delete", role: .destructive) { pendingDelete = note }
                         }
                 }
@@ -232,6 +244,25 @@ struct ScratchpadView: View {
         }
     }
 
+    /// Save the note through an NSSavePanel (the MeetingsPane pattern). The bytes
+    /// and the suggested file name both come from the pure `ScratchpadExport`.
+    private func export(_ format: ScratchpadExport.Format, note: ScratchpadNote? = nil) {
+        guard let note = note ?? model.selectedNote else { return }
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [UTType(filenameExtension: format.fileExtension) ?? .plainText]
+        panel.nameFieldStringValue = ScratchpadExport.exportFileName(for: note, format: format)
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        let body = ScratchpadExport.render(note: note, format: format)
+        try? body.write(to: url, atomically: true, encoding: .utf8)
+    }
+
+    /// Put the note's Markdown source on the pasteboard.
+    private func copyAsMarkdown(note: ScratchpadNote? = nil) {
+        guard let note = note ?? model.selectedNote else { return }
+        let body = ScratchpadExport.render(note: note, format: .md)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(body, forType: .string)
+    }
 }
 
 // MARK: - List row
@@ -369,21 +400,68 @@ struct ScratchpadTextEditor: NSViewRepresentable {
 
 // MARK: - Preview
 
-/// The read-only view of the same note. P2 (MAK-96) replaces this with rendered
-/// Markdown from the pure `MarkdownPreviewRenderer`; for now it shows the raw
-/// source, so the toggle, its shortcut, and the edit-state-preserving flip-back are
-/// already exercised.
+/// The read-only rendered view of the same note. Blocks come from the pure
+/// `MarkdownPreviewRenderer`; this maps them to typography and nothing else.
 struct MarkdownPreviewView: View {
     let text: String
 
     var body: some View {
         ScrollView {
-            Text(text)
+            VStack(alignment: .leading, spacing: 0) {
+                ForEach(Array(MarkdownPreviewRenderer.render(text).enumerated()), id: \.offset) { _, block in
+                    blockView(block)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
+            .textSelection(.enabled)
+        }
+    }
+
+    @ViewBuilder
+    private func blockView(_ block: MarkdownPreviewRenderer.Block) -> some View {
+        switch block.kind {
+        case .heading(let level):
+            Text(block.text)
+                .font(.system(size: headingSize(level), weight: level <= 2 ? .bold : .semibold))
+                .padding(.top, level == 1 ? 4 : 8)
+                .padding(.bottom, 3)
+        case .paragraph:
+            Text(block.text)
                 .font(.system(size: 13))
+                .padding(.vertical, 2)
+        case .listItem(let depth):
+            Text(block.text)
+                .font(.system(size: 13))
+                .padding(.leading, CGFloat(depth) * 16)
+                .padding(.vertical, 1)
+        case .codeBlock:
+            Text(block.text)
+                .font(.system(size: 12, design: .monospaced))
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 12)
-                .textSelection(.enabled)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 1)
+                .background(Color.secondary.opacity(0.12))
+        case .blockQuote:
+            HStack(spacing: 6) {
+                Rectangle().fill(Color.secondary.opacity(0.4)).frame(width: 3)
+                Text(block.text).font(.system(size: 13)).foregroundStyle(.secondary)
+            }
+            .padding(.vertical, 2)
+        case .horizontalRule:
+            Divider().padding(.vertical, 6)
+        case .blank:
+            Spacer().frame(height: 6)
+        }
+    }
+
+    private func headingSize(_ level: Int) -> CGFloat {
+        switch level {
+        case 1:  return 20
+        case 2:  return 17
+        case 3:  return 15
+        default: return 13
         }
     }
 }

@@ -61,10 +61,15 @@ public enum MeetingScratchpadExport {
     }
 
     /// The first line of the note — what the Scratchpad list shows as its title.
-    /// `"Meeting — <date>"`, plus `" · <duration>"` when the duration is positive.
+    /// `"# Meeting — <date>"`, plus `" · <duration>"` when the duration is positive.
+    ///
+    /// An H1 (MAK-96), matching `MeetingPipelineCoordinator.exportMarkdown` so the
+    /// two surfaces render identically. The `#` costs the list nothing: the sidebar
+    /// title comes from `ScratchpadText.listTitle`, which strips Markdown markers,
+    /// so the row still reads "Meeting — …".
     public static func header(for meeting: Meeting, formatter: DateFormatter? = nil) -> String {
         let f = formatter ?? defaultFormatter
-        var line = "Meeting — " + f.string(from: meeting.startedAt)
+        var line = "# Meeting — " + f.string(from: meeting.startedAt)
         if let d = durationLabel(meeting.duration) { line += " · " + d }
         return line
     }

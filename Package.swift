@@ -99,6 +99,8 @@ let package = Package(
                 "Scratchpad.swift",
                 "ScratchpadText.swift",
                 "ScratchpadPersistencePolicy.swift",
+                "MarkdownPreviewRenderer.swift",
+                "ScratchpadExport.swift",
                 "MeetingScratchpadExport.swift",
                 "DictationSession.swift",
                 "AgentSessionFinish.swift",
