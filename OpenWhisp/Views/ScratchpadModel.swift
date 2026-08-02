@@ -56,6 +56,16 @@ final class ScratchpadModel: ObservableObject {
     /// The selected tag filter, if any (P3).
     @Published var tagFilter: String?
 
+    // MARK: - AI actions (MAK-99)
+
+    /// The action currently in flight, if any — drives the toolbar spinner and
+    /// disables the menu (one action at a time).
+    @Published private(set) var aiBusyAction: ScratchpadAI.Action?
+    /// The transient status line under the editor: a failure explanation
+    /// ("Kept original — …") or a success note. Cleared on the next action, on a
+    /// note switch, and on a keystroke.
+    @Published private(set) var aiStatus: String = ""
+
     // MARK: - Private state
 
     private var store = ScratchpadNotes()
@@ -141,6 +151,15 @@ final class ScratchpadModel: ObservableObject {
         editorTextView = textView
     }
 
+    /// The live editor, for the one caller that must drive it directly: the MAK-99
+    /// in-place transform, which replaces the text through the text view's own
+    /// undo-registering path so ⌘Z restores the note. Nil when the editor isn't on
+    /// screen (preview mode, closed panel), which the caller treats as "fall back to
+    /// a direct model write".
+    var liveEditorTextView: NSTextView? {
+        editorTextView?.window == nil ? nil : editorTextView
+    }
+
     /// ⌘F: open the editor's native find bar (incremental, highlighted,
     /// Enter/⇧Enter navigation) — the in-note half of search; the toolbar
     /// field (⌘⇧F) filters across notes. No-op in preview mode.
@@ -161,6 +180,10 @@ final class ScratchpadModel: ObservableObject {
         let body = store.note(id)?.text ?? ""
         if id == selectedID, editorText == body { return }
         selectedID = id
+        // MAK-99: switching notes cancels delivery of any in-flight AI result — it
+        // must never paint into the note the user just moved to.
+        if aiSession.noteChanged(to: id) { aiBusyAction = nil }
+        aiStatus = ""
         loadEditorText(body, for: id)
     }
 
@@ -199,6 +222,8 @@ final class ScratchpadModel: ObservableObject {
     /// but the editor keeps the user's caret exactly where it is.
     func applyEdit(_ text: String) {
         guard !isSyncingEditor, let id = selectedID else { return }
+        // A keystroke retires the AI status line — it described the previous state.
+        clearAIStatus()
         store.setText(text, for: id)
         notes = store.notes
         provenance = ScratchpadText.provenanceLine(store.note(id))
@@ -254,6 +279,184 @@ final class ScratchpadModel: ObservableObject {
         return id
     }
 
+    // MARK: - AI actions (MAK-99)
+
+    /// One LLM round-trip: (instruction, input, resolved model) → output.
+    /// Injected by the controller so this model never touches AppState — the same
+    /// seam `MeetingPipelineCoordinator.SummarizeCall` uses, and equally stubbable.
+    typealias AICall = (
+        _ instruction: String, _ input: String, _ resolved: SummaryModelResolver.Resolved
+    ) async throws -> String
+
+    private var aiCall: AICall?
+    /// Re-evaluated per request so a mid-session settings change lands.
+    private var resolveAIModel: () -> SummaryModelResolver.Resolved = {
+        .init(provider: "", model: "", endpoint: "")
+    }
+    /// The delivery fence — pure and unit-tested (`ScratchpadAISession`).
+    private var aiSession = ScratchpadAISession()
+
+    /// Wire the LLM seam. Called once by the controller at construction.
+    func configureAI(call: @escaping AICall, resolveModel: @escaping () -> SummaryModelResolver.Resolved) {
+        aiCall = call
+        resolveAIModel = resolveModel
+    }
+
+    /// Whether the AI menu is available at all (an LLM seam is wired).
+    var aiAvailable: Bool { aiCall != nil }
+
+    /// Whether an action can start right now: a wired LLM, nothing in flight, and a
+    /// selected note with actual content to work on.
+    var canRunAIAction: Bool {
+        aiAvailable && aiBusyAction == nil
+            && !(selectedNote?.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+    }
+
+    /// The effective provider/model the actions will use, for the settings surface.
+    var resolvedAIModel: SummaryModelResolver.Resolved { resolveAIModel() }
+
+    /// Clear the status line (a keystroke or an explicit dismissal).
+    func clearAIStatus() {
+        guard !aiStatus.isEmpty else { return }
+        aiStatus = ""
+    }
+
+    /// Run an AI action over the selected note.
+    ///
+    /// Failure NEVER clobbers the note: every exit that isn't an accepted result
+    /// leaves the text exactly as it was and explains itself in `aiStatus`.
+    ///
+    /// - Parameter applyInPlace: how a destructive result reaches the note. The view
+    ///   passes a closure that replaces the text THROUGH the NSTextView's
+    ///   undo-registering path, so the transform is a single ⌘Z away (see
+    ///   `ScratchpadTextEditor.replaceTextUndoably`). Nil falls back to a direct
+    ///   model write (used only when the editor isn't on screen — e.g. preview mode).
+    func runAIAction(
+        _ action: ScratchpadAI.Action,
+        applyInPlace: ((String) -> Bool)? = nil
+    ) {
+        guard let aiCall else {
+            aiStatus = "No LLM is configured — set one up in Settings → Cleanup."
+            return
+        }
+        guard aiBusyAction == nil else { return }
+        guard let id = selectedID, let note = store.note(id) else { return }
+        let source = note.text
+        guard !source.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+
+        // Fail closed BEFORE the request: an agent-CLI resolution would otherwise
+        // fall through to the OpenAI cloud endpoint the user never chose (the
+        // MAK-53 hazard).
+        let resolved = resolveAIModel()
+        guard ScratchpadAIModel.isUsable(resolved) else {
+            aiStatus = "Kept original — " + ScratchpadAIModel.unusableProviderMessage
+            return
+        }
+
+        let ticket = aiSession.begin(noteID: id, action: action)
+        aiBusyAction = action
+        aiStatus = ""
+        let instruction = ScratchpadAI.prompt(for: action)
+
+        Task { [weak self] in
+            let outcome: Result<String, Error>
+            do {
+                outcome = .success(try await aiCall(instruction, source, resolved))
+            } catch {
+                outcome = .failure(error)
+            }
+            await MainActor.run {
+                self?.deliverAIResult(
+                    outcome, ticket: ticket, source: source, action: action,
+                    applyInPlace: applyInPlace)
+            }
+        }
+    }
+
+    /// Land (or discard) an AI result. The fence decides whether this result is
+    /// still wanted; the guard decides whether it is good enough to use.
+    private func deliverAIResult(
+        _ outcome: Result<String, Error>,
+        ticket: ScratchpadAISession.Ticket,
+        source: String,
+        action: ScratchpadAI.Action,
+        applyInPlace: ((String) -> Bool)?
+    ) {
+        // A late result for a note the user has left (or a cancelled/superseded
+        // request) is dropped silently — painting it anywhere would be the bug.
+        guard aiSession.accepts(ticket, currentNoteID: selectedID) else {
+            aiSession.finish(ticket)
+            if !aiSession.isBusy { aiBusyAction = nil }
+            return
+        }
+        aiSession.finish(ticket)
+        aiBusyAction = nil
+
+        let output: String
+        switch outcome {
+        case .success(let text):
+            output = text
+        case .failure(let error):
+            aiStatus = "Kept original — " + Self.aiFailureReason(error)
+            return
+        }
+
+        switch ScratchpadAI.validate(output: output, source: source, action: action) {
+        case .failure(let rejection):
+            aiStatus = "Kept original — " + rejection.reason
+        case .success(let accepted):
+            apply(accepted, for: action, source: source, applyInPlace: applyInPlace)
+        }
+    }
+
+    /// Route an ACCEPTED result to its destination: in place for the destructive
+    /// transform, a brand-new note for the summary.
+    private func apply(
+        _ accepted: String,
+        for action: ScratchpadAI.Action,
+        source: String,
+        applyInPlace: ((String) -> Bool)?
+    ) {
+        switch action {
+        case .formatMarkdown:
+            // Preferred path: through the text view, so the whole transform is ONE
+            // undo group and ⌘Z restores the note exactly. `applyInPlace` returns
+            // false when the editor refused (not on screen / not first responder),
+            // in which case we still land the text — losing undo is much better
+            // than losing the result.
+            if applyInPlace?(accepted) == true {
+                // The text view's change notification already drove `applyEdit`.
+                aiStatus = "Formatted as Markdown — ⌘Z to undo."
+            } else {
+                guard let id = selectedID else { return }
+                store.setText(accepted, for: id)
+                notes = store.notes
+                loadEditorText(accepted, for: id)
+                persist(.edit)
+                aiStatus = "Formatted as Markdown."
+            }
+        case .summarize:
+            // Non-destructive: a NEW note, selected. The source is untouched.
+            let id = store.createNote()
+            store.setText(ScratchpadAI.summaryNoteText(summary: accepted, sourceText: source), for: id)
+            store.clearTypedProvenance(for: id)
+            selectedID = id
+            notes = store.notes
+            loadEditorText(store.note(id)?.text ?? "", for: id)
+            persist(.create)
+            aiStatus = "Summary saved as a new note."
+        }
+    }
+
+    /// A short human reason for a failed LLM round-trip.
+    private static func aiFailureReason(_ error: Error) -> String {
+        if let wire = error as? BridgeWire.ErrorObject, !wire.message.isEmpty {
+            return wire.message
+        }
+        let described = (error as NSError).localizedDescription
+        return described.isEmpty ? "the request failed" : described
+    }
+
     // MARK: - Editor sync
 
     /// Write text INTO the editor programmatically, fenced so the resulting change
@@ -299,6 +502,16 @@ final class ScratchpadModel: ObservableObject {
     private func writeSnapshot() {
         let snapshot = store
         Self.saveQueue.async { ScratchpadStore.save(snapshot) }
+    }
+
+    /// Cancel delivery of any in-flight AI result (MAK-99) — the panel closed.
+    /// The request itself keeps running to completion; its result is simply
+    /// discarded on arrival rather than painting into a pad that isn't on screen.
+    func cancelAIAction() {
+        guard aiSession.isBusy else { return }
+        aiSession.cancel()
+        aiBusyAction = nil
+        aiStatus = ""
     }
 
     /// Persist any pending edit immediately — panel close, app terminate.
