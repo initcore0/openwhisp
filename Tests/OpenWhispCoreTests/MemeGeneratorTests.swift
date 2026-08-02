@@ -1,115 +1,12 @@
 import XCTest
 @testable import OpenWhispCore
 
-/// Covers the Meme Generator plugin's pure layer (spike/plugin-system): the LLM
-/// response parser, the template matcher, and the caption layout rules.
+/// Covers the Meme Generator plugin's pure layer (spike/plugin-system): the ranked
+/// candidate parser, lexical ranking and search over the template catalog, the
+/// caption layout rules, and the editable caption-box model.
 final class MemeGeneratorTests: XCTestCase {
 
-    // MARK: - MemeAI.parse
-
-    func testParsesBareJSONObject() {
-        let result = MemeAI.parse("""
-        {"template_query":"drake hotline bling","top_text":"writing tests","bottom_text":"shipping on friday"}
-        """)
-        guard case .success(let spec) = result else { return XCTFail("expected success, got \(result)") }
-        XCTAssertEqual(spec.templateQuery, "drake hotline bling")
-        XCTAssertEqual(spec.topText, "writing tests")
-        XCTAssertEqual(spec.bottomText, "shipping on friday")
-    }
-
-    /// Small local models fence their JSON constantly; that's packaging, not content.
-    func testParsesFencedJSON() {
-        let result = MemeAI.parse("""
-        Sure! Here you go:
-
-        ```json
-        {"template_query":"two buttons","top_text":"A","bottom_text":"B"}
-        ```
-        """)
-        guard case .success(let spec) = result else { return XCTFail("expected success") }
-        XCTAssertEqual(spec.templateQuery, "two buttons")
-        XCTAssertEqual(spec.topText, "A")
-    }
-
-    func testParsesJSONEmbeddedInProse() {
-        let result = MemeAI.parse(
-            "I think this works: {\"template_query\":\"success kid\",\"top_text\":\"x\",\"bottom_text\":\"y\"} — enjoy!")
-        guard case .success(let spec) = result else { return XCTFail("expected success") }
-        XCTAssertEqual(spec.templateQuery, "success kid")
-    }
-
-    /// A caption containing a brace must not end the object scan early.
-    func testBracesInsideStringValuesDoNotTruncateTheScan() {
-        let result = MemeAI.parse(
-            "{\"template_query\":\"code\",\"top_text\":\"when you write {\",\"bottom_text\":\"and forget }\"}")
-        guard case .success(let spec) = result else { return XCTFail("expected success") }
-        XCTAssertEqual(spec.topText, "when you write {")
-        XCTAssertEqual(spec.bottomText, "and forget }")
-    }
-
-    func testStripsSurroundingQuotesFromCaptions() {
-        let result = MemeAI.parse(
-            "{\"template_query\":\"x\",\"top_text\":\"\\\"quoted\\\"\",\"bottom_text\":\"'single'\"}")
-        guard case .success(let spec) = result else { return XCTFail("expected success") }
-        XCTAssertEqual(spec.topText, "quoted")
-        XCTAssertEqual(spec.bottomText, "single")
-    }
-
-    /// Rule 4 in the prompt asks for exactly this on single-line memes.
-    func testOneEmptyCaptionIsAccepted() {
-        let result = MemeAI.parse(
-            "{\"template_query\":\"success kid\",\"top_text\":\"it compiled\",\"bottom_text\":\"\"}")
-        guard case .success(let spec) = result else { return XCTFail("expected success") }
-        XCTAssertEqual(spec.bottomText, "")
-    }
-
-    func testEmptyResponseIsRejected() {
-        XCTAssertEqual(rejection(MemeAI.parse("   \n ")), .empty)
-    }
-
-    func testNonJSONResponseIsRejected() {
-        XCTAssertEqual(rejection(MemeAI.parse("I'm sorry, I can't help with that.")), .notJSON)
-    }
-
-    func testUnbalancedBracesAreRejected() {
-        XCTAssertEqual(rejection(MemeAI.parse("{\"template_query\": \"x\"")), .notJSON)
-    }
-
-    /// An all-empty spec would render a blank caption on an arbitrary template —
-    /// worse than an honest error.
-    func testAllEmptyFieldsAreRejected() {
-        XCTAssertEqual(
-            rejection(MemeAI.parse("{\"template_query\":\"\",\"top_text\":\"\",\"bottom_text\":\"\"}")),
-            .missingFields)
-    }
-
-    func testRejectionReasonsAreHumanReadable() {
-        for r in [MemeAI.Rejection.empty, .notJSON, .missingFields] {
-            XCTAssertFalse(r.reason.isEmpty)
-        }
-    }
-
-    /// The prompt must keep captions in the user's language (PR #157 guard) while
-    /// pinning the template query to English for catalog matching.
-    func testPromptPinsCaptionLanguageAndEnglishTemplateQuery() {
-        let prompt = MemeAI.prompt.lowercased()
-        XCTAssertTrue(prompt.contains("same language"))
-        XCTAssertTrue(prompt.contains("do not translate"))
-        XCTAssertTrue(prompt.contains("english"))
-    }
-
-    func testUserPayloadTrimsAndLabelsTheDescription() {
-        XCTAssertEqual(
-            MemeAI.userPayload(description: "  a cat  "),
-            "Meme description:\na cat")
-    }
-
-    private func rejection(_ result: Result<MemeAI.MemeSpec, MemeAI.Rejection>) -> MemeAI.Rejection? {
-        if case .failure(let r) = result { return r }
-        return nil
-    }
-
-    // MARK: - Template matching
+    // MARK: - Lexical ranking (the fallback when the model names nothing real)
 
     private let catalog: [MemeTemplate] = [
         MemeTemplate(id: "1", name: "Drake Hotline Bling", url: "u1", width: 1200, height: 1200),
@@ -118,53 +15,66 @@ final class MemeGeneratorTests: XCTestCase {
         MemeTemplate(id: "4", name: "Success Kid", url: "u4", width: 500, height: 500),
     ]
 
-    func testExactNameMatchWins() {
-        let match = MemeTemplateMatcher.bestMatch(for: "Two Buttons", in: catalog)
-        XCTAssertEqual(match?.template.id, "3")
-        XCTAssertFalse(match?.isFallback ?? true)
+    func testRankedPutsAnExactNameFirst() {
+        XCTAssertEqual(
+            MemeTemplateMatcher.ranked(for: "Two Buttons", in: catalog, limit: 5).first?.id, "3")
     }
 
-    func testMatchIsCaseAndPunctuationInsensitive() {
+    func testRankedIsCaseAndPunctuationInsensitive() {
         XCTAssertEqual(
-            MemeTemplateMatcher.bestMatch(for: "two-buttons!", in: catalog)?.template.id, "3")
+            MemeTemplateMatcher.ranked(for: "two-buttons!", in: catalog, limit: 5).first?.id, "3")
     }
 
     /// A partial name the user actually says ("the drake one") must find the template.
-    func testPartialPhraseMatches() {
+    func testRankedFindsPartialPhrases() {
         XCTAssertEqual(
-            MemeTemplateMatcher.bestMatch(for: "drake", in: catalog)?.template.id, "1")
+            MemeTemplateMatcher.ranked(for: "drake", in: catalog, limit: 5).first?.id, "1")
         XCTAssertEqual(
-            MemeTemplateMatcher.bestMatch(for: "distracted boyfriend", in: catalog)?.template.id, "2")
+            MemeTemplateMatcher.ranked(for: "distracted boyfriend", in: catalog, limit: 5).first?.id, "2")
     }
 
-    func testStopwordsAndTheWordMemeAreIgnored() {
+    func testRankedIgnoresStopwordsAndTheWordMeme() {
         XCTAssertEqual(
-            MemeTemplateMatcher.bestMatch(for: "the success kid meme", in: catalog)?.template.id, "4")
+            MemeTemplateMatcher.ranked(for: "the success kid meme", in: catalog, limit: 5).first?.id, "4")
     }
 
-    /// A confidently-wrong template is worse than an admitted guess.
-    func testUnmatchableQueryFallsBackToMostPopularAndSaysSo() {
-        let match = MemeTemplateMatcher.bestMatch(for: "zzzz qqqq", in: catalog)
-        XCTAssertEqual(match?.template.id, "1", "falls back to the catalog's first (most popular) entry")
-        XCTAssertTrue(match?.isFallback ?? false)
+    /// The core v2 rule: ranking REFUSES to guess. v1's `bestMatch` answered this
+    /// same query with a confident Drake, which is the reported bug.
+    func testRankedReturnsNothingWhenNothingScores() {
+        XCTAssertEqual(MemeTemplateMatcher.ranked(for: "yoda", in: catalog, limit: 5), [])
+        XCTAssertEqual(MemeTemplateMatcher.ranked(for: "zzzz qqqq", in: catalog, limit: 5), [])
     }
 
-    func testEmptyQueryFallsBack() {
-        let match = MemeTemplateMatcher.bestMatch(for: "   ", in: catalog)
-        XCTAssertTrue(match?.isFallback ?? false)
+    func testRankedReturnsNothingForAnEmptyQuery() {
+        XCTAssertEqual(MemeTemplateMatcher.ranked(for: "   ", in: catalog, limit: 5), [])
     }
 
-    func testEmptyCatalogYieldsNoMatch() {
-        XCTAssertNil(MemeTemplateMatcher.bestMatch(for: "drake", in: []))
+    func testRankedHandlesAnEmptyCatalog() {
+        XCTAssertEqual(MemeTemplateMatcher.ranked(for: "drake", in: [], limit: 5), [])
+    }
+
+    func testRankedRespectsTheLimit() {
+        let many = (1...10).map {
+            MemeTemplate(id: "\($0)", name: "Angry Cat \($0)", url: "u", width: 10, height: 10)
+        }
+        XCTAssertEqual(MemeTemplateMatcher.ranked(for: "angry cat", in: many, limit: 3).count, 3)
+        XCTAssertEqual(MemeTemplateMatcher.ranked(for: "angry", in: many, limit: 0), [])
     }
 
     /// Ties break on catalog order, which imgflip returns popularity-ranked.
-    func testTieBreaksTowardTheMorePopularTemplate() {
+    func testRankedTieBreaksTowardTheMorePopularTemplate() {
         let tied = [
             MemeTemplate(id: "popular", name: "Angry Cat", url: "u", width: 10, height: 10),
             MemeTemplate(id: "less", name: "Angry Dog", url: "u", width: 10, height: 10),
         ]
-        XCTAssertEqual(MemeTemplateMatcher.bestMatch(for: "angry", in: tied)?.template.id, "popular")
+        XCTAssertEqual(
+            MemeTemplateMatcher.ranked(for: "angry", in: tied, limit: 5).map(\.id),
+            ["popular", "less"])
+    }
+
+    func testRankedOrdersBetterMatchesFirst() {
+        let ranked = MemeTemplateMatcher.ranked(for: "success kid", in: catalog, limit: 5)
+        XCTAssertEqual(ranked.first?.id, "4", "the exact match outranks any partial")
     }
 
     func testCatalogResponseDecodesImgflipShape() throws {
@@ -259,18 +169,391 @@ final class MemeGeneratorTests: XCTestCase {
         XCTAssertEqual(fit.lines, [])
     }
 
-    /// Font sizes scale with the image so a 1200px and a 400px template look alike.
-    func testFontSizesScaleWithImageHeight() {
-        XCTAssertGreaterThan(
-            MemeCaptionLayout.idealFontSize(imageHeight: 1200),
-            MemeCaptionLayout.idealFontSize(imageHeight: 400))
-        XCTAssertGreaterThan(
-            MemeCaptionLayout.idealFontSize(imageHeight: 500),
-            MemeCaptionLayout.minimumFontSize(imageHeight: 500))
+
+    // MARK: - v2: ranked candidate parsing
+    //
+    // The rule under test is the fix for the "yoda meme → silent Drake" report: a
+    // template name the model invents must be DROPPED, never fuzzy-matched.
+
+    private let catalogNames = [
+        "Drake Hotline Bling", "Distracted Boyfriend", "Two Buttons", "Success Kid",
+    ]
+
+    func testRankedParsePreservesModelOrder() {
+        let result = MemeAI.parseRanked("""
+        {"templates":["Two Buttons","Drake Hotline Bling"],"top_text":"ship it","bottom_text":"test it"}
+        """, catalogNames: catalogNames)
+        guard case .success(let spec) = result else { return XCTFail("expected success, got \(result)") }
+        XCTAssertEqual(spec.templateNames, ["Two Buttons", "Drake Hotline Bling"])
+        XCTAssertEqual(spec.topText, "ship it")
+        XCTAssertEqual(spec.bottomText, "test it")
     }
 
-    func testFontSizesHaveAbsoluteFloors() {
-        XCTAssertGreaterThanOrEqual(MemeCaptionLayout.idealFontSize(imageHeight: 1), 12)
-        XCTAssertGreaterThanOrEqual(MemeCaptionLayout.minimumFontSize(imageHeight: 1), 8)
+    /// The headline bug: "yoda" is not in imgflip's top 100. The candidate must be
+    /// dropped so the UI can say the corpus doesn't contain it, rather than matched
+    /// onto an unrelated popular template.
+    func testHallucinatedTemplateNameIsDropped() {
+        let result = MemeAI.parseRanked("""
+        {"templates":["Yoda","Baby Yoda"],"top_text":"do or do not","bottom_text":""}
+        """, catalogNames: catalogNames)
+        guard case .success(let spec) = result else { return XCTFail("expected success") }
+        XCTAssertTrue(spec.templateNames.isEmpty)
+        XCTAssertTrue(spec.hasNoUsableTemplate, "the UI needs this to show the corpus honestly")
+        XCTAssertEqual(spec.topText, "do or do not", "captions survive an unusable template")
+    }
+
+    func testInventedNamesAreDroppedButValidOnesSurvive() {
+        let result = MemeAI.parseRanked("""
+        {"templates":["Yoda","Success Kid","Gandalf"],"top_text":"a","bottom_text":"b"}
+        """, catalogNames: catalogNames)
+        guard case .success(let spec) = result else { return XCTFail("expected success") }
+        XCTAssertEqual(spec.templateNames, ["Success Kid"])
+    }
+
+    /// Models re-capitalize and re-punctuate names constantly; that's packaging.
+    func testCandidateMatchingIsCaseAndPunctuationInsensitiveAndReturnsCatalogSpelling() {
+        let result = MemeAI.parseRanked("""
+        {"templates":["drake hotline bling!","TWO   BUTTONS"],"top_text":"x","bottom_text":""}
+        """, catalogNames: catalogNames)
+        guard case .success(let spec) = result else { return XCTFail("expected success") }
+        XCTAssertEqual(
+            spec.templateNames, ["Drake Hotline Bling", "Two Buttons"],
+            "returned in the catalog's own spelling so callers can look them up")
+    }
+
+    func testDuplicateCandidatesAreCollapsed() {
+        XCTAssertEqual(
+            MemeAI.validate(["Success Kid", "success kid", "Success  Kid"], against: catalogNames),
+            ["Success Kid"])
+    }
+
+    func testCandidateListIsCappedAtFive() {
+        let names = (1...10).map { "T\($0)" }
+        let kept = MemeAI.validate(names, against: names)
+        XCTAssertEqual(kept.count, MemeAI.maxCandidates)
+        XCTAssertEqual(kept, ["T1", "T2", "T3", "T4", "T5"], "keeps the model's ranking")
+    }
+
+    /// A model that ignores the array schema and sends one string still works.
+    func testSingleStringTemplateFieldIsAccepted() {
+        for key in ["templates", "template", "template_query"] {
+            let raw = "{\"\(key)\":\"Success Kid\",\"top_text\":\"x\",\"bottom_text\":\"\"}"
+            guard case .success(let spec) = MemeAI.parseRanked(raw, catalogNames: catalogNames) else {
+                return XCTFail("expected success for key \(key)")
+            }
+            XCTAssertEqual(spec.templateNames, ["Success Kid"], "key: \(key)")
+        }
+    }
+
+    func testRankedParseDigsJSONOutOfFencedProse() {
+        let result = MemeAI.parseRanked("""
+        Let me think — Drake fits best here.
+
+        ```json
+        {"templates":["Drake Hotline Bling"],"top_text":"no","bottom_text":"yes"}
+        ```
+        """, catalogNames: catalogNames)
+        guard case .success(let spec) = result else { return XCTFail("expected success") }
+        XCTAssertEqual(spec.templateNames, ["Drake Hotline Bling"])
+    }
+
+    func testRankedParseRejectsNonJSON() {
+        XCTAssertEqual(
+            rejection(MemeAI.parseRanked("I can't help with that.", catalogNames: catalogNames)),
+            .notJSON)
+    }
+
+    func testRankedParseRejectsEmpty() {
+        XCTAssertEqual(rejection(MemeAI.parseRanked("  ", catalogNames: catalogNames)), .empty)
+    }
+
+    /// No template AND no captions is nothing at all — reject rather than render.
+    func testRankedParseRejectsWhenNothingUsableCameBack() {
+        XCTAssertEqual(
+            rejection(MemeAI.parseRanked(
+                "{\"templates\":[\"Yoda\"],\"top_text\":\"\",\"bottom_text\":\"\"}",
+                catalogNames: catalogNames)),
+            .missingFields)
+    }
+
+    func testEmptyCatalogDropsEveryCandidate() {
+        XCTAssertEqual(MemeAI.validate(["Drake Hotline Bling"], against: []), [])
+    }
+
+    private func rejection(_ result: Result<MemeAI.RankedSpec, MemeAI.Rejection>) -> MemeAI.Rejection? {
+        if case .failure(let r) = result { return r }
+        return nil
+    }
+
+    // MARK: - v2: the ranked prompt
+
+    func testRankedPromptForbidsInventingNamesAndPinsCaptionLanguage() {
+        let prompt = MemeAI.rankedPrompt.lowercased()
+        XCTAssertTrue(prompt.contains("copied exactly"))
+        XCTAssertTrue(prompt.contains("do not invent"))
+        XCTAssertTrue(prompt.contains("same language"))
+        XCTAssertTrue(prompt.contains("do not translate"))
+    }
+
+    func testRankedPayloadNumbersTheCatalogAndCarriesTheDescription() {
+        let payload = MemeAI.rankedUserPayload(
+            description: "  two buttons about deploys  ",
+            templateNames: ["Drake Hotline Bling", "Two Buttons"])
+        XCTAssertTrue(payload.contains("1. Drake Hotline Bling"))
+        XCTAssertTrue(payload.contains("2. Two Buttons"))
+        XCTAssertTrue(payload.contains("two buttons about deploys"))
+        XCTAssertFalse(payload.contains("  two buttons about deploys  "), "description is trimmed")
+    }
+
+    /// Short-context local models can't take a 100-name list; truncation drops the
+    /// least popular entries because the catalog is popularity-ordered.
+    func testRankedPayloadTruncatesTheCatalogToTheLimit() {
+        let names = (1...20).map { "Template \($0)" }
+        let payload = MemeAI.rankedUserPayload(description: "x", templateNames: names, limit: 5)
+        XCTAssertTrue(payload.contains("5. Template 5"))
+        XCTAssertFalse(payload.contains("6. Template 6"))
+    }
+
+    // MARK: - Browse all: search filter
+
+    func testSearchIsCaseInsensitiveSubstringOverNames() {
+        XCTAssertEqual(
+            MemeTemplateMatcher.search("DRAKE", in: catalog).map(\.id), ["1"])
+        XCTAssertEqual(
+            MemeTemplateMatcher.search("button", in: catalog).map(\.id), ["3"])
+    }
+
+    func testSearchRequiresEveryTokenToAppear() {
+        XCTAssertEqual(
+            MemeTemplateMatcher.search("drake bling", in: catalog).map(\.id), ["1"])
+        XCTAssertEqual(
+            MemeTemplateMatcher.search("drake buttons", in: catalog).map(\.id), [])
+    }
+
+    func testSearchIgnoresPunctuation() {
+        XCTAssertEqual(
+            MemeTemplateMatcher.search("two-buttons!", in: catalog).map(\.id), ["3"])
+    }
+
+    func testEmptySearchReturnsTheWholeCatalogInOrder() {
+        XCTAssertEqual(
+            MemeTemplateMatcher.search("   ", in: catalog).map(\.id), ["1", "2", "3", "4"])
+    }
+
+    /// The whole point of Browse all: no fallback, ever. An empty grid is the honest
+    /// answer for a query the corpus can't serve — this is the "yoda" case, and
+    /// neither surviving entry point is allowed to invent a substitute.
+    func testSearchNeverFallsBackToAPopularTemplate() {
+        XCTAssertEqual(MemeTemplateMatcher.search("yoda", in: catalog), [])
+        XCTAssertEqual(
+            MemeTemplateMatcher.ranked(for: "yoda", in: catalog, limit: 5), [],
+            "ranking refuses too — v1's bestMatch answered Drake here, which was the bug")
+    }
+
+    func testSearchPreservesPopularityOrder() {
+        let hits = MemeTemplateMatcher.search("t", in: catalog).map(\.id)
+        XCTAssertEqual(hits, catalog.filter { hits.contains($0.id) }.map(\.id))
+    }
+
+    // MARK: - Caption box model
+
+    /// Deterministic metrics for the box layout: every character is `size * 0.5`
+    /// wide, and a named font is 20% wider so per-box faces are observably used.
+    private func boxMeasure(_ text: String, _ size: Double, _ fontName: String?) -> Double {
+        Double(text.count) * size * 0.5 * (fontName == nil ? 1.0 : 1.2)
+    }
+
+    func testSeedBoxesArePlacedTopAndBottom() {
+        let boxes = MemeCaptionLayout.seedBoxes(topText: "up", bottomText: "down")
+        XCTAssertEqual(boxes.count, 2)
+        XCTAssertEqual(boxes[0].text, "up")
+        XCTAssertEqual(boxes[1].text, "down")
+        XCTAssertLessThan(boxes[0].centerY, 0.5, "origin is TOP-left, so the top box has small y")
+        XCTAssertGreaterThan(boxes[1].centerY, 0.5)
+        XCTAssertEqual(boxes[0].centerX, 0.5)
+    }
+
+    /// Empty captions still get a box — the editor needs a handle to type into.
+    func testSeedBoxesExistEvenForEmptyCaptions() {
+        XCTAssertEqual(MemeCaptionLayout.seedBoxes(topText: "", bottomText: "").count, 2)
+    }
+
+    /// Normalized coordinates are the whole reason the box model exists: the same box
+    /// must land proportionally identically on a preview and on a full-res export.
+    func testNormalizedGeometryScalesWithImageSize() {
+        let box = MemeCaptionLayout.CaptionBox(text: "hi", centerX: 0.25, centerY: 0.75)
+
+        let small = MemeCaptionLayout.layout(
+            box: box, imageWidth: 400, imageHeight: 400, measure: boxMeasure)
+        let large = MemeCaptionLayout.layout(
+            box: box, imageWidth: 1200, imageHeight: 1200, measure: boxMeasure)
+
+        XCTAssertEqual(small.centerX, 100)
+        XCTAssertEqual(large.centerX, 300)
+        XCTAssertEqual(large.centerX / small.centerX, 3, accuracy: 0.0001)
+        XCTAssertEqual(large.fontSize / small.fontSize, 3, accuracy: 0.0001,
+                       "font size is a share of height, so it scales too")
+    }
+
+    func testBoxCenterIsInPixelsWithTopLeftOrigin() {
+        let box = MemeCaptionLayout.CaptionBox(text: "hi", centerX: 0.5, centerY: 0.1)
+        let layout = MemeCaptionLayout.layout(
+            box: box, imageWidth: 1000, imageHeight: 500, measure: boxMeasure)
+        XCTAssertEqual(layout.centerX, 500)
+        XCTAssertEqual(layout.centerY, 50, "0.1 of the height, measured from the TOP")
+        XCTAssertLessThan(layout.blockTopY, layout.centerY)
+    }
+
+    func testBoxTextIsUppercasedAndWrappedToTheBoxWidth() {
+        var box = MemeCaptionLayout.CaptionBox(text: "one two three four five", centerX: 0.5, centerY: 0.5)
+        box.widthShare = 0.5
+        let layout = MemeCaptionLayout.layout(
+            box: box, imageWidth: 400, imageHeight: 400, measure: boxMeasure)
+
+        XCTAssertGreaterThan(layout.lines.count, 1, "should have wrapped")
+        XCTAssertTrue(layout.lines.allSatisfy { $0 == $0.uppercased() })
+        let widest = layout.lines.map { boxMeasure($0, layout.fontSize, nil) }.max() ?? 0
+        XCTAssertLessThanOrEqual(widest, layout.maxWidth)
+    }
+
+    /// The user's font size is a ceiling: a caption too long for its box shrinks
+    /// rather than overflowing.
+    func testOversizedCaptionShrinksBelowTheRequestedFontSize() {
+        var box = MemeCaptionLayout.CaptionBox(
+            text: "a very long caption that cannot possibly fit at full size",
+            centerX: 0.5, centerY: 0.5)
+        box.fontSizeShare = 0.3
+        box.widthShare = 0.3
+
+        let layout = MemeCaptionLayout.layout(
+            box: box, imageWidth: 400, imageHeight: 400, measure: boxMeasure)
+        XCTAssertLessThan(layout.fontSize, 400 * 0.3)
+        XCTAssertGreaterThan(layout.fontSize, 0)
+    }
+
+    func testPerBoxFontNameIsPassedToTheMeasurer() {
+        var plain = MemeCaptionLayout.CaptionBox(text: "one two three", centerX: 0.5, centerY: 0.5)
+        plain.widthShare = 0.4
+        var named = plain
+        named.fontName = "Impact"
+
+        let a = MemeCaptionLayout.layout(box: plain, imageWidth: 400, imageHeight: 400, measure: boxMeasure)
+        let b = MemeCaptionLayout.layout(box: named, imageWidth: 400, imageHeight: 400, measure: boxMeasure)
+
+        XCTAssertEqual(b.fontName, "Impact")
+        XCTAssertNotEqual(
+            a.lines, b.lines,
+            "the wider face must wrap differently — proof the font name reached the metrics")
+    }
+
+    func testClampKeepsBoxesOnTheCanvas() {
+        let wild = MemeCaptionLayout.CaptionBox(
+            text: "x", centerX: -3, centerY: 9,
+            fontSizeShare: 99, widthShare: 50)
+        let safe = MemeCaptionLayout.clamped(wild)
+        XCTAssertEqual(safe.centerX, 0)
+        XCTAssertEqual(safe.centerY, 1)
+        XCTAssertEqual(safe.fontSizeShare, MemeCaptionLayout.CaptionBox.maximumFontSizeShare)
+        XCTAssertEqual(safe.widthShare, 1)
+    }
+
+    func testClampRaisesATinyFontToTheReadableFloor() {
+        let tiny = MemeCaptionLayout.CaptionBox(
+            text: "x", centerX: 0.5, centerY: 0.5, fontSizeShare: 0.0001)
+        XCTAssertEqual(
+            MemeCaptionLayout.clamped(tiny).fontSizeShare,
+            MemeCaptionLayout.CaptionBox.minimumFontSizeShare)
+    }
+
+    func testClampPreservesIdentityAndText() {
+        let box = MemeCaptionLayout.CaptionBox(text: "keep me", centerX: 5, centerY: 0.5)
+        let safe = MemeCaptionLayout.clamped(box)
+        XCTAssertEqual(safe.id, box.id)
+        XCTAssertEqual(safe.text, "keep me")
+    }
+
+    /// Out-of-range geometry must not survive into the render either — layout
+    /// clamps on the way through, so a corrupt box can't draw off-canvas.
+    func testLayoutClampsBeforeResolvingPixels() {
+        let box = MemeCaptionLayout.CaptionBox(text: "x", centerX: 4, centerY: -1)
+        let layout = MemeCaptionLayout.layout(
+            box: box, imageWidth: 200, imageHeight: 200, measure: boxMeasure)
+        XCTAssertEqual(layout.centerX, 200)
+        XCTAssertEqual(layout.centerY, 0)
+    }
+
+    /// Empty boxes are dropped at render time but kept in the editor — the export
+    /// and the box list are allowed to differ by exactly the empty ones.
+    func testEmptyBoxesAreDroppedFromTheRenderList() {
+        let boxes = [
+            MemeCaptionLayout.CaptionBox(text: "visible", centerX: 0.5, centerY: 0.2),
+            MemeCaptionLayout.CaptionBox(text: "   ", centerX: 0.5, centerY: 0.8),
+        ]
+        let layouts = MemeCaptionLayout.layout(
+            boxes: boxes, imageWidth: 400, imageHeight: 400, measure: boxMeasure)
+        XCTAssertEqual(layouts.count, 1)
+        XCTAssertEqual(layouts[0].lines, ["VISIBLE"])
+    }
+
+    func testLayoutPreservesBoxIdentityForHitTesting() {
+        let boxes = MemeCaptionLayout.seedBoxes(topText: "a", bottomText: "b")
+        let layouts = MemeCaptionLayout.layout(
+            boxes: boxes, imageWidth: 400, imageHeight: 400, measure: boxMeasure)
+        XCTAssertEqual(layouts.map(\.id), boxes.map(\.id))
+    }
+
+    func testBlockHeightMatchesLineCountTimesLineHeight() {
+        var box = MemeCaptionLayout.CaptionBox(text: "one two three four", centerX: 0.5, centerY: 0.5)
+        box.widthShare = 0.4
+        let layout = MemeCaptionLayout.layout(
+            box: box, imageWidth: 400, imageHeight: 400, measure: boxMeasure)
+        XCTAssertEqual(
+            layout.blockHeight,
+            Double(layout.lines.count) * layout.fontSize * MemeCaptionLayout.lineHeightRatio,
+            accuracy: 0.0001)
+    }
+
+    /// Successive "Add text box" clicks must not stack invisibly on top of each other.
+    func testNewBoxCentersDoNotCollideForSuccessiveAdds() {
+        let ys = (0..<5).map { MemeCaptionLayout.newBoxCenter(existingCount: $0).y }
+        XCTAssertEqual(Set(ys).count, ys.count, "each new box lands somewhere free")
+        XCTAssertTrue(ys.allSatisfy { $0 > 0 && $0 < 1 })
+    }
+
+    func testNewBoxCentersWrapRatherThanRunOffTheCanvas() {
+        for count in 0..<40 {
+            let center = MemeCaptionLayout.newBoxCenter(existingCount: count)
+            XCTAssertTrue(center.y > 0 && center.y < 1, "count \(count)")
+            XCTAssertEqual(center.x, 0.5)
+        }
+    }
+
+    /// An edited meme exports under the name the user sees, not the AI's originals.
+    func testFileNameFollowsTheEditedBoxes() {
+        let boxes = [
+            MemeCaptionLayout.CaptionBox(text: "Ship It", centerX: 0.5, centerY: 0.2),
+            MemeCaptionLayout.CaptionBox(text: "   ", centerX: 0.5, centerY: 0.5),
+            MemeCaptionLayout.CaptionBox(text: "On Friday", centerX: 0.5, centerY: 0.8),
+        ]
+        XCTAssertEqual(MemeCaptionLayout.suggestedFileName(boxes: boxes), "ship-it-on-friday.png")
+    }
+
+    func testFileNameFallsBackWhenEveryBoxIsEmpty() {
+        XCTAssertEqual(
+            MemeCaptionLayout.suggestedFileName(boxes: [
+                MemeCaptionLayout.CaptionBox(text: "", centerX: 0.5, centerY: 0.5)
+            ]),
+            "meme.png")
+    }
+
+    /// Boxes are persisted/carried between templates, so the Codable shape matters.
+    func testCaptionBoxRoundTripsThroughCodable() throws {
+        var box = MemeCaptionLayout.CaptionBox(text: "keep", centerX: 0.3, centerY: 0.7)
+        box.fontName = "Impact"
+        box.fontSizeShare = 0.09
+        let decoded = try JSONDecoder().decode(
+            MemeCaptionLayout.CaptionBox.self,
+            from: try JSONEncoder().encode(box))
+        XCTAssertEqual(decoded, box)
     }
 }

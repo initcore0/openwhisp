@@ -12,20 +12,28 @@ import Foundation
 /// wrapped, top and bottom blocks. Impact is not present on macOS, so we fall back
 /// through the closest system faces (see `captionFont`).
 ///
-/// All the *decisions* (uppercasing, line breaking, shrink-to-fit) live in the pure,
-/// tested `MemeCaptionLayout`; this type owns only the drawing and the font metrics
-/// it feeds back into that layout.
+/// All the *decisions* (uppercasing, line breaking, shrink-to-fit, and — since v2 —
+/// where every box sits) live in the pure, tested `MemeCaptionLayout`; this type owns
+/// only the drawing and the font metrics it feeds back into that layout.
+///
+/// ## v2 — the box model
+///
+/// Rendering is driven by `[MemeCaptionLayout.CaptionBox]` rather than a fixed
+/// top/bottom pair. The AI path seeds two boxes, the manual editor mutates them, and
+/// BOTH the on-screen preview and the exported PNG go through `render(template:
+/// boxes:)` — that's what makes the editor WYSIWYG. Because box geometry is
+/// normalized, the same boxes render correctly onto a differently-sized template when
+/// the user picks another candidate.
 @MainActor
 enum MemeRenderer {
 
-    /// Compose a meme: template image + top/bottom captions.
+    /// Compose a meme from a template and an array of caption boxes.
     ///
     /// Returns a new image at the template's pixel dimensions, so exports are
     /// full-resolution regardless of how the preview is scaled.
     static func render(
         template: NSImage,
-        topText: String,
-        bottomText: String
+        boxes: [MemeCaptionLayout.CaptionBox]
     ) -> NSImage {
         // Work in PIXELS, not points: NSImage.size is point-based and would render
         // captions at the wrong scale on a template whose rep is 2x.
@@ -42,20 +50,88 @@ enum MemeRenderer {
             in: NSRect(x: 0, y: 0, width: width, height: height),
             from: .zero, operation: .copy, fraction: 1.0)
 
-        let inset = width * MemeCaptionLayout.horizontalInsetShare
-        let maxTextWidth = width - inset * 2
-        let maxBlockHeight = height * MemeCaptionLayout.captionHeightShare
+        // The pure layer resolves normalized geometry into pixels and does the
+        // wrapping/shrinking; we hand it real font metrics and then draw what comes
+        // back. Empty boxes are dropped there, not here.
+        let layouts = MemeCaptionLayout.layout(
+            boxes: boxes,
+            imageWidth: Double(width),
+            imageHeight: Double(height),
+            measure: { text, size, fontName in
+                Double(text.size(withAttributes: [.font: captionFont(size: size, name: fontName)]).width)
+            })
 
-        draw(
-            caption: topText, position: .top,
-            imageWidth: width, imageHeight: height,
-            maxTextWidth: maxTextWidth, maxBlockHeight: maxBlockHeight)
-        draw(
-            caption: bottomText, position: .bottom,
-            imageWidth: width, imageHeight: height,
-            maxTextWidth: maxTextWidth, maxBlockHeight: maxBlockHeight)
+        for layout in layouts {
+            draw(layout, imageHeight: height)
+        }
 
         return output
+    }
+
+    /// v1 entry point, kept so the AI path reads the same as before: seed two boxes
+    /// and render them. The seeded geometry reproduces the classic top/bottom look.
+    static func render(
+        template: NSImage,
+        topText: String,
+        bottomText: String
+    ) -> NSImage {
+        render(
+            template: template,
+            boxes: MemeCaptionLayout.seedBoxes(topText: topText, bottomText: bottomText))
+    }
+
+    /// Draw one resolved box.
+    ///
+    /// The pure layer works in a TOP-LEFT origin (what every UI framework, and the
+    /// editor's drag gestures, use). AppKit's image space is BOTTOM-LEFT, so the
+    /// single conversion `imageHeight - y` happens here and nowhere else — keeping
+    /// the flip in one place is what stops the editor and the export from disagreeing
+    /// about which way is up.
+    private static func draw(_ layout: MemeCaptionLayout.BoxLayout, imageHeight: CGFloat) {
+        guard !layout.lines.isEmpty else { return }
+
+        let font = captionFont(size: layout.fontSize, name: layout.fontName)
+        let lineHeight = CGFloat(layout.fontSize * MemeCaptionLayout.lineHeightRatio)
+
+        let style = NSMutableParagraphStyle()
+        style.alignment = .center
+
+        let attributes = captionAttributes(font: font, paragraphStyle: style)
+
+        // Flip the block's top edge into AppKit's bottom-left space.
+        let blockTopFlipped = imageHeight - CGFloat(layout.blockTopY)
+        let boxLeft = CGFloat(layout.centerX - layout.maxWidth / 2)
+
+        for (index, line) in layout.lines.enumerated() {
+            let y = blockTopFlipped - lineHeight * CGFloat(index + 1)
+            let rect = NSRect(
+                x: boxLeft,
+                y: y + (lineHeight - font.ascender + font.descender) / 2,
+                width: CGFloat(layout.maxWidth), height: lineHeight)
+            line.draw(in: rect, withAttributes: attributes)
+        }
+    }
+
+    /// The classic look is a black OUTLINE around white glyphs. A negative
+    /// `.strokeWidth` tells AppKit to stroke AND fill (a positive value strokes only,
+    /// which would render hollow letters). CRUCIALLY the value is a PERCENTAGE of the
+    /// font size, not points — scaling it by the font size double-scaled it to ~12%,
+    /// thick enough that neighboring glyphs' black outlines swallowed each other's
+    /// white interiors (the unreadable-blob bug). ~4% is the classic meme outline
+    /// weight at any size.
+    ///
+    /// Shared by the renderer and any preview that wants to match it, so the two can
+    /// never drift apart.
+    static func captionAttributes(
+        font: NSFont, paragraphStyle: NSParagraphStyle
+    ) -> [NSAttributedString.Key: Any] {
+        [
+            .font: font,
+            .foregroundColor: NSColor.white,
+            .strokeColor: NSColor.black,
+            .strokeWidth: -4.0,
+            .paragraphStyle: paragraphStyle,
+        ]
     }
 
     /// The image's size in PIXELS, preferring the largest bitmap rep so a retina
@@ -71,77 +147,45 @@ enum MemeRenderer {
         return (max(image.size.width, 1), max(image.size.height, 1))
     }
 
-    private static func draw(
-        caption: String,
-        position: MemeCaptionLayout.Position,
-        imageWidth: CGFloat,
-        imageHeight: CGFloat,
-        maxTextWidth: CGFloat,
-        maxBlockHeight: CGFloat
-    ) {
-        guard !caption.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+    // MARK: - Fonts
 
-        // Shrink-to-fit using REAL font metrics: the pure layout does the deciding,
-        // we supply the measurements.
-        let fit = MemeCaptionLayout.fit(
-            caption: caption,
-            maxWidth: Double(maxTextWidth),
-            maxHeight: Double(maxBlockHeight),
-            maxFontSize: MemeCaptionLayout.idealFontSize(imageHeight: Double(imageHeight)),
-            minFontSize: MemeCaptionLayout.minimumFontSize(imageHeight: Double(imageHeight)),
-            measure: { text, size in
-                Double(text.size(withAttributes: [.font: captionFont(size: size)]).width)
-            },
-            lineHeight: { size in size * 1.15 })
+    /// The faces offered in the editor's font picker, best-meme-first.
+    ///
+    /// Impact — the canonical meme font — does not ship with macOS, so the list walks
+    /// down through the closest heavy/condensed system faces. Only the ones actually
+    /// installed are offered (`availableCaptionFonts`), because a picker listing a
+    /// font that silently falls back to something else is worse than a short list.
+    static let captionFontCandidates = [
+        "Impact", "Haettenschweiler", "Arial Black", "HelveticaNeue-CondensedBlack",
+    ]
 
-        guard !fit.lines.isEmpty else { return }
+    /// The label used for "no explicit face" — the renderer's own default.
+    static let defaultFontLabel = "Default (meme)"
 
-        let font = captionFont(size: fit.fontSize)
-        let lineHeight = CGFloat(fit.fontSize) * 1.15
-        let blockHeight = lineHeight * CGFloat(fit.lines.count)
-        let margin = imageHeight * 0.02
+    /// The subset of `captionFontCandidates` present on this Mac, plus the always-
+    /// available bold system font. Computed once; font availability doesn't change
+    /// mid-session in any way that matters here.
+    static let availableCaptionFonts: [String] = {
+        captionFontCandidates.filter { NSFont(name: $0, size: 12) != nil }
+    }()
 
-        // AppKit's image coordinate space is bottom-left origin.
-        let blockTopY: CGFloat
-        switch position {
-        case .top:    blockTopY = imageHeight - margin
-        case .bottom: blockTopY = blockHeight + margin
+    /// Sentinel meaning "the bold system font", which has no stable PostScript name
+    /// to put in `NSFont(name:)`. Stored in the box like any other face name so the
+    /// box model stays a plain `String?` and remains Codable.
+    static let systemFontToken = "__system__"
+
+    /// Resolve a face name to a font, falling back the same way at every call site.
+    ///
+    /// `name == nil` (or a name that isn't installed) walks the candidate list and
+    /// ends at a bold system font, which is always present — so a meme still renders
+    /// in a meme-ish face on a Mac with none of the candidates installed.
+    static func captionFont(size: Double, name: String? = nil) -> NSFont {
+        if name == systemFontToken {
+            return NSFont.systemFont(ofSize: CGFloat(size), weight: .black)
         }
-
-        let style = NSMutableParagraphStyle()
-        style.alignment = .center
-
-        // The classic look is a black OUTLINE around white glyphs. A negative
-        // `.strokeWidth` tells AppKit to stroke AND fill (a positive value strokes
-        // only, which would render hollow letters). CRUCIALLY the value is a
-        // PERCENTAGE of the font size, not points — scaling it by the font size
-        // double-scaled it to ~12%, thick enough that neighboring glyphs' black
-        // outlines swallowed each other's white interiors (the unreadable-blob
-        // bug). ~4% is the classic meme outline weight at any size.
-        let attributes: [NSAttributedString.Key: Any] = [
-            .font: font,
-            .foregroundColor: NSColor.white,
-            .strokeColor: NSColor.black,
-            .strokeWidth: -4.0,
-            .paragraphStyle: style,
-        ]
-
-        for (index, line) in fit.lines.enumerated() {
-            let y = blockTopY - lineHeight * CGFloat(index + 1)
-            let rect = NSRect(
-                x: 0, y: y + (lineHeight - font.ascender + font.descender) / 2,
-                width: imageWidth, height: lineHeight)
-            line.draw(in: rect, withAttributes: attributes)
-        }
-    }
-
-    /// The heaviest condensed face available. Impact — the canonical meme font — does
-    /// not ship with macOS, so this walks a preference list and ends at a bold system
-    /// font, which is always present.
-    static func captionFont(size: Double) -> NSFont {
-        let candidates = ["Impact", "Haettenschweiler", "Arial Black", "HelveticaNeue-CondensedBlack"]
-        for name in candidates {
-            if let font = NSFont(name: name, size: CGFloat(size)) { return font }
+        if let name, let font = NSFont(name: name, size: CGFloat(size)) { return font }
+        for candidate in captionFontCandidates {
+            if let font = NSFont(name: candidate, size: CGFloat(size)) { return font }
         }
         return NSFont.systemFont(ofSize: CGFloat(size), weight: .black)
     }

@@ -8,8 +8,8 @@ import Foundation
 /// no audio, and no LLM output is ever sent to imgflip.
 public struct MemeTemplate: Equatable, Sendable, Codable, Identifiable {
     public let id: String
-    /// Display name, e.g. "Distracted Boyfriend". English — this is what the LLM's
-    /// `template_query` is matched against.
+    /// Display name, e.g. "Distracted Boyfriend". English — this is the string the
+    /// LLM is asked to copy verbatim, and the key candidates are validated against.
     public let name: String
     /// Direct image URL (jpg/png) for the blank template.
     public let url: String
@@ -37,11 +37,11 @@ public struct MemeTemplateCatalogResponse: Decodable, Sendable {
     public var templates: [MemeTemplate] { success ? (data?.memes ?? []) : [] }
 }
 
-/// Picks the template whose name best matches the LLM's `template_query` (spike).
+/// Local, lexical template lookup over the catalog (spike).
 ///
-/// Matching is LOCAL and lexical — the catalog is ~100 short English names, so a
-/// token-overlap score beats anything heavier and keeps the whole decision pure and
-/// testable. No second network call, no embedding model.
+/// Matching is LOCAL — the catalog is ~100 short English names, so a token-overlap
+/// score beats anything heavier and keeps the whole decision pure and testable. No
+/// second network call, no embedding model.
 ///
 /// Scoring, highest first:
 /// 1. **Exact** name match (case/punctuation-insensitive) — 1000.
@@ -52,56 +52,88 @@ public struct MemeTemplateCatalogResponse: Decodable, Sendable {
 ///
 /// Ties break on the catalog's own order, which is popularity-ranked — the more
 /// famous template is the better guess.
+///
+/// **v2 note.** v1's `bestMatch` — "return the single best template, or the most
+/// popular one if nothing scores" — was DELETED. That built-in fallback is precisely
+/// the reported bug: it turned "yoda meme" into a confident Drake with no way for the
+/// caller to know. The two survivors both refuse to guess, and each returns an empty
+/// result the UI must handle: `ranked` (score-ordered candidates) and `search` (the
+/// user's own query over the whole corpus).
 public enum MemeTemplateMatcher {
 
-    /// The minimum score worth accepting. Below this we'd be picking essentially at
-    /// random, and a confidently-wrong template is worse than an honest fallback, so
-    /// the caller falls back to the catalog's most popular entry instead.
-    public static let minimumScore = 100
+    // MARK: - Fallback ranking (v2)
 
-    /// Find the best template for a query. Returns nil only for an empty catalog.
+    /// Rank the catalog by how well each name scores against a free-text query,
+    /// keeping only entries that score at all.
     ///
-    /// A query that matches nothing yields the catalog's FIRST entry (most popular)
-    /// rather than nil: the user dictated a meme and should get a meme. The caller
-    /// surfaces that this was a fallback.
-    public static func bestMatch(
-        for query: String, in catalog: [MemeTemplate]
-    ) -> Match? {
-        guard !catalog.isEmpty else { return nil }
-
+    /// This is the v2 fallback: when the model proposes only template names that
+    /// don't exist (the "yoda" case), the candidate strip would otherwise be pure
+    /// popularity — the same blind guess v1 made, just with more thumbnails. Scoring
+    /// the user's own description against the catalog at least puts anything lexically
+    /// related in front of them first.
+    ///
+    /// This NEVER substitutes a popular template for a zero score:
+    /// a query matching nothing returns an EMPTY list, and the caller is responsible
+    /// for deciding what to show and for saying that nothing matched. That split —
+    /// ranking here, fallback policy at the call site — is what makes the fallback
+    /// visible instead of silent.
+    public static func ranked(
+        for query: String, in catalog: [MemeTemplate], limit: Int
+    ) -> [MemeTemplate] {
         let queryTokens = tokens(in: query)
-        guard !queryTokens.isEmpty else {
-            return Match(template: catalog[0], score: 0, isFallback: true)
+        guard !queryTokens.isEmpty, limit > 0 else { return [] }
+
+        // A named struct rather than a tuple chain: the inferred-tuple version was
+        // too much for the type checker ("unable to type-check in reasonable time").
+        struct Scored {
+            let index: Int
+            let template: MemeTemplate
+            let score: Int
         }
 
-        var best: (template: MemeTemplate, score: Int)?
-
-        for template in catalog {
-            let score = score(query: query, queryTokens: queryTokens, name: template.name)
-            // Strictly greater keeps the earlier (more popular) template on a tie.
-            if score > (best?.score ?? Int.min) {
-                best = (template, score)
-            }
+        // `index` preserves the catalog's popularity order as the tie-break, since
+        // `sorted(by:)` is not guaranteed stable.
+        var scored: [Scored] = []
+        for (index, template) in catalog.enumerated() {
+            let value = score(query: query, queryTokens: queryTokens, name: template.name)
+            guard value > 0 else { continue }
+            scored.append(Scored(index: index, template: template, score: value))
         }
 
-        guard let best, best.score >= minimumScore else {
-            return Match(template: catalog[0], score: best?.score ?? 0, isFallback: true)
+        scored.sort { left, right in
+            left.score == right.score ? left.index < right.index : left.score > right.score
         }
-        return Match(template: best.template, score: best.score, isFallback: false)
+        return scored.prefix(limit).map(\.template)
     }
 
-    /// The chosen template plus why.
-    public struct Match: Equatable, Sendable {
-        public let template: MemeTemplate
-        public let score: Int
-        /// True when nothing scored well enough and the most-popular template was
-        /// substituted — the UI says so rather than pretending it understood.
-        public let isFallback: Bool
+    // MARK: - Browse all (manual override)
 
-        public init(template: MemeTemplate, score: Int, isFallback: Bool) {
-            self.template = template
-            self.score = score
-            self.isFallback = isFallback
+    /// Filter the catalog by a user-typed search string, for the "Browse all" grid.
+    ///
+    /// This is the honest answer to "yoda isn't in the corpus": the user can see and
+    /// search every template the plugin has, and pick one the model never proposed.
+    ///
+    /// Deliberately unlike v1's deleted `bestMatch`: no scoring, no threshold, and
+    /// above all **no fallback**. A search that matches nothing returns nothing, because an
+    /// empty grid saying "no templates match" is the entire point — silently
+    /// substituting popular templates is the bug this whole change exists to fix.
+    ///
+    /// Matching is substring-based over the normalized name so it is
+    /// case/diacritic/punctuation-insensitive, and multi-word queries match when
+    /// EVERY token appears somewhere in the name (so "drake bling" finds "Drake
+    /// Hotline Bling"). Catalog order — imgflip's popularity ranking — is preserved.
+    public static func search(_ query: String, in catalog: [MemeTemplate]) -> [MemeTemplate] {
+        let normalizedQuery = normalize(query)
+        guard !normalizedQuery.isEmpty else { return catalog }
+
+        // Split on the normalized form, not `tokens`: stopword removal is right for
+        // matching an LLM's phrase, wrong for a user typing letter by letter — a
+        // search for "the" should still narrow the list rather than reset it.
+        let needles = normalizedQuery.split(separator: " ").map(String.init)
+
+        return catalog.filter { template in
+            let haystack = normalize(template.name)
+            return needles.allSatisfy { haystack.contains($0) }
         }
     }
 

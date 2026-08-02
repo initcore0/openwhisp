@@ -114,31 +114,218 @@ public enum MemeCaptionLayout {
         return Fit(lines: lines, fontSize: minFontSize)
     }
 
-    // MARK: - Geometry
+    // MARK: - Caption boxes (manual editor)
 
-    /// Where a caption block sits on the image.
-    public enum Position: String, Equatable, Sendable {
-        case top
-        case bottom
+    /// One editable caption on the image.
+    ///
+    /// **Coordinates are NORMALIZED** (0…1, origin TOP-LEFT like every UI framework
+    /// the editor draws in) rather than pixels. That is what lets a box dragged on a
+    /// 520pt-wide preview render identically into a 1200px export, and what lets a
+    /// box survive being moved to a template with different dimensions when the user
+    /// picks another candidate — the whole point of the candidate strip is that the
+    /// captions carry over.
+    ///
+    /// `fontSize` is likewise a SHARE of image height, not points, for the same
+    /// reason: a 0.11 caption looks the same on a 400px and a 1200px template.
+    ///
+    /// `fontName` is a face name resolved by the renderer (`nil` = the renderer's
+    /// default meme face). Kept as a string rather than a font object so the box
+    /// model stays Foundation-only and testable.
+    public struct CaptionBox: Equatable, Sendable, Identifiable, Codable {
+        public let id: UUID
+        /// The caption text as the user typed it. Uppercasing happens at render time
+        /// so the editor shows what was typed.
+        public var text: String
+        /// Horizontal center, 0 = left edge, 1 = right edge.
+        public var centerX: Double
+        /// Vertical center, 0 = TOP edge, 1 = bottom edge.
+        public var centerY: Double
+        /// Font size as a share of image height.
+        public var fontSizeShare: Double
+        /// Width available to the box, as a share of image width.
+        public var widthShare: Double
+        /// Face name, or nil for the renderer's default.
+        public var fontName: String?
+
+        public init(
+            id: UUID = UUID(),
+            text: String,
+            centerX: Double,
+            centerY: Double,
+            fontSizeShare: Double = CaptionBox.defaultFontSizeShare,
+            widthShare: Double = CaptionBox.defaultWidthShare,
+            fontName: String? = nil
+        ) {
+            self.id = id
+            self.text = text
+            self.centerX = centerX
+            self.centerY = centerY
+            self.fontSizeShare = fontSizeShare
+            self.widthShare = widthShare
+            self.fontName = fontName
+        }
+
+        /// The classic caption size — carried over from v1's fixed layout so an
+        /// AI-seeded meme looks the same as it did before the editor existed.
+        public static let defaultFontSizeShare: Double = 0.11
+        /// Full width minus a 5% margin per side: the caption never runs to the bezel.
+        public static let defaultWidthShare: Double = 0.90
+
+        /// Slider bounds for the editor. Below the floor text is unreadable; above
+        /// the ceiling a single word fills the image.
+        public static let minimumFontSizeShare: Double = 0.02
+        public static let maximumFontSizeShare: Double = 0.30
     }
 
-    /// The share of the image height one caption block may occupy before it must
-    /// shrink. Classic memes keep captions in the top/bottom third.
-    public static let captionHeightShare: Double = 0.32
-
-    /// The horizontal inset applied to both sides, as a share of image width — the
-    /// caption never runs to the bezel.
-    public static let horizontalInsetShare: Double = 0.05
-
-    /// Ideal font size for an image height, before shrink-to-fit. Scaled to the
-    /// image so a 1200px template and a 400px one look the same when displayed.
-    public static func idealFontSize(imageHeight: Double) -> Double {
-        max(12, imageHeight * 0.11)
+    /// Clamp a box's geometry into the image.
+    ///
+    /// Applied on every drag and every slider move so a box can never be parked
+    /// outside the canvas (where it would render invisibly and look like data loss).
+    /// The center is clamped to the edges rather than inset by half the box height —
+    /// letting a caption bleed off the edge is a legitimate meme look, and a caption
+    /// the user can still grab matters more than one that is fully contained.
+    public static func clamped(_ box: CaptionBox) -> CaptionBox {
+        var out = box
+        out.centerX = min(max(box.centerX, 0), 1)
+        out.centerY = min(max(box.centerY, 0), 1)
+        out.fontSizeShare = min(
+            max(box.fontSizeShare, CaptionBox.minimumFontSizeShare),
+            CaptionBox.maximumFontSizeShare)
+        out.widthShare = min(max(box.widthShare, 0.05), 1)
+        return out
     }
 
-    /// Smallest acceptable font size for an image height.
-    public static func minimumFontSize(imageHeight: Double) -> Double {
-        max(8, imageHeight * 0.04)
+    /// The two boxes the AI path seeds: classic top and bottom captions.
+    ///
+    /// Positioned at 0.12 / 0.88 of the height — far enough in that a two-line
+    /// caption still sits inside the image, which is where v1's top/bottom blocks
+    /// landed. An empty caption still gets a box so the editor has something to type
+    /// into rather than making the user hunt for "Add text box".
+    public static func seedBoxes(topText: String, bottomText: String) -> [CaptionBox] {
+        [
+            CaptionBox(text: topText, centerX: 0.5, centerY: 0.12),
+            CaptionBox(text: bottomText, centerX: 0.5, centerY: 0.88),
+        ]
+    }
+
+    /// A box resolved into pixels for one specific image size, with its text already
+    /// wrapped and shrunk to fit.
+    public struct BoxLayout: Equatable, Sendable {
+        public let id: UUID
+        /// Wrapped, uppercased lines.
+        public let lines: [String]
+        /// Font size in PIXELS for this image.
+        public let fontSize: Double
+        /// Face name, or nil for the renderer's default.
+        public let fontName: String?
+        /// Box center in pixels, origin TOP-LEFT.
+        public let centerX: Double
+        public let centerY: Double
+        /// Total height of the wrapped block, in pixels.
+        public let blockHeight: Double
+        /// Available width in pixels (what the text was wrapped to).
+        public let maxWidth: Double
+
+        public init(
+            id: UUID, lines: [String], fontSize: Double, fontName: String?,
+            centerX: Double, centerY: Double, blockHeight: Double, maxWidth: Double
+        ) {
+            self.id = id
+            self.lines = lines
+            self.fontSize = fontSize
+            self.fontName = fontName
+            self.centerX = centerX
+            self.centerY = centerY
+            self.blockHeight = blockHeight
+            self.maxWidth = maxWidth
+        }
+
+        /// Y of the block's TOP edge, origin top-left. The renderer flips this into
+        /// AppKit's bottom-left space; the editor uses it directly.
+        public var blockTopY: Double { centerY - blockHeight / 2 }
+    }
+
+    /// The multiplier from font size to line height, shared by the layout math, the
+    /// renderer, and the editor's hit-testing so all three agree on box height.
+    public static let lineHeightRatio: Double = 1.15
+
+    /// Resolve one box against an image size: normalized geometry → pixels, text
+    /// wrapped and shrunk to fit the box's width.
+    ///
+    /// The user's `fontSizeShare` is the CEILING, not a fixed size — a caption too
+    /// long for its box still shrinks rather than overflowing, exactly like the AI
+    /// path. Setting a size and getting overflowing text would be a worse editor
+    /// than one that quietly keeps the caption inside its box; the user can widen
+    /// the box or shorten the text if they want it bigger.
+    ///
+    /// `measure` and `lineHeight` are injected so this stays pure (tests pass a
+    /// deterministic stub, the renderer passes real font metrics). `measure`
+    /// receives the box's `fontName` so per-box faces are measured with the right
+    /// metrics.
+    public static func layout(
+        box: CaptionBox,
+        imageWidth: Double,
+        imageHeight: Double,
+        measure: (_ text: String, _ fontSize: Double, _ fontName: String?) -> Double
+    ) -> BoxLayout {
+        let safe = clamped(box)
+        let maxWidth = max(1, imageWidth * safe.widthShare)
+        let ceiling = max(1, imageHeight * safe.fontSizeShare)
+        // Floor at a quarter of the requested size: a caption may shrink to stay in
+        // its box, but never to the point of being unreadable — beyond that it
+        // clips, which `fit` already degrades to honestly.
+        let floor = max(1, ceiling * 0.25)
+
+        let fit = fit(
+            caption: safe.text,
+            maxWidth: maxWidth,
+            // Vertically the box is free to grow — it's the WIDTH the user controls.
+            // Capping at the image height stops an absurd caption from becoming a
+            // block taller than the canvas.
+            maxHeight: imageHeight,
+            maxFontSize: ceiling,
+            minFontSize: floor,
+            step: max(1, ceiling * 0.05),
+            measure: { text, size in measure(text, size, safe.fontName) },
+            lineHeight: { $0 * lineHeightRatio })
+
+        let blockHeight = Double(fit.lines.count) * fit.fontSize * lineHeightRatio
+
+        return BoxLayout(
+            id: safe.id,
+            lines: fit.lines,
+            fontSize: fit.fontSize,
+            fontName: safe.fontName,
+            centerX: safe.centerX * imageWidth,
+            centerY: safe.centerY * imageHeight,
+            blockHeight: blockHeight,
+            maxWidth: maxWidth)
+    }
+
+    /// Resolve every box, dropping the ones with nothing to draw.
+    ///
+    /// Empty boxes are dropped at RENDER time only — the editor keeps them so the
+    /// user has a handle to type into. This is why the export and the preview can
+    /// disagree by exactly the empty boxes, which is the correct behaviour.
+    public static func layout(
+        boxes: [CaptionBox],
+        imageWidth: Double,
+        imageHeight: Double,
+        measure: (_ text: String, _ fontSize: Double, _ fontName: String?) -> Double
+    ) -> [BoxLayout] {
+        boxes
+            .map { layout(box: $0, imageWidth: imageWidth, imageHeight: imageHeight, measure: measure) }
+            .filter { !$0.lines.isEmpty }
+    }
+
+    /// Where "Add text box" drops a new caption.
+    ///
+    /// Stacked down the middle so successive adds don't land on top of each other
+    /// (which would look like the button did nothing). Wraps back to the top after
+    /// filling the column rather than marching off the bottom edge.
+    public static func newBoxCenter(existingCount: Int) -> (x: Double, y: Double) {
+        let slots = [0.5, 0.3, 0.7, 0.2, 0.8, 0.4, 0.6]
+        return (0.5, slots[existingCount % slots.count])
     }
 
     // MARK: - Export naming
@@ -167,5 +354,15 @@ public enum MemeCaptionLayout {
             .prefix(48)
 
         return (slug.isEmpty ? "meme" : String(slug)) + ".png"
+    }
+
+    /// The same naming rule, driven by the box model so an edited meme exports under
+    /// the name the user actually sees rather than the AI's original captions.
+    public static func suggestedFileName(boxes: [CaptionBox]) -> String {
+        let joined = boxes
+            .map(\.text)
+            .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+            .joined(separator: " ")
+        return suggestedFileName(topText: joined, bottomText: "")
     }
 }
