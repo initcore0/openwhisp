@@ -34,6 +34,13 @@ class OpenWhispApp: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.accessory)
         print("[OpenWhisp] ActivationPolicy set to .accessory")
 
+        // A standard main menu with an EDIT menu. Accessory (menu-bar) apps get
+        // no menu bar UI, but macOS still routes ⌘V/⌘C/⌘X/⌘A/⌘Z through the
+        // main menu's key equivalents — without one, paste is DEAD in every
+        // window (the Scratchpad bug). Standard selectors ride the responder
+        // chain, so this fixes all text fields app-wide.
+        NSApp.mainMenu = Self.makeMainMenu()
+
         // Initialize state
         appState = AppState.shared
         print("[OpenWhisp] AppState initialized")
@@ -157,6 +164,34 @@ class OpenWhispApp: NSObject, NSApplicationDelegate {
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         onboardingWindow = window
+    }
+
+    /// The invisible main menu that makes standard edit shortcuts work.
+    private static func makeMainMenu() -> NSMenu {
+        let main = NSMenu()
+
+        let appItem = NSMenuItem()
+        let appMenu = NSMenu()
+        appMenu.addItem(NSMenuItem(title: "Quit OpenWhisp",
+                                   action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
+        appItem.submenu = appMenu
+        main.addItem(appItem)
+
+        let editItem = NSMenuItem()
+        let edit = NSMenu(title: "Edit")
+        edit.addItem(NSMenuItem(title: "Undo", action: Selector(("undo:")), keyEquivalent: "z"))
+        let redo = NSMenuItem(title: "Redo", action: Selector(("redo:")), keyEquivalent: "z")
+        redo.keyEquivalentModifierMask = [.command, .shift]
+        edit.addItem(redo)
+        edit.addItem(.separator())
+        edit.addItem(NSMenuItem(title: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x"))
+        edit.addItem(NSMenuItem(title: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c"))
+        edit.addItem(NSMenuItem(title: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v"))
+        edit.addItem(NSMenuItem(title: "Select All",
+                                action: #selector(NSText.selectAll(_:)), keyEquivalent: "a"))
+        editItem.submenu = edit
+        main.addItem(editItem)
+        return main
     }
 
     /// Menu-bar icon: the bundled waveform glyph (template, so macOS tints it for
