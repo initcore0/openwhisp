@@ -97,6 +97,8 @@ let package = Package(
                 "LANPairing.swift",
                 "URLScheme.swift",
                 "Scratchpad.swift",
+                "ScratchpadText.swift",
+                "ScratchpadPersistencePolicy.swift",
                 "MeetingScratchpadExport.swift",
                 "DictationSession.swift",
                 "AgentSessionFinish.swift",

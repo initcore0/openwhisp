@@ -1224,7 +1224,7 @@ class AppState: ObservableObject {
     /// into. Lazily created on first open so the panel/text-view cost is paid only
     /// when the feature is used. When the pad is the frontmost key window, a
     /// completed dictation appends into its active note instead of the focused app.
-    lazy var scratchpadController = ScratchpadWindowController(appState: self)
+    lazy var scratchpadController = ScratchpadWindowController()
     private var elapsedTimer: Timer?
     private var recordingStartedAt: Date?
     /// When the current session entered the transcribing/finalize phase (set via the
