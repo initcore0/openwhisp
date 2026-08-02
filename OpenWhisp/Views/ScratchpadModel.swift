@@ -237,6 +237,23 @@ final class ScratchpadModel: ObservableObject {
         return id
     }
 
+    /// Insert a completed file transcription as a new note and select it (MAK-98).
+    /// Immediate (structural), and persisted BEFORE the caller shows the panel so
+    /// first-open selection lands here — same ordering contract as the meeting path.
+    @discardableResult
+    func insertFileTranscriptNote(
+        fileName: String, date: Date, duration: TimeInterval, transcript: String
+    ) -> UUID {
+        loadIfNeeded()
+        let id = store.insertFileTranscriptNote(
+            fileName: fileName, date: date, duration: duration, transcript: transcript)
+        selectedID = id
+        notes = store.notes
+        loadEditorText(store.note(id)?.text ?? "", for: id)
+        persist(.fileTranscriptInsert)
+        return id
+    }
+
     // MARK: - Editor sync
 
     /// Write text INTO the editor programmatically, fenced so the resulting change

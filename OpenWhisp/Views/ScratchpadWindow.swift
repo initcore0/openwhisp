@@ -70,6 +70,23 @@ final class ScratchpadWindowController: NSObject, NSWindowDelegate {
         showAndFocus()
     }
 
+    /// Open a completed file transcription as a NEW editable note and focus it
+    /// (MAK-98 "Open in Scratchpad" for transcribed audio/video files). The body
+    /// comes from the pure, unit-tested `FileTranscriptScratchpadExport`; this is
+    /// only the persist + show shell, and the same insert-before-show ordering the
+    /// meeting path uses applies.
+    ///
+    /// Takes primitives rather than the queue job so this seam has no dependency on
+    /// the file-transcription types.
+    func openFileTranscript(
+        fileName: String, date: Date, duration: TimeInterval, transcript: String
+    ) {
+        model.loadIfNeeded()
+        model.insertFileTranscriptNote(
+            fileName: fileName, date: date, duration: duration, transcript: transcript)
+        showAndFocus()
+    }
+
     // MARK: - Panel construction
 
     private func makePanel() -> NSPanel {

@@ -104,6 +104,7 @@ let package = Package(
                 "ScratchpadTags.swift",
                 "ScratchpadFilter.swift",
                 "MeetingScratchpadExport.swift",
+                "FileTranscriptScratchpadExport.swift",
                 "DictationSession.swift",
                 "AgentSessionFinish.swift",
                 "SilenceAutoStop.swift",

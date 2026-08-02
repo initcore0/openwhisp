@@ -34,6 +34,9 @@ public enum ScratchpadPersistencePolicy {
         case delete
         /// A meeting was inserted as a note. Immediate.
         case meetingInsert
+        /// A completed file transcription was inserted as a note (MAK-98).
+        /// Immediate, for the same reason `meetingInsert` is: it creates a note.
+        case fileTranscriptInsert
         /// The window closed, the app is terminating, or the model is being handed
         /// off. Immediate, and must flush anything already pending.
         case teardown
@@ -52,7 +55,7 @@ public enum ScratchpadPersistencePolicy {
         switch mutation {
         case .edit, .dictation:
             return false
-        case .create, .delete, .meetingInsert, .teardown:
+        case .create, .delete, .meetingInsert, .fileTranscriptInsert, .teardown:
             return true
         }
     }
