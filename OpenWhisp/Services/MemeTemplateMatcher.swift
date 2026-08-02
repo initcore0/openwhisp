@@ -7,34 +7,143 @@ import Foundation
 /// to find a base image — captioning happens locally with CoreGraphics, so no text,
 /// no audio, and no LLM output is ever sent to imgflip.
 public struct MemeTemplate: Equatable, Sendable, Codable, Identifiable {
+    /// Source-qualified id (`"imgflip:181913649"`, `"userLibrary:<uuid>"`) — see
+    /// `MemeTemplateCatalog.qualifiedID`. Qualified so two providers can never
+    /// collide into one image-cache entry.
     public let id: String
-    /// Display name, e.g. "Distracted Boyfriend". English — this is the string the
-    /// LLM is asked to copy verbatim, and the key candidates are validated against.
+    /// Display name, e.g. "Distracted Boyfriend". This is the string the LLM is asked
+    /// to copy verbatim and the key candidates are validated against. For a
+    /// user-library template it is whatever the user named it, in their own script.
     public let name: String
-    /// Direct image URL (jpg/png) for the blank template.
+    /// Where the blank template image lives: an `https:` URL for the remote
+    /// providers, a `file:` URL for the user's own library. Both are just "a string
+    /// that locates the image", which is what lets all three sources share one
+    /// fetch/render path.
     public let url: String
     public let width: Int
     public let height: Int
+    /// Which provider contributed this template. Drives the Browse grid's badge and
+    /// whether the image is loaded from disk or the network.
+    public let source: MemeTemplateSource
+    /// Alternate search terms. memegen ships these ("Ain't Nobody Got Time For That"
+    /// on a template *named* "Sweet Brown"); imgflip has none; the user library
+    /// carries the original filename. Searching them is what makes a merged,
+    /// multi-lingual corpus findable — see `MemeTemplateCatalog.search`.
+    public let keywords: [String]
 
-    public init(id: String, name: String, url: String, width: Int, height: Int) {
+    public init(
+        id: String, name: String, url: String, width: Int, height: Int,
+        source: MemeTemplateSource = .imgflip, keywords: [String] = []
+    ) {
         self.id = id
         self.name = name
         self.url = url
         self.width = width
         self.height = height
+        self.source = source
+        self.keywords = keywords
+    }
+
+    /// Decoding tolerates a missing `source`/`keywords` so a catalog cache written by
+    /// an older build still loads instead of being discarded — the cache is a
+    /// performance artifact, but throwing it away on every upgrade would make the
+    /// first launch after an update look like the offline bug this release fixes.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        name = try c.decode(String.self, forKey: .name)
+        url = try c.decode(String.self, forKey: .url)
+        width = (try? c.decode(Int.self, forKey: .width)) ?? 0
+        height = (try? c.decode(Int.self, forKey: .height)) ?? 0
+        source = (try? c.decode(MemeTemplateSource.self, forKey: .source)) ?? .imgflip
+        keywords = (try? c.decode([String].self, forKey: .keywords)) ?? []
     }
 }
 
 /// The Imgflip `get_memes` response envelope.
 public struct MemeTemplateCatalogResponse: Decodable, Sendable {
+    /// The raw wire shape. Decoded into a separate type rather than straight into
+    /// `MemeTemplate` because the id has to be SOURCE-QUALIFIED before it becomes a
+    /// catalog id, and a `Decodable` conformance can't know which provider it is
+    /// being decoded for.
+    public struct Wire: Decodable, Sendable {
+        public let id: String
+        public let name: String
+        public let url: String
+        public let width: Int
+        public let height: Int
+    }
     public struct Payload: Decodable, Sendable {
-        public let memes: [MemeTemplate]
+        public let memes: [Wire]
     }
     public let success: Bool
     public let data: Payload?
 
     /// The templates, or empty when the API reported failure.
-    public var templates: [MemeTemplate] { success ? (data?.memes ?? []) : [] }
+    public var templates: [MemeTemplate] {
+        guard success else { return [] }
+        return (data?.memes ?? []).map { wire in
+            MemeTemplate(
+                id: MemeTemplateCatalog.qualifiedID(.imgflip, wire.id),
+                name: wire.name, url: wire.url,
+                width: wire.width, height: wire.height,
+                source: .imgflip, keywords: [])
+        }
+    }
+}
+
+/// The memegen.link `/templates` response (spike v3).
+///
+/// A second key-less, read-only catalog — ~200 templates, many of which imgflip's
+/// top-100 popularity list doesn't carry. Like imgflip it is used ONLY to locate a
+/// blank image: captioning stays local, so memegen's own caption-rendering URL API
+/// (`/images/<id>/<top>/<bottom>.jpg`) is deliberately NOT used. Routing the user's
+/// text through a URL would put their words on someone else's server, which is
+/// exactly what this plugin avoids.
+///
+/// The response is a bare JSON ARRAY, not an envelope, so failure shows up as a
+/// decode error rather than a `success: false` flag.
+public struct MemegenTemplateResponse: Decodable, Sendable {
+    public struct Wire: Decodable, Sendable {
+        public let id: String
+        public let name: String
+        /// The blank (caption-less) image URL.
+        public let blank: String
+        /// Alternate names — the field that makes a merged corpus searchable.
+        public let keywords: [String]?
+
+        private enum CodingKeys: String, CodingKey { case id, name, blank, keywords }
+
+        public init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            id = try c.decode(String.self, forKey: .id)
+            name = try c.decode(String.self, forKey: .name)
+            blank = try c.decode(String.self, forKey: .blank)
+            keywords = try? c.decode([String].self, forKey: .keywords)
+        }
+    }
+
+    public let templates: [MemeTemplate]
+
+    public init(from decoder: Decoder) throws {
+        let wires = try [Wire](from: decoder)
+        templates = wires.compactMap { wire in
+            // A template with no name can't be searched, de-duplicated, or copied
+            // verbatim by the LLM — drop it at the boundary rather than letting it
+            // occupy a grid cell nobody can reach.
+            let name = wire.name.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !name.isEmpty, !wire.blank.isEmpty else { return nil }
+            return MemeTemplate(
+                id: MemeTemplateCatalog.qualifiedID(.memegen, wire.id),
+                name: name, url: wire.blank,
+                // memegen doesn't report dimensions; 0 means "ask the image".
+                // Nothing in the render path uses these (the layout works off the
+                // decoded NSImage's real pixel size), so they stay honest zeros
+                // rather than invented defaults.
+                width: 0, height: 0,
+                source: .memegen, keywords: wire.keywords ?? [])
+        }
+    }
 }
 
 /// Local, lexical template lookup over the catalog (spike).

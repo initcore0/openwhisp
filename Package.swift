@@ -175,7 +175,11 @@ let package = Package(
                 "PluginRegistry.swift",
                 "MemeAI.swift",
                 "MemeTemplateMatcher.swift",
-                "MemeCaptionLayout.swift"
+                "MemeCaptionLayout.swift",
+                "MemeTemplateProvider.swift",
+                "MemeUserLibrary.swift",
+                "MemeGenerationState.swift",
+                "MemeCatalogCache.swift"
             ]
         ),
         // The Agent Bridge client + MCP stdio adapter. A library (not folded into
