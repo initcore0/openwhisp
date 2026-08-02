@@ -1,0 +1,9 @@
+{
+  "id": "meme-generator",
+  "name": "Meme Generator",
+  "version": "0.1.0",
+  "summary": "Dictate a meme description — the AI picks a template and writes the captions.",
+  "symbol": "photo.badge.plus",
+  "entry": "builtIn",
+  "networkHosts": ["api.imgflip.com", "i.imgflip.com"]
+}
