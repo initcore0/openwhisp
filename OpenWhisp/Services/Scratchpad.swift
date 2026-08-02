@@ -15,7 +15,7 @@ import Foundation
 /// decodes. The provenance line the panel shows ("Dictated 3:14 PM · typed 3:20
 /// PM") is derived purely from these, so the app view and the tests share one
 /// source of truth.
-public struct ScratchpadNote: Codable, Identifiable, Equatable {
+public struct ScratchpadNote: Codable, Identifiable, Equatable, Sendable {
     public let id: UUID
     /// The note's body text (plain text in v1).
     public var text: String
@@ -70,7 +70,7 @@ public struct ScratchpadNote: Codable, Identifiable, Equatable {
     }
 
     /// How a note was most recently sourced, for the provenance line.
-    public enum Origin: Equatable { case dictated, typed, mixed, empty }
+    public enum Origin: Equatable, Sendable { case dictated, typed, mixed, empty }
 
     /// The provenance the panel shows, derived purely from the timestamps.
     /// `mixed` when the note has both a dictated and a typed timestamp.
@@ -88,7 +88,7 @@ public struct ScratchpadNote: Codable, Identifiable, Equatable {
 /// drives. Kept as a value type so every state transition (create, edit, append a
 /// dictation, reorder) is a testable pure function; the app holds one of these and
 /// persists it after each change.
-public struct ScratchpadNotes: Codable, Equatable {
+public struct ScratchpadNotes: Codable, Equatable, Sendable {
     /// Notes in display order: most-recently-updated first (index 0 is newest-touched).
     public private(set) var notes: [ScratchpadNote]
 
