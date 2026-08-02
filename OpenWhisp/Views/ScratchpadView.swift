@@ -127,14 +127,21 @@ struct ScratchpadView: View {
         .overlay(
             RoundedRectangle(cornerRadius: 6).strokeBorder(Color(nsColor: .separatorColor))
         )
-        // ⌘F focuses the field. A zero-size button carries the shortcut so it works
-        // regardless of which subview currently holds first responder.
+        // Two searches, standard Mac split: ⌘F = find IN the open note (the
+        // editor's native find bar, with highlighting and Enter/⇧Enter
+        // navigation); ⌘⇧F = the cross-note filter field here. Zero-size
+        // buttons carry the shortcuts so they work regardless of which subview
+        // holds first responder.
         .background(
-            Button("") { searchFocused = true }
-                .keyboardShortcut("f", modifiers: .command)
-                .opacity(0)
-                .frame(width: 0, height: 0)
-                .accessibilityHidden(true)
+            Group {
+                Button("") { searchFocused = true }
+                    .keyboardShortcut("f", modifiers: [.command, .shift])
+                Button("") { model.showEditorFindBar() }
+                    .keyboardShortcut("f", modifiers: .command)
+            }
+            .opacity(0)
+            .frame(width: 0, height: 0)
+            .accessibilityHidden(true)
         )
     }
 
@@ -206,7 +213,15 @@ struct ScratchpadView: View {
             if model.showsPreview {
                 MarkdownPreviewView(text: model.editorText)
             } else {
-                ScratchpadTextEditor(text: $model.editorText, onEdit: model.applyEdit)
+                ScratchpadTextEditor(
+                    text: $model.editorText,
+                    onEdit: model.applyEdit,
+                    // Global filter query lights up its matches in the open
+                    // note and jumps to the first one (the "where IS it in
+                    // this long transcript" gap).
+                    highlightQuery: model.searchQuery,
+                    noteID: model.selectedID,
+                    onTextViewReady: { model.registerEditorTextView($0) })
             }
             Divider()
             footer
@@ -280,6 +295,15 @@ private struct ScratchpadRow: View {
         return f
     }()
 
+    /// A fresh note's `updatedAt` can sit a rounding-hair in the FUTURE, which
+    /// RelativeDateTimeFormatter renders as the nonsense "in 0s". Clamp: not
+    /// yet a minute old (or future) reads as "now".
+    private static func relativeLabel(_ date: Date) -> String {
+        let now = Date()
+        guard date < now, now.timeIntervalSince(date) >= 60 else { return "now" }
+        return relativeFormatter.localizedString(for: date, relativeTo: now)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 4) {
@@ -293,7 +317,7 @@ private struct ScratchpadRow: View {
                     .font(.system(size: 12, weight: .medium))
                     .lineLimit(1)
                 Spacer(minLength: 4)
-                Text(Self.relativeFormatter.localizedString(for: note.updatedAt, relativeTo: Date()))
+                Text(Self.relativeLabel(note.updatedAt))
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
             }
@@ -356,6 +380,19 @@ private struct ScratchpadRow: View {
 struct ScratchpadTextEditor: NSViewRepresentable {
     @Binding var text: String
     var onEdit: (String) -> Void
+    /// The active GLOBAL filter query — its matches are highlighted in the
+    /// editor (temporary layout attributes, so the text storage and undo stack
+    /// are untouched) and the first match is scrolled into view when the note
+    /// opens. Empty = no highlights. In-note ad-hoc search is the native find
+    /// bar (⌘F), which manages its own highlighting.
+    var highlightQuery: String = ""
+    /// Identity of the shown note — with `highlightQuery`, decides when the
+    /// scroll-to-first-match should fire (once per note-under-query, never on
+    /// every keystroke re-render).
+    var noteID: UUID?
+    /// Hands the created NSTextView to the owner so toolbar/⌘F can drive the
+    /// native find bar. Weakly held by the model.
+    var onTextViewReady: (NSTextView) -> Void = { _ in }
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -375,7 +412,13 @@ struct ScratchpadTextEditor: NSViewRepresentable {
                                   height: CGFloat.greatestFiniteMagnitude)
         textView.isVerticallyResizable = true
         textView.textContainer?.widthTracksTextView = true
+        // Native find bar (⌘F): incremental find with match highlighting and
+        // Enter/⇧Enter navigation — the in-note half of search. The toolbar
+        // field stays the cross-note filter (⌘⇧F).
+        textView.usesFindBar = true
+        textView.isIncrementalSearchingEnabled = true
         textView.string = text
+        onTextViewReady(textView)
 
         let scroll = NSScrollView()
         scroll.documentView = textView
@@ -404,11 +447,17 @@ struct ScratchpadTextEditor: NSViewRepresentable {
                 textView.setSelectedRange(NSRange(location: min(selected.location, length), length: 0))
             }
         }
+        context.coordinator.applyHighlights(
+            query: highlightQuery, noteID: noteID, to: textView)
     }
 
     final class Coordinator: NSObject, NSTextViewDelegate {
         var parent: ScratchpadTextEditor
         weak var textView: NSTextView?
+        /// The (note, query) pair the current highlights were applied for —
+        /// scroll-to-first-match fires only when this changes, so keystroke
+        /// re-renders never yank the viewport.
+        private var appliedHighlight: (noteID: UUID?, query: String) = (nil, "")
 
         init(_ parent: ScratchpadTextEditor) { self.parent = parent }
 
@@ -420,6 +469,47 @@ struct ScratchpadTextEditor: NSViewRepresentable {
             let value = textView.string
             parent.text = value
             parent.onEdit(value)
+            // Edits shift character positions — recompute the ranges in place
+            // (same pair, so no scroll).
+            reapplyHighlightRanges(to: textView)
+        }
+
+        /// Paint the global filter query's matches with TEMPORARY layout
+        /// attributes — visible like the find bar's highlight, but the text
+        /// storage (and with it the undo stack and persistence) is untouched.
+        func applyHighlights(query: String, noteID: UUID?, to textView: NSTextView) {
+            let pairChanged = appliedHighlight.noteID != noteID || appliedHighlight.query != query
+            appliedHighlight = (noteID, query)
+            let first = reapplyHighlightRanges(to: textView)
+            // A newly opened note under an active query jumps to the first
+            // match — the whole point for long meeting transcripts.
+            if pairChanged, let first {
+                textView.scrollRangeToVisible(first)
+            }
+        }
+
+        /// Recompute + repaint; returns the first match range (NSRange) if any.
+        @discardableResult
+        private func reapplyHighlightRanges(to textView: NSTextView) -> NSRange? {
+            guard let layoutManager = textView.layoutManager else { return nil }
+            let text = textView.string
+            let full = NSRange(location: 0, length: (text as NSString).length)
+            layoutManager.removeTemporaryAttribute(.backgroundColor, forCharacterRange: full)
+            layoutManager.removeTemporaryAttribute(.foregroundColor, forCharacterRange: full)
+            let query = appliedHighlight.query
+            guard !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+            var firstRange: NSRange?
+            for range in ScratchpadFilter.matchRanges(of: query, in: text) {
+                let nsRange = NSRange(range, in: text)
+                layoutManager.addTemporaryAttribute(
+                    .backgroundColor, value: NSColor.findHighlightColor, forCharacterRange: nsRange)
+                // findHighlightColor is a light yellow in both appearances —
+                // force dark glyphs so dark-mode text stays readable on it.
+                layoutManager.addTemporaryAttribute(
+                    .foregroundColor, value: NSColor.black, forCharacterRange: nsRange)
+                if firstRange == nil { firstRange = nsRange }
+            }
+            return firstRange
         }
     }
 }

@@ -130,6 +130,28 @@ final class ScratchpadModel: ObservableObject {
         tagFilter = nil
     }
 
+    // MARK: - In-note find (native find bar)
+
+    /// The live editor NSTextView, registered by the representable — held
+    /// weakly so a torn-down editor (preview mode, panel closed) can't be kept
+    /// alive by the model.
+    private weak var editorTextView: NSTextView?
+
+    func registerEditorTextView(_ textView: NSTextView) {
+        editorTextView = textView
+    }
+
+    /// ⌘F: open the editor's native find bar (incremental, highlighted,
+    /// Enter/⇧Enter navigation) — the in-note half of search; the toolbar
+    /// field (⌘⇧F) filters across notes. No-op in preview mode.
+    func showEditorFindBar() {
+        guard let textView = editorTextView, textView.window != nil else { return }
+        textView.window?.makeFirstResponder(textView)
+        let action = NSMenuItem()
+        action.tag = NSTextFinder.Action.showFindInterface.rawValue
+        textView.performTextFinderAction(action)
+    }
+
     // MARK: - Selection
 
     /// Show a note in the editor. Early-returns when it is already selected and the
