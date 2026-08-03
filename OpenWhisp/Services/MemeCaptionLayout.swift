@@ -204,6 +204,18 @@ public enum MemeCaptionLayout {
     ///
     /// Kept as the 2-slot special case of `seedBoxes(captions:slots:)` so the classic
     /// path is literally the same code and can't drift from it.
+    ///
+    /// **Deprecated in v8.** It hard-codes `slots: 2`, so reaching for it on ANY code
+    /// path that doesn't already know the template is 2-slot is the v6 bug's exact
+    /// shape: four captions in, two boxes out, no test failing. It has no production
+    /// callers left — the app seeds through `MemeCaptionSeeding.resolve`, which takes
+    /// the slot count from the template. Retained (deprecated rather than unavailable)
+    /// because the geometry assertions in the test suite are legitimately ABOUT the
+    /// 2-slot layout, and rewriting them would lose that coverage.
+    @available(*, deprecated, message: """
+        Hard-codes 2 slots. Use seedBoxes(captions:slots:) with the template's own \
+        captionSlots, or MemeCaptionSeeding.resolve for the full decision.
+        """)
     public static func seedBoxes(topText: String, bottomText: String) -> [CaptionBox] {
         seedBoxes(captions: [topText, bottomText], slots: 2)
     }

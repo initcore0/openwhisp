@@ -443,13 +443,14 @@ final class MemeGeneratorModel: ObservableObject {
             // the template search can prefer templates with the matching slot count,
             // and so the theme ("expanding brain") rather than the whole sentence drives
             // the match. Nil for ordinary prose, which falls through to v6 unchanged.
-            let extracted = MemeCaptionExtraction.extract(from: self.description)
-            let searchText = extracted.flatMap { $0.theme.isEmpty ? nil : $0.theme }
-                ?? self.description
+            // v8: the query and the preferred slot count come from the same core
+            // decision that later seeds the boxes, so the two can't disagree about
+            // whether the description was a list.
+            let search = MemeCaptionSeeding.templateQuery(for: self.description)
 
             let shortlist = MemeTemplateCatalog.prefilter(
-                for: searchText, in: self.catalog, limit: MemeAI.candidateShortlist,
-                affinity: self.affinity, preferringSlots: extracted?.slotCount)
+                for: search.query, in: self.catalog, limit: MemeAI.candidateShortlist,
+                affinity: self.affinity, preferringSlots: search.preferredSlots)
             // Three positionally-aligned projections of the SAME shortlist: the model
             // sees `lines` (name + keywords + slot count), answers with numbers that
             // index it, and any name it writes instead is validated against `names`.
@@ -471,14 +472,10 @@ final class MemeGeneratorModel: ObservableObject {
                 case .failure(let rejection):
                     self.finish(ticket, status: "Couldn't build the meme — \(rejection.reason).")
                 case .success(let spec):
-                    // v7: when the description WAS a list, the user's own items are the
-                    // captions and the model's are discarded. The model is still asked
-                    // for both (one round-trip, and its pick is what we want) — but the
-                    // captions it writes are the part it gets wrong, and the part we
-                    // already have verbatim.
-                    let resolvedSpec = extracted.map { spec.replacingCaptions(with: $0.captions) }
-                        ?? spec
-                    await self.applyRanked(resolvedSpec, ticket: ticket)
+                    // v8: the "user's own list beats the model's captions" rule moved
+                    // into `MemeCaptionSeeding.resolve`, which `applyRanked` calls —
+                    // one tested place instead of a step here and a step there.
+                    await self.applyRanked(spec, ticket: ticket)
                 }
             } catch {
                 guard !self.isCancelled, self.state.accepts(ticket: ticket) else { return }
@@ -679,20 +676,20 @@ final class MemeGeneratorModel: ObservableObject {
         candidates = picks
         candidateReason = spec.reason
 
-        // The boxes are seeded for the TOP candidate's real structure, never for an
-        // assumed top/bottom pair. This is the second half of the v6 report: the
-        // geometry ALWAYS comes from the template's own slot count, so an N≠2 template
-        // can never render as a classic two-liner regardless of what the model wrote.
-        let slots = MemeCaptionSlots.clamp(picks.first?.captionSlots ?? MemeCaptionSlots.default)
-
-        // v7: the host decides whether these captions may be rendered. A count that
-        // doesn't match the template is NOT silently padded out with blanks — it is
-        // refitted, because "Expanding Brain with two captions" is not the joke the
-        // user asked for. The seed still happens first so the user sees the meme land
-        // while the refit runs.
-        let fit = MemeAI.fit(
-            captions: spec.captions, slots: slots, wasLegacyShape: spec.wasLegacyShape)
-        seedBoxes(captions: fit.captions, slots: slots)
+        // v8: the ENTIRE captions→boxes decision is one pure core call. Extraction of
+        // the user's own list, the template's slot geometry, and the refit rule used to
+        // be three steps chained HERE, in a file `swift test` cannot compile — so the
+        // chain was untested by construction even while each link had tests. That is
+        // exactly how v6 shipped `seedBoxes(captions: spec.captions, slots:)` with no
+        // fit at all and rendered the owner's four-item prompt as two captions.
+        //
+        // Everything below is UI glue: assign the boxes, render, run the owed refit.
+        let seed = MemeCaptionSeeding.resolve(
+            description: description,
+            specCaptions: spec.captions,
+            wasLegacyShape: spec.wasLegacyShape,
+            templateSlots: picks.first?.captionSlots)
+        apply(seed: seed)
 
         guard let best = picks.first else {
             finish(ticket, status: "There are no templates to choose from — import one to get started.")
@@ -703,27 +700,44 @@ final class MemeGeneratorModel: ObservableObject {
 
         // Ordering matters: the template is on screen before the refit starts, so the
         // second round-trip is a visible correction rather than a longer wait.
-        if case .refit(let current, let target) = fit {
+        if let refit = seed.refit {
             await refitCaptions(
-                to: best, slots: target, from: current,
-                status: MemeAI.refitStatus(wrote: current.count, of: target))
+                to: best, slots: refit.slots, from: refit.from, status: refit.status)
         }
     }
 
-    /// Replace the AI-seeded boxes, keeping any the user added by hand (v6).
+    /// Put a resolved core seed onto the canvas — the ONLY place boxes are seeded.
     ///
-    /// The rule and the reasoning behind choosing it over a confirmation dialog live in
-    /// `MemeCaptionLayout.merging`; this is only the plumbing. `seededBoxIDs` is
-    /// re-minted from the NEW seed, so the next regenerate replaces these in turn while
-    /// the user's own boxes keep surviving indefinitely.
-    private func seedBoxes(captions: [String], slots: Int) {
-        let seed = MemeCaptionLayout.seedBoxes(captions: captions, slots: slots)
-        boxes = MemeCaptionLayout.merging(seed: seed, into: boxes, seededIDs: seededBoxIDs)
-        seededBoxIDs = Set(seed.map(\.id))
-        // Select the first seeded box rather than whatever was selected before: after a
-        // regenerate the user is looking at new captions, and leaving the editor panel
-        // pointed at a box that may no longer exist would show an empty panel.
+    /// This is the app-layer half of seeding, and all of it is state mutation: merge the
+    /// new seed over the user's hand-added boxes (the rule and the reasoning live in
+    /// `MemeCaptionLayout.merging`), re-mint `seededBoxIDs` from the NEW seed so the
+    /// next regenerate replaces these in turn while the user's own boxes survive
+    /// indefinitely, and move the selection to the first box — after a regenerate the
+    /// user is looking at new captions, and leaving the editor panel pointed at a box
+    /// that may no longer exist would show an empty panel.
+    ///
+    /// Every decision ABOUT the seed — which captions, how many slots, whether a refit
+    /// is owed — was already made in `MemeCaptionSeeding`, under test.
+    private func apply(seed: MemeCaptionSeeding.Seed) {
+        boxes = MemeCaptionLayout.merging(
+            seed: seed.boxes, into: boxes, seededIDs: seededBoxIDs)
+        seededBoxIDs = Set(seed.boxes.map(\.id))
         selectedBoxID = boxes.first?.id
+    }
+
+    /// Seed boxes for a known caption list and slot count, with no description to read.
+    ///
+    /// The two callers that legitimately have no description in play: picking a template
+    /// before ever generating (empty captions, the template's own slots), and applying a
+    /// completed refit (captions already exactly `slots` long). Both still go through
+    /// the core layout + the single `apply` path, so there is no second way to put boxes
+    /// on the canvas.
+    private func seedBoxes(captions: [String], slots: Int) {
+        let count = MemeCaptionSlots.clamp(slots)
+        apply(seed: MemeCaptionSeeding.Seed(
+            boxes: MemeCaptionLayout.seedBoxes(captions: captions, slots: count),
+            captions: captions,
+            slots: count))
     }
 
     // MARK: - Template selection

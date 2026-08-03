@@ -68,16 +68,20 @@ enum MemeRenderer {
         return output
     }
 
-    /// v1 entry point, kept so the AI path reads the same as before: seed two boxes
-    /// and render them. The seeded geometry reproduces the classic top/bottom look.
-    static func render(
-        template: NSImage,
-        topText: String,
-        bottomText: String
-    ) -> NSImage {
-        render(
-            template: template,
-            boxes: MemeCaptionLayout.seedBoxes(topText: topText, bottomText: bottomText))
+    /// v1's two-caption entry point. **Removed in v8 — do not reintroduce.**
+    ///
+    /// It had no callers left (the render path takes `boxes:`), and leaving a
+    /// top/bottom-shaped overload in reach is precisely how a 4-slot template gets
+    /// rendered as a classic two-liner: any future call site that reached for it would
+    /// collapse N captions to 2 at the boundary, silently and without failing a test.
+    /// The `boxes:` overload above is the only entry point; a caller that genuinely has
+    /// two captions passes a 2-element array through `MemeCaptionSeeding`.
+    @available(*, unavailable, message: """
+        Removed in v8: renders exactly two captions and silently drops the rest. \
+        Use render(template:boxes:) with boxes from MemeCaptionSeeding.resolve.
+        """)
+    static func render(template: NSImage, topText: String, bottomText: String) -> NSImage {
+        fatalError("unavailable")
     }
 
     /// Draw one resolved box.

@@ -294,6 +294,16 @@ public enum MemeAI {
 
         /// The classic two-slot spelling, kept so existing call sites and tests that
         /// think in top/bottom still read naturally.
+        ///
+        /// **Deprecated in v8**, for the same reason as `MemeCaptionLayout`'s
+        /// top/bottom seed: a two-caption constructor is the shape the v6 bug came in,
+        /// and every production path now carries N captions from `parseRanked` straight
+        /// into `MemeCaptionSeeding.resolve`. Kept for the tests that assert the legacy
+        /// wire shape still decodes.
+        @available(*, deprecated, message: """
+            Two-caption shape. Use init(templateNames:captions:) — pass a 2-element \
+            array when the template really has two slots.
+            """)
         public init(templateNames: [String], topText: String, bottomText: String) {
             self.init(templateNames: templateNames, captions: [topText, bottomText])
         }
