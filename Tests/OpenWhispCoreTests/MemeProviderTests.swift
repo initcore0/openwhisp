@@ -124,6 +124,130 @@ final class MemeProviderTests: XCTestCase {
         XCTAssertEqual(MemeTemplateCatalog.search("  ", in: catalog).count, 2)
     }
 
+    // MARK: - v4: ranked search (the owner's "worst day" repro)
+
+    /// A corpus shaped like the real merged one: the Bart template is present, buried
+    /// well down the popularity order, and its relevance lives partly in keywords.
+    private var worstDayCatalog: [MemeTemplate] {
+        var out: [MemeTemplate] = (0..<40).map {
+            template(.imgflip, "i\($0)", "Popular Template \($0)")
+        }
+        out.append(template(.memegen, "worst-day", "Worst Day Of My Life So Far",
+                            keywords: ["Bart Simpson", "chalkboard", "bad day"]))
+        return out
+    }
+
+    /// **The owner's exact report.** "the worst day for the planet" must surface the
+    /// Bart template. v3 returned NOTHING: its all-tokens rule required "planet" to
+    /// appear in the name or keywords, so one unmatched token vetoed the three that
+    /// matched perfectly.
+    func testWorstDayDescriptionFindsTheBartTemplate() {
+        let hits = MemeTemplateCatalog.search("the worst day for the planet", in: worstDayCatalog)
+        XCTAssertEqual(hits.first?.name, "Worst Day Of My Life So Far",
+                       "describing the meme's content must find it, and rank it first")
+    }
+
+    /// The owner's second phrasing of the same query.
+    func testWorstDaySoFarDescriptionFindsTheBartTemplate() {
+        let hits = MemeTemplateCatalog.search("the worst day so far", in: worstDayCatalog)
+        XCTAssertEqual(hits.first?.name, "Worst Day Of My Life So Far")
+    }
+
+    /// Relevance beats popularity: the Bart template is at index 40 and still wins.
+    func testARelevantTemplateOutranksPopularOnesThatDoNotMatch() {
+        let hits = MemeTemplateCatalog.search("worst day", in: worstDayCatalog)
+        XCTAssertEqual(hits.first?.name, "Worst Day Of My Life So Far")
+        XCTAssertFalse(hits.contains { $0.name.hasPrefix("Popular Template") },
+                       "templates that match nothing must not be padded in")
+    }
+
+    /// A name-token match is stronger evidence than a keyword match, so the template
+    /// actually NAMED for the query ranks above one that merely lists it as an alias.
+    func testANameMatchOutranksAKeywordMatch() {
+        let catalog = [
+            template(.memegen, "alias", "Something Else", keywords: ["chalkboard"]),
+            template(.imgflip, "named", "Chalkboard"),
+        ]
+        XCTAssertEqual(MemeTemplateCatalog.search("chalkboard", in: catalog).first?.name,
+                       "Chalkboard")
+    }
+
+    /// Partial/prefix matches count, but count LESS — they are weaker evidence.
+    func testAPrefixMatchScoresBelowAWholeTokenMatch() {
+        let whole = template(.imgflip, "w", "Planet")
+        let prefix = template(.imgflip, "p", "Planetarium Nights")
+        let hits = MemeTemplateCatalog.search("planet", in: [prefix, whole])
+        XCTAssertEqual(hits.first?.name, "Planet",
+                       "exact token beats prefix even though prefix came first in the catalog")
+        XCTAssertEqual(hits.count, 2, "the prefix match is still shown, just ranked lower")
+    }
+
+    /// v4 ranks partial matches — it must still never INVENT one. Ranking and
+    /// falling back are different things, and the fallback is the original bug.
+    func testRankedSearchStillReturnsNothingWhenNothingMatchesAtAll() {
+        XCTAssertTrue(
+            MemeTemplateCatalog.search("zzzzz qqqqq", in: worstDayCatalog).isEmpty)
+    }
+
+    /// A query of pure stopwords must still narrow rather than silently resetting the
+    /// grid to the whole catalog.
+    func testAStopwordOnlyQueryStillFilters() {
+        let catalog = [
+            template(.imgflip, "i1", "The Rock Driving"),
+            template(.imgflip, "i2", "Success Kid"),
+        ]
+        XCTAssertEqual(MemeTemplateCatalog.search("the", in: catalog).map(\.name),
+                       ["The Rock Driving"])
+    }
+
+    // MARK: - v4: the LLM shortlist
+
+    /// The prefilter is what lets the LLM benefit from the same scoring: the relevant
+    /// template is at index 40 of the corpus and would be truncated off a
+    /// popularity-ordered prompt, but it leads the shortlist.
+    func testPrefilterPutsTheRelevantTemplateInFrontOfTheModel() {
+        let shortlist = MemeTemplateCatalog.prefilter(
+            for: "the worst day for the planet", in: worstDayCatalog, limit: 30)
+        XCTAssertEqual(shortlist.first?.name, "Worst Day Of My Life So Far")
+        XCTAssertEqual(shortlist.count, 30, "the model still gets a full shortlist to rank")
+    }
+
+    /// A description matching nothing still gets the model a corpus to choose from —
+    /// the UI, not the prompt, is where "nothing matched" is stated.
+    func testPrefilterFallsBackToPopularityWhenNothingMatches() {
+        let shortlist = MemeTemplateCatalog.prefilter(
+            for: "zzzzz qqqqq", in: worstDayCatalog, limit: 5)
+        XCTAssertEqual(shortlist.map(\.name), (0..<5).map { "Popular Template \($0)" })
+    }
+
+    func testPrefilterNeverRepeatsATemplateWhenToppingUp() {
+        let shortlist = MemeTemplateCatalog.prefilter(
+            for: "worst day", in: worstDayCatalog, limit: 10)
+        XCTAssertEqual(Set(shortlist.map(\.id)).count, shortlist.count)
+    }
+
+    /// The model is shown keywords — that is what connects a CONTENT description to a
+    /// template — but the name stays first and unadorned so it can be copied verbatim
+    /// and validated against the catalog.
+    func testPromptLinesCarryKeywordsAfterAnUnadornedName() {
+        let catalog = [
+            template(.memegen, "m1", "Sweet Brown", keywords: ["Ain't Nobody Got Time For That"]),
+            template(.imgflip, "i1", "Drake Hotline Bling"),
+        ]
+        let lines = MemeTemplateCatalog.promptLines(catalog, limit: 10)
+        XCTAssertEqual(lines[0], "Sweet Brown (Ain't Nobody Got Time For That)")
+        XCTAssertEqual(lines[1], "Drake Hotline Bling", "no keywords -> no empty parentheses")
+    }
+
+    /// The name a `promptLines` entry starts with must be the one `MemeAI.validate`
+    /// accepts — otherwise every keyword-carrying template would read as a
+    /// hallucination and be dropped.
+    func testAModelCopyingTheNameOffAPromptLineValidates() {
+        let catalog = [template(.memegen, "m1", "Sweet Brown", keywords: ["no time"])]
+        let names = MemeTemplateCatalog.promptNames(catalog, limit: 10)
+        XCTAssertEqual(MemeAI.validate(["Sweet Brown"], against: names), ["Sweet Brown"])
+    }
+
     /// The user's own templates sort first, so the prompt cap can never exclude them.
     func testPromptNamesCapTheCorpusButKeepUserTemplates() {
         let merged = MemeTemplateCatalog.merge([
@@ -524,5 +648,183 @@ final class MemeProviderTests: XCTestCase {
         XCTAssertTrue(MemeGenerationState.timeoutMessage.contains("Generate again"))
         XCTAssertTrue(MemeGenerationState.timeoutMessage.contains("Browse all"))
         XCTAssertGreaterThan(MemeGenerationState.generateTimeout, 0)
+    }
+
+    // MARK: - v4: the stuck-download orderings
+
+    /// **The owner's report #2 ordering.** A download that is superseded/abandoned and
+    /// then followed by a window REOPEN must not leave the surface parked in
+    /// `.downloading`. v3's `renderTemplate` returned bare on a stale ticket and
+    /// `windowDidOpen` only cleared `isCancelled`, so the phase survived with no task,
+    /// no timeout and no Retry behind it — "Downloading <name>" forever.
+    func testAReopenedWindowNeverInheritsADownloadingPhase() {
+        var state = MemeGenerationState()
+        _ = state.begin(.downloading(templateName: "Drake"))
+        XCTAssertTrue(state.isGenerating)
+
+        state.reset()
+
+        XCTAssertEqual(state.phase, .idle)
+        XCTAssertFalse(state.isGenerating)
+        XCTAssertNil(state.generateBlockedReason(), "Generate must be live again after a reopen")
+    }
+
+    /// `reset` also refuses the abandoned work's late result, so a download that
+    /// completes after the reopen can't drag the fresh window back into its phase.
+    func testResetRefusesTheAbandonedDownloadsLateResult() {
+        var state = MemeGenerationState()
+        let stale = state.begin(.downloading(templateName: "Drake"))
+        state.reset()
+
+        XCTAssertFalse(state.accepts(ticket: stale))
+        XCTAssertFalse(state.finish(ticket: stale))
+        XCTAssertFalse(state.advance(.asking, ticket: stale))
+        XCTAssertEqual(state.phase, .idle)
+    }
+
+    /// Every download exit — success, failure, timeout, supersession — ends at a
+    /// `finish` for its OWN ticket, and finishing a superseded ticket is a harmless
+    /// no-op. This is the property that makes "no exit can leave the phase set" true
+    /// without a superseded task being able to unstick newer work.
+    func testFinishingASupersededDownloadCannotDisturbTheNewerOne() {
+        var state = MemeGenerationState()
+        let first = state.begin(.downloading(templateName: "Drake"))
+        let second = state.begin(.downloading(templateName: "Bart"))
+
+        XCTAssertFalse(state.finish(ticket: first), "the superseded exit is a no-op")
+        XCTAssertEqual(state.phase, .downloading(templateName: "Bart"),
+                       "the newer download still owns the phase")
+
+        XCTAssertTrue(state.finish(ticket: second))
+        XCTAssertEqual(state.phase, .idle)
+    }
+
+    /// A download ticket now carries a FINITE ceiling — v3 started one with no timer
+    /// at all, which is why a wedged GET hung the surface indefinitely.
+    func testADownloadHasItsOwnFiniteCeilingShorterThanAGenerates() {
+        XCTAssertGreaterThan(MemeGenerationState.downloadTimeout, 0)
+        XCTAssertLessThan(MemeGenerationState.downloadTimeout,
+                          MemeGenerationState.generateTimeout,
+                          "an image is not a model load — it must give up much sooner")
+    }
+
+    /// The download give-up message names the template and offers a way out, rather
+    /// than leaving a spinner with no explanation.
+    func testDownloadTimeoutMessageNamesTheTemplateAndOffersRetry() {
+        let message = MemeGenerationState.downloadTimeoutMessage("Drake Hotline Bling")
+        XCTAssertTrue(message.contains("Drake Hotline Bling"))
+        XCTAssertTrue(message.contains("Retry"))
+    }
+
+    // MARK: - v4: generate retry (the "first two generates fail" report)
+
+    /// A refused connection is "the server isn't up YET", not a failure to report —
+    /// this is exactly what surfaced as the owner's raw "network error".
+    func testARefusedConnectionIsTreatedAsNotReadyYet() {
+        let refused = NSError(domain: NSURLErrorDomain,
+                              code: NSURLErrorCannotConnectToHost, userInfo: nil)
+        XCTAssertTrue(MemeGenerateRetry.isNotReadyYet(refused))
+        XCTAssertTrue(MemeGenerateRetry.shouldRetry(refused, attempt: 1))
+    }
+
+    /// A real model error is reported immediately — retrying it would only make the
+    /// user wait longer for the same message.
+    func testARealFailureIsNotRetried() {
+        let real = NSError(domain: "OpenWhisp", code: 42, userInfo: nil)
+        XCTAssertFalse(MemeGenerateRetry.isNotReadyYet(real))
+        XCTAssertFalse(MemeGenerateRetry.shouldRetry(real, attempt: 1))
+    }
+
+    /// The retry budget is finite: the third refusal surfaces honestly instead of
+    /// looping forever.
+    func testRetriesAreBoundedAndThenReportHonestly() {
+        let refused = NSError(domain: NSURLErrorDomain,
+                              code: NSURLErrorCannotConnectToHost, userInfo: nil)
+        XCTAssertTrue(MemeGenerateRetry.shouldRetry(refused, attempt: 2))
+        XCTAssertFalse(
+            MemeGenerateRetry.shouldRetry(refused, attempt: MemeGenerateRetry.maxAttempts),
+            "the budget is spent — say so rather than retrying forever")
+        XCTAssertGreaterThanOrEqual(MemeGenerateRetry.maxAttempts, 2)
+    }
+
+    /// Backoff, not a fixed sleep: the first retry is quick (the server is usually one
+    /// instant from binding) and later ones wait longer.
+    func testRetryDelaysBackOff() {
+        XCTAssertEqual(MemeGenerateRetry.delay(beforeAttempt: 1), 0,
+                       "the first attempt never waits")
+        XCTAssertGreaterThan(MemeGenerateRetry.delay(beforeAttempt: 2), 0)
+        XCTAssertGreaterThan(MemeGenerateRetry.delay(beforeAttempt: 3),
+                             MemeGenerateRetry.delay(beforeAttempt: 2))
+    }
+
+    /// Matching is on the URL error CODE, not on message text — the text is localized,
+    /// so a non-English Mac would silently stop retrying if this keyed on English.
+    func testNotReadyDetectionDoesNotDependOnLocalizedText() {
+        let localized = NSError(
+            domain: NSURLErrorDomain, code: NSURLErrorCannotConnectToHost,
+            userInfo: [NSLocalizedDescriptionKey: "Не удалось подключиться к серверу"])
+        XCTAssertTrue(MemeGenerateRetry.isNotReadyYet(localized))
+    }
+
+    /// The wait is visible rather than a frozen button.
+    func testRetryStatusNamesTheAttempt() {
+        let message = MemeGenerateRetry.retryingMessage(attempt: 2)
+        XCTAssertTrue(message.contains("2"))
+        XCTAssertTrue(message.contains("\(MemeGenerateRetry.maxAttempts)"))
+    }
+
+    // MARK: - v4: what "warmed" means per provider
+
+    /// The bundled provider has a local server, so readiness is its health check —
+    /// this is the case the plugin must WAIT for rather than guess at.
+    func testTheBundledProviderIsWarmedByWaitingForItsLocalServer() {
+        XCTAssertEqual(
+            LLMWarmReadiness.decide(provider: "bundled", isExplicit: true,
+                                    modelInstalled: true, cleanupEnabled: false),
+            .awaitLocalServer)
+    }
+
+    /// A cloud/remote provider has no local server to start, so it is ready by
+    /// definition. Gating it on a llama-server that will never launch would leave
+    /// "Preparing model…" on screen forever — the stuck-state bug in a new costume.
+    func testANonBundledProviderIsReadyImmediately() {
+        XCTAssertEqual(
+            LLMWarmReadiness.decide(provider: "openai", isExplicit: true,
+                                    modelInstalled: false, cleanupEnabled: false),
+            .alreadyReady)
+    }
+
+    /// Bundled but never downloaded is genuinely unavailable — the caller must say so
+    /// rather than blocking Generate behind a warm that can't finish.
+    func testTheBundledProviderWithoutItsModelIsUnavailable() {
+        XCTAssertEqual(
+            LLMWarmReadiness.decide(provider: "bundled", isExplicit: true,
+                                    modelInstalled: false, cleanupEnabled: true),
+            .unavailable)
+    }
+
+    /// The MAK-53 split: a surface that resolved its OWN provider to bundled warms
+    /// even when Settings → Cleanup is off, while the implicit global case still
+    /// respects the toggle.
+    func testAnExplicitlyResolvedProviderBypassesTheCleanupToggle() {
+        XCTAssertEqual(
+            LLMWarmReadiness.decide(provider: "bundled", isExplicit: true,
+                                    modelInstalled: true, cleanupEnabled: false),
+            .awaitLocalServer)
+        XCTAssertEqual(
+            LLMWarmReadiness.decide(provider: "bundled", isExplicit: false,
+                                    modelInstalled: true, cleanupEnabled: false),
+            .unavailable)
+    }
+
+    /// Warming blocks Generate with an honest reason — and `reset` clears it, so a
+    /// warm that never completed can't leave the button permanently "Preparing model…".
+    func testAWarmThatNeverCompletesCannotBlockGenerateForever() {
+        var state = MemeGenerationState()
+        _ = state.begin(.warming)
+        XCTAssertEqual(state.generateBlockedReason(), "Preparing model…")
+
+        state.reset()
+        XCTAssertNil(state.generateBlockedReason())
     }
 }

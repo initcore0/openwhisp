@@ -249,7 +249,7 @@ struct MemeGeneratorView: View {
             HStack(alignment: .top, spacing: 6) {
                 // A fallback is called out with a symbol as well as words — the
                 // owner's complaint was that the substitution was invisible.
-                if model.didFallBack || model.catalogFailed {
+                if model.didFallBack || model.catalogFailed || model.imageFailed {
                     Image(systemName: "exclamationmark.triangle")
                         .foregroundStyle(.orange)
                 }
@@ -257,6 +257,14 @@ struct MemeGeneratorView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+                // A failed template image gets its OWN Retry (v4) — the catalog Retry
+                // above re-fetches the catalog, which does nothing for an image that
+                // failed to download.
+                if model.imageFailed {
+                    Button("Retry") { model.retryTemplate() }
+                        .buttonStyle(.link)
+                        .font(.caption)
+                }
                 Spacer()
             }
         }

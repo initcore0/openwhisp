@@ -133,12 +133,24 @@ enum MemeTemplateService {
             return image
         }
 
-        let (data, response) = try await session.data(from: url)
+        // A per-request ceiling on top of the session's, so one wedged image GET can't
+        // outlive the UI's own download timeout and land a result into a surface that
+        // has already recovered.
+        var request = URLRequest(url: url)
+        request.timeoutInterval = imageTimeout
+
+        let (data, response) = try await session.data(for: request)
         try check(response, host: url.host ?? "the template host")
 
         guard let image = NSImage(data: data) else { throw ServiceError.undecodableImage }
         return image
     }
+
+    /// The ceiling on one template-image GET. Deliberately shorter than
+    /// `MemeGenerationState.downloadTimeout` so the transport fails FIRST and the user
+    /// gets a real reason ("the request timed out") rather than the UI's generic
+    /// give-up message.
+    static let imageTimeout: TimeInterval = 20
 
     private static func check(_ response: URLResponse, host: String) throws {
         guard let http = response as? HTTPURLResponse else { return }

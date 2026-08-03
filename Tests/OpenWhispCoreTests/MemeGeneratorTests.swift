@@ -323,11 +323,23 @@ final class MemeGeneratorTests: XCTestCase {
             MemeTemplateMatcher.search("button", in: catalog).map(\.id), ["3"])
     }
 
-    func testSearchRequiresEveryTokenToAppear() {
+    /// v3 REQUIRED every token to appear, which is what made a content description
+    /// unsearchable (see `testWorstDayDescriptionFindsTheBartTemplate`). v4 ranks
+    /// instead: a query spanning two templates surfaces BOTH rather than neither.
+    func testAPartialTokenMatchStillSurfacesTheTemplate() {
         XCTAssertEqual(
             MemeTemplateMatcher.search("drake bling", in: catalog).map(\.id), ["1"])
-        XCTAssertEqual(
-            MemeTemplateMatcher.search("drake buttons", in: catalog).map(\.id), [])
+
+        let both = MemeTemplateMatcher.search("drake buttons", in: catalog).map(\.id)
+        XCTAssertTrue(both.contains("1"), "the Drake half of the query must still match")
+        XCTAssertTrue(both.contains("3"), "the Buttons half must too — v3 returned nothing here")
+    }
+
+    /// More matched tokens ranks higher. This is the ordering the whole v4 change
+    /// exists to produce.
+    func testMoreMatchedTokensRanksHigher() {
+        let hits = MemeTemplateMatcher.search("drake hotline bling", in: catalog).map(\.id)
+        XCTAssertEqual(hits.first, "1")
     }
 
     func testSearchIgnoresPunctuation() {
@@ -350,9 +362,11 @@ final class MemeGeneratorTests: XCTestCase {
             "ranking refuses too — v1's bestMatch answered Drake here, which was the bug")
     }
 
-    func testSearchPreservesPopularityOrder() {
-        let hits = MemeTemplateMatcher.search("t", in: catalog).map(\.id)
-        XCTAssertEqual(hits, catalog.filter { hits.contains($0.id) }.map(\.id))
+    /// Equal scores fall back to the catalog's own order, which IS the popularity
+    /// ranking — so ranking never reshuffles templates it has no reason to separate.
+    func testEquallyScoringHitsKeepPopularityOrder() {
+        let hits = MemeTemplateMatcher.search("bling boyfriend", in: catalog).map(\.id)
+        XCTAssertEqual(hits, ["1", "2"], "same score (one token each) -> catalog order")
     }
 
     // MARK: - Caption box model

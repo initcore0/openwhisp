@@ -165,6 +165,18 @@ public struct MemeGenerationState: Equatable, Sendable {
         phase = .idle
     }
 
+    /// Return to idle unconditionally, refusing every outstanding result (v4).
+    ///
+    /// Distinct from `cancel()` only in intent, and worth its own name for that
+    /// reason: `cancel` is "the user or the window stopped this", `reset` is "this
+    /// surface is starting fresh and must not inherit anything". Used by
+    /// `windowDidOpen`, where a phase left over from a previous session had no task,
+    /// no timeout, and no owner — the shape of the stuck-download report.
+    public mutating func reset() {
+        ticket += 1
+        phase = .idle
+    }
+
     /// Whether a result carrying `incoming` is still wanted.
     public func accepts(ticket incoming: Int) -> Bool { incoming == ticket }
 
@@ -183,4 +195,95 @@ public struct MemeGenerationState: Equatable, Sendable {
     public static let timeoutMessage =
         "The model didn't answer within \(Int(generateTimeout)) seconds. It may still be "
         + "loading — try Generate again, or pick a template yourself with Browse all."
+
+    /// The ceiling on ONE template-image download (v4).
+    ///
+    /// Much tighter than `generateTimeout`, because the two waits are not comparable:
+    /// a local model loading a multi-gigabyte file legitimately takes a minute, while
+    /// a template image is a few hundred KB over HTTP or a file read off the local
+    /// disk. Anything past this is a hang, not slowness.
+    ///
+    /// v3 applied NO ceiling to a download ticket at all — `select()` began a
+    /// `.downloading` phase and started no timer — which is why the owner's
+    /// "Downloading <name>" could sit there indefinitely.
+    public static let downloadTimeout: TimeInterval = 30
+
+    /// The message shown when a template download hits the ceiling.
+    public static func downloadTimeoutMessage(_ templateName: String) -> String {
+        "\(templateName) didn't finish downloading within \(Int(downloadTimeout)) seconds. "
+        + "Press Retry, or pick another template."
+    }
+}
+
+/// When a failed generate request is worth retrying rather than reporting (v4).
+///
+/// ## Why a policy type
+///
+/// The owner's report was that the FIRST TWO generates after opening the window fail
+/// with a raw "network error". The cause is a race the UI cannot see: llama-server
+/// binds its port slightly after it starts, so a request fired into that gap is
+/// refused by the OS — not by the model. `NSURLErrorCannotConnectToHost` /
+/// `ECONNREFUSED` is therefore not really an error yet, it is "too early"; the honest
+/// response is to wait a moment and try again, exactly as a human would.
+///
+/// v3 attacked the same race by sleeping a guessed 2.5 seconds before allowing
+/// Generate. Guessing is what made it fail twice on a slow cold start and wait
+/// pointlessly on a warm one. v4 gates on REAL readiness instead, and keeps this
+/// retry as the second line of defence for the gap that readiness can't cover: the
+/// server can pass a health check and still refuse the very next connection if it is
+/// mid-restart (an idle-teardown relaunch, a model swap).
+///
+/// Pure and Foundation-only so every decision is pinned by `swift test` — the
+/// alternative is a retry loop nobody can test without a real socket.
+public enum MemeGenerateRetry {
+
+    /// How many ATTEMPTS one generate gets in total (the first try plus retries).
+    public static let maxAttempts = 3
+
+    /// The delay before attempt `attempt` (1-based: the delay before attempt 2).
+    ///
+    /// Backoff, not a fixed sleep: a server that is one instant from binding recovers
+    /// on the first short retry, and one that is genuinely still loading gets a longer
+    /// second wait rather than burning both attempts in half a second.
+    public static func delay(beforeAttempt attempt: Int) -> TimeInterval {
+        switch attempt {
+        case ..<2:  return 0
+        case 2:     return 0.75
+        default:    return 2.0
+        }
+    }
+
+    /// True when `error` looks like "the server isn't accepting connections YET"
+    /// rather than a real failure.
+    ///
+    /// Matched on the URL-loading error codes rather than on message text, because the
+    /// text is localized — a Russian-locale Mac would silently stop retrying if this
+    /// keyed on English. `cannotConnectToHost` is the refused-connection case,
+    /// `networkConnectionLost` and `cannotFindHost` cover a server that dropped the
+    /// connection mid-restart, and `timedOut` covers one still paging its model in.
+    public static func isNotReadyYet(_ error: Error) -> Bool {
+        let ns = error as NSError
+        guard ns.domain == NSURLErrorDomain else { return false }
+        switch ns.code {
+        case NSURLErrorCannotConnectToHost,
+             NSURLErrorCannotFindHost,
+             NSURLErrorNetworkConnectionLost,
+             NSURLErrorTimedOut,
+             NSURLErrorNotConnectedToInternet:
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// Whether to retry: the error is a not-ready one AND attempts remain.
+    public static func shouldRetry(_ error: Error, attempt: Int) -> Bool {
+        attempt < maxAttempts && isNotReadyYet(error)
+    }
+
+    /// The status shown while waiting to retry, so the wait is visible rather than a
+    /// frozen button.
+    public static func retryingMessage(attempt: Int) -> String {
+        "The model isn't ready yet — retrying (\(attempt) of \(maxAttempts))…"
+    }
 }

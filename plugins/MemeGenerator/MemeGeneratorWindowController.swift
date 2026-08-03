@@ -78,8 +78,15 @@ final class MemeGeneratorWindowController: NSWindowController, NSWindowDelegate,
             // only fires when Settings → Cleanup is itself set to the bundled
             // provider, so a plugin resolved to bundled would otherwise never warm.
             // Same MAK-53 split `ensureBundledLLMReady(provider:)` already makes.
-            warm: { resolved in
-                AppState.shared.warmLlamaServerIfPossible(provider: resolved.provider)
+            //
+            // v4: the completion carries REAL readiness — `ensureRunning` polls
+            // llama-server's `/health` and calls back only when it answers. v3
+            // discarded that signal and had the plugin sleep a guessed 2.5s instead,
+            // which is why the first generates still hit a socket nothing was
+            // listening on.
+            warm: { resolved, ready in
+                AppState.shared.warmLlamaServerIfPossible(
+                    provider: resolved.provider, completion: ready)
             })
     }
 

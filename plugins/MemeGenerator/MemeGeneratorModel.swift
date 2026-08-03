@@ -86,6 +86,19 @@ final class MemeGeneratorModel: ObservableObject {
     /// where the user must act. Drives the Retry affordance.
     @Published private(set) var catalogFailed: Bool = false
 
+    /// Set when a TEMPLATE IMAGE failed to load. Drives its own Retry affordance
+    /// (v4).
+    ///
+    /// Separate from `catalogFailed` because they fail independently and recover
+    /// differently: a catalog failure retries the fetch, an image failure retries one
+    /// template. v3 had no image-failure signal at all, so a failed download had
+    /// nowhere to surface — which is half of why "Downloading…" looked like it hung
+    /// rather than like it had failed.
+    @Published private(set) var imageFailed: Bool = false
+
+    /// The template whose image failed, so Retry knows what to re-fetch.
+    @Published private(set) var failedTemplate: MemeTemplate?
+
     /// The templates matching `searchText`, across names AND keywords so a merged,
     /// multi-lingual corpus is actually findable.
     var searchResults: [MemeTemplate] {
@@ -125,14 +138,22 @@ final class MemeGeneratorModel: ObservableObject {
     private var resolveAIModel: () -> SummaryModelResolver.Resolved = {
         .init(provider: "", model: "", endpoint: "")
     }
-    /// Warms the LLM without running a completion. Injected so this model stays
-    /// AppState-free and the warm is stubbable.
-    private var warmModel: (SummaryModelResolver.Resolved) -> Void = { _ in }
+    /// Warms the LLM and REPORTS READINESS (v4).
+    ///
+    /// The completion carries whether the model can actually take a request — it is
+    /// driven by llama-server's `/health` poll, not by a timer. v3's seam returned
+    /// `Void`, which is precisely why this model had to guess how long to wait.
+    /// Injected so the model stays AppState-free and the readiness is stubbable.
+    typealias WarmCall = (
+        _ resolved: SummaryModelResolver.Resolved, _ ready: @escaping (Bool) -> Void
+    ) -> Void
+
+    private var warmModel: WarmCall = { _, ready in ready(true) }
 
     func configureAI(
         call: @escaping AICall,
         resolveModel: @escaping () -> SummaryModelResolver.Resolved,
-        warm: @escaping (SummaryModelResolver.Resolved) -> Void = { _ in }
+        warm: @escaping WarmCall = { _, ready in ready(true) }
     ) {
         aiCall = call
         resolveAIModel = resolveModel
@@ -160,35 +181,71 @@ final class MemeGeneratorModel: ObservableObject {
     /// stale). Neither blocks the user — they can browse and edit while both run.
     func windowDidOpen() {
         isCancelled = false
+        // v4: a reopened window must never INHERIT a phase. `cancel()` on close bumps
+        // the ticket and returns to idle, but any exit path that failed to finish left
+        // the machine parked — and clearing `isCancelled` here is what used to revive
+        // a stranded `.downloading` with no task, no timeout, and no Retry behind it.
+        // Resetting is cheap and makes the window's initial state unconditional.
+        state.reset()
+        imageFailed = false
+        failedTemplate = nil
+        status = ""
         warmLLM()
         openCatalog()
     }
 
-    /// Start the local model loading in the background.
+    /// Start the local model loading, and hold "Preparing model…" until it is REALLY
+    /// ready.
     ///
-    /// Deliberately fire-and-forget with a phase, not an awaited call: the warm has no
-    /// completion we can observe from here (the engine's readiness is AppState's), so
-    /// we show "Preparing model…" for a bounded moment and then allow Generate. If the
-    /// model is still loading when Generate runs, `summarizeResolved` blocks on the
-    /// same engine anyway — the warm has simply removed most of that wait.
+    /// ## v4 — readiness, not a stopwatch
+    ///
+    /// v3 showed the warming phase for a guessed 2.5 seconds and then allowed Generate
+    /// regardless. That is why the owner still saw the first TWO generates fail with a
+    /// raw network error: on a cold start llama-server needs far longer than 2.5s to
+    /// bind its port, so the guess expired while the socket was still refusing
+    /// connections, and the UI cheerfully fired into it.
+    ///
+    /// The readiness signal existed all along and was being discarded:
+    /// `LlamaServerEngine.ensureRunning` polls the server's `/health` endpoint and
+    /// calls back only when it answers. `AppState.warmLlamaServerIfPossible` dropped
+    /// that completion (`{ _ in }`); it now forwards it, and the `warm` seam carries it
+    /// here. So the warming phase ends when the model can actually take a request —
+    /// immediately on a warm server, a minute later on a cold one, and never on a
+    /// guess.
+    ///
+    /// A warm that FAILS is stated rather than hidden, because the alternative is the
+    /// original bug in a new costume: an available-looking Generate button in front of
+    /// a model that isn't there.
     private func warmLLM() {
         let resolved = resolveAIModel()
         guard ScratchpadAIModel.isUsable(resolved) else { return }
-        warmModel(resolved)
 
         let ticket = state.begin(.warming)
-        Task { [weak self] in
-            // A short, fixed window. The point is to stop the user firing a request
-            // into a socket nothing is listening on yet, not to gate the UI on a
-            // completion we can't see.
-            try? await Task.sleep(nanoseconds: 2_500_000_000)
+        status = MemeGenerationState.Phase.warming.statusText
+
+        // A ceiling on the warm itself: a server that never becomes healthy must not
+        // leave Generate blocked behind "Preparing model…" forever — that would be the
+        // stuck-state bug moved into the warm path. On expiry we simply stop blocking;
+        // the request's own retry (`MemeGenerateRetry`) becomes the safety net.
+        startTimeout(ticket: ticket,
+                     after: Self.warmTimeout,
+                     message: "The model is taking a while to start — Generate will try anyway.")
+
+        warmModel(resolved) { [weak self] ready in
             guard let self, !self.isCancelled else { return }
-            if self.state.finish(ticket: ticket), self.status == MemeGenerationState.Phase.warming.statusText {
-                self.status = ""
+            guard self.state.finish(ticket: ticket) else { return }
+            // Only clear a status we ourselves wrote; anything newer wins.
+            if ready {
+                if self.status == MemeGenerationState.Phase.warming.statusText { self.status = "" }
+            } else {
+                self.status = "The built-in model isn't available — check Settings → Cleanup."
             }
         }
-        status = MemeGenerationState.Phase.warming.statusText
     }
+
+    /// How long the warm may block Generate before it gives up and lets the request
+    /// try on its own.
+    private static let warmTimeout: TimeInterval = 180
 
     // MARK: - Catalog
 
@@ -337,12 +394,25 @@ final class MemeGeneratorModel: ObservableObject {
             self.state.advance(.asking, ticket: ticket)
             self.status = MemeGenerationState.Phase.asking.statusText
 
-            let names = MemeTemplateCatalog.promptNames(self.catalog, limit: 100)
+            // v4: shortlist LOCALLY before asking. Scoring the user's own words
+            // against the whole merged corpus (name AND keywords) is what lets a
+            // description of the meme's CONTENT reach a template whose name shares no
+            // words with it — and it guarantees the relevant template is in the
+            // prompt at all, rather than truncated off the end of a popularity list.
+            let shortlist = MemeTemplateCatalog.prefilter(
+                for: self.description, in: self.catalog, limit: MemeAI.candidateShortlist)
+            // The model is shown names + keywords, but validated against NAMES —
+            // `promptLines` keeps the name first and unadorned precisely so the two
+            // stay in sync.
+            let names = MemeTemplateCatalog.promptNames(shortlist, limit: shortlist.count)
+            let lines = MemeTemplateCatalog.promptLines(shortlist, limit: shortlist.count)
             let payload = MemeAI.rankedUserPayload(
-                description: self.description, templateNames: names)
+                description: self.description, templateNames: lines,
+                limit: MemeAI.candidateShortlist)
 
             do {
-                let raw = try await aiCall(MemeAI.rankedPrompt, payload, resolved)
+                let raw = try await self.askWithRetry(
+                    aiCall, payload: payload, resolved: resolved, ticket: ticket)
                 guard !self.isCancelled, self.state.accepts(ticket: ticket) else { return }
 
                 switch MemeAI.parseRanked(raw, catalogNames: names) {
@@ -358,18 +428,60 @@ final class MemeGeneratorModel: ObservableObject {
         }
     }
 
+    /// Run the LLM round-trip, retrying while the failure is "the server isn't
+    /// accepting connections yet" (v4).
+    ///
+    /// This is the second line of defence behind the readiness gate. Readiness covers
+    /// the cold start; this covers the gap readiness cannot see — llama-server can
+    /// pass a health check and still refuse the very next connection when it is
+    /// mid-restart (idle teardown, a model swap). Without it that shows up as the raw
+    /// "network error" the owner reported.
+    ///
+    /// The decision of WHETHER to retry lives in `MemeGenerateRetry` so it is pinned
+    /// by `swift test`; only the sleeping and the status writing happen here. A
+    /// non-transport failure (a real model error) is rethrown on the first attempt —
+    /// retrying it would just make the user wait longer for the same message.
+    private func askWithRetry(
+        _ aiCall: AICall, payload: String,
+        resolved: SummaryModelResolver.Resolved, ticket: Int
+    ) async throws -> String {
+        var attempt = 1
+        while true {
+            do {
+                return try await aiCall(MemeAI.rankedPrompt, payload, resolved)
+            } catch {
+                guard MemeGenerateRetry.shouldRetry(error, attempt: attempt) else { throw error }
+                // A superseded or cancelled request must not keep retrying in the
+                // background — rethrow and let the caller's guards drop it.
+                guard !isCancelled, state.accepts(ticket: ticket) else { throw error }
+
+                attempt += 1
+                status = MemeGenerateRetry.retryingMessage(attempt: attempt)
+                let delay = MemeGenerateRetry.delay(beforeAttempt: attempt)
+                if delay > 0 {
+                    try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                }
+                guard !isCancelled, state.accepts(ticket: ticket) else { throw error }
+                status = MemeGenerationState.Phase.asking.statusText
+            }
+        }
+    }
+
     /// A hard ceiling on one generate.
     ///
     /// v2 had none: an LLM call that never returned left the surface busy forever with
     /// no way back but closing the window. `finish` is ticket-guarded and idempotent,
     /// so this fires harmlessly when the work already completed.
-    private func startTimeout(ticket: Int) {
+    private func startTimeout(
+        ticket: Int,
+        after seconds: TimeInterval = MemeGenerationState.generateTimeout,
+        message: String = MemeGenerationState.timeoutMessage
+    ) {
         Task { [weak self] in
-            try? await Task.sleep(
-                nanoseconds: UInt64(MemeGenerationState.generateTimeout * 1_000_000_000))
+            try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
             guard let self, !self.isCancelled else { return }
             if self.state.finish(ticket: ticket) {
-                self.status = MemeGenerationState.timeoutMessage
+                self.status = message
             }
         }
     }
@@ -462,12 +574,48 @@ final class MemeGeneratorModel: ObservableObject {
         didFallBack = false
 
         let ticket = state.begin(.downloading(templateName: template.name))
+        // v4: an image download gets the SAME hard ceiling a generate does. v3 started
+        // this ticket with no timeout at all, so a download that never came back left
+        // "Downloading <name>…" on screen forever — the owner's report #2.
+        startTimeout(ticket: ticket,
+                     after: MemeGenerationState.downloadTimeout,
+                     message: MemeGenerationState.downloadTimeoutMessage(template.name))
         Task { [weak self] in
             await self?.renderTemplate(template, ticket: ticket, isNewGeneration: false)
         }
     }
 
+    /// Re-run the last template load that failed. The Retry affordance's action.
+    func retryTemplate() {
+        guard let template = failedTemplate else { return }
+        // Clear it first: `select` early-returns when the template is already
+        // selected, and a stale failure must not survive a successful retry.
+        failedTemplate = nil
+        imageFailed = false
+        // The failed template is NOT the selected one (the load never completed), so
+        // `select` will proceed — but drop any cached corpse just in case.
+        imageCache[template.id] = nil
+        select(template: template)
+    }
+
     /// Load a template's image (cached, from disk or network) and render the boxes.
+    ///
+    /// ## v4 — every exit clears the phase
+    ///
+    /// The owner's "Downloading <name> forever" was caused by the two BARE `return`s
+    /// this function used to have: a superseded/cancelled ticket returned without ever
+    /// touching the state machine. That is only safe if some other task owns the
+    /// phase, which is exactly the assumption v3's own doc comment identified as the
+    /// bug class — and it is false in the ordering the owner hit: closing the window
+    /// (`cancel()` sets `isCancelled`) and reopening it (`windowDidOpen` resets
+    /// `isCancelled = false`) left the machine parked in `.downloading` with no
+    /// in-flight task left to clear it, no timeout, and no Retry.
+    ///
+    /// Now every path — cache hit, fetch failure, decode failure, stale ticket,
+    /// cancellation — ends at a `finish` for its OWN ticket. `finish` is
+    /// ticket-guarded and idempotent, so finishing a superseded ticket is a harmless
+    /// no-op that cannot disturb newer work; what it CANNOT do any more is leave the
+    /// phase set with nobody responsible for it.
     private func renderTemplate(
         _ template: MemeTemplate, ticket: Int, isNewGeneration: Bool
     ) async {
@@ -480,21 +628,44 @@ final class MemeGeneratorModel: ObservableObject {
             do {
                 image = try await MemeTemplateService.fetchImage(template)
             } catch {
-                finish(ticket, status:
-                    "Couldn't load the template image — \(Self.reason(error))")
+                // Honest error + a way out, for EVERY failure the fetch can produce:
+                // transport, non-2xx, an undecodable image, and the timeout.
+                noteImageFailure(template, ticket: ticket, error: error)
                 return
             }
-            guard !isCancelled, state.accepts(ticket: ticket) else { return }
+            guard !isCancelled, state.accepts(ticket: ticket) else {
+                finish(ticket, status: status)
+                return
+            }
             imageCache[template.id] = image
             MemeLibraryStore.storeThumbnail(image, for: template.id)
         }
-        guard !isCancelled, state.accepts(ticket: ticket) else { return }
+        guard !isCancelled, state.accepts(ticket: ticket) else {
+            finish(ticket, status: status)
+            return
+        }
 
         baseImage = image
         selectedTemplate = template
+        imageFailed = false
+        failedTemplate = nil
         redraw()
 
         finish(ticket, status: statusLine(isNewGeneration: isNewGeneration))
+    }
+
+    /// Record a template-image failure: clear the phase, say what happened, and offer
+    /// Retry. One funnel so no image failure can reach the UI without all three.
+    private func noteImageFailure(_ template: MemeTemplate, ticket: Int, error: Error) {
+        guard state.accepts(ticket: ticket) else {
+            // Superseded — still end our own ticket rather than returning bare.
+            finish(ticket, status: status)
+            return
+        }
+        failedTemplate = template
+        imageFailed = true
+        finish(ticket, status:
+            "Couldn't load \(template.name) — \(Self.reason(error)) Press Retry, or pick another template.")
     }
 
     /// The line under the controls: honest about a fallback, quiet otherwise.

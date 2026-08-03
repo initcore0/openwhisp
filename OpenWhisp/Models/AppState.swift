@@ -575,7 +575,7 @@ class AppState: ObservableObject {
 
     /// Lazily-created engine that manages the bundled llama-server subprocess.
     private var llamaEngine: LlamaServerEngine?
-    private func ensureLlamaEngine() -> LlamaServerEngine {
+    func ensureLlamaEngine() -> LlamaServerEngine {
         if let engine = llamaEngine { return engine }
         let engine = LlamaServerEngine()
         llamaEngine = engine
@@ -2785,25 +2785,10 @@ class AppState: ObservableObject {
 
     /// True when a resident whisper.cpp server is held in memory at the same time the
     /// built-in LLM would run. (WhisperKit/AppleSpeech keep no resident server.)
-    private var whisperServerResident: Bool {
+    /// Internal rather than private: the warm path lives in `LLMWarmReadiness.swift`
+    /// (MAK-32 — new AppState logic goes to core, not into the god object).
+    var whisperServerResident: Bool {
         transcriptionEngine == "whisper" && whisperBackend == "serverAPI"
-    }
-
-    /// Start the bundled llama-server if the built-in provider is the active,
-    /// enabled, downloaded one. Idempotent (the engine no-ops if already healthy).
-    /// `provider` defaults to the global cleanup one; a caller with its OWN resolved
-    /// provider passes it (the MAK-53 split `ensureBundledLLMReady` already makes) so
-    /// a surface resolved to `bundled` still warms when cleanup uses something else.
-    /// The cleanup on/off toggle then gates only the implicit, global case.
-    func warmLlamaServerIfPossible(provider explicitProvider: String? = nil) {
-        let provider = explicitProvider ?? llmProvider
-        guard provider == "bundled", bundledLLMModelInstalled else { return }
-        guard explicitProvider != nil || openAIEnhancementEnabled else { return }
-        let engine = ensureLlamaEngine()
-        // Shorter idle teardown when a whisper-server is also resident, to relieve
-        // dual-engine memory pressure sooner (small-RAM Macs run both models).
-        engine.idleTimeout = whisperServerResident ? 30 : 90
-        engine.ensureRunning(modelPath: selectedLLMModelPath()) { _ in }
     }
 
     /// Gate a refinement call behind the bundled server being healthy. For the

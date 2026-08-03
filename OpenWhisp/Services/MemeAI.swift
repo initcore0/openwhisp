@@ -89,16 +89,20 @@ public enum MemeAI {
     public static let rankedPrompt = """
     You pick meme templates for a spoken description.
 
-    You are given a numbered list of the ONLY templates available. Think about which \
-    ones could carry the joke, then rank your best options.
+    You are given a numbered list of the ONLY templates available. Each line is a \
+    template name, optionally followed by alternate names in parentheses — the \
+    parentheses describe what the meme is about, so use them to match a description \
+    of the meme's CONTENT, but never copy them into your answer.
+
+    Think about which ones could carry the joke, then rank your best options.
 
     Reply with ONLY a JSON object, no preamble and no code fence:
     {"templates": ["...", "...", "..."], "top_text": "...", "bottom_text": "..."}
 
     Rules:
     1. "templates" lists 1 to 5 template names COPIED EXACTLY from the list, best \
-    first. Do not invent a name, do not reword one, do not use a name that is not on \
-    the list.
+    first — the part BEFORE any parentheses, without the number. Do not invent a \
+    name, do not reword one, do not use a name that is not on the list.
     2. If nothing on the list fits the description well, still return the closest \
     options — but put the genuinely closest first.
     3. "top_text" and "bottom_text" are the caption lines, in the SAME LANGUAGE as \
@@ -110,15 +114,31 @@ public enum MemeAI {
     6. Never invent a caption that contradicts the description.
     """
 
+    /// How many templates the LLM is asked to rank (v4).
+    ///
+    /// The shortlist is built LOCALLY by `MemeTemplateCatalog.prefilter` scoring the
+    /// user's own description against the whole merged corpus, so this cap is no
+    /// longer "the first N by popularity" — it is "the N most relevant". That makes it
+    /// safe to be much smaller than v3's 100, which matters: a tiny local model
+    /// attends to a 30-line list far better than a 100-line one, and the relevant
+    /// template is now guaranteed to be IN the list rather than truncated off the end
+    /// at position 180 of a merged ~300-template catalog.
+    public static let candidateShortlist = 30
+
     /// Build the user payload: the description plus the catalog the model must
     /// choose from.
     ///
     /// The list is numbered because small models copy list items more reliably when
-    /// the items are visually delimited, and truncated to `limit` because a 100-name
-    /// list is already ~1k tokens and some local models have short contexts. The
-    /// catalog is popularity-ordered, so truncating drops the least likely picks.
+    /// the items are visually delimited, and truncated to `limit` because a long list
+    /// blows a small local model's context.
+    ///
+    /// Each line may carry the template's KEYWORDS after its name (v4, see
+    /// `MemeTemplateCatalog.promptLines`) — that is what lets the model connect a
+    /// description of meme CONTENT to a template whose name shares no words with it.
+    /// The name stays first and unadorned so the model can copy it verbatim, which is
+    /// what `validate` checks.
     public static func rankedUserPayload(
-        description: String, templateNames: [String], limit: Int = 100
+        description: String, templateNames: [String], limit: Int = candidateShortlist
     ) -> String {
         let names = templateNames.prefix(max(0, limit))
         let list = names.enumerated()

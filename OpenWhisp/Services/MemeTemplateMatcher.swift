@@ -222,28 +222,18 @@ public enum MemeTemplateMatcher {
     /// This is the honest answer to "yoda isn't in the corpus": the user can see and
     /// search every template the plugin has, and pick one the model never proposed.
     ///
-    /// Deliberately unlike v1's deleted `bestMatch`: no scoring, no threshold, and
-    /// above all **no fallback**. A search that matches nothing returns nothing, because an
+    /// **v4: ranked, not all-or-nothing.** This now delegates to
+    /// `MemeTemplateCatalog.search`, which scores name AND keywords and orders the
+    /// results best-first. The v3 rule here — every query token had to appear in the
+    /// name — is what made a content description ("the worst day for the planet")
+    /// return nothing at all: one unmatched token vetoed every token that did match.
+    /// See `MemeTemplateCatalog.score` for the tiers.
+    ///
+    /// Still **no fallback**: a query matching nothing returns nothing, because an
     /// empty grid saying "no templates match" is the entire point — silently
     /// substituting popular templates is the bug this whole change exists to fix.
-    ///
-    /// Matching is substring-based over the normalized name so it is
-    /// case/diacritic/punctuation-insensitive, and multi-word queries match when
-    /// EVERY token appears somewhere in the name (so "drake bling" finds "Drake
-    /// Hotline Bling"). Catalog order — imgflip's popularity ranking — is preserved.
     public static func search(_ query: String, in catalog: [MemeTemplate]) -> [MemeTemplate] {
-        let normalizedQuery = normalize(query)
-        guard !normalizedQuery.isEmpty else { return catalog }
-
-        // Split on the normalized form, not `tokens`: stopword removal is right for
-        // matching an LLM's phrase, wrong for a user typing letter by letter — a
-        // search for "the" should still narrow the list rather than reset it.
-        let needles = normalizedQuery.split(separator: " ").map(String.init)
-
-        return catalog.filter { template in
-            let haystack = normalize(template.name)
-            return needles.allSatisfy { haystack.contains($0) }
-        }
+        MemeTemplateCatalog.search(query, in: catalog)
     }
 
     // MARK: - Scoring
@@ -275,7 +265,7 @@ public enum MemeTemplateMatcher {
     }
 
     /// Lowercase, strip punctuation, collapse whitespace.
-    static func normalize(_ value: String) -> String {
+    public static func normalize(_ value: String) -> String {
         let folded = value.folding(options: [.diacriticInsensitive, .caseInsensitive],
                                    locale: Locale(identifier: "en_US"))
         let scalars = folded.unicodeScalars.map { scalar -> Character in
@@ -286,9 +276,22 @@ public enum MemeTemplateMatcher {
             .joined(separator: " ")
     }
 
+    /// Tokens for SEARCH scoring (v4).
+    ///
+    /// Like `tokens`, but it degrades gracefully instead of vanishing: a query made
+    /// entirely of stopwords ("the man") would tokenize to nothing and silently reset
+    /// the grid to the whole catalog, so when stopword removal empties the query we
+    /// fall back to the raw normalized words. Single characters survive here too — a
+    /// user typing "x" is narrowing, not searching for nothing.
+    public static func searchTokens(in value: String) -> [String] {
+        let meaningful = tokens(in: value)
+        guard meaningful.isEmpty else { return meaningful }
+        return normalize(value).split(separator: " ").map(String.init)
+    }
+
     /// Meaningful tokens, with English stopwords dropped so "the drake meme" and
     /// "drake" score the same.
-    static func tokens(in value: String) -> [String] {
+    public static func tokens(in value: String) -> [String] {
         let stopwords: Set<String> = ["the", "a", "an", "of", "and", "meme", "guy", "man"]
         return normalize(value)
             .split(separator: " ")
