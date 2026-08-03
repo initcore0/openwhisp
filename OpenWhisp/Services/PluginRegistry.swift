@@ -39,7 +39,7 @@ public enum PluginRegistry {
     public static let memeGenerator = PluginManifest(
         id: "meme-generator",
         name: "Meme Generator",
-        version: "0.3.0",
+        version: "0.5.0",
         summary: "Dictate a meme description — the AI picks a template and writes the captions.",
         symbol: "photo.badge.plus",
         entry: .builtIn,
@@ -49,6 +49,10 @@ public enum PluginRegistry {
         // not use it. Templates the user imports themselves need no network at all.
         networkHosts: [
             "api.imgflip.com", "i.imgflip.com", "api.memegen.link",
-        ]
+        ],
+        // ⌘M opens the window from the menu bar, the way ⌘S opens the Scratchpad.
+        // Declared here rather than hardcoded in `AppMain` so a second plugin needs no
+        // host change — the host resolves collisions (`PluginKeyEquivalent`).
+        keyEquivalent: "m"
     )
 }

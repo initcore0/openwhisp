@@ -46,14 +46,94 @@ enum MemeTemplateService {
     static let imgflipCatalogURL = URL(string: "https://api.imgflip.com/get_memes")!
     static let memegenCatalogURL = URL(string: "https://api.memegen.link/templates")!
 
-    /// A short timeout: this sits in front of a user waiting on a meme, so failing
-    /// fast and saying so beats a long hang.
-    private static let session: URLSession = {
+    // MARK: - Session
+
+    /// The HTTP session, REPLACEABLE (v5).
+    ///
+    /// ## Why this stopped being a `static let`
+    ///
+    /// The owner's v5 report was "template downloads stop working after about a day
+    /// of uptime, and Retry does nothing". A `URLSession` is a connection pool, and
+    /// v4's was a process-lifetime `static let` that nothing could ever replace. A
+    /// pooled connection can outlive its own validity — the Mac sleeps and wakes on a
+    /// different network, a VPN comes up, a captive portal's lease expires, an
+    /// interface changes — and once the pool is in that state EVERY request handed to
+    /// the session fails identically, for as long as the app stays running. That is
+    /// precisely the reported shape: fine all day, then permanently broken, with a
+    /// relaunch as the only cure.
+    ///
+    /// It also explains the second half of the report. Retry re-ran the request
+    /// through the SAME session, so it inherited exactly the pool that was broken —
+    /// a no-op by construction, however many times the user pressed it.
+    ///
+    /// So the session is now rebuildable, and a transport-shaped failure throws it
+    /// away (`invalidate`). The next request — including a Retry — builds a fresh one
+    /// with a fresh pool. The decision of WHICH failures count is the pure,
+    /// `swift test`-pinned `MemeGenerationState.isTransportFailure`; a 404 or an
+    /// undecodable image says nothing about the transport and keeps the pool.
+    private static var _session: URLSession?
+
+    /// How many times the pool has been thrown away this launch.
+    ///
+    /// Not test-reachable (this file is behind `PLUGINS=1`, outside the `swift test`
+    /// target), so it earns its place as a DIAGNOSTIC instead: if the owner reports
+    /// downloads dying again, this number distinguishes "the pool was never recycled,
+    /// so the recycle predicate is too narrow" from "it recycled repeatedly and still
+    /// failed, so the problem is not the pool". Surfaced through `sessionDiagnostic`.
+    private(set) static var sessionGeneration = 0
+
+    /// A one-line description of the transport's history, for the status line when a
+    /// download fails after the session has already been recycled at least once.
+    static var sessionDiagnostic: String? {
+        guard sessionGeneration > 0 else { return nil }
+        return sessionGeneration == 1
+            ? "(the connection was reset once)"
+            : "(the connection was reset \(sessionGeneration) times)"
+    }
+
+    static var session: URLSession {
+        if let existing = _session { return existing }
+        let created = makeSession()
+        _session = created
+        return created
+    }
+
+    private static func makeSession() -> URLSession {
         let config = URLSessionConfiguration.ephemeral
+        // A short timeout: this sits in front of a user waiting on a meme, so failing
+        // fast and saying so beats a long hang.
         config.timeoutIntervalForRequest = 15
         config.timeoutIntervalForResource = 30
+        // Never hand back a response cached before the network went bad — the whole
+        // point of rebuilding is to re-ask reality.
+        config.requestCachePolicy = .reloadIgnoringLocalCacheData
+        // Fail rather than park a request until connectivity returns: this sits in
+        // front of a waiting user, and a visible error with a Retry beats a spinner.
+        config.waitsForConnectivity = false
         return URLSession(configuration: config)
-    }()
+    }
+
+    /// Throw the current session away so the next request builds a fresh one.
+    ///
+    /// `invalidateAndCancel` rather than a bare drop: it tears down the pooled
+    /// connections instead of leaving them alive until ARC gets around to the
+    /// session, which matters because those connections are the thing being
+    /// discarded.
+    static func invalidateSession() {
+        guard let existing = _session else { return }
+        _session = nil
+        sessionGeneration += 1
+        existing.invalidateAndCancel()
+    }
+
+    /// Drop the session if `error` says the transport itself is suspect.
+    ///
+    /// One funnel, called from every fetch path, so no request can fail on a wedged
+    /// pool without the pool being reconsidered.
+    static func recycleSessionIfNeeded(after error: Error) {
+        guard MemeGenerationState.isTransportFailure(error) else { return }
+        invalidateSession()
+    }
 
     // MARK: - Providers
 
@@ -93,8 +173,8 @@ enum MemeTemplateService {
     }
 
     static func fetchImgflip() async throws -> [MemeTemplate] {
-        let (data, response) = try await session.data(from: imgflipCatalogURL)
-        try check(response, host: "imgflip.com")
+        let (data, response) = try await get(imgflipCatalogURL, host: "imgflip.com")
+        _ = response
 
         let decoded = try JSONDecoder().decode(MemeTemplateCatalogResponse.self, from: data)
         let templates = decoded.templates
@@ -103,12 +183,35 @@ enum MemeTemplateService {
     }
 
     static func fetchMemegen() async throws -> [MemeTemplate] {
-        let (data, response) = try await session.data(from: memegenCatalogURL)
-        try check(response, host: "memegen.link")
+        let (data, response) = try await get(memegenCatalogURL, host: "memegen.link")
+        _ = response
 
         let decoded = try JSONDecoder().decode(MemegenTemplateResponse.self, from: data)
         guard !decoded.templates.isEmpty else { throw ServiceError.emptyCatalog }
         return decoded.templates
+    }
+
+    /// One GET, through the current session, recycling it on a transport failure.
+    ///
+    /// Every network read in this file goes through here so the recycle rule cannot be
+    /// forgotten on a path — which is how v4 ended up with a session nothing could
+    /// replace. Each call builds its OWN `URLRequest` rather than reusing a stored one,
+    /// so a Retry is a genuinely fresh request and not a replay of the wedged attempt.
+    private static func get(
+        _ url: URL, host: String, timeout: TimeInterval? = nil
+    ) async throws -> (Data, URLResponse) {
+        var request = URLRequest(url: url)
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        if let timeout { request.timeoutInterval = timeout }
+
+        do {
+            let (data, response) = try await session.data(for: request)
+            try check(response, host: host)
+            return (data, response)
+        } catch {
+            recycleSessionIfNeeded(after: error)
+            throw error
+        }
     }
 
     // MARK: - Images
@@ -135,12 +238,10 @@ enum MemeTemplateService {
 
         // A per-request ceiling on top of the session's, so one wedged image GET can't
         // outlive the UI's own download timeout and land a result into a surface that
-        // has already recovered.
-        var request = URLRequest(url: url)
-        request.timeoutInterval = imageTimeout
-
-        let (data, response) = try await session.data(for: request)
-        try check(response, host: url.host ?? "the template host")
+        // has already recovered. A FRESH `URLRequest` every call (v5) — see `get` —
+        // so pressing Retry re-asks rather than replaying the attempt that hung.
+        let (data, _) = try await get(
+            url, host: url.host ?? "the template host", timeout: imageTimeout)
 
         guard let image = NSImage(data: data) else { throw ServiceError.undecodableImage }
         return image

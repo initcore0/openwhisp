@@ -180,6 +180,46 @@ public struct MemeGenerationState: Equatable, Sendable {
     /// Whether a result carrying `incoming` is still wanted.
     public func accepts(ticket incoming: Int) -> Bool { incoming == ticket }
 
+    // MARK: - Transport health (v5)
+
+    /// Whether a failure means the shared HTTP session should be THROWN AWAY before
+    /// the next attempt.
+    ///
+    /// The v5 report was "downloads stop working after about a day of uptime, and
+    /// Retry does nothing". A `URLSession` is a connection pool, and a pooled
+    /// connection can outlive its own validity — the Mac sleeps and wakes on a
+    /// different network, a captive portal expires, an interface changes — after
+    /// which every request handed to that session fails the same way, forever.
+    /// Retrying on the SAME session is then a no-op by construction: the retry
+    /// inherits exactly the pool that is broken.
+    ///
+    /// So a transport-shaped failure invalidates the session and the next request
+    /// builds a new one. The predicate is deliberately narrow: an HTTP 404 or an
+    /// undecodable image says nothing about the transport, and tearing the pool down
+    /// for those would just throw away working connections.
+    ///
+    /// Pure and matched on URL-loading error CODES rather than message text — the
+    /// same reason `MemeGenerateRetry.isNotReadyYet` does: the text is localized, so
+    /// keying on English would silently stop recycling on a non-English Mac.
+    public static func isTransportFailure(_ error: Error) -> Bool {
+        let ns = error as NSError
+        guard ns.domain == NSURLErrorDomain else { return false }
+        switch ns.code {
+        case NSURLErrorTimedOut,
+             NSURLErrorCannotConnectToHost,
+             NSURLErrorCannotFindHost,
+             NSURLErrorDNSLookupFailed,
+             NSURLErrorNetworkConnectionLost,
+             NSURLErrorNotConnectedToInternet,
+             NSURLErrorInternationalRoamingOff,
+             NSURLErrorSecureConnectionFailed,
+             NSURLErrorResourceUnavailable:
+            return true
+        default:
+            return false
+        }
+    }
+
     // MARK: - Timeout
 
     /// The hard ceiling on one generate round-trip.
@@ -213,6 +253,120 @@ public struct MemeGenerationState: Equatable, Sendable {
         "\(templateName) didn't finish downloading within \(Int(downloadTimeout)) seconds. "
         + "Press Retry, or pick another template."
     }
+}
+
+/// The Meme Generator's composition — everything "this meme" consists of (v5).
+///
+/// ## Why this is a type
+///
+/// The owner asked for a way to start from scratch, and "start from scratch" is only
+/// trustworthy if it is TOTAL: a New-meme button that clears the canvas but leaves the
+/// prompt text, or clears the candidate strip but leaves a stale error and a Retry
+/// pointing at a template the user has moved on from, is worse than no button — it
+/// looks reset while carrying the previous meme's state forward.
+///
+/// Spreading that clearing over a dozen assignments in an `@MainActor` AppKit class
+/// makes it untestable and, worse, easy to under-do: adding a `@Published` next month
+/// and forgetting one line is a silent regression nothing catches. Gathering the
+/// resettable fields into ONE Foundation-only value means `reset()` is a single
+/// expression, `swift test` can assert that EVERY field returned to its initial value,
+/// and the model's job shrinks to projecting this into its published properties.
+///
+/// The image cache is deliberately NOT part of this: it is a performance detail keyed
+/// by template id, holds nothing about the current meme, and discarding it would make
+/// New-meme re-download templates the user already has.
+public struct MemeComposition: Equatable, Sendable {
+
+    /// What the user described / dictated.
+    public var description: String
+
+    /// The caption boxes.
+    public var boxes: [MemeCaptionLayout.CaptionBox]
+
+    /// The box the editor panel is editing.
+    public var selectedBoxID: UUID?
+
+    /// The ranked candidate strip.
+    public var candidateIDs: [String]
+
+    /// The rendered template's id, if one is selected.
+    public var selectedTemplateID: String?
+
+    /// The status / error line.
+    public var status: String
+
+    /// Whether the candidate strip is a lexical fallback rather than the model's picks.
+    public var didFallBack: Bool
+
+    /// As above, for the CURRENT strip.
+    public var candidatesAreFallback: Bool
+
+    /// Whether the catalog failed to load with nothing cached.
+    public var catalogFailed: Bool
+
+    /// Whether a template IMAGE failed to load.
+    public var imageFailed: Bool
+
+    /// The id of the template whose image failed, so Retry knows what to re-fetch.
+    public var failedTemplateID: String?
+
+    /// Whether a meme is currently rendered.
+    public var hasMeme: Bool
+
+    public init(
+        description: String = "",
+        boxes: [MemeCaptionLayout.CaptionBox] = [],
+        selectedBoxID: UUID? = nil,
+        candidateIDs: [String] = [],
+        selectedTemplateID: String? = nil,
+        status: String = "",
+        didFallBack: Bool = false,
+        candidatesAreFallback: Bool = false,
+        catalogFailed: Bool = false,
+        imageFailed: Bool = false,
+        failedTemplateID: String? = nil,
+        hasMeme: Bool = false
+    ) {
+        self.description = description
+        self.boxes = boxes
+        self.selectedBoxID = selectedBoxID
+        self.candidateIDs = candidateIDs
+        self.selectedTemplateID = selectedTemplateID
+        self.status = status
+        self.didFallBack = didFallBack
+        self.candidatesAreFallback = candidatesAreFallback
+        self.catalogFailed = catalogFailed
+        self.imageFailed = imageFailed
+        self.failedTemplateID = failedTemplateID
+        self.hasMeme = hasMeme
+    }
+
+    /// The state a freshly-opened, never-used window is in.
+    ///
+    /// Note the CATALOG is not here. Resetting the meme must not throw away the ~300
+    /// templates the user is browsing: they are a corpus, not part of this meme, and
+    /// re-fetching them would turn New-meme into a network round-trip and a spinner.
+    public static let empty = MemeComposition()
+
+    /// Everything the user was making, cleared.
+    ///
+    /// Total by construction — it returns `.empty` rather than assigning field by
+    /// field, so a field added to this type is reset automatically instead of being
+    /// forgotten. `MemeCompositionResetTests` asserts a fully-populated composition
+    /// comes back exactly equal to `.empty`.
+    public mutating func reset() { self = .empty }
+
+    /// Whether there is anything to clear — drives whether New meme is offered.
+    ///
+    /// A New-meme button that is live on an untouched window is a control that
+    /// visibly does nothing, so it is disabled until the surface actually holds
+    /// something. An error alone counts: clearing a failed state is exactly the
+    /// moment the user most wants a way back to a clean sheet.
+    public var isEmpty: Bool { self == .empty }
+
+    /// The hint shown on the empty canvas — an INVITATION rather than a blank pane.
+    public static let emptyHint =
+        "Describe the meme out loud, or pick a template on the left."
 }
 
 /// When a failed generate request is worth retrying rather than reporting (v4).

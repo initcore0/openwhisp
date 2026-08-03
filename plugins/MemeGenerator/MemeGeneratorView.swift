@@ -225,6 +225,20 @@ struct MemeGeneratorView: View {
                     .keyboardShortcut(.cancelAction)
             }
 
+            // Start from scratch (v5). ALWAYS present rather than appearing once
+            // there's something to clear — a control that materializes is harder to
+            // find than one that is simply dimmed, and this is the button a user
+            // reaches for when the surface is in a state they don't understand.
+            // Disabled (not hidden) on an untouched window so it never reads as broken.
+            Button {
+                model.startNewMeme()
+            } label: {
+                Label("New meme", systemImage: "arrow.counterclockwise")
+            }
+            .keyboardShortcut("n", modifiers: .command)
+            .disabled(!model.canStartNewMeme)
+            .help("Clear the description, captions, and template and start over (⌘N)")
+
             Spacer()
 
             Button {
@@ -332,10 +346,18 @@ struct MemeGeneratorView: View {
                         Image(systemName: "photo")
                             .font(.largeTitle)
                             .foregroundStyle(.tertiary)
-                        Text("Pick a template on the left, or describe a meme and press Generate.")
+                        // The empty state INVITES the next action rather than just
+                        // being blank (v5) — this is what the user is looking at
+                        // straight after ⌘N, so it has to say what to do next.
+                        Text(MemeComposition.emptyHint)
                             .font(.callout)
                             .multilineTextAlignment(.center)
                             .foregroundStyle(.tertiary)
+                            .padding(.horizontal, 24)
+                        Text("Press ⌘⏎ to generate once you've described one.")
+                            .font(.caption)
+                            .multilineTextAlignment(.center)
+                            .foregroundStyle(.quaternary)
                             .padding(.horizontal, 24)
                     })
                 .frame(maxWidth: .infinity, maxHeight: .infinity)

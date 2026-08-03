@@ -109,6 +109,17 @@ final class PluginHost: ObservableObject {
         if let existing = windows[pluginID] {
             existing.window?.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
+            // v5: tell the controller it is being SHOWN AGAIN.
+            //
+            // This is the fix for "template downloads stop working after a day". The
+            // controller is cached for the app's lifetime and reused on every open, so
+            // a plugin that did its open-time work in `init` did it exactly ONCE. The
+            // Meme Generator closes over that: `windowWillClose` sets its model's
+            // `isCancelled = true` to stop a late result touching a dead window, and
+            // only `windowDidOpen` clears it — which, reached from `init` alone, never
+            // ran again. Every download after the first close therefore returned
+            // through a guard that dropped it, silently and permanently.
+            (existing as? PluginWindowLifecycle)?.pluginWindowWillShow()
             return
         }
 
@@ -162,6 +173,24 @@ final class PluginHost: ObservableObject {
         }
         return false
     }
+}
+
+/// A plugin window that needs to know when it is shown again (v5).
+///
+/// Plugin window controllers are created once and REUSED — `PluginHost` caches them so
+/// reopening restores the user's window rather than throwing their work away. That
+/// makes `init` the wrong place for anything that must be true on every open, and the
+/// wrong-place-ness is invisible until a plugin also does teardown on close: the
+/// teardown then runs N times against exactly one setup.
+///
+/// This seam is the missing half. A controller adopting it gets told about every
+/// subsequent show, so "prepare to be used" and "stop touching me" stay balanced no
+/// matter how many times the user opens and closes the window.
+@MainActor
+protocol PluginWindowLifecycle: AnyObject {
+    /// The window is about to be brought forward again after having been created.
+    /// Not called for the first show — `init` already covers that.
+    func pluginWindowWillShow()
 }
 
 /// A plugin window that can receive dictation when it is the key window.

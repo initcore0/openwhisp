@@ -390,11 +390,19 @@ class OpenWhispApp: NSObject, NSApplicationDelegate {
             pluginsItem.image = NSImage(
                 systemSymbolName: "puzzlepiece.extension", accessibilityDescription: nil)
             let submenu = NSMenu()
+            // Shortcuts are DECLARED by each manifest and GRANTED by the host (v5):
+            // the plugin can't see the app's own menu, so it asks for a key and
+            // `PluginKeyEquivalent` resolves it against what's already bound — the
+            // app's reserved set first, then earlier plugins in this same list. A
+            // refusal is silent; the row still opens on a click.
+            let shortcuts = PluginKeyEquivalent.assign(
+                requests: activePlugins.map { ($0.id, $0.manifest.keyEquivalent) })
             for plugin in activePlugins {
                 let item = menuItem(
                     plugin.manifest.name,
                     symbol: plugin.manifest.symbol,
-                    action: #selector(openPlugin(_:)))
+                    action: #selector(openPlugin(_:)),
+                    keyEquivalent: shortcuts[plugin.id] ?? "")
                 item.representedObject = plugin.id
                 item.target = self
                 submenu.addItem(item)

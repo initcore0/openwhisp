@@ -55,6 +55,24 @@ public struct PluginManifest: Codable, Equatable, Sendable, Identifiable {
     /// the plugin's own manifest (see the PR's security notes).
     public let networkHosts: [String]
 
+    /// The single character this plugin would like as its ⌘-shortcut in the menu bar
+    /// (v5), e.g. `"m"` → ⌘M opens the Meme Generator's window.
+    ///
+    /// OPTIONAL, and a REQUEST rather than a grant. The host is the only thing that
+    /// knows the app's own menu shortcuts, so it — not the plugin — decides whether
+    /// the request is honoured (`PluginKeyEquivalent.assignable`). A plugin that asks
+    /// for ⌘Q does not get to shadow Quit.
+    ///
+    /// It lives on the MANIFEST rather than being hardcoded next to the one plugin
+    /// that wants it, because the manifest is already the place a plugin declares how
+    /// the host should present it (name, symbol, disclosure). That is the MAK-100
+    /// "manifests carry host metadata" direction, and it means a second plugin needs
+    /// no change in `AppMain` at all.
+    ///
+    /// Decoded with a default so every manifest written before this field existed —
+    /// including any already sitting in the user's plugins folder — still decodes.
+    public let keyEquivalent: String?
+
     public init(
         id: String,
         name: String,
@@ -62,7 +80,8 @@ public struct PluginManifest: Codable, Equatable, Sendable, Identifiable {
         summary: String,
         symbol: String,
         entry: PluginEntryKind,
-        networkHosts: [String] = []
+        networkHosts: [String] = [],
+        keyEquivalent: String? = nil
     ) {
         self.id = id
         self.name = name
@@ -71,6 +90,30 @@ public struct PluginManifest: Codable, Equatable, Sendable, Identifiable {
         self.symbol = symbol
         self.entry = entry
         self.networkHosts = networkHosts
+        self.keyEquivalent = keyEquivalent
+    }
+
+    /// Forward-compatible decode: `networkHosts` and `keyEquivalent` are optional in
+    /// the JSON, so an older manifest (and a hand-written one) decodes rather than
+    /// failing the whole plugin out of the list over a missing key.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        version = try container.decodeIfPresent(String.self, forKey: .version) ?? "0.0.0"
+        summary = try container.decodeIfPresent(String.self, forKey: .summary) ?? ""
+        symbol = try container.decode(String.self, forKey: .symbol)
+        entry = try container.decodeIfPresent(PluginEntryKind.self, forKey: .entry) ?? .builtIn
+        networkHosts = try container.decodeIfPresent([String].self, forKey: .networkHosts) ?? []
+        keyEquivalent = try container.decodeIfPresent(String.self, forKey: .keyEquivalent)
+    }
+
+    /// The shortcut as it should be DISPLAYED, e.g. `"⌘M"`, or nil when this manifest
+    /// asks for none / asks for something unusable. Kept here so the Plugins pane and
+    /// any future surface render it identically, and so `swift test` pins it.
+    public var keyEquivalentDisplay: String? {
+        guard let key = PluginKeyEquivalent.normalized(keyEquivalent) else { return nil }
+        return "⌘\(key.uppercased())"
     }
 
     /// Whether this plugin uses the network at all — drives the pane's disclosure row.
@@ -91,6 +134,8 @@ public struct PluginManifest: Codable, Equatable, Sendable, Identifiable {
         case invalidID(String)
         case emptyName
         case emptySymbol
+        /// The manifest asked for a shortcut that isn't a single character (v5).
+        case invalidKeyEquivalent(String)
     }
 
     /// Characters allowed in an id: lowercase alphanumerics plus `-` and `.`.
@@ -111,10 +156,106 @@ public struct PluginManifest: Codable, Equatable, Sendable, Identifiable {
         if id.allSatisfy({ $0 == "." }) { return .invalidID(id) }
         if name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return .emptyName }
         if symbol.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return .emptySymbol }
+        // A malformed shortcut is reported but is NOT fatal — see `isValid`. Losing a
+        // whole working plugin over a cosmetic field would be a bad trade, and the id,
+        // name, and symbol are the fields the host genuinely cannot proceed without.
+        if let requested = keyEquivalent,
+           PluginKeyEquivalent.normalized(requested) == nil {
+            return .invalidKeyEquivalent(requested)
+        }
         return nil
     }
 
-    public var isValid: Bool { validate() == nil }
+    /// Whether the host can LIST and run this manifest.
+    ///
+    /// Deliberately more permissive than `validate() == nil`: only the structural
+    /// failures disqualify a plugin. An unusable `keyEquivalent` costs the plugin its
+    /// shortcut (`keyEquivalentDisplay` returns nil, and the menu assigns nothing) and
+    /// nothing else.
+    public var isValid: Bool {
+        switch validate() {
+        case nil, .invalidKeyEquivalent: return true
+        default: return false
+        }
+    }
+}
+
+/// Who gets a ⌘-shortcut in the menu bar, and who is refused (v5).
+///
+/// A plugin ASKS for a shortcut in its manifest; this decides. The host owns the
+/// keyboard because only the host can see the whole menu — a plugin cannot know that
+/// ⌘S is the Scratchpad or that ⌘, is Settings, and a plugin that could silently
+/// shadow Quit would be a genuine hazard rather than a papercut.
+///
+/// Pure and Foundation-only so every rule here is pinned by `swift test` rather than
+/// discovered by a user whose ⌘Q stopped quitting.
+public enum PluginKeyEquivalent {
+
+    /// The shortcuts the app itself already owns, which no plugin may take.
+    ///
+    /// Sourced from `AppMain`'s ACTUAL menu construction, and nothing beyond it:
+    /// Quit (q), Scratchpad (s), Settings (,), Copy-last (c), and the Edit-menu verbs
+    /// cut/paste/select-all/undo (x, v, a, z). The Edit ones matter most — PR #242 was
+    /// the bug where those shortcuts were MISSING app-wide, and letting a plugin
+    /// re-take one would reintroduce it for the price of a line in a JSON file.
+    ///
+    /// Kept to what the app really binds rather than padded with plausible-looking
+    /// extras: every speculative entry here is a shortcut silently denied to a plugin
+    /// for no reason. ⌘M is free precisely because this app has no Window menu.
+    public static let reserved: Set<String> = [
+        "q", "s", ",", "c", "x", "v", "a", "z",
+    ]
+
+    /// Normalize a requested shortcut, or nil when it isn't usable.
+    ///
+    /// Usable means: exactly ONE character after trimming, and a letter, digit, or
+    /// `,`. Lowercased, because `NSMenuItem` treats an uppercase key equivalent as
+    /// ⇧⌘ — a manifest saying `"M"` means ⌘M, not ⇧⌘M, and silently promoting it
+    /// would hand out a different shortcut than the one declared.
+    public static func normalized(_ requested: String?) -> String? {
+        guard let requested else { return nil }
+        let trimmed = requested.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard trimmed.count == 1, let character = trimmed.first else { return nil }
+        guard character.isLetter || character.isNumber || character == "," else { return nil }
+        return trimmed
+    }
+
+    /// The shortcut a plugin may actually be given, or nil to assign none.
+    ///
+    /// `taken` carries the shortcuts already handed out in THIS menu build — the
+    /// app's reserved set plus anything an earlier plugin in the list already got —
+    /// so two plugins both asking for `"m"` resolve deterministically by list order
+    /// instead of both rendering ⌘M and one of them silently never firing.
+    ///
+    /// A refusal is SILENT by design: the plugin still appears in the menu and still
+    /// opens by clicking. Dropping the whole row, or surfacing an error to the user
+    /// about a collision they did not cause and cannot fix, would both be worse.
+    public static func assignable(
+        _ requested: String?, taken: Set<String>
+    ) -> String? {
+        guard let key = normalized(requested) else { return nil }
+        guard !reserved.contains(key), !taken.contains(key) else { return nil }
+        return key
+    }
+
+    /// Resolve shortcuts for a whole ordered menu in one pass.
+    ///
+    /// Returns plugin id → assigned key for the plugins that got one. Earlier entries
+    /// win, matching the list order the menu renders in — the same first-wins rule
+    /// `PluginDiscovery` already uses for id collisions, so the host has ONE
+    /// precedence story rather than two.
+    public static func assign(
+        requests: [(id: String, keyEquivalent: String?)]
+    ) -> [String: String] {
+        var taken = reserved
+        var assigned: [String: String] = [:]
+        for request in requests {
+            guard let key = assignable(request.keyEquivalent, taken: taken) else { continue }
+            assigned[request.id] = key
+            taken.insert(key)
+        }
+        return assigned
+    }
 }
 
 /// How a plugin's code is expected to be executed by the host.

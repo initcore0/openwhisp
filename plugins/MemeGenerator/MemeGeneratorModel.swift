@@ -256,6 +256,11 @@ final class MemeGeneratorModel: ObservableObject {
     /// upgrades it. A refresh that fails while templates are on screen is silent —
     /// reporting it would make a working plugin look broken.
     func openCatalog(forceRefresh: Bool = false) {
+        // An explicit Retry / force-refresh throws the HTTP session away first (v5).
+        // Same reason `retryTemplate` does: a refresh that reuses a wedged connection
+        // pool is a no-op however many times the user presses it.
+        if forceRefresh { MemeTemplateService.invalidateSession() }
+
         let cached = MemeLibraryStore.loadCachedCatalog()
         let library = MemeLibraryStore.libraryTemplates()
         let decision = forceRefresh
@@ -493,6 +498,72 @@ final class MemeGeneratorModel: ObservableObject {
         status = "Cancelled."
     }
 
+    // MARK: - New meme (v5)
+
+    /// The current composition, projected into the pure, testable value.
+    ///
+    /// The projection exists so `startNewMeme` can be proved TOTAL by `swift test`
+    /// without linking AppKit: the test builds a fully-populated `MemeComposition`,
+    /// resets it, and asserts it equals `.empty`. A field added to the surface later
+    /// gets reset by construction rather than by remembering to add a line.
+    var composition: MemeComposition {
+        MemeComposition(
+            description: description,
+            boxes: boxes,
+            selectedBoxID: selectedBoxID,
+            candidateIDs: candidates.map(\.id),
+            selectedTemplateID: selectedTemplate?.id,
+            status: status,
+            didFallBack: didFallBack,
+            candidatesAreFallback: candidatesAreFallback,
+            catalogFailed: catalogFailed,
+            imageFailed: imageFailed,
+            failedTemplateID: failedTemplate?.id,
+            hasMeme: meme != nil)
+    }
+
+    /// Whether New meme has anything to do — drives the button's enabled state.
+    var canStartNewMeme: Bool { !composition.isEmpty }
+
+    /// Start from scratch (v5).
+    ///
+    /// The owner asked for a way back to an empty sheet, and the important word is
+    /// BACK: this has to abandon in-flight work as well as clear what is on screen.
+    /// `state.reset()` bumps the ticket, so a download or an LLM round-trip already
+    /// running is refused when it lands — the same ticket guard every other exit path
+    /// uses — rather than completing a moment later and repopulating the surface the
+    /// user just cleared.
+    ///
+    /// What deliberately SURVIVES: the template catalog (a corpus, not part of this
+    /// meme — clearing it would make New meme a network round-trip), the downloaded
+    /// image cache (keyed by template id, holds nothing about this meme, and dropping
+    /// it would re-download templates the user already has), and the user's library.
+    func startNewMeme() {
+        // Refuse every outstanding result BEFORE clearing, so nothing in flight can
+        // land between the reset and the next user action.
+        state.reset()
+
+        let empty = MemeComposition.empty
+        description = empty.description
+        boxes = empty.boxes
+        selectedBoxID = empty.selectedBoxID
+        candidates = []
+        selectedTemplate = nil
+        status = empty.status
+        didFallBack = empty.didFallBack
+        candidatesAreFallback = empty.candidatesAreFallback
+        imageFailed = empty.imageFailed
+        failedTemplate = nil
+        meme = nil
+        baseImage = nil
+        searchText = ""
+
+        // The catalog stays, so a catalog failure is only cleared when there is in
+        // fact a catalog — clearing the flag with an empty corpus would hide a real
+        // problem behind a fresh-looking empty state.
+        catalogFailed = catalog.isEmpty && catalogFailed
+    }
+
     /// Make sure there is a catalog to prompt with. Returns false when it failed and
     /// has already reported why.
     private func ensureCatalogForGenerate(ticket: Int) async -> Bool {
@@ -586,6 +657,16 @@ final class MemeGeneratorModel: ObservableObject {
     }
 
     /// Re-run the last template load that failed. The Retry affordance's action.
+    ///
+    /// ## v5 — Retry must be able to succeed
+    ///
+    /// The owner reported Retry doing nothing once downloads had gone bad. It was a
+    /// no-op by construction: it re-ran the request through the same process-lifetime
+    /// `URLSession`, so it inherited exactly the connection pool that was broken.
+    /// `MemeTemplateService.invalidateSession()` throws that pool away first, so the
+    /// retry builds a FRESH session and a fresh request. Unconditional here rather
+    /// than only on transport errors: Retry is an explicit "try properly this time",
+    /// it happens at most once per user click, and a new pool costs a handshake.
     func retryTemplate() {
         guard let template = failedTemplate else { return }
         // Clear it first: `select` early-returns when the template is already
@@ -595,6 +676,7 @@ final class MemeGeneratorModel: ObservableObject {
         // The failed template is NOT the selected one (the load never completed), so
         // `select` will proceed — but drop any cached corpse just in case.
         imageCache[template.id] = nil
+        MemeTemplateService.invalidateSession()
         select(template: template)
     }
 
@@ -664,8 +746,14 @@ final class MemeGeneratorModel: ObservableObject {
         }
         failedTemplate = template
         imageFailed = true
+        // Name the transport's history when it has one (v5). After a day of uptime the
+        // useful question is whether the connection has already been rebuilt — that is
+        // the difference between "the network blipped" and "something is genuinely
+        // wrong", and it is the datum the owner's next report will need.
+        let diagnostic = MemeTemplateService.sessionDiagnostic.map { " \($0)" } ?? ""
         finish(ticket, status:
-            "Couldn't load \(template.name) — \(Self.reason(error)) Press Retry, or pick another template.")
+            "Couldn't load \(template.name) — \(Self.reason(error))\(diagnostic) "
+            + "Press Retry, or pick another template.")
     }
 
     /// The line under the controls: honest about a fallback, quiet otherwise.

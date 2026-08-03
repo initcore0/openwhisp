@@ -12,7 +12,8 @@ import SwiftUI
 /// look at, not an always-on-top scratch surface. It still needs to become KEY so
 /// dictation can land in it — that is what makes `appendDictationIfKey` fire.
 @MainActor
-final class MemeGeneratorWindowController: NSWindowController, NSWindowDelegate, PluginDictationSink {
+final class MemeGeneratorWindowController: NSWindowController, NSWindowDelegate,
+    PluginDictationSink, PluginWindowLifecycle {
 
     private let model = MemeGeneratorModel()
 
@@ -88,6 +89,21 @@ final class MemeGeneratorWindowController: NSWindowController, NSWindowDelegate,
                 AppState.shared.warmLlamaServerIfPossible(
                     provider: resolved.provider, completion: ready)
             })
+    }
+
+    // MARK: - PluginWindowLifecycle
+
+    /// The window is being shown again after a close (v5).
+    ///
+    /// `PluginHost` caches this controller forever, so without this hook the model's
+    /// `windowDidOpen` ran exactly once — at `init` — while `windowWillClose` ran on
+    /// every close. The two are a matched pair: close sets `isCancelled = true` so a
+    /// late result can't write into a dead window, and only `windowDidOpen` clears it.
+    /// Unbalanced, the FIRST close permanently poisoned every later download; the
+    /// symptom the owner saw was a plugin that worked all day and then stopped, since
+    /// closing the window at some point during that day is what armed it.
+    func pluginWindowWillShow() {
+        model.windowDidOpen()
     }
 
     // MARK: - PluginDictationSink

@@ -77,7 +77,15 @@ struct PluginsPane: View {
                 SettingsCallout(.info, disclosure)
             }
 
+            // Where to find it, and the shortcut that opens it (v5). A shortcut the
+            // user is never told about may as well not exist, and the menu row it
+            // appears on is two clicks away inside a submenu.
             if host.isEnabled(plugin.id), plugin.isRunnable {
+                LabeledContent("Open from the menu bar") {
+                    Text(shortcutSubtitle(for: plugin))
+                        .foregroundStyle(.secondary)
+                }
+
                 configuration(for: plugin)
             }
         } header: {
@@ -87,6 +95,19 @@ struct PluginsPane: View {
                 "Version \(plugin.manifest.version) · "
                 + (plugin.source == .builtIn ? "Built in" : "Installed"))
         }
+    }
+
+    /// "Plugins › Meme Generator (⌘M)" — the GRANTED shortcut, not the requested one.
+    ///
+    /// Resolved through the same `PluginKeyEquivalent.assign` pass the menu itself
+    /// uses, over the same active-plugin list, so the pane can never advertise a
+    /// shortcut the menu refused on a collision. Advertising a key that does nothing
+    /// would be worse than saying nothing at all.
+    private func shortcutSubtitle(for plugin: PluginDiscovery.Discovered) -> String {
+        let granted = PluginKeyEquivalent.assign(
+            requests: host.activePlugins.map { ($0.id, $0.manifest.keyEquivalent) })
+        guard let key = granted[plugin.id] else { return "Plugins › \(plugin.manifest.name)" }
+        return "Plugins › \(plugin.manifest.name)  ⌘\(key.uppercased())"
     }
 
     /// A plugin's own configuration surface.
