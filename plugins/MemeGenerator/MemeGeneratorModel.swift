@@ -148,10 +148,18 @@ final class MemeGeneratorModel: ObservableObject {
 
     // MARK: - Injected seams
 
-    /// One LLM round-trip: (instruction, input, resolved model) -> output. Injected
-    /// by the window controller, exactly like `ScratchpadModel.AICall`.
+    /// One LLM round-trip: (instruction, input, resolved model, schema) -> output.
+    /// Injected by the window controller, like `ScratchpadModel.AICall`.
+    ///
+    /// v7 adds `schema`: an optional JSON schema the endpoint should CONSTRAIN the
+    /// response to (llama-server compiles it to a GBNF grammar). It rides the seam
+    /// rather than being applied at the AppState layer because only this model knows
+    /// which of the two meme shapes a given call expects — and because a seam that
+    /// can't express the constraint would force the schema to be hardcoded next to
+    /// the transport, out of reach of `swift test`.
     typealias AICall = (
-        _ instruction: String, _ input: String, _ resolved: SummaryModelResolver.Resolved
+        _ instruction: String, _ input: String, _ resolved: SummaryModelResolver.Resolved,
+        _ schema: JSONValue?
     ) async throws -> String
 
     private var aiCall: AICall?
@@ -430,9 +438,18 @@ final class MemeGeneratorModel: ObservableObject {
             // prompt at all, rather than truncated off the end of a popularity list.
             // v6: the user's own past corrections tilt this, within a hard cap and
             // only among templates the description already matched.
+            // v7: read the captions straight out of the description when it is
+            // list-shaped ("expanding brain: a, b, c, d"). Done BEFORE the shortlist so
+            // the template search can prefer templates with the matching slot count,
+            // and so the theme ("expanding brain") rather than the whole sentence drives
+            // the match. Nil for ordinary prose, which falls through to v6 unchanged.
+            let extracted = MemeCaptionExtraction.extract(from: self.description)
+            let searchText = extracted.flatMap { $0.theme.isEmpty ? nil : $0.theme }
+                ?? self.description
+
             let shortlist = MemeTemplateCatalog.prefilter(
-                for: self.description, in: self.catalog, limit: MemeAI.candidateShortlist,
-                affinity: self.affinity)
+                for: searchText, in: self.catalog, limit: MemeAI.candidateShortlist,
+                affinity: self.affinity, preferringSlots: extracted?.slotCount)
             // Three positionally-aligned projections of the SAME shortlist: the model
             // sees `lines` (name + keywords + slot count), answers with numbers that
             // index it, and any name it writes instead is validated against `names`.
@@ -454,7 +471,14 @@ final class MemeGeneratorModel: ObservableObject {
                 case .failure(let rejection):
                     self.finish(ticket, status: "Couldn't build the meme — \(rejection.reason).")
                 case .success(let spec):
-                    await self.applyRanked(spec, ticket: ticket)
+                    // v7: when the description WAS a list, the user's own items are the
+                    // captions and the model's are discarded. The model is still asked
+                    // for both (one round-trip, and its pick is what we want) — but the
+                    // captions it writes are the part it gets wrong, and the part we
+                    // already have verbatim.
+                    let resolvedSpec = extracted.map { spec.replacingCaptions(with: $0.captions) }
+                        ?? spec
+                    await self.applyRanked(resolvedSpec, ticket: ticket)
                 }
             } catch {
                 guard !self.isCancelled, self.state.accepts(ticket: ticket) else { return }
@@ -483,7 +507,11 @@ final class MemeGeneratorModel: ObservableObject {
         var attempt = 1
         while true {
             do {
-                return try await aiCall(MemeAI.rankedPrompt, payload, resolved)
+                // v7: constrain the reply to the ranked schema. On llama-server this
+                // compiles to a grammar, so `templates` cannot come back as invented
+                // names and `captions` cannot come back as a top/bottom pair.
+                return try await aiCall(
+                    MemeAI.rankedPrompt, payload, resolved, MemeAI.Schema.ranked())
             } catch {
                 guard MemeGenerateRetry.shouldRetry(error, attempt: attempt) else { throw error }
                 // A superseded or cancelled request must not keep retrying in the
@@ -651,11 +679,20 @@ final class MemeGeneratorModel: ObservableObject {
         candidates = picks
         candidateReason = spec.reason
 
-        // v6: the boxes are seeded for the TOP candidate's real structure, not for an
-        // assumed top/bottom pair. A 4-slot Expanding Brain gets four boxes with four
-        // captions in panel order; a 2-slot Drake behaves exactly as it did in v5.
-        let slots = picks.first?.captionSlots ?? MemeCaptionSlots.default
-        seedBoxes(captions: spec.captions, slots: slots)
+        // The boxes are seeded for the TOP candidate's real structure, never for an
+        // assumed top/bottom pair. This is the second half of the v6 report: the
+        // geometry ALWAYS comes from the template's own slot count, so an N≠2 template
+        // can never render as a classic two-liner regardless of what the model wrote.
+        let slots = MemeCaptionSlots.clamp(picks.first?.captionSlots ?? MemeCaptionSlots.default)
+
+        // v7: the host decides whether these captions may be rendered. A count that
+        // doesn't match the template is NOT silently padded out with blanks — it is
+        // refitted, because "Expanding Brain with two captions" is not the joke the
+        // user asked for. The seed still happens first so the user sees the meme land
+        // while the refit runs.
+        let fit = MemeAI.fit(
+            captions: spec.captions, slots: slots, wasLegacyShape: spec.wasLegacyShape)
+        seedBoxes(captions: fit.captions, slots: slots)
 
         guard let best = picks.first else {
             finish(ticket, status: "There are no templates to choose from — import one to get started.")
@@ -663,6 +700,14 @@ final class MemeGeneratorModel: ObservableObject {
         }
 
         await renderTemplate(best, ticket: ticket, isNewGeneration: true)
+
+        // Ordering matters: the template is on screen before the refit starts, so the
+        // second round-trip is a visible correction rather than a longer wait.
+        if case .refit(let current, let target) = fit {
+            await refitCaptions(
+                to: best, slots: target, from: current,
+                status: MemeAI.refitStatus(wrote: current.count, of: target))
+        }
     }
 
     /// Replace the AI-seeded boxes, keeping any the user added by hand (v6).
@@ -773,12 +818,32 @@ final class MemeGeneratorModel: ObservableObject {
         // The fast path, and the common one: same slot count means the captions carry
         // over verbatim, instantly, with no LLM involved — exactly as in v5.
         guard MemeAI.needsRefit(captions: current, slots: slots) else { return }
+        await refitCaptions(
+            to: template, slots: slots, from: current,
+            status: "Refitting the captions to \(template.name)…")
+    }
+
+    /// Run the refit round-trip: rewrite `current` into exactly `slots` captions (v7).
+    ///
+    /// Extracted from `refitCaptionsIfNeeded` so the GENERATE path can reach it too.
+    /// That is the point of the v7 change: a caption count that doesn't match the
+    /// template is the same problem whether it arrived from a template switch or from
+    /// the model's first answer, so it must have the same fix — and one shared
+    /// implementation means the generate path can't drift from the tested switch path.
+    ///
+    /// `status` is the caller's, because the two entry points mean different things to
+    /// the user: switching templates says "refitting to X", while a short first answer
+    /// says "Model wrote 2 of 4 — refitting…", which is an honest account of why the
+    /// captions are about to change.
+    private func refitCaptions(
+        to template: MemeTemplate, slots: Int, from current: [String], status refitStatus: String
+    ) async {
         guard let aiCall else { return }
         let resolved = resolveAIModel()
         guard ScratchpadAIModel.isUsable(resolved) else { return }
 
         let ticket = state.begin(.asking)
-        status = "Refitting the captions to \(template.name)…"
+        status = refitStatus
         startTimeout(ticket: ticket,
                      after: MemeGenerationState.downloadTimeout,
                      message: "Used \(template.name). The captions weren't refitted — edit them by hand.")
@@ -788,7 +853,11 @@ final class MemeGeneratorModel: ObservableObject {
             templateName: template.name)
 
         do {
-            let raw = try await aiCall(MemeAI.refitPrompt, payload, resolved)
+            // v7: the refit is the ONE call where the required count is known up front,
+            // so the schema pins minItems == maxItems == slots. With constrained
+            // decoding a short answer is unrepresentable rather than retried.
+            let raw = try await aiCall(
+                MemeAI.refitPrompt, payload, resolved, MemeAI.Schema.refit(slots: slots))
             guard !isCancelled, state.accepts(ticket: ticket) else {
                 finish(ticket, status: status)
                 return

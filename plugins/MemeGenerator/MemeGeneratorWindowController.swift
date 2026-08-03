@@ -59,11 +59,19 @@ final class MemeGeneratorWindowController: NSWindowController, NSWindowDelegate,
     /// plugin config surface would put that on the plugin's own defaults keys.
     private func wireAI() {
         model.configureAI(
-            call: { instruction, input, resolved in
+            call: { instruction, input, resolved, schema in
                 try await withCheckedThrowingContinuation { cont in
                     Task { @MainActor in
+                        // v7: when the model gives us a schema, ask the endpoint to
+                        // CONSTRAIN the response to it. llama-server turns this into a
+                        // GBNF grammar, so an off-schema reply becomes unrepresentable
+                        // rather than merely rejected downstream.
+                        let format = schema.map {
+                            ResponseFormat.jsonSchema(name: "meme_response", schema: $0)
+                        }
                         AppState.shared.summarizeResolved(
-                            text: input, instruction: instruction, resolved: resolved
+                            text: input, instruction: instruction, resolved: resolved,
+                            responseFormat: format
                         ) { result in
                             switch result {
                             case .success(let out): cont.resume(returning: out)

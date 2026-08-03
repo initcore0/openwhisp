@@ -324,6 +324,10 @@ final class MemeStructureTests: XCTestCase {
     }
 
     /// v5's shape, and the one any model that has seen a two-line meme reaches for.
+    ///
+    /// v7 keeps DECODING it — the parser is still forgiving about packaging — but the
+    /// decision about whether it may be RENDERED moved to `MemeAI.fit`, which accepts it
+    /// only on a 2-slot template. See `MemeSlotEnforcementTests`.
     func testLegacyTopAndBottomTextDecodeAsATwoSlotResponse() {
         let result = MemeAI.parseRanked("""
         {"templates":[1],"top_text":"ship it","bottom_text":"test it"}
@@ -332,6 +336,20 @@ final class MemeStructureTests: XCTestCase {
         XCTAssertEqual(spec.captions, ["ship it", "test it"])
         XCTAssertEqual(spec.topText, "ship it")
         XCTAssertEqual(spec.bottomText, "test it")
+        // v7: the shape is RECORDED so the host can tell a deliberate 2-slot answer
+        // from a model that never engaged with the slot count.
+        XCTAssertTrue(spec.wasLegacyShape)
+    }
+
+    /// The counterpart: a two-element ARRAY is not the legacy shape, even though it
+    /// carries the same two strings.
+    func testACaptionsArrayOfTwoIsNotFlaggedAsTheLegacyShape() {
+        let result = MemeAI.parseRanked("""
+        {"templates":[1],"captions":["ship it","test it"]}
+        """, catalogNames: shortlist)
+        guard case .success(let spec) = result else { return XCTFail("expected success") }
+        XCTAssertEqual(spec.captions, ["ship it", "test it"])
+        XCTAssertFalse(spec.wasLegacyShape)
     }
 
     /// A response carrying BOTH keeps the richer answer.

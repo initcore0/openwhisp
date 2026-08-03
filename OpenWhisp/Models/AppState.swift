@@ -6514,8 +6514,8 @@ extension AppState: AgentBridgeHost {
     /// bundled engine when the resolved provider is bundled.
     func summarizeResolved(
         text: String, instruction: String, resolved: SummaryModelResolver.Resolved,
-        completion: @escaping (Result<String, BridgeWire.ErrorObject>) -> Void
-    ) {
+        responseFormat: ResponseFormat? = nil, // v7: grammar-constrained decoding
+        completion: @escaping (Result<String, BridgeWire.ErrorObject>) -> Void) {
         // Busy-reject while dictating (same guarantee refineText gives): warming
         // the bundled LLM would stop a live whisper-server.
         guard !sessionActive, !isRecording, !isTranscribing else {
@@ -6558,7 +6558,7 @@ extension AppState: AgentBridgeHost {
                 targetLanguage: self.translationTargetLanguage,
                 endpoint: endpoint,
                 model: model,
-                customInstruction: systemDirective
+                customInstruction: systemDirective, responseFormat: responseFormat
             ) { [weak self] result in
                 Task { @MainActor in
                     done()

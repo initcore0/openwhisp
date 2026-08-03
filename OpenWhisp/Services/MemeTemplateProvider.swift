@@ -285,19 +285,35 @@ public enum MemeTemplateCatalog {
     /// templates that already matched the description, so it changes the ORDER of the
     /// shortlist and never its membership rule. See `MemeTemplateAffinity` for the
     /// bounds and why each exists.
+    /// ## v7 — `preferringSlots`
+    ///
+    /// When the description was a LIST, we already know how many captions the meme
+    /// needs, and a template with exactly that many slots is a better fit than one that
+    /// merely shares words. So a known slot count STABLY REORDERS the shortlist to put
+    /// exact-slot matches first.
+    ///
+    /// Reordering, never filtering: a 4-item list whose best lexical match is a 2-slot
+    /// template should still see that template (the user may want it, and the refit path
+    /// handles the mismatch), it just shouldn't be the first thing offered. Filtering
+    /// here would be the confident-Drake bug in a new costume — silently hiding the
+    /// template the user actually described.
     public static func prefilter(
         for description: String, in catalog: [MemeTemplate], limit: Int,
-        affinity: MemeTemplateAffinity = MemeTemplateAffinity()
+        affinity: MemeTemplateAffinity = MemeTemplateAffinity(),
+        preferringSlots: Int? = nil
     ) -> [MemeTemplate] {
         let cap = max(0, limit)
         guard cap > 0 else { return [] }
 
-        let hits = ranked(description, in: catalog, limit: cap, affinity: affinity).map(\.template)
-        guard !hits.isEmpty else { return Array(catalog.prefix(cap)) }
+        let hits = ranked(description, in: catalog, limit: cap, affinity: affinity)
+            .map(\.template)
+        guard !hits.isEmpty else {
+            return reorder(Array(catalog.prefix(cap)), preferringSlots: preferringSlots)
+        }
 
         // Top up with popular templates when the query was narrow, so the model always
         // sees a full shortlist rather than the two things that happened to match.
-        guard hits.count < cap else { return hits }
+        guard hits.count < cap else { return reorder(hits, preferringSlots: preferringSlots) }
         var out = hits
         var seen = Set(hits.map(\.id))
         for template in catalog where out.count < cap {
@@ -305,7 +321,22 @@ public enum MemeTemplateCatalog {
             seen.insert(template.id)
             out.append(template)
         }
-        return out
+        return reorder(out, preferringSlots: preferringSlots)
+    }
+
+    /// Stable-partition a shortlist so templates with exactly `slots` caption slots
+    /// come first, preserving relevance order within each group.
+    ///
+    /// Stability is the requirement: the ranker's ordering is the primary signal and
+    /// slot count is a tiebreaker, so a sort that reshuffled equal-slot templates would
+    /// throw away the relevance work `ranked` just did.
+    static func reorder(_ templates: [MemeTemplate], preferringSlots slots: Int?) -> [MemeTemplate] {
+        guard let slots else { return templates }
+        let wanted = MemeCaptionSlots.clamp(slots)
+        let matching = templates.filter { MemeCaptionSlots.clamp($0.captionSlots) == wanted }
+        guard !matching.isEmpty else { return templates }
+        let rest = templates.filter { MemeCaptionSlots.clamp($0.captionSlots) != wanted }
+        return matching + rest
     }
 
     /// The names handed to the LLM, capped so a merged ~300-name corpus doesn't blow

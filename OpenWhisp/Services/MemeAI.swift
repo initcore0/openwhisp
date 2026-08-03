@@ -1,5 +1,31 @@
 import Foundation
 
+/// A minimal JSON value, so a schema can be built in Swift and encoded verbatim.
+///
+/// Written by hand rather than reaching for `[String: Any]` because `Any` is not
+/// `Encodable` — and rather than a raw JSON string, because a string would put the
+/// schema beyond the reach of the type checker AND of `swift test`. It lives in
+/// OpenWhispCore (not beside the HTTP client) for exactly that reason: the schemas
+/// are logic, and logic in this project is testable by construction.
+public indirect enum JSONValue: Encodable, Equatable, Sendable {
+    case string(String)
+    case int(Int)
+    case bool(Bool)
+    case array([JSONValue])
+    case object([String: JSONValue])
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.singleValueContainer()
+        switch self {
+        case .string(let v): try c.encode(v)
+        case .int(let v):    try c.encode(v)
+        case .bool(let v):   try c.encode(v)
+        case .array(let v):  try c.encode(v)
+        case .object(let v): try c.encode(v)
+        }
+    }
+}
+
 /// The pure rules behind the Meme Generator plugin's LLM step (spike).
 ///
 /// One round-trip turns a spoken description ("make me the distracted boyfriend one
@@ -245,10 +271,25 @@ public enum MemeAI {
         /// nicety, never a reason to reject a response.
         public let reason: String
 
-        public init(templateNames: [String], captions: [String], reason: String = "") {
+        /// True when the captions came from the legacy `top_text`/`bottom_text` pair
+        /// rather than a `captions` array (v7).
+        ///
+        /// Recorded because the two shapes mean different things even when they carry
+        /// the same two strings: an ARRAY of two is a model answering a 2-slot question,
+        /// while the legacy pair is a model that never engaged with the slot count. On a
+        /// 2-slot template both are correct; on any other, the legacy pair is the v6 bug
+        /// signature. `fit` treats them identically today — the count is what decides —
+        /// and this flag is what lets the host say WHICH happened without re-parsing.
+        public let wasLegacyShape: Bool
+
+        public init(
+            templateNames: [String], captions: [String], reason: String = "",
+            wasLegacyShape: Bool = false
+        ) {
             self.templateNames = templateNames
             self.captions = captions
             self.reason = reason
+            self.wasLegacyShape = wasLegacyShape
         }
 
         /// The classic two-slot spelling, kept so existing call sites and tests that
@@ -267,6 +308,19 @@ public enum MemeAI {
         /// True when nothing at all was said — the reject condition, stated once.
         public var isEmpty: Bool {
             templateNames.isEmpty && captions.allSatisfy(\.isEmpty)
+        }
+
+        /// The same pick, with the captions replaced by the user's own words (v7).
+        ///
+        /// Used when `MemeCaptionExtraction` read a list out of the description: the
+        /// model's TEMPLATE choice is kept (that is the judgement we wanted from it) and
+        /// its captions are discarded in favour of what the user actually said. Marks
+        /// the result as non-legacy because these captions came from the user, not from
+        /// a `top_text` pair — the distinction the status line reads.
+        public func replacingCaptions(with captions: [String]) -> RankedSpec {
+            RankedSpec(
+                templateNames: templateNames, captions: captions, reason: reason,
+                wasLegacyShape: false)
         }
     }
 
@@ -290,6 +344,8 @@ public enum MemeAI {
         let templates: [CandidateRef]
         let captions: [String]
         let reason: String
+        /// Whether `captions` was reconstructed from `top_text`/`bottom_text` (v7).
+        let wasLegacyShape: Bool
 
         private enum CodingKeys: String, CodingKey {
             case templates
@@ -352,14 +408,18 @@ public enum MemeAI {
             // keys keeps the array — the richer answer wins.
             if let list = try? c.decode([String].self, forKey: .captions) {
                 captions = list
+                wasLegacyShape = false
             } else if let list = try? c.decode([String].self, forKey: .texts) {
                 captions = list
+                wasLegacyShape = false
             } else if let list = try? c.decode([String].self, forKey: .lines) {
                 captions = list
+                wasLegacyShape = false
             } else {
                 let top = (try? c.decode(String.self, forKey: .topText)) ?? ""
                 let bottom = (try? c.decode(String.self, forKey: .bottomText)) ?? ""
                 captions = [top, bottom]
+                wasLegacyShape = true
             }
 
             reason = (try? c.decode(String.self, forKey: .reason)) ?? ""
@@ -402,7 +462,8 @@ public enum MemeAI {
         while let last = captions.last, last.isEmpty { captions.removeLast() }
 
         let spec = RankedSpec(
-            templateNames: names, captions: captions, reason: clean(wire.reason))
+            templateNames: names, captions: captions, reason: clean(wire.reason),
+            wasLegacyShape: wire.wasLegacyShape)
         guard !spec.isEmpty else { return .failure(.missingFields) }
         return .success(spec)
     }
@@ -542,6 +603,86 @@ public enum MemeAI {
         return captions.count != MemeCaptionSlots.clamp(slots)
     }
 
+    // MARK: - v7: the host decides what a caption count MEANS
+
+    /// What to do with a caption response, given the template it has to fill (v7).
+    ///
+    /// ## The v6 bug this type exists to make impossible
+    ///
+    /// v6 had no such decision. `parseRanked` returned whatever the model wrote,
+    /// `applyRanked` handed it to `seedBoxes`, and a 2-caption answer for a 4-slot
+    /// Expanding Brain was padded with two blank boxes and rendered — the reported
+    /// failure. The legacy `top_text`/`bottom_text` fallback made that the DEFAULT
+    /// outcome for any model that reached for the classic keys, because those keys can
+    /// only ever produce two.
+    ///
+    /// The rule is now stated once, here, and it is the host's, not the model's:
+    ///
+    /// * **The count matches** → render.
+    /// * **The count doesn't match** → REFIT. Never render a mismatch silently; the
+    ///   refit call already exists (`refitPrompt`) and says "same joke, exactly N".
+    /// * **The legacy two-caption shape** is accepted as final for a **2-slot template
+    ///   only**. That is the one case where `top_text`/`bottom_text` is genuinely the
+    ///   right answer rather than a model that ignored the slot count. On any N≠2
+    ///   template it is treated as the mismatch it is.
+    public enum CaptionFit: Equatable, Sendable {
+        /// The captions fill the template — render them as they are.
+        case ready([String])
+        /// The count is wrong; run the refit round-trip to `slots` captions.
+        case refit(from: [String], to: Int)
+
+        /// The captions to seed right now, in either case.
+        ///
+        /// A refit still SEEDS first: the template has already been chosen and the user
+        /// should see the joke land while the refit runs, rather than an empty canvas.
+        /// `seedBoxes` pads or truncates to the slot count, so this is always safe.
+        public var captions: [String] {
+            switch self {
+            case .ready(let captions):      return captions
+            case .refit(let captions, _):   return captions
+            }
+        }
+
+        /// True when a second round-trip is owed.
+        public var needsRefit: Bool {
+            if case .refit = self { return true }
+            return false
+        }
+    }
+
+    /// Decide whether `captions` may be rendered on a `slots`-slot template.
+    ///
+    /// `wasLegacyShape` is what makes the 2-slot exception decidable: a `["a","b"]` that
+    /// came from a `captions` ARRAY is the model answering a 2-slot question correctly,
+    /// while the same pair from `top_text`/`bottom_text` is a model that never engaged
+    /// with the slot count at all. Both are fine on a 2-slot template and neither is
+    /// fine on a 4-slot one, so the flag doesn't change THIS rule — but it is carried on
+    /// `RankedSpec` so the status line can be honest about which happened, and so a
+    /// future rule can tell them apart without re-deriving it.
+    ///
+    /// Empty captions never refit: there is no joke to preserve, and asking a model to
+    /// rewrite nothing into four somethings is how you get four hallucinations. They
+    /// seed as empty boxes for the user to type into, exactly as `select` already does.
+    public static func fit(captions: [String], slots: Int, wasLegacyShape: Bool = false) -> CaptionFit {
+        let target = MemeCaptionSlots.clamp(slots)
+        let meaningful = captions.filter {
+            !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        guard !meaningful.isEmpty else { return .ready(captions) }
+        guard captions.count != target else { return .ready(captions) }
+        return .refit(from: captions, to: target)
+    }
+
+    /// The status line shown while a mismatch is being refitted.
+    ///
+    /// Honest about the shortfall rather than a generic spinner: the user watched the
+    /// model answer and is about to watch the captions CHANGE, and "Refitting…" alone
+    /// would make that look like a glitch. Naming the numbers makes the second call
+    /// legible as a correction.
+    public static func refitStatus(wrote: Int, of slots: Int) -> String {
+        "Model wrote \(wrote) of \(slots) — refitting…"
+    }
+
     /// Parse a refit reply into exactly `slots` captions.
     ///
     /// Returns nil rather than throwing a typed error: a refit that fails must leave
@@ -570,6 +711,90 @@ public enum MemeAI {
 
         if captions.count >= count { return Array(captions.prefix(count)) }
         return captions + Array(repeating: "", count: count - captions.count)
+    }
+
+    // MARK: - v7: constrained decoding (the systemic fix)
+
+    /// JSON schemas that FORCE the response shape, for servers that support
+    /// constrained decoding.
+    ///
+    /// ## Why this is the real fix
+    ///
+    /// Every other guard in this file is a parser: the model writes whatever it wants
+    /// and we decide afterwards whether to accept it. That is a losing game against a
+    /// 1.5B local model — v5 fixed name transcription, v6 fixed the caption array, and
+    /// v6 STILL shipped the bug this file's `fit` now catches, because there was always
+    /// one more shape to mis-write.
+    ///
+    /// llama-server compiles a `json_schema` into a GBNF grammar and constrains the
+    /// SAMPLER with it. A response missing `captions`, or carrying `top_text` instead,
+    /// or returning three strings where four were required, is then not rejected — it
+    /// is unrepresentable, because no token sequence that produces it is reachable.
+    /// The whole class of bug goes away rather than being caught one shape at a time.
+    ///
+    /// These are built as values rather than raw JSON strings so `swift test` can
+    /// assert their contents; a schema stored as a string literal would be exactly the
+    /// kind of untested wiring this spike exists to avoid shipping.
+    public enum Schema {
+
+        /// The ranked-pick schema: numeric template indices plus a caption array.
+        ///
+        /// `templates` is `integer`-typed, which is what makes v6's numbered-reference
+        /// idea airtight: a model CANNOT answer with a name it invented, because a
+        /// string is not a representable token at that position.
+        ///
+        /// Captions are deliberately NOT pinned to a count here — the model chooses its
+        /// first candidate in the same reply, so the required count isn't known when the
+        /// request is built. The count is enforced host-side by `fit`, and the refit call
+        /// (which DOES know the number) is schema-pinned by `refit(slots:)`.
+        public static func ranked(maxCaptions: Int = MemeCaptionSlots.maximum) -> JSONValue {
+            .object([
+                "type": .string("object"),
+                "properties": .object([
+                    "templates": .object([
+                        "type": .string("array"),
+                        "items": .object(["type": .string("integer")]),
+                        "minItems": .int(1),
+                        "maxItems": .int(maxCandidates),
+                    ]),
+                    "captions": .object([
+                        "type": .string("array"),
+                        "items": .object(["type": .string("string")]),
+                        "minItems": .int(1),
+                        "maxItems": .int(MemeCaptionSlots.clamp(maxCaptions)),
+                    ]),
+                    "reason": .object(["type": .string("string")]),
+                ]),
+                "required": .array([
+                    .string("templates"), .string("captions"), .string("reason"),
+                ]),
+                "additionalProperties": .bool(false),
+            ])
+        }
+
+        /// The refit schema: EXACTLY `slots` captions, and nothing else.
+        ///
+        /// `minItems == maxItems == slots` is the whole point. The refit call exists
+        /// precisely because a count was wrong, so it is the one call where the required
+        /// count is known up front — and pinning both bounds makes "wrote 2 of 4" a
+        /// shape the sampler cannot emit. On a server with constrained decoding this
+        /// makes the refit succeed on the first attempt by construction.
+        public static func refit(slots: Int) -> JSONValue {
+            let count = MemeCaptionSlots.clamp(slots)
+            return .object([
+                "type": .string("object"),
+                "properties": .object([
+                    "captions": .object([
+                        "type": .string("array"),
+                        "items": .object(["type": .string("string")]),
+                        "minItems": .int(count),
+                        "maxItems": .int(count),
+                    ]),
+                ]),
+                "required": .array([.string("captions")]),
+                "additionalProperties": .bool(false),
+            ])
+        }
     }
 
     /// Extract the first balanced `{...}` run from a string, ignoring braces that
