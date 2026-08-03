@@ -788,4 +788,71 @@ final class MemeStructureTests: XCTestCase {
         XCTAssertEqual(MemeTemplateCatalog.promptSlots(catalog, limit: 2).count, 2)
         XCTAssertEqual(MemeTemplateCatalog.promptSlots(catalog, limit: 0).count, 0)
     }
+
+    // MARK: - Live drag (v9)
+
+    private func box(_ text: String) -> MemeCaptionLayout.CaptionBox {
+        MemeCaptionLayout.CaptionBox(text: text, centerX: 0.5, centerY: 0.5)
+    }
+
+    /// The dragged box renders EMPTY so its caption isn't painted twice — once burned
+    /// in at the old spot and once travelling under the cursor.
+    func testDraggedBoxHasItsTextHiddenFromTheRender() {
+        let boxes = [box("TOP"), box("BOTTOM")]
+        let hidden = MemeCaptionLayout.hidingText(of: boxes[0].id, in: boxes)
+
+        XCTAssertEqual(hidden.map(\.text), ["", "BOTTOM"])
+    }
+
+    /// Hiding is a RENDERING concern and must not edit the document: the box survives,
+    /// with its id and geometry, so the editor's selection stays valid mid-drag.
+    func testHidingTextKeepsTheBoxItsIDAndItsGeometry() {
+        let boxes = [box("TOP"), box("BOTTOM")]
+        let hidden = MemeCaptionLayout.hidingText(of: boxes[0].id, in: boxes)
+
+        XCTAssertEqual(hidden.count, 2)
+        XCTAssertEqual(hidden.map(\.id), boxes.map(\.id))
+        XCTAssertEqual(hidden[0].centerX, boxes[0].centerX)
+        XCTAssertEqual(hidden[0].centerY, boxes[0].centerY)
+    }
+
+    /// At rest — nothing being dragged — the render is untouched.
+    func testHidingNothingIsIdentity() {
+        let boxes = [box("TOP"), box("BOTTOM")]
+        XCTAssertEqual(MemeCaptionLayout.hidingText(of: nil, in: boxes), boxes)
+    }
+
+    /// An id that no longer exists (the box was deleted mid-drag) leaves every caption
+    /// visible rather than blanking an arbitrary one.
+    func testHidingAnUnknownIDLeavesEveryCaptionVisible() {
+        let boxes = [box("TOP"), box("BOTTOM")]
+        XCTAssertEqual(MemeCaptionLayout.hidingText(of: UUID(), in: boxes), boxes)
+    }
+
+    // MARK: - Runtime trace (v9)
+
+    /// The breadcrumb must report the SLOT COUNT, because that is the field that was
+    /// wrong and the trace is what finally showed it.
+    ///
+    /// Asserting the line's content keeps the trace honest: a trace that quietly
+    /// stopped describing the decision would send the next debugging round the same
+    /// way the last three went.
+    func testSeedTraceReportsSlotsAndBoxCount() {
+        let seed = MemeCaptionSeeding.resolve(
+            description: "expanding brain: a, b, c, d",
+            specCaptions: ["a", "b", "c", "d"], templateSlots: 2)
+        let line = MemeTrace.seedLine(
+            description: "expanding brain: a, b, c, d",
+            specCaptions: ["a", "b", "c", "d"], slots: 2, seed: seed)
+
+        XCTAssertTrue(line.contains("slots: 2"), line)
+        XCTAssertTrue(line.contains("-> 2 boxes"), line)
+        XCTAssertTrue(line.contains("refit: 4->2"), line)
+    }
+
+    func testExtractionTraceDistinguishesAListFromProse() {
+        let list = MemeCaptionExtraction.extract(from: "brain: a, b, c, d")
+        XCTAssertTrue(MemeTrace.extractionLine(list).contains("4 items"))
+        XCTAssertTrue(MemeTrace.extractionLine(nil).contains("not list-shaped"))
+    }
 }

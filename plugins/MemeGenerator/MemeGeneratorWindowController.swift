@@ -99,6 +99,45 @@ final class MemeGeneratorWindowController: NSWindowController, NSWindowDelegate,
             })
     }
 
+    // MARK: - Runtime proof hook (v9)
+
+    /// Drive the REAL generate path from a launch argument, and log what it produced.
+    ///
+    /// ## Why a hook rather than another read of the code
+    ///
+    /// v7 and v8 each fixed the "four items, two captions" report by tracing the wiring
+    /// and declaring it correct. The owner then ran a hash-verified v8 build and got
+    /// two boxes anyway. At that point the code's appearance had been wrong twice, so
+    /// the only evidence worth anything is what the running binary does — and driving
+    /// Generate by hand through the UI is not something a build script can do.
+    ///
+    /// This runs `model.generate()` — the same method the Generate button calls, with
+    /// no branch of its own — after seeding `description` exactly as the user's typing
+    /// would. Everything downstream (extraction, shortlist, the LLM round-trip, the
+    /// seeding) is the production path, and `MemeTrace` reports what each step decided.
+    ///
+    /// It is gated on an env var, so a normal launch never touches it.
+    func runTraceProbeIfRequested() {
+        let env = ProcessInfo.processInfo.environment
+        guard let prompt = env["OPENWHISP_MEME_PROBE_PROMPT"], !prompt.isEmpty else { return }
+
+        MemeTrace.log("probe start, prompt=\"\(prompt)\"")
+        model.description = prompt
+        model.generate()
+
+        // Report the canvas after the generate settles. The probe cannot know when the
+        // LLM answers, so it samples on a deadline and states what it found — a probe
+        // that reported nothing would look like a crash.
+        let deadline = Double(env["OPENWHISP_MEME_PROBE_SECONDS"] ?? "") ?? 90
+        Task { @MainActor [model] in
+            try? await Task.sleep(nanoseconds: UInt64(deadline * 1_000_000_000))
+            MemeTrace.log(
+                "probe result: \(model.boxes.count) boxes on canvas, "
+                + "texts=\(model.boxes.map(\.text))")
+            MemeTrace.log("probe done")
+        }
+    }
+
     // MARK: - PluginWindowLifecycle
 
     /// The window is being shown again after a close (v5).

@@ -322,8 +322,15 @@ final class MemeProviderTests: XCTestCase {
 
     // MARK: - Catalog cache policy
 
-    private func cached(ageSeconds: TimeInterval, count: Int = 3, version: Int = 1)
-    -> MemeCatalogCache.Cached {
+    /// Defaults to the CURRENT version rather than a literal `1`.
+    ///
+    /// The literal is what let the v9 bug through: these tests all passed a v1 cache and
+    /// asserted it was honoured, so when `captionSlots` arrived and the format really did
+    /// change, the suite was actively asserting the stale-cache behaviour was correct.
+    private func cached(
+        ageSeconds: TimeInterval, count: Int = 3,
+        version: Int = MemeCatalogCache.currentVersion
+    ) -> MemeCatalogCache.Cached {
         MemeCatalogCache.Cached(
             version: version,
             fetchedAt: Date(timeIntervalSince1970: 10_000 - ageSeconds),
@@ -357,6 +364,98 @@ final class MemeProviderTests: XCTestCase {
     func testCacheFromAFutureVersionIsNotTrusted() {
         XCTAssertEqual(MemeCatalogCache.decide(cached: cached(ageSeconds: 10, version: 99), now: now),
                        .fetchNow)
+    }
+
+    /// **The v9 regression.** A cache written before `captionSlots` existed must be
+    /// refetched, not honoured.
+    ///
+    /// This is the test that would have caught the owner's bug three rounds earlier.
+    /// The old policy was `cached.version <= currentVersion`, so a v1 file — written by
+    /// a v5-era build, with no `captionSlots` key on any template — was accepted as
+    /// current. `MemeTemplate.init(from:)` is deliberately tolerant of the missing
+    /// field and defaulted it to 2, so EVERY template in the corpus reported two
+    /// caption slots, including Expanding Brain. The caption code then did exactly what
+    /// it is supposed to do with a 4-caption answer for a 2-slot template: refit it
+    /// down to 2. Hence "typing" + "dictating memes by voice", the first and last of
+    /// four items, from a pipeline every unit test agreed was correct.
+    func testCacheFromAnOlderVersionIsRefetchedRatherThanTrusted() {
+        XCTAssertEqual(
+            MemeCatalogCache.decide(cached: cached(ageSeconds: 10, version: 1), now: now),
+            .fetchNow,
+            "A pre-captionSlots cache must be refetched — honouring it silently "
+            + "reports every template as a 2-slot meme.")
+    }
+
+    /// The mechanism behind that regression, pinned directly: a template JSON with no
+    /// `captionSlots` decodes to the 2-slot default.
+    ///
+    /// The tolerance itself is correct and stays — the point is that it is a LOADING
+    /// convenience and never a source of truth, which is why the version gate above has
+    /// to keep such a file from reaching the decision in the first place.
+    func testTemplateWithoutCaptionSlotsDecodesToTheDefaultAndIsThereforeNotTrustworthy() throws {
+        let json = Data("""
+        {"id":"imgflip:1","name":"Expanding Brain","url":"https://e.example/x.jpg",
+         "width":857,"height":1202,"source":"imgflip","keywords":[]}
+        """.utf8)
+        let decoded = try JSONDecoder().decode(MemeTemplate.self, from: json)
+        XCTAssertEqual(
+            decoded.captionSlots, MemeCaptionSlots.default,
+            "A missing captionSlots defaults to 2 — which is WHY a stale cache must "
+            + "never be honoured: the real Expanding Brain has four.")
+    }
+
+    /// A cache written by THIS build round-trips its slot counts.
+    ///
+    /// The other half of the story: nothing was wrong with encoding, so the fix is a
+    /// version bump rather than a serialization change. Pinned so a future refactor
+    /// that drops the field from the wire format fails here.
+    func testCurrentCacheRoundTripsCaptionSlots() throws {
+        let four = MemeTemplate(
+            id: "imgflip:1", name: "Expanding Brain", url: "https://e.example/x.jpg",
+            width: 857, height: 1202, source: .imgflip, keywords: [], captionSlots: 4)
+        let payload = MemeCatalogCache.Cached(fetchedAt: now, templates: [four])
+
+        let data = try JSONEncoder().encode(payload)
+        let back = try JSONDecoder().decode(MemeCatalogCache.Cached.self, from: data)
+
+        XCTAssertEqual(back.version, MemeCatalogCache.currentVersion)
+        XCTAssertEqual(back.templates.first?.captionSlots, 4)
+        XCTAssertEqual(MemeCatalogCache.decide(cached: back, now: now), .useCache)
+    }
+
+    /// End to end over the SAME core call the app makes: the owner's exact prompt, on a
+    /// template whose slot count survived the cache, yields four boxes.
+    ///
+    /// Paired deliberately with the failing case below, because the difference between
+    /// them is the entire bug: identical prompt, identical model answer, and the only
+    /// variable is what the catalog said about the template.
+    func testOwnerPromptSeedsFourBoxesWhenTheTemplateKeepsItsSlots() {
+        let seed = MemeCaptionSeeding.resolve(
+            description: "expanding brain: typing, dictating, dictating memes, dictating memes by voice",
+            specCaptions: ["typing", "dictating", "dictating memes", "dictating memes by voice"],
+            templateSlots: 4)
+
+        XCTAssertEqual(seed.boxes.count, 4)
+        XCTAssertNil(seed.refit, "Four captions on a four-slot template need no refit.")
+        XCTAssertEqual(
+            seed.captions,
+            ["typing", "dictating", "dictating memes", "dictating memes by voice"])
+    }
+
+    /// The bug, reproduced as a unit test: the same prompt with a 2-slot template
+    /// refits down to two — which is CORRECT behaviour for the input it was given, and
+    /// why no amount of reading the caption code could find the fault.
+    func testOwnerPromptRefitsToTwoWhenAStaleCacheReportsTwoSlots() {
+        let seed = MemeCaptionSeeding.resolve(
+            description: "expanding brain: typing, dictating, dictating memes, dictating memes by voice",
+            specCaptions: ["typing", "dictating", "dictating memes", "dictating memes by voice"],
+            templateSlots: 2)
+
+        XCTAssertEqual(seed.boxes.count, 2)
+        XCTAssertEqual(seed.refit?.slots, 2)
+        XCTAssertEqual(seed.refit?.from.count, 4,
+                       "Four captions are sent back to be squeezed into two — the "
+                       + "observed 'first and last item' meme.")
     }
 
     /// A restored backup or a skewed clock must not pin the catalog forever.

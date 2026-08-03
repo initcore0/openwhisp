@@ -176,6 +176,7 @@ let package = Package(
                 "MemeAI.swift",
                 "MemeCaptionExtraction.swift",
                 "MemeCaptionSeeding.swift",
+                "MemeTrace.swift",
                 "MemeTemplateMatcher.swift",
                 "MemeCaptionLayout.swift",
                 "MemeTemplateProvider.swift",

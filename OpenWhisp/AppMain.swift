@@ -120,6 +120,43 @@ class OpenWhispApp: NSObject, NSApplicationDelegate {
         // First-run onboarding
         showOnboardingIfNeeded()
         print("[OpenWhisp] Ready")
+
+        // v9 spike: the meme plugin's runtime-proof probe. Opens the plugin window and
+        // drives the real Generate from `OPENWHISP_MEME_PROBE_PROMPT`, so a build
+        // script can capture what the SHIPPING binary decides instead of another
+        // reading of the source. Absent the env var this is a no-op.
+        startMemeProbeIfRequested()
+    }
+
+    /// Launch-time entry for the meme plugin's runtime proof (spike v9).
+    ///
+    /// Deliberately routed through `PluginHost.open` rather than constructing the
+    /// controller directly: the probe is only worth anything if it exercises the same
+    /// window the menu item opens, including the enablement gate and the cached-window
+    /// reuse. A probe with its own construction path could pass while the real one
+    /// failed — which is the exact class of mistake this whole exercise is about.
+    private func startMemeProbeIfRequested() {
+        let env = ProcessInfo.processInfo.environment
+        guard let prompt = env["OPENWHISP_MEME_PROBE_PROMPT"], !prompt.isEmpty else { return }
+        MemeTrace.log("probe requested at launch")
+
+        // The catalog and the LLM warm on window open; give them a moment before
+        // firing Generate, exactly as a human opening the window and speaking would.
+        let delay = Double(env["OPENWHISP_MEME_PROBE_DELAY"] ?? "") ?? 6
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+            PluginHost.shared.open(pluginID: PluginRegistry.memeGenerator.id)
+            #if OPENWHISP_PLUGINS
+            guard let controller = PluginHost.shared.windowController(
+                for: PluginRegistry.memeGenerator.id) as? MemeGeneratorWindowController
+            else {
+                MemeTrace.log("probe ABORTED: no meme window controller (plugin disabled?)")
+                return
+            }
+            controller.runTraceProbeIfRequested()
+            #else
+            MemeTrace.log("probe ABORTED: build has no plugins (PLUGINS=1 ./build.sh)")
+            #endif
+        }
     }
 
     /// Re-check permissions whenever the app becomes active. This is what makes

@@ -27,7 +27,32 @@ public enum MemeCatalogCache {
         }
     }
 
-    public static let currentVersion = 1
+    /// The cache format version.
+    ///
+    /// ## v9: why this is 2, and what a stale 1 actually cost
+    ///
+    /// v6 added `MemeTemplate.captionSlots` — the field the whole "a 4-panel meme gets
+    /// 4 captions" behaviour hangs off — and did NOT bump this. So every catalog cached
+    /// by a v5-era build stayed `version: 1`, `decide` accepted it as current, and
+    /// `MemeTemplate.init(from:)` — deliberately tolerant, so an old cache still loads —
+    /// defaulted the missing field to `MemeCaptionSlots.default`, i.e. 2.
+    ///
+    /// The result was invisible and total: EVERY template in the corpus reported two
+    /// slots. Expanding Brain reported two slots. The owner's four-item prompt then
+    /// extracted four captions correctly, matched the right template, and was refit
+    /// DOWN to two by the rule that a count mismatch must be refitted — which is why
+    /// the rendered meme kept the first and last items and dropped the middle two.
+    ///
+    /// That is the bug v7 and v8 both hunted in the caption code and could not find by
+    /// reading it: the caption code was right the whole time, and was being handed
+    /// `slots: 2` by a cache file older than the feature. A version bump discards those
+    /// entries and refetches, which is the only honest fix — the slot counts are simply
+    /// not in that file, so there is nothing to migrate them from.
+    ///
+    /// **The rule this encodes:** adding a field to `MemeTemplate` that any DECISION
+    /// reads is a format change, and it must bump this number. The tolerant decoder
+    /// makes a stale cache load; it cannot make it correct.
+    public static let currentVersion = 2
 
     public static let fileName = "catalog-cache.json"
 
@@ -55,12 +80,24 @@ public enum MemeCatalogCache {
 
     /// Decide how to open the catalog.
     ///
-    /// A cache from a FUTURE version is treated as absent rather than trusted: a
-    /// downgrade must not read a format it doesn't understand. An empty cache is
-    /// likewise treated as absent — persisting a zero-template catalog and then
-    /// honouring it would present the offline state as a legitimately empty corpus.
+    /// Any cache whose version is not EXACTLY `currentVersion` is treated as absent.
+    ///
+    /// A future version must not be trusted (a downgrade would read a format it doesn't
+    /// understand), and — the v9 fix — neither must an older one. The previous
+    /// `<= currentVersion` test is what let a v1 cache survive the arrival of
+    /// `captionSlots`: it loaded, every template silently defaulted to 2 slots, and the
+    /// owner's 4-panel meme was refit down to 2 captions. See `currentVersion`.
+    ///
+    /// Refetching is cheap (one key-less GET, already backed by the offline fallback)
+    /// and correctness here is not optional, so equality is the right test even though
+    /// it discards a cache that a migration could in principle have salvaged. There is
+    /// nothing to salvage: the missing field was never written to that file.
+    ///
+    /// An empty cache is likewise treated as absent — persisting a zero-template
+    /// catalog and then honouring it would present the offline state as a legitimately
+    /// empty corpus.
     public static func decide(cached: Cached?, now: Date) -> Decision {
-        guard let cached, cached.version <= currentVersion, !cached.templates.isEmpty else {
+        guard let cached, cached.version == currentVersion, !cached.templates.isEmpty else {
             return .fetchNow
         }
         // A timestamp in the future (clock skew, a restored backup) is treated as

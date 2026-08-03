@@ -515,12 +515,28 @@ struct MemeGeneratorView: View {
 
 // MARK: - Drag handle
 
-/// The invisible, draggable hit area sitting on top of one rendered caption.
+/// The draggable hit area sitting on top of one rendered caption.
 ///
-/// Deliberately NOT a second copy of the text: drawing the caption again in SwiftUI
-/// would mean two renderers to keep in agreement, and they would drift (different
-/// wrapping, different outline). Instead the burned-in render IS the visual, and this
-/// is a positioned outline the user grabs.
+/// ## v9: the text travels with the box
+///
+/// Until v9 this was an outline and nothing else, on the reasoning that drawing the
+/// caption a second time in SwiftUI would mean two renderers to keep in agreement. The
+/// reasoning was sound and the result was still wrong: the caption is BURNED INTO the
+/// preview image, so dragging moved an empty dashed rectangle while the text stayed
+/// behind, and it only jumped to the new position when the drag ended and the renderer
+/// ran. The user is aiming text at a spot; a handle that doesn't carry the text gives
+/// them nothing to aim.
+///
+/// The fix keeps a single source of truth by making the duplication EXPLICIT and
+/// strictly temporary: while (and only while) this box is being dragged, the burned-in
+/// copy is masked out and a SwiftUI approximation rides along inside the handle. On
+/// drop the mask lifts and the real renderer's output is what remains, so the
+/// approximation is never what the user keeps — it cannot drift into the export,
+/// because it never reaches it.
+///
+/// Re-rendering the whole meme per frame was the other option and is the worse one:
+/// `MemeRenderer` redraws a full-resolution image, and driving that from a gesture
+/// would make the drag's smoothness depend on the template's pixel count.
 private struct DragHandle: View {
 
     @ObservedObject var model: MemeGeneratorModel
@@ -532,6 +548,11 @@ private struct DragHandle: View {
     /// Live drag offset in points, applied on top of the box's committed position so
     /// the handle tracks the cursor without a re-render per frame fighting it.
     @State private var dragOffset: CGSize = .zero
+
+    /// True from the first `onChanged` until the drop. Drives BOTH the travelling text
+    /// and the mask over the burned-in copy, so the two can never disagree about
+    /// whether a drag is in progress.
+    @State private var isDragging = false
 
     var body: some View {
         let width = canvas.width * box.widthShare
@@ -546,20 +567,54 @@ private struct DragHandle: View {
             .background(
                 RoundedRectangle(cornerRadius: 4)
                     .fill(Color.accentColor.opacity(isSelected ? 0.10 : 0.001)))
+            .overlay {
+                // The travelling caption. Only while dragging — at rest the burned-in
+                // render is the one true visual, exactly as before.
+                if isDragging {
+                    Text(MemeCaptionLayout.displayText(box.text))
+                        .font(.system(
+                            size: canvas.height * box.fontSizeShare,
+                            weight: .heavy))
+                        .foregroundStyle(.white)
+                        .shadow(color: .black, radius: 1, x: 1, y: 1)
+                        .shadow(color: .black, radius: 1, x: -1, y: -1)
+                        .minimumScaleFactor(0.4)
+                        .lineLimit(3)
+                        .multilineTextAlignment(.center)
+                        .allowsHitTesting(false)
+                }
+            }
             .frame(width: width, height: height)
             .position(x: x, y: y)
             .gesture(
                 DragGesture()
                     .onChanged { value in
                         model.selectedBoxID = box.id
+                        // Announce the drag BEFORE the offset so the burned-in copy is
+                        // masked on the same frame the text starts moving — setting it
+                        // after would flash both copies for one frame.
+                        if !isDragging {
+                            isDragging = true
+                            model.beginDragging(id: box.id)
+                        }
                         dragOffset = value.translation
                     }
                     .onEnded { value in
                         // Commit in NORMALIZED units so the move survives the export's
                         // full-resolution render and a switch to another template.
-                        guard canvas.width > 0, canvas.height > 0 else { return }
+                        guard canvas.width > 0, canvas.height > 0 else {
+                            isDragging = false
+                            model.endDragging()
+                            dragOffset = .zero
+                            return
+                        }
                         let dx = value.translation.width / canvas.width
                         let dy = value.translation.height / canvas.height
+                        isDragging = false
+                        // Clear the mask and commit in one step: `updateBox` re-renders
+                        // with the caption at its NEW home, so there is no frame in
+                        // which the burned-in copy is visible at the old position.
+                        model.endDragging()
                         model.updateBox(id: box.id) { b in
                             b.centerX += dx
                             b.centerY += dy

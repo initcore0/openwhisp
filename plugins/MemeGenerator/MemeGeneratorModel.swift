@@ -79,6 +79,10 @@ final class MemeGeneratorModel: ObservableObject {
     /// the user can read it instead of into tokens the parser dropped.
     @Published private(set) var candidateReason: String = ""
 
+    /// The box currently being dragged, whose burned-in caption is suppressed while the
+    /// drag handle carries the text (v9). Nil at rest.
+    private var draggingBoxID: UUID?
+
     /// The ids of the boxes the last AI seed minted (v6).
     ///
     /// This is the whole mechanism behind "Generate replaces AI boxes and preserves
@@ -472,6 +476,9 @@ final class MemeGeneratorModel: ObservableObject {
                 case .failure(let rejection):
                     self.finish(ticket, status: "Couldn't build the meme — \(rejection.reason).")
                 case .success(let spec):
+                    MemeTrace.log(MemeTrace.llmLine(
+                        captions: spec.captions, wasLegacyShape: spec.wasLegacyShape,
+                        schema: true))
                     // v8: the "user's own list beats the model's captions" rule moved
                     // into `MemeCaptionSeeding.resolve`, which `applyRanked` calls —
                     // one tested place instead of a step here and a step there.
@@ -723,6 +730,7 @@ final class MemeGeneratorModel: ObservableObject {
             seed: seed.boxes, into: boxes, seededIDs: seededBoxIDs)
         seededBoxIDs = Set(seed.boxes.map(\.id))
         selectedBoxID = boxes.first?.id
+        MemeTrace.log(MemeTrace.seedingLine(boxes: seed.boxes.count, merged: boxes.count))
     }
 
     /// Seed boxes for a known caption list and slot count, with no description to read.
@@ -1014,7 +1022,34 @@ final class MemeGeneratorModel: ObservableObject {
     /// literally the export.
     func redraw() {
         guard let baseImage else { return }
-        meme = MemeRenderer.render(template: baseImage, boxes: boxes)
+        // v9: the box being dragged is rendered EMPTY, because the drag handle is
+        // drawing that caption itself and travelling with the cursor. Without this the
+        // caption would appear twice mid-drag — burned in at the old position and live
+        // under the cursor — which reads as a duplicate rather than a move.
+        meme = MemeRenderer.render(
+            template: baseImage, boxes: MemeCaptionLayout.hidingText(of: draggingBoxID, in: boxes))
+    }
+
+    // MARK: - Drag (v9)
+
+    /// Begin dragging a caption box: hide its burned-in copy so the handle's own copy
+    /// is the only one on screen.
+    ///
+    /// Re-rendering ONCE at the start (and once at the drop) is what makes the live
+    /// drag cheap. The alternative — re-rendering the meme on every gesture frame —
+    /// would tie the drag's frame rate to a full-resolution CoreGraphics pass.
+    func beginDragging(id: UUID) {
+        guard draggingBoxID != id else { return }
+        draggingBoxID = id
+        redraw()
+    }
+
+    /// End the drag. The caller commits the new position immediately after, which
+    /// re-renders with the caption at its new home.
+    func endDragging() {
+        guard draggingBoxID != nil else { return }
+        draggingBoxID = nil
+        redraw()
     }
 
     /// Mutate one box and re-render. The single funnel for every editor edit.

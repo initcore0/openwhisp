@@ -195,6 +195,27 @@ public enum MemeCaptionLayout {
         return out
     }
 
+    /// Blank the TEXT of one box, keeping every box and all geometry (v9).
+    ///
+    /// Used for the live drag: the box being dragged has its caption drawn by the drag
+    /// handle, travelling with the cursor, so the burned-in render must not draw it a
+    /// second time at the position the user is moving it away from.
+    ///
+    /// The box is emptied rather than REMOVED, and that distinction is the whole point:
+    /// `boxes` is the document, indices and ids are referenced by the editor's
+    /// selection, and dropping an element mid-gesture to achieve a visual effect would
+    /// make a rendering concern edit the user's data. Emptying `text` changes only what
+    /// is painted. `nil` returns the boxes untouched, so the resting path is identity.
+    public static func hidingText(of id: UUID?, in boxes: [CaptionBox]) -> [CaptionBox] {
+        guard let id else { return boxes }
+        return boxes.map { box in
+            guard box.id == id else { return box }
+            var hidden = box
+            hidden.text = ""
+            return hidden
+        }
+    }
+
     /// The two boxes the AI path seeds: classic top and bottom captions.
     ///
     /// Positioned at 0.12 / 0.88 of the height — far enough in that a two-line

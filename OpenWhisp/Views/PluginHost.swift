@@ -129,6 +129,14 @@ final class PluginHost: ObservableObject {
         NSApp.activate(ignoringOtherApps: true)
     }
 
+    /// The live window controller for a plugin, if one has been opened.
+    ///
+    /// Exists for the v9 runtime probe, which must reach the SAME cached controller
+    /// `open(pluginID:)` created rather than build a parallel one.
+    func windowController(for pluginID: String) -> NSWindowController? {
+        windows[pluginID]
+    }
+
     private func closeWindow(for id: String) {
         windows[id]?.window?.close()
         windows[id] = nil

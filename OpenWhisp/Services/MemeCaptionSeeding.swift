@@ -132,9 +132,20 @@ public enum MemeCaptionSeeding {
             return Refit(from: from, slots: target)
         }()
 
-        return Seed(
+        let seed = Seed(
             boxes: boxes, captions: fit.captions, slots: slots, refit: refit,
             captionsCameFromUser: extracted != nil)
+
+        // v9: breadcrumbs at the decision itself, not at the call site. Two rounds of
+        // "the wiring reads correct" were wrong about the running app, so the trace
+        // has to come from the function that actually made the decision — a call-site
+        // log can only prove that the call site ran.
+        MemeTrace.log(MemeTrace.extractionLine(extracted))
+        MemeTrace.log(MemeTrace.seedLine(
+            description: description, specCaptions: specCaptions,
+            slots: templateSlots, seed: seed))
+
+        return seed
     }
 
     /// The template search query for a description, and the slot count to prefer.
