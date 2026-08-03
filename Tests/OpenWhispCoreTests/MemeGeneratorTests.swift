@@ -287,9 +287,18 @@ final class MemeGeneratorTests: XCTestCase {
 
     // MARK: - v2: the ranked prompt
 
-    func testRankedPromptForbidsInventingNamesAndPinsCaptionLanguage() {
+    /// The two guards that must survive every prompt revision: the model may not
+    /// invent a candidate, and it may not translate the captions.
+    ///
+    /// **v6 note.** The anti-invention guard used to be "names COPIED EXACTLY from the
+    /// list". v6 asks for NUMBERS instead — the same guard, expressed in a form a small
+    /// local model can actually satisfy (see `MemeAI.rankedPrompt`), so the assertion
+    /// moved to the numbering rather than being dropped. The language guard is
+    /// unchanged and is the one that stops a tiny model translating a Ukrainian
+    /// dictation into English (`llm-cleanup-language-guard`).
+    func testRankedPromptForbidsInventingCandidatesAndPinsCaptionLanguage() {
         let prompt = MemeAI.rankedPrompt.lowercased()
-        XCTAssertTrue(prompt.contains("copied exactly"))
+        XCTAssertTrue(prompt.contains("numbers from the list"))
         XCTAssertTrue(prompt.contains("do not invent"))
         XCTAssertTrue(prompt.contains("same language"))
         XCTAssertTrue(prompt.contains("do not translate"))

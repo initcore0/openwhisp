@@ -288,19 +288,39 @@ struct MemeGeneratorView: View {
     /// instantly, and even while a generation is still running.
     private var candidateStrip: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(model.candidatesAreFallback
-                 ? "Nothing matched — closest and most popular instead:"
-                 : "The model's picks, best first:")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            HStack(spacing: 4) {
+                Text(model.candidatesAreFallback
+                     ? "Nothing matched — closest and most popular instead:"
+                     : "The model's picks, best first:")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                // The model's own justification for its top pick (v6). This is where
+                // the reasoning the v5 prompt asked for and threw away now goes: on
+                // hover the user reads WHY the first thumbnail is first, instead of
+                // guessing. Only shown when the model actually gave one.
+                if !model.candidateReason.isEmpty, !model.candidatesAreFallback {
+                    Image(systemName: "info.circle")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                        .help(model.candidateReason)
+                        .accessibilityLabel("Why this pick: \(model.candidateReason)")
+                }
+                Spacer()
+            }
 
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
-                    ForEach(model.candidates) { template in
+                    ForEach(Array(model.candidates.enumerated()), id: \.element.id) { index, template in
                         TemplateThumbnail(
                             template: template,
                             isSelected: template.id == model.selectedTemplate?.id,
-                            width: 88)
+                            width: 88,
+                            // Only the FIRST candidate carries the reason: the model was
+                            // asked to justify its top pick, so attaching that sentence
+                            // to the others would be attributing an explanation to a
+                            // choice it doesn't describe.
+                            note: index == 0 ? model.candidateReason : "")
                         .onTapGesture { model.select(template: template) }
                     }
                 }
@@ -672,6 +692,21 @@ private struct TemplateThumbnail: View {
     let template: MemeTemplate
     let isSelected: Bool
     let width: CGFloat
+    /// An extra line for the tooltip — the model's reason, on the top candidate (v6).
+    var note: String = ""
+
+    /// The tooltip: what this template is, where it came from, how many captions it
+    /// takes, and (on the model's top pick) why it was chosen.
+    ///
+    /// The slot count is worth stating because it now has a visible consequence —
+    /// clicking a 4-caption template turns two captions into four — and a user who can
+    /// see that coming isn't surprised by it.
+    private var tooltip: String {
+        var parts = ["\(template.name) — \(template.source.label)"]
+        parts.append("\(template.captionSlots) caption\(template.captionSlots == 1 ? "" : "s")")
+        if !note.isEmpty { parts.append(note) }
+        return parts.joined(separator: " · ")
+    }
 
     var body: some View {
         VStack(spacing: 3) {
@@ -703,7 +738,7 @@ private struct TemplateThumbnail: View {
                 .frame(width: width)
         }
         .contentShape(Rectangle())
-        .help("\(template.name) — \(template.source.label)")
+        .help(tooltip)
     }
 
     @ViewBuilder

@@ -180,6 +180,7 @@ let package = Package(
                 "MemeUserLibrary.swift",
                 "MemeGenerationState.swift",
                 "MemeCatalogCache.swift",
+                "MemeTemplateAffinity.swift",
                 "LLMWarmReadiness.swift"
             ]
         ),

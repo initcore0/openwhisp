@@ -201,11 +201,166 @@ public enum MemeCaptionLayout {
     /// caption still sits inside the image, which is where v1's top/bottom blocks
     /// landed. An empty caption still gets a box so the editor has something to type
     /// into rather than making the user hunt for "Add text box".
+    ///
+    /// Kept as the 2-slot special case of `seedBoxes(captions:slots:)` so the classic
+    /// path is literally the same code and can't drift from it.
     public static func seedBoxes(topText: String, bottomText: String) -> [CaptionBox] {
-        [
-            CaptionBox(text: topText, centerX: 0.5, centerY: 0.12),
-            CaptionBox(text: bottomText, centerX: 0.5, centerY: 0.88),
-        ]
+        seedBoxes(captions: [topText, bottomText], slots: 2)
+    }
+
+    // MARK: - Per-template caption slots (v6)
+
+    /// Where a template's `n` caption slots sit, as normalized centers.
+    ///
+    /// ## The honest state of the source data
+    ///
+    /// The task hoped memegen would supply real box POSITIONS. It does not — verified
+    /// against the live API on 2026-08-03. `GET /templates` returns
+    /// `{id, name, lines, overlays, styles, blank, example, source, keywords, _self}`
+    /// and the per-template `GET /templates/<id>` returns the same shape; `lines` is a
+    /// COUNT and there is no geometry field anywhere in either payload. imgflip's
+    /// `get_memes` is the same story — `box_count`, no rectangles. (imgflip *does*
+    /// expose per-box geometry, but only through the authenticated `caption_image`
+    /// endpoint, which is a captioning API we deliberately don't use: sending the
+    /// user's words to someone else's server is exactly the local-first line this
+    /// plugin holds.)
+    ///
+    /// So EVERY position here is synthesized from the count. The doc comment says so
+    /// rather than implying the layout is template-accurate, because a wrong claim
+    /// about provenance is how the next person ships a "fix" that removes a fallback
+    /// that was never a fallback.
+    ///
+    /// ## The synthesized layouts, and why each shape
+    ///
+    /// * **1** — one centered caption near the top: the impact-font one-liner.
+    /// * **2** — classic top/bottom at 0.12 / 0.88. Unchanged from v1, because this is
+    ///   two thirds of the corpus (166 of memegen's 212, 66 of imgflip's 100) and
+    ///   regressing the common case to gain the rare one is a bad trade.
+    /// * **3 and 4** — a STACKED LEFT COLUMN: evenly spaced rows, left-aligned by
+    ///   sitting at x = 0.30 with a narrower width. This is the spike-grade choice and
+    ///   it is a genuine compromise, so here is the reasoning. The 3- and 4-slot
+    ///   templates that matter (Drake, Distracted Boyfriend, Expanding Brain, Galaxy
+    ///   Brain) are PANEL memes: their captions belong beside or inside stacked panels,
+    ///   never spread top-to-bottom across the whole frame. A stacked column lands the
+    ///   captions in roughly the right band for a vertically-panelled template (Drake,
+    ///   Expanding Brain — the most common panel layout by far) and merely
+    ///   *approximately* right for a horizontally-panelled one (Distracted Boyfriend).
+    ///   Approximately-right and draggable beats confidently-wrong and invisible: the
+    ///   user sees N captions in N distinct places and moves them, instead of getting
+    ///   two captions for a four-panel joke.
+    /// * **5+** — the same even column at full width, since past four slots there is no
+    ///   dominant convention left to approximate.
+    ///
+    /// The real fix is per-template geometry, which needs a data source none of the
+    /// key-less APIs provide — a bundled table of hand-measured boxes for the top ~30
+    /// templates would do it, and that is a deliberate non-goal for a spike.
+    public static func slotCenters(slots: Int) -> [(x: Double, y: Double)] {
+        let count = MemeCaptionSlots.clamp(slots)
+        switch count {
+        case 1:
+            return [(0.5, 0.12)]
+        case 2:
+            return [(0.5, 0.12), (0.5, 0.88)]
+        default:
+            // Evenly spaced rows inside the frame, inset so the first and last aren't
+            // welded to the bezel. Panel memes read top-to-bottom, so slot order is
+            // top-to-bottom too — which is also the order the LLM returns captions in.
+            let top = 0.14
+            let bottom = 0.86
+            let span = bottom - top
+            let x = count <= 4 ? 0.30 : 0.5
+            return (0..<count).map { index in
+                let t = Double(index) / Double(count - 1)
+                return (x, top + span * t)
+            }
+        }
+    }
+
+    /// How wide a box should be for an `n`-slot template.
+    ///
+    /// Narrower for the 3–4 panel layouts because those captions sit in a left column
+    /// beside the artwork; a full-width box there would run straight across the panel
+    /// it is labelling.
+    public static func slotWidthShare(slots: Int) -> Double {
+        MemeCaptionSlots.clamp(slots) <= 2 ? CaptionBox.defaultWidthShare : 0.46
+    }
+
+    /// The font share for an `n`-slot template.
+    ///
+    /// Stacked captions have to share the frame's height, so they start smaller — at
+    /// the classic 0.11 four captions would overlap before the user typed anything.
+    /// This is a CEILING (`layout` shrinks further to fit), so a short caption still
+    /// renders as large as it can.
+    public static func slotFontSizeShare(slots: Int) -> Double {
+        MemeCaptionSlots.clamp(slots) <= 2 ? CaptionBox.defaultFontSizeShare : 0.07
+    }
+
+    /// Seed one box per caption slot, laid out for a template of that structure (v6).
+    ///
+    /// The caption list is fitted to the slot count rather than trusted: a model that
+    /// returns three captions for a two-slot template has its extra dropped, and one
+    /// that returns two for a four-slot template gets two empty boxes to type into.
+    /// Both are better than the alternatives — rendering captions the template has no
+    /// room for, or silently losing the ones it does.
+    ///
+    /// Empty captions still get boxes, for the same reason `seedBoxes(topText:)` always
+    /// did: the editor needs a handle to type into.
+    public static func seedBoxes(captions: [String], slots: Int) -> [CaptionBox] {
+        let count = MemeCaptionSlots.clamp(slots)
+        let centers = slotCenters(slots: count)
+        let width = slotWidthShare(slots: count)
+        let fontSize = slotFontSizeShare(slots: count)
+
+        return centers.enumerated().map { index, center in
+            CaptionBox(
+                text: index < captions.count ? captions[index] : "",
+                centerX: center.x,
+                centerY: center.y,
+                fontSizeShare: fontSize,
+                widthShare: width)
+        }
+    }
+
+    // MARK: - What a regenerate is allowed to destroy (v6)
+
+    /// Merge a fresh AI seed over the boxes already on the canvas.
+    ///
+    /// ## The rule, stated once: Generate replaces AI-seeded boxes and PRESERVES boxes
+    /// the user added.
+    ///
+    /// v5's Generate assigned `boxes = seedBoxes(...)` outright, so a user who had
+    /// pressed "Add text", typed a third caption, and positioned it, lost it the moment
+    /// they tweaked the description and regenerated. Silent destruction of manual work
+    /// is the worst class of bug in an editor, and it has no undo here.
+    ///
+    /// Of the two options in the brief — confirm before replacing, or preserve
+    /// user-added boxes — this takes the second, deliberately:
+    ///
+    /// * A confirmation dialog charges EVERY regenerate (the common, harmless case:
+    ///   nothing was hand-added and the user just wants a rewrite) to protect the rare
+    ///   one. Generate is the plugin's primary verb and putting a modal in front of it
+    ///   would be felt on every single use.
+    /// * "Your own boxes survive, the AI's are rewritten" is a rule a user can hold in
+    ///   their head and predict, which a dialog they dismiss reflexively is not.
+    /// * It is reversible in the direction that matters: an unwanted surviving box is
+    ///   one click on the trash icon, whereas a destroyed caption is retyped and
+    ///   repositioned from memory.
+    ///
+    /// A box counts as user-added when its id is not among `seededIDs` — the ids the
+    /// previous seed minted. EDITS to a seeded box (retyping it, dragging it, resizing
+    /// it) are NOT preserved: that box is the AI's answer to the old description, and a
+    /// regenerate is a request for a new answer, so keeping the old text would make
+    /// Generate look broken. The distinction is deliberate and is what keeps the rule
+    /// to one sentence.
+    ///
+    /// Preserved boxes keep their identity, text, and geometry exactly, and are
+    /// appended AFTER the new seed so panel order still reads top-to-bottom for the
+    /// slots the template actually has.
+    public static func merging(
+        seed: [CaptionBox], into existing: [CaptionBox], seededIDs: Set<UUID>
+    ) -> [CaptionBox] {
+        let userAdded = existing.filter { !seededIDs.contains($0.id) }
+        return seed + userAdded
     }
 
     /// A box resolved into pixels for one specific image size, with its text already

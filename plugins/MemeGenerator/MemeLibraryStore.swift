@@ -199,6 +199,38 @@ enum MemeLibraryStore {
         }
     }
 
+    // MARK: - Template affinity (v6)
+
+    private static var affinityURL: URL {
+        pluginDirectory.appendingPathComponent(MemeTemplateAffinity.fileName)
+    }
+
+    /// Read the learned per-template boosts.
+    ///
+    /// A missing or corrupt file is an EMPTY affinity, never an error — it is a
+    /// ranking nicety, and failing to open the plugin because a preference file went
+    /// bad would be wildly out of proportion. The decoder re-applies the cap, so even
+    /// a hand-edited file can't inject a dominating boost.
+    static func loadAffinity() -> MemeTemplateAffinity {
+        guard let data = try? Data(contentsOf: affinityURL),
+              let decoded = try? JSONDecoder().decode(MemeTemplateAffinity.self, from: data)
+        else { return MemeTemplateAffinity() }
+        return decoded
+    }
+
+    /// Persist the boosts. Silent on failure for the same reason as the read.
+    static func saveAffinity(_ affinity: MemeTemplateAffinity) {
+        do {
+            try FileManager.default.createDirectory(
+                at: pluginDirectory, withIntermediateDirectories: true)
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            try encoder.encode(affinity).write(to: affinityURL, options: .atomic)
+        } catch {
+            // Losing a boost costs nothing the user will notice.
+        }
+    }
+
     // MARK: - Thumbnails
 
     /// `…/Plugins/MemeGenerator/thumbnails` — downscaled template previews.

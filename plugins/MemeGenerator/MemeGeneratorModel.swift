@@ -71,6 +71,26 @@ final class MemeGeneratorModel: ObservableObject {
     /// The whole merged catalog, for Browse.
     @Published private(set) var catalog: [MemeTemplate] = []
 
+    /// The model's one-line justification for its top pick, shown as the candidate
+    /// strip's tooltip (v6).
+    ///
+    /// This is what replaced the v5 prompt's discarded "think about which ones could
+    /// carry the joke" invitation: the same request for reasoning, but routed somewhere
+    /// the user can read it instead of into tokens the parser dropped.
+    @Published private(set) var candidateReason: String = ""
+
+    /// The ids of the boxes the last AI seed minted (v6).
+    ///
+    /// This is the whole mechanism behind "Generate replaces AI boxes and preserves
+    /// yours" — see `MemeCaptionLayout.merging`. Anything on the canvas whose id ISN'T
+    /// in here was added by the user with the Add text button and survives a
+    /// regenerate.
+    private var seededBoxIDs: Set<UUID> = []
+
+    /// The learned per-template boosts, loaded once per window and persisted on every
+    /// correction (v6).
+    private var affinity = MemeTemplateAffinity()
+
     /// True when the model named only templates that don't exist in the corpus and we
     /// fell back. Drives the honest "not in this corpus" warning.
     @Published private(set) var didFallBack: Bool = false
@@ -190,6 +210,10 @@ final class MemeGeneratorModel: ObservableObject {
         imageFailed = false
         failedTemplate = nil
         status = ""
+        // Re-read on every open rather than caching across sessions: the file is small,
+        // and a second window (or a hand edit) must not be silently overwritten by a
+        // stale in-memory copy on the next pick.
+        affinity = MemeLibraryStore.loadAffinity()
         warmLLM()
         openCatalog()
     }
@@ -404,15 +428,21 @@ final class MemeGeneratorModel: ObservableObject {
             // description of the meme's CONTENT reach a template whose name shares no
             // words with it — and it guarantees the relevant template is in the
             // prompt at all, rather than truncated off the end of a popularity list.
+            // v6: the user's own past corrections tilt this, within a hard cap and
+            // only among templates the description already matched.
             let shortlist = MemeTemplateCatalog.prefilter(
-                for: self.description, in: self.catalog, limit: MemeAI.candidateShortlist)
-            // The model is shown names + keywords, but validated against NAMES —
+                for: self.description, in: self.catalog, limit: MemeAI.candidateShortlist,
+                affinity: self.affinity)
+            // Three positionally-aligned projections of the SAME shortlist: the model
+            // sees `lines` (name + keywords + slot count), answers with numbers that
+            // index it, and any name it writes instead is validated against `names`.
             // `promptLines` keeps the name first and unadorned precisely so the two
             // stay in sync.
             let names = MemeTemplateCatalog.promptNames(shortlist, limit: shortlist.count)
             let lines = MemeTemplateCatalog.promptLines(shortlist, limit: shortlist.count)
+            let slots = MemeTemplateCatalog.promptSlots(shortlist, limit: shortlist.count)
             let payload = MemeAI.rankedUserPayload(
-                description: self.description, templateNames: lines,
+                description: self.description, templateLines: lines, slots: slots,
                 limit: MemeAI.candidateShortlist)
 
             do {
@@ -557,6 +587,16 @@ final class MemeGeneratorModel: ObservableObject {
         meme = nil
         baseImage = nil
         searchText = ""
+        candidateReason = ""
+        // No boxes left, so nothing can be "AI-seeded" any more. Leaving stale ids here
+        // would make the first regenerate after a New meme treat a fresh user-added box
+        // as seeded if UUIDs ever collided — cheap to clear, and it keeps the invariant
+        // "seededBoxIDs ⊆ boxes" true at all times.
+        seededBoxIDs = []
+
+        // The learned affinity deliberately SURVIVES. It is not part of this meme — it
+        // is what the user has taught the ranker across all of them, and throwing it
+        // away on New meme would make the lesson unlearnable in practice.
 
         // The catalog stays, so a catalog failure is only cleared when there is in
         // fact a catalog — clearing the flag with an empty corpus would hide a real
@@ -609,8 +649,13 @@ final class MemeGeneratorModel: ObservableObject {
         }
 
         candidates = picks
-        boxes = MemeCaptionLayout.seedBoxes(topText: spec.topText, bottomText: spec.bottomText)
-        selectedBoxID = boxes.first?.id
+        candidateReason = spec.reason
+
+        // v6: the boxes are seeded for the TOP candidate's real structure, not for an
+        // assumed top/bottom pair. A 4-slot Expanding Brain gets four boxes with four
+        // captions in panel order; a 2-slot Drake behaves exactly as it did in v5.
+        let slots = picks.first?.captionSlots ?? MemeCaptionSlots.default
+        seedBoxes(captions: spec.captions, slots: slots)
 
         guard let best = picks.first else {
             finish(ticket, status: "There are no templates to choose from — import one to get started.")
@@ -618,6 +663,22 @@ final class MemeGeneratorModel: ObservableObject {
         }
 
         await renderTemplate(best, ticket: ticket, isNewGeneration: true)
+    }
+
+    /// Replace the AI-seeded boxes, keeping any the user added by hand (v6).
+    ///
+    /// The rule and the reasoning behind choosing it over a confirmation dialog live in
+    /// `MemeCaptionLayout.merging`; this is only the plumbing. `seededBoxIDs` is
+    /// re-minted from the NEW seed, so the next regenerate replaces these in turn while
+    /// the user's own boxes keep surviving indefinitely.
+    private func seedBoxes(captions: [String], slots: Int) {
+        let seed = MemeCaptionLayout.seedBoxes(captions: captions, slots: slots)
+        boxes = MemeCaptionLayout.merging(seed: seed, into: boxes, seededIDs: seededBoxIDs)
+        seededBoxIDs = Set(seed.map(\.id))
+        // Select the first seeded box rather than whatever was selected before: after a
+        // regenerate the user is looking at new captions, and leaving the editor panel
+        // pointed at a box that may no longer exist would show an empty panel.
+        selectedBoxID = boxes.first?.id
     }
 
     // MARK: - Template selection
@@ -635,10 +696,17 @@ final class MemeGeneratorModel: ObservableObject {
     func select(template: MemeTemplate) {
         guard template.id != selectedTemplate?.id else { return }
 
-        // Seed boxes if the user picked a template before ever generating.
+        // v6: the user reaching past the model's first pick is a correction, and the
+        // cheapest supervision this plugin will ever get. Recorded BEFORE the async
+        // work so a download that fails still teaches — the user's preference was
+        // expressed by the click, not by the download succeeding.
+        recordCorrection(for: template)
+
+        // Seed boxes if the user picked a template before ever generating — now for
+        // the template's OWN slot count, so picking a 4-panel meme first and typing
+        // into it works without ever touching the LLM.
         if boxes.isEmpty {
-            boxes = MemeCaptionLayout.seedBoxes(topText: "", bottomText: "")
-            selectedBoxID = boxes.first?.id
+            seedBoxes(captions: [], slots: template.captionSlots)
         }
 
         // The user has now chosen deliberately, so this is no longer a fallback.
@@ -652,7 +720,94 @@ final class MemeGeneratorModel: ObservableObject {
                      after: MemeGenerationState.downloadTimeout,
                      message: MemeGenerationState.downloadTimeoutMessage(template.name))
         Task { [weak self] in
-            await self?.renderTemplate(template, ticket: ticket, isNewGeneration: false)
+            guard let self else { return }
+            await self.renderTemplate(template, ticket: ticket, isNewGeneration: false)
+            await self.refitCaptionsIfNeeded(for: template)
+        }
+    }
+
+    // MARK: - Learning signal (v6)
+
+    /// Note that the user picked `template` instead of the candidate on offer.
+    ///
+    /// Only a NON-FIRST pick counts. Clicking the candidate the model already put first
+    /// is agreement, not a correction, and boosting it would just amplify whatever the
+    /// ranker already believed — the signal has to be about the cases the ranker got
+    /// wrong, or it is a feedback loop rather than a lesson. A Browse pick always
+    /// counts: reaching into the full corpus is the strongest correction available.
+    private func recordCorrection(for template: MemeTemplate) {
+        guard candidates.first?.id != template.id else { return }
+        affinity.record(pick: template.id)
+        MemeLibraryStore.saveAffinity(affinity)
+    }
+
+    // MARK: - Caption refit (v6)
+
+    /// Re-fit the captions when the newly-chosen template has a DIFFERENT number of
+    /// slots than the captions currently on the canvas.
+    ///
+    /// ## Why this needs the model
+    ///
+    /// The candidate strip promises "same joke, different template". Going from a
+    /// 2-slot Drake to a 4-slot Expanding Brain needs two new lines invented in the
+    /// user's language and the joke's voice — that is a language task, not a
+    /// redistribution, so it is a small second round-trip.
+    ///
+    /// ## What keeps it from being another stuck-state bug
+    ///
+    /// * It runs on its OWN ticket through the same state machine, so Cancel works and
+    ///   a superseded refit can't write over a newer one.
+    /// * It NEVER blocks the strip. The template has already rendered by the time this
+    ///   starts; the user can click straight past it to a different candidate, and the
+    ///   in-flight refit is refused when it lands.
+    /// * Every exit path — no-op, no LLM, parse failure, transport failure, stale
+    ///   ticket — ends at `finish` for its own ticket.
+    /// * A failure is SILENT and leaves the previous captions in place. The switch
+    ///   itself succeeded, so surfacing an error would make a working action look
+    ///   broken; the user keeps captions that are merely the wrong shape, and can edit
+    ///   them by hand exactly as before.
+    private func refitCaptionsIfNeeded(for template: MemeTemplate) async {
+        let slots = MemeCaptionSlots.clamp(template.captionSlots)
+        let current = boxes.map(\.text)
+
+        // The fast path, and the common one: same slot count means the captions carry
+        // over verbatim, instantly, with no LLM involved — exactly as in v5.
+        guard MemeAI.needsRefit(captions: current, slots: slots) else { return }
+        guard let aiCall else { return }
+        let resolved = resolveAIModel()
+        guard ScratchpadAIModel.isUsable(resolved) else { return }
+
+        let ticket = state.begin(.asking)
+        status = "Refitting the captions to \(template.name)…"
+        startTimeout(ticket: ticket,
+                     after: MemeGenerationState.downloadTimeout,
+                     message: "Used \(template.name). The captions weren't refitted — edit them by hand.")
+
+        let payload = MemeAI.refitUserPayload(
+            description: description, captions: current, slots: slots,
+            templateName: template.name)
+
+        do {
+            let raw = try await aiCall(MemeAI.refitPrompt, payload, resolved)
+            guard !isCancelled, state.accepts(ticket: ticket) else {
+                finish(ticket, status: status)
+                return
+            }
+            guard let captions = MemeAI.parseRefit(raw, slots: slots) else {
+                // Nothing usable came back. Keep what the user has and say nothing
+                // about the failed nicety.
+                finish(ticket, status: statusLine(isNewGeneration: false))
+                return
+            }
+            seedBoxes(captions: captions, slots: slots)
+            redraw()
+            finish(ticket, status: statusLine(isNewGeneration: false))
+        } catch {
+            guard !isCancelled, state.accepts(ticket: ticket) else {
+                finish(ticket, status: status)
+                return
+            }
+            finish(ticket, status: statusLine(isNewGeneration: false))
         }
     }
 
@@ -804,6 +959,9 @@ final class MemeGeneratorModel: ObservableObject {
 
     func deleteBox(id: UUID) {
         boxes.removeAll { $0.id == id }
+        // Keep the seeded set in step with what's actually on the canvas, so it can't
+        // accumulate ids for boxes that no longer exist.
+        seededBoxIDs.remove(id)
         if selectedBoxID == id { selectedBoxID = boxes.first?.id }
         redraw()
     }

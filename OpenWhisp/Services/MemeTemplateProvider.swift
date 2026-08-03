@@ -146,13 +146,18 @@ public enum MemeTemplateCatalog {
     /// catalog order IS the popularity ranking, so it is the right thing to fall back
     /// on when two templates match a query equally well.
     public static func ranked(
-        _ query: String, in catalog: [MemeTemplate], limit: Int
+        _ query: String, in catalog: [MemeTemplate], limit: Int,
+        affinity: MemeTemplateAffinity = MemeTemplateAffinity()
     ) -> [Match] {
         let normalizedQuery = MemeTemplateMatcher.normalize(query)
         let cap = max(0, limit)
         guard cap > 0 else { return [] }
         // An empty query isn't a failed search — it's "no filter applied", which the
-        // Browse grid renders as the whole corpus in popularity order.
+        // Browse grid renders as the whole corpus in popularity order. Note the
+        // affinity boost deliberately does NOT reorder this: an unfiltered Browse grid
+        // is the corpus in popularity order, and quietly floating the user's favourites
+        // to the top of it would make the grid's order mean two different things
+        // depending on whether the search box happened to be empty.
         guard !normalizedQuery.isEmpty else {
             return catalog.prefix(cap).map { Match(template: $0, score: 0) }
         }
@@ -175,8 +180,15 @@ public enum MemeTemplateCatalog {
         for (index, template) in catalog.enumerated() {
             let value = score(queryTokens: queryTokens, normalizedQuery: normalizedQuery,
                               template: template)
+            // The affinity boost applies ONLY to a template that already matched (v6).
+            // This guard is the whole safety property: a learned preference can reorder
+            // things the query already found, and can never conjure a hit for a query
+            // that found nothing. "No template matches" therefore stays reachable no
+            // matter how much the store has learned.
             guard value > 0 else { continue }
-            scored.append(Scored(index: index, template: template, score: value))
+            scored.append(Scored(
+                index: index, template: template,
+                score: value + affinity.boost(for: template.id)))
         }
 
         scored.sort { left, right in
@@ -265,13 +277,22 @@ public enum MemeTemplateCatalog {
     /// Falls back to popularity order when the description matches nothing — the model
     /// still deserves a corpus to choose from, and the UI already states plainly when
     /// nothing matched.
+    ///
+    /// ## v6 — the user's own picks tilt this
+    ///
+    /// `affinity` adds a small, capped boost to templates the user has previously
+    /// chosen over the model's first suggestion. It is applied inside `ranked`, only to
+    /// templates that already matched the description, so it changes the ORDER of the
+    /// shortlist and never its membership rule. See `MemeTemplateAffinity` for the
+    /// bounds and why each exists.
     public static func prefilter(
-        for description: String, in catalog: [MemeTemplate], limit: Int
+        for description: String, in catalog: [MemeTemplate], limit: Int,
+        affinity: MemeTemplateAffinity = MemeTemplateAffinity()
     ) -> [MemeTemplate] {
         let cap = max(0, limit)
         guard cap > 0 else { return [] }
 
-        let hits = ranked(description, in: catalog, limit: cap).map(\.template)
+        let hits = ranked(description, in: catalog, limit: cap, affinity: affinity).map(\.template)
         guard !hits.isEmpty else { return Array(catalog.prefix(cap)) }
 
         // Top up with popular templates when the query was narrow, so the model always
@@ -318,5 +339,18 @@ public enum MemeTemplateCatalog {
             guard !keywords.isEmpty else { return template.name }
             return "\(template.name) (\(keywords.prefix(6).joined(separator: ", ")))"
         }
+    }
+
+    /// The caption-slot count per shortlisted template, positionally aligned with
+    /// `promptLines` and `promptNames` (v6).
+    ///
+    /// Three parallel arrays rather than one array of triples because the call site
+    /// hands each to a different consumer (the prompt gets lines, the resolver gets
+    /// names, the annotator gets slots) and they must all be sliced by the same limit.
+    /// `slotAnnotatedLines` is the only thing that zips two of them, and it tolerates a
+    /// short `slots` array by defaulting — so a future limit mismatch degrades to "2
+    /// captions" rather than crashing.
+    public static func promptSlots(_ catalog: [MemeTemplate], limit: Int) -> [Int] {
+        catalog.prefix(max(0, limit)).map(\.captionSlots)
     }
 }

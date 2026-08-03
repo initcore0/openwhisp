@@ -31,9 +31,32 @@ public struct MemeTemplate: Equatable, Sendable, Codable, Identifiable {
     /// multi-lingual corpus findable — see `MemeTemplateCatalog.search`.
     public let keywords: [String]
 
+    /// How many caption slots this template actually has (v6).
+    ///
+    /// ## Why this exists
+    ///
+    /// Up to v5 every meme was captioned top-and-bottom, because that is what the LLM
+    /// was asked for and what `seedBoxes` produced. That is *wrong for most of the
+    /// corpus*: Drake is two SIDE labels, Distracted Boyfriend is three, Expanding
+    /// Brain is four. Rendering a four-panel meme with a top line and a bottom line
+    /// isn't a stylistic choice, it's a broken meme — the joke lives in the per-panel
+    /// captions.
+    ///
+    /// Both remote sources carried this all along and v5 discarded it: memegen's
+    /// `/templates` ships `lines`, imgflip's `get_memes` ships `box_count`. Now they
+    /// are decoded into this field, the LLM is asked for exactly this many captions,
+    /// and `MemeCaptionLayout.seedBoxes(slots:)` lays out that many boxes.
+    ///
+    /// Defaults to `MemeCaptionSlots.default` (2) so an older cache, a user-library
+    /// import, or a source that doesn't report it still behaves exactly as it did.
+    /// Clamped at construction — see `MemeCaptionSlots.clamp` — because a wire value
+    /// of 0 (or 40) must not become 0 caption boxes (or 40).
+    public let captionSlots: Int
+
     public init(
         id: String, name: String, url: String, width: Int, height: Int,
-        source: MemeTemplateSource = .imgflip, keywords: [String] = []
+        source: MemeTemplateSource = .imgflip, keywords: [String] = [],
+        captionSlots: Int = MemeCaptionSlots.default
     ) {
         self.id = id
         self.name = name
@@ -42,6 +65,7 @@ public struct MemeTemplate: Equatable, Sendable, Codable, Identifiable {
         self.height = height
         self.source = source
         self.keywords = keywords
+        self.captionSlots = MemeCaptionSlots.clamp(captionSlots)
     }
 
     /// Decoding tolerates a missing `source`/`keywords` so a catalog cache written by
@@ -57,6 +81,41 @@ public struct MemeTemplate: Equatable, Sendable, Codable, Identifiable {
         height = (try? c.decode(Int.self, forKey: .height)) ?? 0
         source = (try? c.decode(MemeTemplateSource.self, forKey: .source)) ?? .imgflip
         keywords = (try? c.decode([String].self, forKey: .keywords)) ?? []
+        // A cache written by a v5 build has no `captionSlots`. Defaulting rather than
+        // failing keeps the offline path working across the upgrade — the cache is a
+        // performance artifact, and discarding it would make the first launch after an
+        // update look like the offline bug this plugin already fixed once.
+        captionSlots = MemeCaptionSlots.clamp(
+            (try? c.decode(Int.self, forKey: .captionSlots)) ?? MemeCaptionSlots.default)
+    }
+}
+
+/// How many caption slots a template has, and what a sane value looks like (v6).
+///
+/// A tiny namespace rather than loose constants because the clamp is a RULE with a
+/// reason, applied at three boundaries (imgflip's `box_count`, memegen's `lines`, and
+/// the cache decoder) and it must agree at all three.
+public enum MemeCaptionSlots {
+
+    /// What a template gets when its source doesn't say — the classic top/bottom meme.
+    ///
+    /// Two, because that is what every caption path did before slots existed: a
+    /// template with unknown structure must degrade to v5's behaviour, not to a guess.
+    public static let `default` = 2
+
+    /// The floor. A template with zero caption slots would seed zero boxes and give
+    /// the user a picture with no way to type on it — the source reporting `0` (or a
+    /// negative, or a corrupt cache) must never produce that dead end.
+    public static let minimum = 1
+
+    /// The ceiling. memegen reports up to 8 `lines`; the cap exists so a wire value
+    /// nobody anticipated can't seed a screenful of boxes the user has to delete by
+    /// hand. Real templates top out at 8, so this clips nothing that exists today.
+    public static let maximum = 8
+
+    /// Bring any reported count into range.
+    public static func clamp(_ raw: Int) -> Int {
+        min(max(raw, minimum), maximum)
     }
 }
 
@@ -72,6 +131,27 @@ public struct MemeTemplateCatalogResponse: Decodable, Sendable {
         public let url: String
         public let width: Int
         public let height: Int
+        /// How many caption boxes the template really has (v6). imgflip has shipped
+        /// this on `get_memes` all along and v5 threw it away, which is why Distracted
+        /// Boyfriend (3) and Expanding Brain (4) were captioned top-and-bottom.
+        /// Optional so a response missing it decodes to the 2-slot default rather than
+        /// failing the whole catalog.
+        public let boxCount: Int?
+
+        private enum CodingKeys: String, CodingKey {
+            case id, name, url, width, height
+            case boxCount = "box_count"
+        }
+
+        public init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            id = try c.decode(String.self, forKey: .id)
+            name = try c.decode(String.self, forKey: .name)
+            url = try c.decode(String.self, forKey: .url)
+            width = (try? c.decode(Int.self, forKey: .width)) ?? 0
+            height = (try? c.decode(Int.self, forKey: .height)) ?? 0
+            boxCount = try? c.decode(Int.self, forKey: .boxCount)
+        }
     }
     public struct Payload: Decodable, Sendable {
         public let memes: [Wire]
@@ -87,7 +167,8 @@ public struct MemeTemplateCatalogResponse: Decodable, Sendable {
                 id: MemeTemplateCatalog.qualifiedID(.imgflip, wire.id),
                 name: wire.name, url: wire.url,
                 width: wire.width, height: wire.height,
-                source: .imgflip, keywords: [])
+                source: .imgflip, keywords: [],
+                captionSlots: wire.boxCount ?? MemeCaptionSlots.default)
         }
     }
 }
@@ -111,8 +192,17 @@ public struct MemegenTemplateResponse: Decodable, Sendable {
         public let blank: String
         /// Alternate names — the field that makes a merged corpus searchable.
         public let keywords: [String]?
+        /// How many caption lines the template takes (v6).
+        ///
+        /// memegen's `/templates` reports this per template — verified against the live
+        /// API: of its 212 templates, 166 are 2-line, 23 are 3-line, 7 are 4-line, and
+        /// the rest spread over 1/5/6/8. It ships the COUNT only; there is no box
+        /// geometry anywhere in the payload (the fields are `lines`, `overlays`,
+        /// `styles`, `blank`, `example`, `source`, `keywords`), so positions have to be
+        /// synthesized — see `MemeCaptionLayout.slotCenters`.
+        public let lines: Int?
 
-        private enum CodingKeys: String, CodingKey { case id, name, blank, keywords }
+        private enum CodingKeys: String, CodingKey { case id, name, blank, keywords, lines }
 
         public init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -120,6 +210,7 @@ public struct MemegenTemplateResponse: Decodable, Sendable {
             name = try c.decode(String.self, forKey: .name)
             blank = try c.decode(String.self, forKey: .blank)
             keywords = try? c.decode([String].self, forKey: .keywords)
+            lines = try? c.decode(Int.self, forKey: .lines)
         }
     }
 
@@ -141,7 +232,8 @@ public struct MemegenTemplateResponse: Decodable, Sendable {
                 // decoded NSImage's real pixel size), so they stay honest zeros
                 // rather than invented defaults.
                 width: 0, height: 0,
-                source: .memegen, keywords: wire.keywords ?? [])
+                source: .memegen, keywords: wire.keywords ?? [],
+                captionSlots: wire.lines ?? MemeCaptionSlots.default)
         }
     }
 }
