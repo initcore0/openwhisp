@@ -1,8 +1,319 @@
 {
   "$schema": "./changelog.schema.md",
   "project": "OpenWhisp",
-  "generated": "2026-08-01",
+  "generated": "2026-08-04",
   "releases": [
+    {
+      "id": "2026-08",
+      "title": "August 2026",
+      "date": "2026-08-04",
+      "summary": "The headline: OpenWhisp has plugins — optional add-ons with their own window, their own settings, and their own spoken commands, every one of them off until you switch it on. The first plugin turns a spoken description into a finished meme. Say “create a meme about the deploy that broke everything” and it picks a template from ~300+ (or one of your own imported images), writes captions that fit that template's layout — a four-panel meme gets four captions — renders it on your Mac, and opens an editor where you can drag the caption boxes, change fonts and sizes, and export a PNG. It is fully hands-free from refine: select text anywhere and say “create a meme based on that”, or refine with nothing selected and say the whole thing out loud, in English or Russian. The rendering is local — only the blank template image is fetched, and templates you import yourself need no network at all. Also in this release: the Scratchpad became a real editor — a proper note list with titles, dates and snippets, Markdown preview and .md/.txt export, live search with #tags, ⌘F find-in-note with highlighted matches, and two AI actions (“Format as Markdown”, undoable with ⌘Z, and “Summarize” into a new note) with their own model override; transcribed files and meetings open in it in one click. Model loading is now visible instead of silently eating your first dictation, the stream overlay can count spoken phrases live for streamers, vocabulary substitutions finally fire on translate sessions, Russian stops being detected as Ukrainian, and ⌘V works everywhere — the app had never installed a main menu, so paste was dead in every window since day one. Everything still runs on your Mac.",
+      "stats": {
+        "changesShipped": 18,
+        "newFeatures": 9,
+        "testsPassing": 2685,
+        "onDevicePercent": 100,
+        "newFeaturesLive": 9,
+        "newFeaturesCorePending": 0
+      },
+      "entries": [
+        {
+          "category": "feature",
+          "headline": "OpenWhisp has plugins — optional add-ons, off until you turn one on",
+          "body": "A plugin contributes its own window, its own section in Settings, and — if it asks for them — a ⌘-shortcut in the menu bar and spoken commands that route mid-dictation. Plugins ship with the app but none of them run until you enable it yourself in Settings › Plugins, one at a time. Each one declares up front which hosts it contacts, and the pane prints that list verbatim next to its toggle, so a plugin that touches the network can't do it quietly. A plugin that wants your clipboard has to declare that too, and the app simply doesn't read the pasteboard for one that didn't.",
+          "tickets": [
+            "MAK-100"
+          ],
+          "prs": [
+            244
+          ],
+          "howTo": {
+            "availability": "live",
+            "summary": "Settings › Plugins, then switch on the one you want.",
+            "steps": [
+              "Open Settings › Plugins. Every bundled plugin is listed with its description, the hosts it contacts, and its toggle.",
+              "Switch one on. Nothing is enabled by default — an untouched install runs no plugin code.",
+              "The menu bar grows a Plugins submenu (it's absent entirely when nothing is enabled), and the plugin's window opens from there or from its ⌘-shortcut.",
+              "Switch it back off and its window, its shortcut, and its voice commands all go with it."
+            ],
+            "note": "The network-hosts line is a disclosure, not a sandbox — it tells you truthfully what a plugin is built to contact. Bundled plugins are reviewed in the open repo; a plugin directory dropped into Application Support is listed but can't execute yet, and a user-writable directory can never shadow a reviewed plugin. Out-of-process plugins with real isolation are the next step; loadable dylibs stay permanently rejected. See docs/PLUGINS.md."
+          }
+        },
+        {
+          "category": "feature",
+          "headline": "Say what you want and get a meme — the first plugin, rendered on your Mac",
+          "body": "Dictate a description and the Meme Generator picks a template, writes the captions, and renders the image locally. It searches ~300+ templates from Imgflip and memegen.link — plus any images you import yourself — and offers ranked candidates rather than committing to one guess, so a wrong pick is one click from the right one. Captions are written per template: a four-panel meme gets four captions in the right slots. When you dictate an explicit list — “expanding brain: typing, dictating, refining, shipping” — those are your words verbatim in the panels, not the model's paraphrase of them. Only the blank template image is fetched; your text is never sent anywhere, and the captioning runs on the same local model the rest of the app uses.",
+          "tickets": [
+            "MAK-100"
+          ],
+          "prs": [
+            244
+          ],
+          "howTo": {
+            "availability": "live",
+            "summary": "Enable Meme Generator in Settings › Plugins, then ⌘M and describe the meme.",
+            "steps": [
+              "Settings › Plugins → switch on “Meme Generator”.",
+              "Open it with ⌘M from the menu bar's Plugins submenu.",
+              "Describe the meme, or dictate into it. You get ranked template candidates — take the top one or pick another.",
+              "For a fixed layout, say the panels as a list: “expanding brain: typing, dictating, refining, shipping” puts those exact four lines in the four panels.",
+              "Drag the caption boxes to reposition them, change the font and size, then export a PNG or share it."
+            ],
+            "note": "The preview is the export — what you arrange is exactly what gets written out. Template browsing and the blank images come from api.imgflip.com, i.imgflip.com and api.memegen.link, disclosed on the plugin's row; memegen.link also offers server-side captioning by URL and this plugin deliberately doesn't use it. Templates you import yourself work fully offline and in any language or culture the bundled catalogs don't cover."
+          }
+        },
+        {
+          "category": "feature",
+          "headline": "Hands-free memes: “create a meme based on that”, straight from refine",
+          "body": "You never have to open the plugin window to use it. With refine armed, an instruction that starts with a trigger phrase is handed to the plugin instead of the refine model — so you can select a sentence in any app and say “create a meme based on that” and the meme is built from your selection, or refine with nothing selected and say the whole description out loud. English and Russian phrases both ship. Matching is deliberately strict, because a match redirects a dictation away from your editor: prefix only, whole words, no fuzzy matching — “summarize this, then create a meme” stays an ordinary refine, and “create a memo about Q3” is never mistaken for one.",
+          "tickets": [
+            "MAK-100"
+          ],
+          "prs": [
+            244
+          ],
+          "howTo": {
+            "availability": "live",
+            "summary": "With Meme Generator enabled, tap Refine and start the instruction with “create a meme”.",
+            "say": [
+              "“create a meme based on that” — with text selected anywhere, builds the meme from your selection",
+              "“create a meme about the deploy that broke everything” — nothing selected, the description is what you just said",
+              "“create a meme expanding brain: typing, dictating, refining, shipping” — your four items, verbatim, in the four panels",
+              "“сделай мем …” / “создай мем …” — the same, in Russian"
+            ],
+            "steps": [
+              "Enable Meme Generator in Settings › Plugins.",
+              "Select text in any app (or select nothing), then tap Refine as usual.",
+              "Say an instruction beginning with “create a meme”, “make a meme” or “generate a meme”.",
+              "The refine session ends without inserting anything into your document — the plugin window is the output."
+            ],
+            "note": "Nothing is typed into your app on a routed command: the meme window is the destination, and the refine model never sees the instruction. If the plugin is switched off, the phrase is treated as an ordinary refine and a hint explains the missing window. Any plugin can declare its own trigger phrases in any language."
+          }
+        },
+        {
+          "category": "feature",
+          "headline": "The Scratchpad is a real editor now — list, Markdown preview, export",
+          "body": "The pad's plain multi-note list became a proper sidebar: every note shows a title, a relative date, and a snippet of its content, with a toolbar and keyboard shortcuts for New (⌘N), Delete, Preview (⌘⇧P) and Export (⌘E). ⌘⇧P swaps the editor for a rendered Markdown view of the same note — headings, lists, bold, code blocks, quotes — and ⌘E saves it as .md or .txt, or copies it as Markdown. Notes are Markdown source, so exporting one is a verbatim passthrough rather than a lossy round-trip.",
+          "tickets": [
+            "MAK-95",
+            "MAK-96"
+          ],
+          "prs": [
+            239
+          ],
+          "howTo": {
+            "availability": "live",
+            "summary": "Open the Scratchpad from the menu bar, then use the new toolbar — Preview (⌘⇧P) and Export (⌘E).",
+            "steps": [
+              "Open the Scratchpad from the menu bar or via openwhisp://scratchpad.",
+              "The sidebar lists your notes with titles, dates and snippets; ⌘N makes a new one.",
+              "⌘⇧P toggles the rendered Markdown preview; flipping back keeps your editing state.",
+              "⌘E saves the note as Markdown, or use the Export menu for .txt and “Copy as Markdown”."
+            ],
+            "note": "The renderer covers a practical Markdown subset and is built to never lose or reorder content — anything it doesn't recognize renders as plain text. A note in Cyrillic (or any non-Latin script) exports with a filename in that script rather than an empty one. The scratchpad.json format is unchanged."
+          }
+        },
+        {
+          "category": "feature",
+          "headline": "Find things in the Scratchpad — live search, #tags, and ⌘F inside a note",
+          "body": "Search filters the note list as you type, matching the full body rather than just the title, because the sentence you remember is usually buried in a long dictation. Tags are derived from the text itself — write #work in a note and it becomes a filter, with a menu listing every tag and its note count, and chips on each row. Inside a note, ⌘F opens the standard macOS find bar with incremental highlighting and Enter/⇧Enter navigation, and matches for the list-wide query are painted over the open note so you can see where they are in a long meeting transcript.",
+          "tickets": [
+            "MAK-97"
+          ],
+          "prs": [
+            239,
+            240
+          ],
+          "howTo": {
+            "availability": "live",
+            "summary": "⌘F finds inside the open note; ⌘⇧F filters across all notes; type #tags anywhere in a note.",
+            "steps": [
+              "Type in the search field (⌘⇧F) to filter the note list by any word in the body.",
+              "Write a #tag anywhere in a note — it's picked up automatically and appears in the tag menu with a count.",
+              "Combine a tag and a query; they narrow together. The X button clears both.",
+              "Inside a note, ⌘F opens the native find bar for incremental search within that note."
+            ],
+            "note": "Tags are recomputed from the text, never stored, so they can't drift out of sync with what the note says — and “#1”, “issue#5” and URL fragments deliberately don't count as tags. Search is correctly case-insensitive in non-Latin scripts. If the note you're editing filters out of the list, the editor keeps showing it rather than silently moving you somewhere else."
+          }
+        },
+        {
+          "category": "feature",
+          "headline": "Two AI actions in the Scratchpad — reformat in place, or summarize into a new note",
+          "body": "“Format as Markdown” restructures a messy dictation into headings and lists without changing what it says, replacing the note's text in place — as a single undo step, so ⌘Z gives you the original back and the Edit menu reads “Undo Format as Markdown”. “Summarize” is non-destructive: the summary becomes a new note and the source is left alone. The pad gets its own model override, so you can point these at a different (or larger) model than your dictation cleanup uses, without touching the cleanup setting.",
+          "tickets": [
+            "MAK-99"
+          ],
+          "prs": [
+            241
+          ],
+          "howTo": {
+            "availability": "live",
+            "summary": "The wand menu in the Scratchpad toolbar — Format as Markdown, or Summarize.",
+            "steps": [
+              "Open a note in the Scratchpad and click the wand menu in the toolbar.",
+              "“Format as Markdown” rewrites the note in place — ⌘Z undoes the whole transform in one step.",
+              "“Summarize” leaves the note untouched and creates “Summary — <note title>” alongside it.",
+              "Use the gear popover in the pad to pick a different provider/model for these actions; leaving it alone uses your normal cleanup model."
+            ],
+            "note": "The reformat is guarded: if the result drops too much of your content, translates it into another language, or comes back as a refusal, the note is kept as-is and the status line says why. A result can only ever land in the note that asked for it — switching notes, closing the pad, or cancelling invalidates delivery, so a slow reply can't paint into the wrong note."
+          }
+        },
+        {
+          "category": "feature",
+          "headline": "Open a transcribed file in the Scratchpad",
+          "body": "Batch file transcription's results were a read-only three-line preview. A finished job now opens as an editable Scratchpad note in one click — the file name, date and duration as a header, then the transcript — matching what meeting transcripts already do.",
+          "tickets": [
+            "MAK-98"
+          ],
+          "prs": [
+            241
+          ],
+          "howTo": {
+            "availability": "live",
+            "summary": "Settings › Files → “Open in Scratchpad” on any completed job.",
+            "steps": [
+              "Transcribe an audio or video file as usual.",
+              "On a completed row, click “Open in Scratchpad” (also in the row's menu).",
+              "The transcript opens as an editable note you can clean up, annotate, or dictate into."
+            ],
+            "note": "Each export makes a fresh note rather than overwriting an earlier one, so re-exporting can never clobber edits you've already made. Jobs that finished with no text don't offer the button."
+          }
+        },
+        {
+          "category": "feature",
+          "headline": "You can see the model loading now — no more dead first dictation",
+          "body": "The first dictation after a launch or an update waited several seconds while the speech model loaded, with nothing on screen saying so — pressing the hotkey in that window simply felt broken. The menu bar now shows “Loading …” or a download percentage while the selected engine is working, pressing the hotkey early brings up the overlay with “Loading model…” instead of nothing, and the overlay no longer claims “Listening…” over a microphone that isn't live yet. When the model is ready the row disappears, so a warm app shows no clutter.",
+          "tickets": [
+            "MAK-94"
+          ],
+          "prs": [
+            237
+          ],
+          "howTo": {
+            "availability": "live",
+            "summary": "Nothing to turn on — press the hotkey right after launch and the overlay tells you the truth.",
+            "steps": [
+              "Launch OpenWhisp and open the menu bar during the first few seconds: a disabled row reports the model downloading or loading.",
+              "Press your dictation hotkey immediately — the overlay appears and says “Loading model…”, then starts listening once the model is genuinely ready.",
+              "If a load fails, the menu row says why instead of leaving you guessing."
+            ],
+            "note": "Downloading and loading are now reported separately — the load is the wait you pay on every launch after the first. A genuinely wedged load errors out loudly rather than spinning forever."
+          }
+        },
+        {
+          "category": "feature",
+          "headline": "A live voice-command counter on the stream overlay",
+          "body": "For streamers who want a widget rather than subtitles: set a trigger phrase and the overlay keeps a running count of how many times you say it, ticking up live on the same local caption page you already point OBS at. Captions and the counter toggle independently, so you can run the counter with subtitles switched off.",
+          "tickets": [],
+          "prs": [
+            232
+          ],
+          "howTo": {
+            "availability": "live",
+            "summary": "Settings › Stream Overlay → set a counter phrase, and add the overlay URL to OBS as a Browser source.",
+            "steps": [
+              "Turn on the Stream Overlay and add its URL to OBS (or any streaming app) as a Browser source.",
+              "Set the phrase you want counted.",
+              "Say it while streaming — the count updates live on the overlay.",
+              "Turn captions off if you only want the counter; the two are independent."
+            ],
+            "note": "It's a local web server on loopback — the page is served from your own Mac and nothing is uploaded."
+          }
+        },
+        {
+          "category": "fix",
+          "headline": "⌘V works again — everywhere in the app",
+          "body": "Paste was dead in every OpenWhisp window, and had been since the app's first day. As a menu-bar accessory the app never installed a main menu, and macOS routes the standard edit shortcuts through exactly that menu — so ⌘V, ⌘C, ⌘X, ⌘A and ⌘Z did nothing in the Scratchpad, in Settings text fields, everywhere. The app now installs the standard menu and all of them work.",
+          "tickets": [],
+          "prs": [
+            242
+          ]
+        },
+        {
+          "category": "fix",
+          "headline": "Your vocabulary rules now work when you're translating",
+          "body": "Substitution rules key on what the engine actually heard, in the language you spoke — “пара кит” → “parakeet”. On a translating session they never fired: the text was translated first and the rules then ran against English, by which point the mishearing had already been mangled into something no source-language rule could match. Substitutions now run on the raw transcript before translation, so the corrected words are what gets translated — and if translation fails you still get the corrected transcript rather than the raw one.",
+          "tickets": [],
+          "prs": [
+            238
+          ]
+        },
+        {
+          "category": "fix",
+          "headline": "Russian is no longer auto-detected as Ukrainian",
+          "body": "With Auto Detect on, short Cyrillic fragments were often guessed as Ukrainian — a language pair most Russian speakers had never downloaded — so translation reported a missing download that wasn't really the problem. Detection now prefers the best-confidence language whose pair you actually have installed.",
+          "tickets": [],
+          "prs": [
+            235,
+            238
+          ]
+        },
+        {
+          "category": "fix",
+          "headline": "The Scratchpad no longer saves everything on every keystroke",
+          "body": "Typing in a note used to re-encode every note's full text to disk and rebuild the whole list on each individual keystroke, which got slower the more notes you had. Edits are now coalesced and written on a background queue, while structural changes — creating or deleting a note — still save immediately. A pending write can never land after a delete and resurrect a note you removed, and everything is flushed when the pad closes or the app quits.",
+          "tickets": [
+            "MAK-95"
+          ],
+          "prs": [
+            239
+          ]
+        },
+        {
+          "category": "fix",
+          "headline": "“Model: Not checked” no longer sits in the menu",
+          "body": "The menu bar could report a model as “Not checked” indefinitely, which told you nothing actionable. Model state is now derived from what the selected engine is actually doing — downloading, loading, ready, or failed with a reason.",
+          "tickets": [
+            "MAK-94"
+          ],
+          "prs": [
+            237
+          ]
+        },
+        {
+          "category": "fix",
+          "headline": "A brand-new note no longer says it was updated “in 0s”",
+          "body": "A freshly created note's timestamp could land a rounding hair in the future, which the relative date formatter rendered as the nonsensical “in 0s” in the sidebar. Anything under a minute old now reads “now”.",
+          "tickets": [],
+          "prs": [
+            240
+          ]
+        },
+        {
+          "category": "improvement",
+          "headline": "Plugins are built to be inspectable, and to fail visibly",
+          "body": "Every decision a plugin makes — which template matches, which plugin claims a spoken phrase, which shortcut it's granted, what it's allowed to receive — lives in the tested core rather than in window code, so it's covered by the same suite as the rest of the app. The build pipeline verifies the shipped binary actually contains the plugins, because plugins live outside the app's main source glob: a broken source list would otherwise produce an app that builds, runs, and simply has an empty Plugins pane with no error anywhere. CI now builds both configurations — with plugins and without.",
+          "tickets": [
+            "MAK-100"
+          ],
+          "prs": [
+            244
+          ]
+        },
+        {
+          "category": "improvement",
+          "headline": "Developer probes are compiled out of the app you install",
+          "body": "The meme plugin's tracing and its launch-triggered debug hooks are now behind the same instrumentation flag the LLM bench already used, so they don't exist in a shipped build. An environment variable that opens a window and drives a generation is a reasonable debugging tool and a poor thing to leave reachable in a signed app holding microphone and Accessibility permissions.",
+          "tickets": [
+            "MAK-100"
+          ],
+          "prs": [
+            244
+          ]
+        },
+        {
+          "category": "improvement",
+          "headline": "The plugin system is documented, including what it can't do yet",
+          "body": "docs/PLUGINS.md is the reference: the architecture, the full manifest schema, how to write a plugin today, and — deliberately — the honest limits. The network-hosts list is a disclosure and not a sandbox; the clipboard gate is real at the host but can't bind an in-process plugin; real enforcement only arrives at a process boundary. The route to installing a plugin without rebuilding the app is written down as a committed plan rather than left as an open question.",
+          "tickets": [
+            "MAK-100"
+          ],
+          "prs": [
+            244
+          ]
+        }
+      ]
+    },
     {
       "id": "2026-07",
       "title": "July 2026",

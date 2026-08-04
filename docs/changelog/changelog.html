@@ -245,15 +245,15 @@
 
 <div class="wrap">
   <header>
-    <p class="eyebrow">Shipped · July 2026</p>
-    <h1>Sixty-seven ways OpenWhisp got<br><span class="accent">sharper, faster, and more yours.</span></h1>
-    <p class="lede">The headline: dictate in one language and get another — on-device translation, powered by Apple's own Translation framework, now works with every transcription engine (including the default), with an experimental live preview so you can watch it happen while you speak. macOS 15 is the new minimum. Also in this release: live subtitles for your stream — OpenWhisp now serves a caption overlay you can drop into OBS or any streaming software, and with a translate-capable engine those captions can come out in English while you speak another language. Everything still runs on your Mac. Also in this release: Parakeet — our fast, on-device realtime streaming engine — is now the default on a fresh install. Alongside it, a big batch of new features, fixes, and under-the-hood hardening, all landed on main, all covered by tests, all on your machine. New this release also includes built-in auto-update and a 28-fix stability sweep. The latest additions: per-app refine tone (casual in Slack, formal in Mail, verbatim in your terminal), a fifth transcription engine — Apple's SpeechAnalyzer on macOS 26 — and agent dictation that now knows your project's branch and file names and lets you tap to finish. Among the features: meeting mode that records a call and gives you an on-device transcript plus a local Markdown summary — now with Me/Them speaker attribution and a live talking indicator, and with a separate, optionally larger summarization model you can point at your own server — a floating Scratchpad to dictate into with no target app, quiet-dictation mode for whispering into your mic, opt-in on-device audio retention with one-click re-transcription and an auto-cleanup policy, a fully-remappable dictation trigger with a record-a-shortcut field, an AppleScript keystroke insert method and mouse-button dictation triggers, a local Usage Insights dashboard, opt-in screen-context awareness that biases transcription toward the names already on screen, batch file transcription with watch folders, hands-free (tap-to-lock) dictation, adjustable AI cleanup, voice editing, a self-learning dictionary, rich local formatting, spoken-filename @-mentions for code editors, agent-CLI cleanup, output targets that route a dictation to a file/Shortcut/webhook, first-class Modes you can invoke by name, a Rules engine that runs your own actions when a dictation finishes, and an openwhisp:// URL scheme so Raycast, Alfred, or any launcher can drive dictation.</p>
+    <p class="eyebrow">Shipped · August 2026</p>
+    <h1>Plugins arrive — and OpenWhisp<br><span class="accent">makes memes when you ask.</span></h1>
+    <p class="lede">The headline: OpenWhisp has plugins — optional add-ons with their own window, their own settings, and their own spoken commands, every one of them off until you switch it on. The first plugin turns a spoken description into a finished meme. Say “create a meme about the deploy that broke everything” and it picks a template from ~300+ (or one of your own imported images), writes captions that fit that template's layout — a four-panel meme gets four captions — renders it on your Mac, and opens an editor where you can drag the caption boxes, change fonts and sizes, and export a PNG. It is fully hands-free from refine: select text anywhere and say “create a meme based on that”, or refine with nothing selected and say the whole thing out loud, in English or Russian. The rendering is local — only the blank template image is fetched, and templates you import yourself need no network at all. Also in this release: the Scratchpad became a real editor — a proper note list with titles, dates and snippets, Markdown preview and .md/.txt export, live search with #tags, ⌘F find-in-note with highlighted matches, and two AI actions (“Format as Markdown”, undoable with ⌘Z, and “Summarize” into a new note) with their own model override; transcribed files and meetings open in it in one click. Model loading is now visible instead of silently eating your first dictation, the stream overlay can count spoken phrases live for streamers, vocabulary substitutions finally fire on translate sessions, Russian stops being detected as Ukrainian, and ⌘V works everywhere — the app had never installed a main menu, so paste was dead in every window since day one. Everything still runs on your Mac.</p>
   </header>
 
   <div class="stats">
-    <div class="stat"><div class="n">67</div><div class="k">changes shipped</div></div>
-    <div class="stat"><div class="n">40<small> live</small></div><div class="k">new features</div></div>
-    <div class="stat"><div class="n">2009</div><div class="k">tests passing</div></div>
+    <div class="stat"><div class="n">18</div><div class="k">changes shipped</div></div>
+    <div class="stat"><div class="n">9<small> live</small></div><div class="k">new features</div></div>
+    <div class="stat"><div class="n">2685</div><div class="k">tests passing</div></div>
     <div class="stat"><div class="n">100<small>%</small></div><div class="k">on-device</div></div>
   </div>
 
@@ -262,31 +262,31 @@
     <div class="sec-head">
       <span class="dot feature"></span>
       <h2>New features</h2>
-      <span class="count">40 live</span>
+      <span class="count">9 live</span>
     </div>
     <ul class="entries">
       <li>
         <details class="entry">
           <summary>
             <div class="sum-left">
-              <h3>Translate as you dictate — on-device, in any app, with no cloud</h3>
-              <p>Speak Russian, Spanish, French, or any supported language and get English text out — translated entirely on your Mac by Apple's own Translation framework. Turn on “Translate to English” in Settings › Dictation, download the language pair once, and every dictation lands translated. It works with whichever transcription engine you use, including Parakeet, because OpenWhisp translates the text rather than asking the speech engine to do it. The rule underneath: if translation can't run for any reason, you get your original words — never nothing.</p>
+              <h3>OpenWhisp has plugins — optional add-ons, off until you turn one on</h3>
+              <p>A plugin contributes its own window, its own section in Settings, and — if it asks for them — a ⌘-shortcut in the menu bar and spoken commands that route mid-dictation. Plugins ship with the app but none of them run until you enable it yourself in Settings › Plugins, one at a time. Each one declares up front which hosts it contacts, and the pane prints that list verbatim next to its toggle, so a plugin that touches the network can't do it quietly. A plugin that wants your clipboard has to declare that too, and the app simply doesn't read the pasteboard for one that didn't.</p>
             </div>
             <div class="sum-right">
               <span class="try">How to use<svg class="howto-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span>
-              <div class="receipts"><span class="tag ticket">MAK-88</span><span class="tag ticket">MAK-89</span><span class="tag pr">#223</span><span class="tag pr">#233</span></div>
+              <div class="receipts"><span class="tag ticket">MAK-100</span><span class="tag pr">#244</span></div>
             </div>
           </summary>
           <div class="guide">
             <span class="avail live">Available now</span>
-            <p class="g-sum">Turn on Translate to English, download the language pair, and dictate.</p>
+            <p class="g-sum">Settings › Plugins, then switch on the one you want.</p>
             <ol>
-              <li>Open Settings › Dictation and switch on “Translate to English”.</li>
-              <li>A row below shows the language pair's status — click through to download it if it isn't on your Mac yet (it takes a few minutes, and the row updates when it's ready).</li>
-              <li>Set your spoken language, or leave it on Auto Detect.</li>
-              <li>Dictate as usual — the text that lands in your app is English.</li>
-              <li>If the language pair isn't downloaded, or translation fails for any reason, your dictation is inserted untranslated rather than lost.</li>
+              <li>Open Settings › Plugins. Every bundled plugin is listed with its description, the hosts it contacts, and its toggle.</li>
+              <li>Switch one on. Nothing is enabled by default — an untouched install runs no plugin code.</li>
+              <li>The menu bar grows a Plugins submenu (it's absent entirely when nothing is enabled), and the plugin's window opens from there or from its ⌘-shortcut.</li>
+              <li>Switch it back off and its window, its shortcut, and its voice commands all go with it.</li>
             </ol>
+            <p class="g-note">The network-hosts line is a disclosure, not a sandbox — it tells you truthfully what a plugin is built to contact. Bundled plugins are reviewed in the open repo; a plugin directory dropped into Application Support is listed but can't execute yet, and a user-writable directory can never shadow a reviewed plugin. Out-of-process plugins with real isolation are the next step; loadable dylibs stay permanently rejected. See docs/PLUGINS.md.</p>
           </div>
         </details>
       </li>
@@ -294,58 +294,25 @@
         <details class="entry">
           <summary>
             <div class="sum-left">
-              <h3>Watch the translation happen — a live preview while you speak</h3>
-              <p>Translation used to be invisible until the moment text landed in your app: the overlay showed your spoken words, and English only appeared at paste. An experimental preview closes that gap — the dictation overlay now shows a running English translation as you talk, with your spoken words kept on a single dimmed line above it. You can judge the translation while you're still speaking instead of discovering it afterwards. It's display-only: what actually gets pasted is unchanged.</p>
+              <h3>Say what you want and get a meme — the first plugin, rendered on your Mac</h3>
+              <p>Dictate a description and the Meme Generator picks a template, writes the captions, and renders the image locally. It searches ~300+ templates from Imgflip and memegen.link — plus any images you import yourself — and offers ranked candidates rather than committing to one guess, so a wrong pick is one click from the right one. Captions are written per template: a four-panel meme gets four captions in the right slots. When you dictate an explicit list — “expanding brain: typing, dictating, refining, shipping” — those are your words verbatim in the panels, not the model's paraphrase of them. Only the blank template image is fetched; your text is never sent anywhere, and the captioning runs on the same local model the rest of the app uses.</p>
             </div>
             <div class="sum-right">
               <span class="try">How to use<svg class="howto-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span>
-              <div class="receipts"><span class="tag pr">#231</span><span class="tag pr">#235</span></div>
+              <div class="receipts"><span class="tag ticket">MAK-100</span><span class="tag pr">#244</span></div>
             </div>
           </summary>
           <div class="guide">
             <span class="avail live">Available now</span>
-            <p class="g-sum">Switch on “Live translation preview (experimental)” under Translate to English.</p>
+            <p class="g-sum">Enable Meme Generator in Settings › Plugins, then ⌘M and describe the meme.</p>
             <ol>
-              <li>Turn on “Translate to English” in Settings › Dictation and make sure the language pair is downloaded.</li>
-              <li>Switch on “Live translation preview (experimental)” just below it. It's off by default — each session it's on does extra on-device translation work while you speak.</li>
-              <li>Dictate: the overlay shows the running English translation, your spoken text stays visible as a single line above, and a quiet “Translating…” indicator appears while a request is in flight.</li>
-              <li>The preview never writes into your document — the pasted result comes from the normal translation path.</li>
+              <li>Settings › Plugins → switch on “Meme Generator”.</li>
+              <li>Open it with ⌘M from the menu bar's Plugins submenu.</li>
+              <li>Describe the meme, or dictate into it. You get ranked template candidates — take the top one or pick another.</li>
+              <li>For a fixed layout, say the panels as a list: “expanding brain: typing, dictating, refining, shipping” puts those exact four lines in the four panels.</li>
+              <li>Drag the caption boxes to reposition them, change the font and size, then export a PNG or share it.</li>
             </ol>
-          </div>
-        </details>
-      </li>
-      <li class="entry">
-        <h3>Open a meeting transcript or summary in the Scratchpad</h3>
-        <p>Meeting transcripts and summaries were read-only. One click now opens either as an editable note in the floating Scratchpad, so you can clean it up, annotate it, or dictate additions straight into it.</p>
-        <div class="receipts"><span class="tag pr">#229</span></div>
-      </li>
-      <li class="entry">
-        <h3>Voice-command counter for the stream overlay</h3>
-        <p>For streamers who want overlay widgets rather than captions: configure a trigger phrase and the overlay keeps a live count of how many times you say it — driven entirely by your voice, rendered on the same local caption page.</p>
-        <div class="receipts"><span class="tag pr">#232</span></div>
-      </li>
-      <li>
-        <details class="entry">
-          <summary>
-            <div class="sum-left">
-              <h3>Live subtitles for your stream — a caption overlay for OBS, Twitch, and any streaming software</h3>
-              <p>OpenWhisp can now put movie-style subtitles on your stream. Turn on the Stream Overlay and it serves a caption page from your own Mac; add that URL to OBS (or any streaming app) as a Browser source and your speech appears as captions over a transparent canvas. Lines word-wrap, older ones scroll off the top, and everything fades out after a stretch of silence. It's a local web server on loopback — nothing is uploaded, and the page is fully self-contained so OBS needs no internet.</p>
-            </div>
-            <div class="sum-right">
-              <span class="try">How to use<svg class="howto-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span>
-              <div class="receipts"><span class="tag pr">#217</span></div>
-            </div>
-          </summary>
-          <div class="guide">
-            <span class="avail live">Available now</span>
-            <p class="g-sum">Enable the overlay, then add its URL to OBS as a Browser source.</p>
-            <ol>
-              <li>Open Settings › More features › Stream Overlay and turn on the overlay server (default port 9280).</li>
-              <li>Set the canvas to match your Browser source — 1920×1080 by default — and style the captions: font, size, text colour, background (including fully transparent), how many subtitle lines stay on screen, characters per line, and how long captions linger after you stop talking.</li>
-              <li>Click Copy URL, then in OBS add a Browser source and paste it, using the same width and height. (Preview in Browser opens it locally first if you want to check.)</li>
-              <li>Hit Start Captions. That runs a hands-free session whose transcript goes only to the overlay — nothing is typed into your apps, and long silences won't end it.</li>
-              <li>Stop Captions, Esc, or your dictation hotkey ends it.</li>
-            </ol>
+            <p class="g-note">The preview is the export — what you arrange is exactly what gets written out. Template browsing and the blank images come from api.imgflip.com, i.imgflip.com and api.memegen.link, disclosed on the plugin's row; memegen.link also offers server-side captioning by URL and this plugin deliberately doesn't use it. Templates you import yourself work fully offline and in any language or culture the bundled catalogs don't cover.</p>
           </div>
         </details>
       </li>
@@ -353,595 +320,33 @@
         <details class="entry">
           <summary>
             <div class="sum-left">
-              <h3>Translated live subtitles — speak one language, caption your stream in English</h3>
-              <p>The stream overlay honours your dictation language settings, so a translate-capable engine turns your speech into English captions as you talk. Pick WhisperKit (or whisper.cpp) as the engine, switch on Translate to English, and start captions: you speak Russian, Spanish, or any supported language and your viewers read English. Like everything else, the translation runs on your Mac. (Parakeet, Apple Speech, and SpeechAnalyzer are transcription-only, so the toggle is disabled on those engines rather than silently doing nothing.)</p>
+              <h3>Hands-free memes: “create a meme based on that”, straight from refine</h3>
+              <p>You never have to open the plugin window to use it. With refine armed, an instruction that starts with a trigger phrase is handed to the plugin instead of the refine model — so you can select a sentence in any app and say “create a meme based on that” and the meme is built from your selection, or refine with nothing selected and say the whole description out loud. English and Russian phrases both ship. Matching is deliberately strict, because a match redirects a dictation away from your editor: prefix only, whole words, no fuzzy matching — “summarize this, then create a meme” stays an ordinary refine, and “create a memo about Q3” is never mistaken for one.</p>
             </div>
             <div class="sum-right">
               <span class="try">How to use<svg class="howto-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span>
-              <div class="receipts"><span class="tag pr">#217</span></div>
+              <div class="receipts"><span class="tag ticket">MAK-100</span><span class="tag pr">#244</span></div>
             </div>
           </summary>
           <div class="guide">
             <span class="avail live">Available now</span>
-            <p class="g-sum">Use WhisperKit with Translate to English, then start captions as usual.</p>
+            <p class="g-sum">With Meme Generator enabled, tap Refine and start the instruction with “create a meme”.</p>
             <ol>
-              <li>In Settings › Models, pick WhisperKit (or whisper.cpp) — the engines that can translate.</li>
-              <li>In Settings › Dictation, turn on “Translate to English” and set your spoken language (or leave it on auto-detect).</li>
-              <li>Start captions from the Stream Overlay pane — your speech is captioned in English.</li>
-              <li>On transcription-only engines (Parakeet, Apple Speech, SpeechAnalyzer) the translate toggle is disabled, so captions stay in the language you spoke.</li>
-            </ol>
-          </div>
-        </details>
-      </li>
-      <li class="entry">
-        <h3>Custom vocabulary now biases Apple's SpeechAnalyzer too</h3>
-        <p>Your vocabulary terms now reach the SpeechAnalyzer engine (macOS 26) through the Speech framework's contextual-strings mechanism, so names and jargon come out spelled right there as well. Every bundled engine except Parakeet's live path can now be biased by your terms.</p>
-        <div class="receipts"><span class="tag ticket">MAK-84</span><span class="tag pr">#209</span></div>
-      </li>
-      <li class="entry">
-        <h3>Agents can hand OpenWhisp a file to transcribe</h3>
-        <p>A new openwhisp_transcribe_file tool lets a coding agent pass a local audio or video file and get the transcript back — all on-device, gated by its own consent scope like every other agent capability.</p>
-        <div class="receipts"><span class="tag ticket">MAK-83</span><span class="tag pr">#212</span></div>
-      </li>
-      <li>
-        <details class="entry">
-          <summary>
-            <div class="sum-left">
-              <h3>Per-app refine tone — casual in Slack, formal in Mail, verbatim in your terminal</h3>
-              <p>Set how the AI cleans up your words per app, so a message in Slack comes out casual, an email in Mail comes out formal, and dictation into a terminal or code editor is left verbatim — no AI rewrite at all. It's Wispr Flow's most-praised feature, done entirely on-device: pick a preset (verbatim, minimal, casual, formal, or a custom prompt) for any app in Settings. Code editors and terminals default to verbatim automatically so a spoken command is never reshaped.</p>
-            </div>
-            <div class="sum-right">
-              <span class="try">How to use<svg class="howto-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span>
-              <div class="receipts"><span class="tag ticket">MAK-77</span><span class="tag pr">#203</span></div>
-            </div>
-          </summary>
-          <div class="guide">
-            <span class="avail live">Available now</span>
-            <p class="g-sum">Give each app its own refine tone in Settings › Profiles.</p>
-            <ol>
-              <li>Open Settings › Profiles and turn on “Apply per-app profiles”.</li>
-              <li>Add an app (or pick an existing profile) and choose a Refine preset in its column: Verbatim, Minimal cleanup, Casual, Formal, or Custom.</li>
-              <li>For Custom, a prompt editor appears below the table — write a one-line tone instruction (it still runs behind the same safety guard, so it can't translate your words).</li>
-              <li>Terminals and code editors (Terminal, iTerm2, Warp, VS Code, Xcode, JetBrains, Cursor, Zed, and more) default to verbatim automatically — an explicit preset overrides that.</li>
-              <li>Precedence when more than one applies: an active Mode wins, then the per-app preset, then your global cleanup dial.</li>
-            </ol>
-          </div>
-        </details>
-      </li>
-      <li>
-        <details class="entry">
-          <summary>
-            <div class="sum-left">
-              <h3>A fifth engine: Apple's SpeechAnalyzer (macOS 26) — fast, on-device file transcription</h3>
-              <p>On macOS 26, OpenWhisp can use Apple's new SpeechAnalyzer / SpeechTranscriber as an on-device transcription engine — fully local, auto-punctuating, and about 2× faster than Whisper on file transcription. It backs the file queue, meetings, watch folders, and history re-transcribe, with a live-dictation variant too. It sits alongside Parakeet (the default), WhisperKit, whisper.cpp, and Apple Speech; pick it in Settings › Models.</p>
-            </div>
-            <div class="sum-right">
-              <span class="try">How to use<svg class="howto-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span>
-              <div class="receipts"><span class="tag ticket">MAK-59</span><span class="tag pr">#188</span></div>
-            </div>
-          </summary>
-          <div class="guide">
-            <span class="avail live">Available now</span>
-            <p class="g-sum">On macOS 26, choose Apple SpeechAnalyzer in Settings › Models.</p>
-            <ol>
-              <li>Requires macOS 26 — the engine only appears there.</li>
-              <li>Open Settings › Models and select Apple SpeechAnalyzer.</li>
-              <li>It runs on-device and auto-punctuates. The file-transcription path (files, meetings, watch folders, history re-transcribe) is the primary, fastest win — roughly 2× Whisper's speed on files.</li>
-              <li>Custom-vocabulary biasing isn't wired for this engine yet; use Parakeet, WhisperKit, or whisper.cpp when you need it.</li>
-            </ol>
-          </div>
-        </details>
-      </li>
-      <li>
-        <details class="entry">
-          <summary>
-            <div class="sum-left">
-              <h3>Agent dictation gets your project's vocabulary — branch, folder, and file names land right</h3>
-              <p>When a coding agent hands you the mic, OpenWhisp now feeds it your workspace context — the project folder name, the current git branch, and file/symbol names — so spoken dev terms come out spelled correctly (your branch feature/agent-eou, a file called getUserProfile). It's OpenWhisp's local answer to Claude Code's /voice project hints, and it works exactly where /voice can't: API-key, Bedrock, SSH, and privacy-locked setups. The context is derived on your Mac, used only for that session, never saved, and API-key-shaped tokens are filtered out so nothing secret leaks into a transcript.</p>
-            </div>
-            <div class="sum-right">
-              <span class="try">How to use<svg class="howto-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span>
-              <div class="receipts"><span class="tag ticket">MAK-75</span><span class="tag pr">#202</span></div>
-            </div>
-          </summary>
-          <div class="guide">
-            <span class="avail live">Available now</span>
-            <p class="g-sum">Automatic for MCP agents — the cwd and git branch are derived on each dictate call.</p>
-            <ol>
-              <li>No setup for MCP clients: openwhisp mcp runs in the client's working directory and self-derives the folder name + git branch on each openwhisp_dictate call.</li>
-              <li>A client can also pass explicit context (e.g. recent file names) — explicit values win and merge with the derived ones.</li>
-              <li>Opt out with the OPENWHISP_MCP_WORKSPACE_CONTEXT environment variable (0/false/off/no).</li>
-              <li>From the CLI, pass --cwd, --git-branch, or --terms "a,b,c".</li>
-              <li>Terms bias whichever engine honors it (whisper.cpp, WhisperKit, Apple Speech) and are session-scoped only — never written to your vocabulary file.</li>
-            </ol>
-          </div>
-        </details>
-      </li>
-      <li>
-        <details class="entry">
-          <summary>
-            <div class="sum-left">
-              <h3>Tap to finish an agent dictation — a deliberate “done”, like Claude Code /voice</h3>
-              <p>When an agent asks you a question by voice, you can now end the answer yourself with a tap of your dictation key — a deliberate finish, instead of waiting out the silence/end-of-utterance detector or a timeout. A new autoSubmit option on the openwhisp_dictate tool matches Claude Code /voice's behavior (hold or tap, submit automatically or wait for confirm). Your own hotkey dictations are unaffected.</p>
-            </div>
-            <div class="sum-right">
-              <span class="try">How to use<svg class="howto-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span>
-              <div class="receipts"><span class="tag ticket">MAK-76</span><span class="tag pr">#200</span></div>
-            </div>
-          </summary>
-          <div class="guide">
-            <span class="avail live">Available now</span>
-            <p class="g-sum">During an agent dictation, tap your dictation key to finish and return the transcript now.</p>
-            <ol>
-              <li>When a coding agent opens a dictation, speak your answer.</li>
-              <li>Tap your dictation hotkey to end the session immediately and return the transcript — overriding any pending silence/EOU settle wait.</li>
-              <li>A tap during the confirm window re-opens the session so you can append more.</li>
-              <li>Agents can set autoSubmit on the openwhisp_dictate tool to choose submit-immediately vs. wait-for-confirm.</li>
-            </ol>
-          </div>
-        </details>
-      </li>
-      <li>
-        <details class="entry">
-          <summary>
-            <div class="sum-left">
-              <h3>Parakeet Realtime — a true streaming engine: words appear ~0.3 s behind your voice</h3>
-              <p>A new on-device transcription engine built on NVIDIA Parakeet (CoreML, via the Apache-2.0 FluidAudio SDK). Unlike the batch engines, Parakeet is architecturally streaming: partials trail your voice by about a third of a second WITH punctuation and capitalization, and the final text lands ~50 ms after you release the hotkey — no end-of-dictation decode wait. Five model variants cover realtime English, an efficiency tier, best-accuracy English, an ultra-light 120M model, and a multilingual model (~40 languages, auto-detected). Meetings, batch file jobs, watch folders, and history re-transcription run on Parakeet too (a 25-language batch model), and the models show up in Settings › Storage with sizes and one-click delete. It's now the default, recommended engine on a fresh install (existing users keep whatever engine they already chose).</p>
-            </div>
-            <div class="sum-right">
-              <span class="try">How to use<svg class="howto-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span>
-              <div class="receipts"><span class="tag ticket">MAK-46</span><span class="tag pr">#163</span></div>
-            </div>
-          </summary>
-          <div class="guide">
-            <span class="avail live">Available now</span>
-            <p class="g-sum">Settings › Models › pick “Parakeet Realtime (CoreML)”, choose a variant, and dictate — the model downloads itself on first use.</p>
-            <ol>
-              <li>Open Settings › Models and select “Parakeet Realtime (CoreML)” (badged Recommended).</li>
-
-      <li>
-        <details class="entry">
-          <summary>
-            <div class="sum-left">
-              <h3>OpenWhisp keeps itself up to date — built-in auto-update</h3>
-              <p>OpenWhisp now updates itself. A built-in updater (Sparkle 2) checks for new signed releases and offers to install them, so you're no longer re-downloading the app by hand. Updates are delivered from a cryptographically signed feed, and the update check is disclosed in the privacy docs. It's part of the notarized release build.</p>
-            </div>
-            <div class="sum-right">
-              <span class="try">How to use<svg class="howto-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span>
-              <div class="receipts"><span class="tag ticket">MAK-56</span><span class="tag pr">#169</span></div>
-            </div>
-          </summary>
-          <div class="guide">
-            <span class="avail live">Available now</span>
-            <p class="g-sum">OpenWhisp checks for updates on its own and offers to install them.</p>
-            <ol>
-              <li>Nothing to set up — the app checks for new signed releases automatically and prompts you when one is available.</li>
-              <li>You can also check on demand from Settings → General → Check for Updates.</li>
-              <li>Updates come from a cryptographically signed appcast; the update check is disclosed in the privacy documentation.</li>
-            </ol>
-          </div>
-        </details>
-      </li>              <li>Pick a variant: Unified realtime (default, 0.32 s latency, punctuation), Unified efficient (same accuracy, lower CPU), Unified accurate, EOU ultra light (smallest), or Parakeet Multilingual (~40 languages, auto-detect).</li>
-              <li>The model (~150–600 MB) downloads automatically to Application Support/FluidAudio and is cached; the row shows Not downloaded / Downloading… / installed.</li>
-              <li>Dictate as usual — words stream in as you speak in preview and live-typing modes, and meetings/file jobs automatically use Parakeet's multilingual batch model.</li>
-            </ol>
-            <p class="g-note">The English variants refuse a fixed non-English dictation language up front (switch to the Multilingual variant or Auto instead of silently mangling it). Parakeet is ASR-only: the translate-to-English toggle doesn't apply, and vocabulary biasing is text-side only.</p>
-          </div>
-        </details>
-      </li>
-      <li>
-        <details class="entry">
-          <summary>
-            <div class="sum-left">
-              <h3>Agent dictations can end the moment you finish speaking — end-of-utterance auto-stop</h3>
-              <p>When a coding agent hands you the mic, the session previously ended on a timeout or an energy-silence heuristic. The Parakeet EOU model emits a genuine “the speaker finished” signal, and OpenWhisp can now use it: an experimental, default-off toggle ends agent-requested dictations right after your utterance settles — a crisper finish than waiting out the silence window. Your own hotkey dictations are never auto-stopped.</p>
-            </div>
-            <div class="sum-right">
-              <span class="try">How to use<svg class="howto-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span>
-              <div class="receipts"><span class="tag ticket">MAK-46</span><span class="tag pr">#163</span></div>
-            </div>
-          </summary>
-          <div class="guide">
-            <span class="avail live">Available now</span>
-            <p class="g-sum">Settings › Agent Bridge › turn on “Stop on end-of-utterance (Parakeet EOU)” with the Parakeet EOU variant selected.</p>
-            <ol>
-              <li>Select the Parakeet engine with the “EOU — ultra light” variant (Settings › Models).</li>
-              <li>Open Settings › Agent Bridge and enable “Stop on end-of-utterance (Parakeet EOU)”.</li>
-              <li>When an agent requests a dictation, speak your answer — the session finishes ~0.6 s after your utterance ends (a new word cancels the pending stop).</li>
-            </ol>
-            <p class="g-note">Experimental and default-off. Only the EOU variant emits the signal — on any other engine or variant the toggle is inert and the silence auto-stop still applies. Agent sessions only.</p>
-          </div>
-        </details>
-      </li>
-      <li>
-        <details class="entry">
-          <summary>
-            <div class="sum-left">
-              <h3>Meeting mode — record a call, get an on-device transcript and a local summary</h3>
-              <p>Record a meeting (system audio + your mic) straight to your Mac, then let OpenWhisp transcribe it with your on-device engine and summarize it locally into Markdown — a short overview, the decisions made, and the action items. A new Meetings pane in Settings lists every recording with its transcript and summary, and lets you re-transcribe, summarize, export a .md, or delete (which also removes the audio). Nothing leaves your machine unless you choose a cloud LLM for the summary — and then only after an explicit per-meeting confirmation. The summary is checked against the transcript's language, so a small model can't quietly hand you an English summary of a Russian meeting; if it tries, OpenWhisp keeps the transcript and tells you.</p>
-            </div>
-            <div class="sum-right">
-              <span class="try">How to use<svg class="howto-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span>
-              <div class="receipts"><span class="tag ticket">MAK-50</span><span class="tag pr">#158</span></div>
-            </div>
-          </summary>
-          <div class="guide">
-            <span class="avail live">Available now</span>
-            <p class="g-sum">Start/Stop a recording from the menu bar, then open Settings → Meetings to read the transcript, run the summary, and export.</p>
-            <ol>
-              <li>Start a recording from the OpenWhisp menu bar (Start meeting), and Stop it there when the call ends — the audio is captured on-device as a 16 kHz WAV.</li>
-              <li>Open Settings → Meetings: the new recording appears in the list and is transcribed automatically by your on-device engine (long recordings are chunked, like file transcription).</li>
-              <li>For a summary: with a LOCAL LLM configured it runs automatically once transcription finishes; with a cloud or agent-CLI provider you get a per-meeting “Summarize (transcript leaves this Mac)” confirmation first, so cloud text-sharing is never silent.</li>
-              <li>Use the row’s Actions menu to Re-transcribe, Summarize, Export .md (summary + transcript), or Delete (which also deletes the recording’s audio).</li>
-            </ol>
-            <p class="g-note">Live now. The summary is map-reduced for long meetings and always demanded in the transcript’s own language — if a small model translates it away, OpenWhisp rejects the summary and keeps the transcript. Speaker attribution (Me vs. Them) now ships too — see the next entry. Cloud summaries only ever run after your explicit confirmation.</p>
-          </div>
-        </details>
-      </li>
-      <li>
-        <details class="entry">
-          <summary>
-            <div class="sum-left">
-              <h3>Meeting mode now labels who spoke — Me vs. Them — plus a live talking indicator</h3>
-              <p>Meeting recordings are now attributed. Alongside the mixed recording, OpenWhisp writes two separate on-device WAVs — your microphone (“Me”) and the system audio (“Them”) — and transcribes each leg on its own, then interleaves them by time into a single transcript with Me:/Them: labels. The Meetings pane shows the attributed transcript, the .md export includes it, and the local summary is built from the labeled transcript so action items can be pinned to a speaker. While a meeting records, the live row tells you who’s talking (“You’re talking” / “They’re talking” / “Both” / “…”), with a matching glyph in the menu bar. Everything stays on your Mac. This is a robust, degrade-safe addition: the mixed recording is unchanged and still the fallback, and if a leg can’t be captured or transcribed the meeting simply keeps its plain, un-attributed transcript.</p>
-            </div>
-            <div class="sum-right">
-              <span class="try">How to use<svg class="howto-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span>
-              <div class="receipts"><span class="tag ticket">MAK-52</span><span class="tag pr">#160</span></div>
-            </div>
-          </summary>
-          <div class="guide">
-            <span class="avail live">Available now</span>
-            <p class="g-sum">Record a meeting as before — the transcript now comes back with Me:/Them: labels, and the live row shows who’s talking while you record.</p>
-            <ol>
-              <li>Start a meeting from the menu bar as usual. OpenWhisp records the mixed audio plus two per-speaker legs (your mic and the system audio), all on-device.</li>
-              <li>While recording, the Meetings pane’s live row shows “You’re talking”, “They’re talking”, “Both”, or “…”, and the menu-bar item shows a matching glyph.</li>
-              <li>When transcription finishes, the pane shows the attributed transcript (Me:/Them: lines). Export .md includes it, and the local summary is built from the labeled transcript so action items can carry the speaker.</li>
-            </ol>
-            <p class="g-note">Live now. “Them” is everyone on the remote side of the call — system audio is a single mixed stream, so distinguishing individual remote participants (per-person diarization) is a separate follow-on. Attribution is degrade-safe: the mixed recording is unchanged and remains the fallback, and if a leg can’t be captured or transcribed the meeting keeps its plain, un-attributed transcript.</p>
-          </div>
-        </details>
-      </li>
-      <li>
-        <details class="entry">
-          <summary>
-            <div class="sum-left">
-              <h3>Meeting summaries can use their own, larger model — separate from dictation cleanup</h3>
-              <p>Dictation cleanup wants a tiny, fast model because it runs on every final transcript; a meeting summary is different — it runs only when you ask for it, so it can afford a bigger, smarter model. Meeting mode now has its own “Summarization model” setting, independent of the cleanup LLM. Leave it on “Same as cleanup” (the default) and nothing changes. Or point summaries at a larger local model behind your own server — e.g. a 70B running in llama-server / Ollama — while keeping a fast on-device model for live dictation. The privacy gate follows the summary model, not cleanup: if the summarization provider is local, summaries still run automatically; if it's a cloud provider, you still get the explicit per-meeting “transcript leaves this Mac” confirmation, now naming the actual summary provider. The transcript-language guard on the summary is unchanged.</p>
-            </div>
-            <div class="sum-right">
-              <span class="try">How to use<svg class="howto-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span>
-              <div class="receipts"><span class="tag ticket">MAK-53</span><span class="tag pr">#159</span></div>
-            </div>
-          </summary>
-          <div class="guide">
-            <span class="avail live">Available now</span>
-            <p class="g-sum">Open Settings → Meetings → Summarization model to pick a separate provider/model for summaries, or leave it on “Same as cleanup”.</p>
-            <ol>
-              <li>Open Settings → Meetings. The new “Summarization model” picker defaults to “Same as cleanup” — existing behavior, no change needed.</li>
-              <li>To use a bigger model just for summaries, pick a provider (On this Mac, Your server, or OpenAI) and optionally a model name; for a self-hosted server you can also set its URL. Leave the model blank to use the server/provider default.</li>
-              <li>Summaries then run through that model: a local summary provider still summarizes automatically after transcription; a cloud one asks for your per-meeting confirmation first, naming the provider the transcript would be sent to.</li>
-            </ol>
-            <p class="g-note">Live now. Cleanup keeps favoring a small fast model; the summary model runs only when you summarize. Agent-CLI isn't offered for summaries (the summarize path is OpenAI-shape); use the cleanup Agent-CLI provider for dictation as before. The summary is still checked against the transcript's language and rejected if it's translated away.</p>
-          </div>
-        </details>
-      </li>
-      <li>
-        <details class="entry">
-          <summary>
-            <div class="sum-left">
-              <h3>A floating Scratchpad — dictate anywhere, even with no app to type into</h3>
-              <p>Open the Scratchpad from the menu bar (or open "openwhisp://scratchpad") and you get an always-on-top note panel to dictate into when nothing else has focus — a quick capture surface that's fully local. Keep several notes in a list, type or dictate freely, and each note shows a small provenance line (when it was last dictated vs. typed). Nothing leaves your Mac; the notes are saved on device.</p>
-            </div>
-            <div class="sum-right">
-              <span class="try">How to use<svg class="howto-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span>
-              <div class="receipts"><span class="tag ticket">MAK-49</span><span class="tag pr">#155</span></div>
-            </div>
-          </summary>
-          <div class="guide">
-            <span class="avail live">Available now</span>
-            <p class="g-sum">Open the Scratchpad from the menu bar (⌘S in the menu) or via openwhisp://scratchpad, then dictate or type; each dictation lands in the active note.</p>
-            <ol>
-              <li>Click the OpenWhisp menu-bar icon → “📝 Scratchpad” (or run open "openwhisp://scratchpad" from any launcher).</li>
-              <li>The floating panel opens on top of your other windows and takes focus. Use “＋ New” for another note; click a note in the left list to switch.</li>
-              <li>With the Scratchpad frontmost, start a dictation (your trigger key) — the text appends into the active note instead of an app. You can also just type.</li>
-              <li>Each note shows a provenance line (e.g. “Dictated 3:14 PM · typed 3:20 PM”); the list is ordered most-recently-touched first. Notes persist locally between launches.</li>
-            </ol>
-            <p class="g-note">v1 is plain text with a simple multi-note list and per-note dictated/typed timestamps. It's local-only (saved under Application Support). Rich text, tabs, checklists, and image paste are intentionally deferred. Dictation lands in the Scratchpad only while it's the frontmost window; otherwise dictation goes to your focused app as usual.</p>
-          </div>
-        </details>
-      </li>
-      <li>
-        <details class="entry">
-          <summary>
-            <div class="sum-left">
-              <h3>Rules — run your own actions when a dictation finishes</h3>
-              <p>OpenWhisp can now do something with a dictation the moment it's done: append it to a Markdown log, run a Shortcut, POST it to a webhook, run a script, open a URL, or type a canned snippet — automatically, when the transcript matches a rule you set. A rule is a match (starts-with / contains / exact / regex, optionally scoped to one app) plus a list of actions, and it's a pure side channel: if a rule or its action fails, your words are still typed exactly as before — nothing is dropped or delayed. It generalizes the old “run my script” toggle and reuses the same file / Shortcut / webhook delivery under the hood.</p>
-            </div>
-            <div class="sum-right">
-              <span class="try">How to use<svg class="howto-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span>
-              <div class="receipts"><span class="tag ticket">MAK-43</span><span class="tag pr">#151</span></div>
-            </div>
-          </summary>
-          <div class="guide">
-            <span class="avail live">Available now</span>
-            <p class="g-sum">Settings › Rules › Add rule: pick when it fires and what it matches, then add one or more actions.</p>
-            <ol>
-              <li>Open Settings › Rules and click “Add rule”.</li>
-              <li>Choose when it fires: “After transcribe” (the raw transcript, pre-refine) or “After refine” (the final text that gets typed).</li>
-              <li>Set the match: Always, Exact, Starts with, Contains, or Regex — optionally scope it to one app by bundle ID (e.g. com.apple.Notes).</li>
-              <li>Add actions in order: Insert snippet, Open URL (use {{text}} for the transcript), Run script, Run Shortcut, POST webhook, or Append to file.</li>
-              <li>Save. Rules run automatically on your next matching dictation.</li>
-              <li>To run a rule on agent-bridge sessions too, set its “Sessions” to “Agent only” or “Both” — it's dictation-only by default so an agent's transcript never leaves your machine unless you opt in.</li>
-            </ol>
-            <p class="g-note">Live in Settings today. Actions are fail-open: a failing or slow action is skipped and never affects the normal insert. Scripts and Shortcuts receive the transcript on stdin (never interpolated into a command line); webhooks receive it as JSON; an Open-URL template's {{text}} is percent-encoded. Regex is guarded against catastrophic backtracking. The old Output › Script toggle still works and is unchanged.</p>
-          </div>
-        </details>
-      </li>
-      <li>
-        <details class="entry">
-          <summary>
-            <div class="sum-left">
-              <h3>Keep your dictation audio on-device — re-transcribe any past dictation, with an auto-cleanup policy</h3>
-              <p>Turn on opt-in audio retention and OpenWhisp saves each dictation's raw audio on this Mac — and only this Mac; it never leaves the device. A re-transcribe button on any saved history entry runs that audio back through your current engine (handy after you switch or upgrade a model) and keeps the old text as a one-click revert. A retention policy sweeps automatically: keep at most N clips and/or delete audio + history older than N days. Retention is OFF by default, and turning it off deletes every saved clip. The cleanup only ever removes files OpenWhisp itself created.</p>
-            </div>
-            <div class="sum-right">
-              <span class="try">How to use<svg class="howto-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span>
-              <div class="receipts"><span class="tag ticket">MAK-40</span><span class="tag pr">#147</span></div>
-            </div>
-          </summary>
-          <div class="guide">
-            <span class="avail live">Available now</span>
-            <p class="g-sum">Settings › Privacy › turn on “Keep raw audio for re-transcription”, set the clip/day caps, then use the re-transcribe button on any saved history entry.</p>
-            <ol>
-              <li>Open Settings › Privacy &amp; Permissions › History.</li>
-              <li>Turn on “Keep transcription history” (needed to associate audio with an entry), then turn on “Keep raw audio for re-transcription”. It's off by default — the audio stays on this Mac and is never uploaded.</li>
-              <li>Set the policy: “Keep at most N clips” and/or “Delete audio + history after N days” (0 = no cap). The sweep runs after each dictation and on launch.</li>
-              <li>Dictate as usual (standard hold-to-talk sessions). Each dictation's audio is saved beside its history entry.</li>
-              <li>On a saved entry, click the re-transcribe (waveform) button to run its audio through your current engine again; the new text replaces the old, and the revert arrow restores the previous words.</li>
-              <li>Turn the toggle off (or use Clear History) to delete every saved clip immediately.</li>
-            </ol>
-            <p class="g-note">On-device only — audio never leaves your Mac. Retention covers standard hold-to-talk dictations (which produce a single whole-session recording); live-chunk/streaming sessions aren't retained yet. Crash recovery of an interrupted in-progress recording is scaffolded and tested in core but not yet wired to a launch prompt — that's a follow-up; retention, re-transcribe, and the cleanup policy are live now.</p>
-          </div>
-        </details>
-      </li>
-      <li>
-        <details class="entry">
-          <summary>
-            <div class="sum-left">
-              <h3>Two new ways to get your words in: an AppleScript keystroke insert method and mouse-button triggers</h3>
-              <p>Some apps mangle the usual paste (⌘V) and direct-insert methods — Electron apps, remote-desktop (VNC) windows, and non-QWERTY keyboard layouts. A new AppleScript keystroke insert method types your transcript in as if from the keyboard, which those surfaces accept; pick it globally or per-app. And you can now bind a non-primary mouse button (middle, or a side button) as a dictation trigger, using the same hold or hands-free style as your trigger key.</p>
-            </div>
-            <div class="sum-right">
-              <span class="try">How to use<svg class="howto-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span>
-              <div class="receipts"><span class="tag ticket">MAK-42</span><span class="tag pr">#148</span></div>
-            </div>
-          </summary>
-          <div class="guide">
-            <span class="avail live">Available now</span>
-            <p class="g-sum">Settings › Output › Insertion → “AppleScript keystroke”, and Settings › Dictation › Activation → “Mouse-button trigger”. Both can also be set per-app under Per-App Profiles.</p>
-            <ol>
-              <li>Insert method: Settings › Output › Insertion → choose “AppleScript keystroke” if paste/direct insert misbehaves in an app (Electron, VNC, non-QWERTY).</li>
-              <li>Per-app override: Settings › Per-App Profiles → add the app and set its “Insert” column (Inherit / Auto / Direct / Paste / AppleScript).</li>
-              <li>Mouse trigger: Settings › Dictation › Activation → “Mouse-button trigger” → pick Middle button or a side button (Mouse 4-10). “Off” disables it.</li>
-              <li>The mouse trigger uses your existing activation style — hold to talk, or tap to lock hands-free.</li>
-            </ol>
-            <p class="g-note">The AppleScript method never touches the clipboard, and your transcript is always safely escaped into the script (quotes, backslashes, and newlines can't break or inject it) — it falls back to paste if the script can't run (grant Accessibility/Automation permission if prompted) or if the transcript is very long (keystroke types at keyboard speed). The left and right mouse buttons are deliberately not bindable, since they're needed for normal clicking.</p>
-          </div>
-        </details>
-      </li>
-      <li>
-        <details class="entry">
-          <summary>
-            <div class="sum-left">
-              <h3>Set any key or combo as your dictation trigger — record-a-shortcut in Settings</h3>
-              <p>The dictation trigger is no longer limited to Fn or Control + Space. Open Settings › Dictation › Activation, click “Record shortcut”, and press any key or modifier combo (⌥⌘R, ⌃⇧Space, a lone Option — whatever you like). OpenWhisp warns before you pick something that would fire on ordinary typing, shadow a system shortcut like ⌘Space, or clash with your Refine key. Your custom trigger works in both hold-to-talk and hands-free modes, and the two original presets stay one click away.</p>
-            </div>
-            <div class="sum-right">
-              <span class="try">How to use<svg class="howto-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span>
-              <div class="receipts"><span class="tag ticket">MAK-17</span><span class="tag pr">#145</span></div>
-            </div>
-          </summary>
-          <div class="guide">
-            <span class="avail live">Available now</span>
-            <p class="g-sum">Settings › Dictation › Activation → “Record shortcut”, press your combo; the two presets remain as quick picks.</p>
-            <ol>
-              <li>Open Settings › Dictation › Activation.</li>
-              <li>Click “Record shortcut” and press the key or modifier combo you want (e.g. ⌥⌘R, ⌃⇧Space, or a lone Option). Press Esc to cancel a recording.</li>
-              <li>If the combo would fire on ordinary typing, shadow a system shortcut (⌘Space, ⌘Q…), or clash with your Refine key, a warning appears — pick another.</li>
-              <li>Prefer a built-in? The “Trigger key” menu keeps Fn (Globe) and Control + Space as one-click quick picks.</li>
-              <li>Your custom trigger works in both Hold-to-talk and Hands-free activation styles.</li>
-            </ol>
-            <p class="g-note">Live in Settings today. A single typing key with no modifier is rejected (it would fire as you type); add a modifier or bind a non-text key (function row, Esc, arrows) instead.</p>
-          </div>
-        </details>
-      </li>
-      <li>
-        <details class="entry">
-          <summary>
-            <div class="sum-left">
-              <h3>See your dictation stats — words, speaking speed, time saved, streaks — all on this Mac</h3>
-              <p>A new Insights tab in Settings surfaces what OpenWhisp was quietly counting: total words dictated, your words-per-minute, an estimated time saved versus typing, current and longest daily streaks, and a breakdown of which apps you dictate into. It's all computed on-device from metadata only — counts and durations, never your transcripts — and there's a one-click share card (a PNG rendered locally) if you want to post your numbers. No accounts, no cloud.</p>
-            </div>
-            <div class="sum-right">
-              <span class="try">How to use<svg class="howto-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span>
-              <div class="receipts"><span class="tag ticket">MAK-38</span><span class="tag pr">#144</span></div>
-            </div>
-          </summary>
-          <div class="guide">
-            <span class="avail live">Available now</span>
-            <p class="g-sum">Open Settings › Insights to see your words, WPM, time saved, and streaks; Save/Copy the share card to post them.</p>
-            <ol>
-              <li>Open OpenWhisp Settings and pick the “Insights” tab.</li>
-              <li>Read your lifetime words, speaking speed (WPM), and estimated time saved (the card states the typing-speed assumption behind that estimate).</li>
-              <li>Check your current and longest streaks and which apps you dictate into most.</li>
-              <li>Click “Save share card…” to write a PNG, or “Copy image” to put it on the clipboard — the image is rendered entirely on your Mac; nothing is uploaded.</li>
-            </ol>
-            <p class="g-note">Time saved is an estimate: it compares your speaking time to typing the same words at 40 wpm (a common average). Your real typing speed will differ. Stats are metadata only — no transcript text is ever stored or shown here, and sessions recorded while a password field was focused are excluded.</p>
-          </div>
-        </details>
-      </li>
-      <li>
-        <details class="entry">
-          <summary>
-            <div class="sum-left">
-              <h3>Screen-context awareness — dictation that knows the names already on screen</h3>
-              <p>Opt in per app and, at dictation start, OpenWhisp reads the focused field's existing text on your Mac to do two things: harvest the proper nouns and code identifiers already there (Anthropic, kubectl.apply, getUserProfile) and feed them to the transcription engine so it spells them right, and — only with a local AI cleanup provider — hand the surrounding text to the cleanup model so it matches the thread's tone. Off by default, gated to apps you list, never reads password fields, and nothing read is saved to disk.</p>
-            </div>
-            <div class="sum-right">
-              <span class="try">How to use<svg class="howto-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span>
-              <div class="receipts"><span class="tag ticket">MAK-34</span><span class="tag pr">#150</span></div>
-            </div>
-          </summary>
-          <div class="guide">
-            <span class="avail live">Available now</span>
-            <p class="g-sum">Settings › Privacy › Screen Context: turn it on, add the apps you want, then dictate — names on screen bias transcription; local cleanup also gets the surrounding text.</p>
-            <ol>
-              <li>Grant Accessibility (Settings › Privacy › Permissions) — it's how OpenWhisp reads the focused field.</li>
-              <li>Settings › Privacy › Screen Context → turn on “Read screen context (advanced)”. It's off by default.</li>
-              <li>Click “Add Last-Used App” to allowlist the app you were just typing in. Context is only ever read in apps you list.</li>
-              <li>Dictate as usual. Proper nouns and identifiers on screen bias the on-device transcription so they come out right.</li>
-              <li>For the surrounding-text cleanup boost, keep your AI cleanup provider on Built-in or your own local LLM (Cleanup › AI Cleanup) — with OpenAI or an agent CLI selected, no surrounding text is shared.</li>
-            </ol>
-            <p class="g-note">Live now. Bias terms only prime the on-device transcription engine (whisper.cpp) and never leave your Mac; the WhisperKit engine ignores the term prompt today (a known pilot gap), so bias terms apply on the whisper.cpp backend. Surrounding text is shared ONLY with a local cleanup provider and never with a cloud/agent-CLI one. Password fields are excluded entirely, and nothing read is written to disk. Vision/OCR of non-text UI is out of scope for this version.</p>
-          </div>
-        </details>
-      </li>
-      <li>
-        <details class="entry">
-          <summary>
-            <div class="sum-left">
-              <h3>Drop in an audio or video file — batch transcription with a live queue and subtitle export</h3>
-              <p>Point OpenWhisp at MP3/MP4/M4A/WAV/WEBM (and more) and it decodes them to 16 kHz audio, runs your on-device engine, and shows a live per-file queue (Queued → Loading model → Transcribing → Enhancing → Done). Long files are chunked automatically, and finished transcripts export to plain text, SubRip (.srt) or WebVTT (.vtt) with chunk-level timestamps. Set up watch folders and any media dropped in transcribes itself.</p>
-            </div>
-            <div class="sum-right">
-              <span class="try">How to use<svg class="howto-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span>
-              <div class="receipts"><span class="tag ticket">MAK-36</span><span class="tag pr">#142</span></div>
-            </div>
-          </summary>
-          <div class="guide">
-            <span class="avail live">Available now</span>
-            <p class="g-sum">Settings › File Transcription › Add files, watch the queue, then export .txt/.srt/.vtt from any finished file. Add a watch folder to auto-transcribe drops.</p>
-            <ol>
-              <li>Open Settings › File Transcription.</li>
-              <li>Click “Add audio or video files…” and pick one or more media files — they queue up and transcribe one at a time on your current engine.</li>
-              <li>Watch each row move through Queued → Loading model → Transcribing → Done; long files are chunked for you.</li>
-              <li>On a finished row, use Export to save .txt, .srt, or .vtt (SRT/VTT carry chunk-level timestamps).</li>
-              <li>Optional: “Add a watch folder…” so any new media dropped into it is transcribed automatically (files still copying are picked up once they settle).</li>
-            </ol>
-            <p class="g-note">Timestamps for .srt/.vtt are chunk-level (each cue spans a decode window), since the local engines surface plain text per chunk — finer per-word timing is a future engine-seam upgrade. The optional LLM “Enhance” pass over finished transcripts is present as a toggle but only runs when an LLM is configured.</p>
-          </div>
-        </details>
-      </li>
-      <li>
-        <details class="entry">
-          <summary>
-            <div class="sum-left">
-              <h3>Hands-free dictation — tap to lock the mic open, tap or Esc to stop</h3>
-              <p>Dictation no longer has to be held. Switch on Hands-free mode (or just double-tap your trigger key) and one tap locks the mic open so you can speak with your hands free; a second tap — or Esc — stops it. A safety net ends a forgotten locked session after a long silence, so a session you walk away from won't record forever. Holding the key still works exactly as before.</p>
-            </div>
-            <div class="sum-right">
-              <span class="try">How to use<svg class="howto-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span>
-              <div class="receipts"><span class="tag ticket">MAK-16</span><span class="tag pr">#143</span></div>
-            </div>
-          </summary>
-          <div class="guide">
-            <span class="avail live">Available now</span>
-            <p class="g-sum">Turn on Hands-free in Settings (or double-tap the trigger key), tap to start, tap again or press Esc to stop.</p>
-            <ol>
-              <li>Settings › Dictation › Activation › “Activation style” → “Hands-free (tap to lock)”. (Or leave it on “Hold to talk” and double-tap the trigger key to lock the mic open for a single session.)</li>
-              <li>Tap your trigger key (Fn or Control + Space) — the overlay shows a lock badge and “Hands-free — tap key or Esc to stop”.</li>
-              <li>Speak with your hands free; the mic stays live.</li>
-              <li>Tap the trigger key again, or press Esc, to stop. Esc discards the session; a stop tap delivers it.</li>
-              <li>Optional safety net: “Auto-stop after long silence” (on by default) ends a locked session after a long quiet stretch so a forgotten one can't record forever.</li>
-            </ol>
-            <p class="g-note">Live in Settings today. Hold-to-talk remains the default and is unchanged. The double-tap gesture reaches lock even without changing the setting; a normal pause to think won't trip the silence safety auto-stop (its hangover is deliberately long).</p>
-          </div>
-        </details>
-      </li>
-      <li>
-        <details class="entry">
-          <summary>
-            <div class="sum-left">
-              <h3>Trigger OpenWhisp from Raycast, Alfred, or any launcher — the openwhisp:// URL scheme</h3>
-              <p>OpenWhisp now answers an openwhisp:// URL, so any launcher or script can start a dictation, refine your last result, or paste it — no CLI needed. Point Raycast or Alfred at open "openwhisp://record" and bind it to a key. The scheme exposes only a small, validated allow-list of safe verbs — never a shell string or an arbitrary file — and rejects anything malformed as a whole.</p>
-            </div>
-            <div class="sum-right">
-              <span class="try">How to use<svg class="howto-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span>
-              <div class="receipts"><span class="tag ticket">MAK-37</span><span class="tag pr">#141</span></div>
-            </div>
-          </summary>
-          <div class="guide">
-            <span class="avail live">Available now</span>
-            <p class="g-sum">Hand OpenWhisp a URL like openwhisp://record from Raycast, Alfred, Shortcuts, or a script; ready-made Raycast/Alfred recipes ship in integrations/.</p>
-            <ol>
-              <li>Make sure OpenWhisp is installed (if it isn't running, macOS launches it and delivers the URL on start).</li>
-              <li>From any launcher or a terminal: open "openwhisp://record" to start/stop dictation, open "openwhisp://paste-last-result" to paste the last result, or open "openwhisp://refine?instruction=make%20it%20formal" to rewrite the last result onto your clipboard.</li>
-              <li>Chain verbs in one URL — open "openwhisp://?switch-mode=email&amp;record" — they run in order, all-or-nothing.</li>
-              <li>For a one-key setup, add the Raycast Script Commands or the Alfred recipe from the integrations/ folder and bind them to hotkeys.</li>
-            </ol>
-            <p class="g-note">record, refine, paste-last-result, switch-mode, and activate-mode all work today. switch-mode?key=… queues a Mode for your next dictation; activate-mode?key=… sets it as the sticky active Mode without recording (MAK-39 wired the named-mode registry). An unknown key is logged as a miss rather than silently pinning a phantom mode. See integrations/README.md for the full grammar.</p>
-          </div>
-        </details>
-      </li>
-      <li>
-        <details class="entry">
-          <summary>
-            <div class="sum-left">
-              <h3>Modes — save a dictation style and invoke it by name</h3>
-              <p>A Mode bundles a tone (Formal / Casual / Legal / Chat / Personalized), an AI instruction, optional model and language/output/AI-cleanup overrides, a custom icon, and a stable key you can invoke. Pick one as your active mode in Settings, bind a mode to an app so it auto-activates, or switch modes from a launcher with openwhisp://switch-mode?key=…. Modes generalize the old per-app profiles and travel inside config export/import and packs, so a style is shareable.</p>
-            </div>
-            <div class="sum-right">
-              <span class="try">How to use<svg class="howto-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span>
-              <div class="receipts"><span class="tag ticket">MAK-39</span><span class="tag pr">#146</span></div>
-            </div>
-          </summary>
-          <div class="guide">
-            <span class="avail live">Available now</span>
-            <p class="g-sum">Create a Mode in Settings › Modes, give it a tone/instruction, then set it active there or invoke it by key from an openwhisp:// URL.</p>
-            <ol>
-              <li>Settings › Modes → “+” to add a Mode. Give it a name, a key (normalized to lowercase-with-hyphens), a tone, and optionally an AI instruction, icon, or language/output/AI-cleanup overrides.</li>
-              <li>Set your “Active mode” at the top of the pane — it governs your next dictations until you change it (or pick “None” for global settings).</li>
-              <li>Bind a Mode to an app (its bundle ID) and turn on per-app modes to have it auto-activate when you dictate into that app.</li>
-              <li>From a launcher: open "openwhisp://switch-mode?key=email" to use a Mode for just your next dictation, or "openwhisp://activate-mode?key=email" to make it the sticky active Mode.</li>
-              <li>Share a Mode by exporting your config (it now includes Modes) or shipping it in a config pack.</li>
-            </ol>
-            <p class="g-note">The tone/instruction, language/output/AI-cleanup overrides, LLM-model override, active-mode picker, app auto-activation, and both URL verbs are live. Two pieces are deferred honestly: a per-Mode transcription-model swap is carried and round-trips but is NOT yet applied to the live engine mid-session, and per-Mode global hotkeys are not wired (key-based invocation via the URL scheme + picker is the shipped path). The old Per-App Profiles pane still exists; Modes are seeded from your profiles on first launch.</p>
-          </div>
-        </details>
-      </li>
-      <li>
-        <details class="entry">
-          <summary>
-            <div class="sum-left">
-              <h3>Say a filename, get an @-mention — hands-free file references in Cursor &amp; Windsurf</h3>
-              <p>Speak a file the way you'd read it aloud — “main dot t s”, “at main”, “index dot j s x” — and OpenWhisp writes @main.ts / @main / @index.jsx so your editor's own file autocomplete pops up. It's a pure, offline text transform, and it's deliberately timid: only clear filename forms are rewritten, so ordinary speech (“I ate lunch”, “the main point”, “at noon”) is never touched.</p>
-            </div>
-            <div class="sum-right">
-              <span class="try">How to use<svg class="howto-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span>
-              <div class="receipts"><span class="tag ticket">MAK-48</span><span class="tag pr">#131</span></div>
-            </div>
-          </summary>
-          <div class="guide">
-            <span class="avail live">Available now</span>
-            <p class="g-sum">Turn it on once in Settings, then say the filename in Cursor or Windsurf; the “dot &lt;ext&gt;” or leading “at” cue becomes an @-mention.</p>
-            <ol>
-              <li>Turn it on: Settings › Cleanup › Formatting › “Enable file tagging in code editors” (off by default).</li>
-              <li>Dictate into Cursor or Windsurf and say the filename the way you'd read it: the name, the word “dot”, then the extension spelled out letter-by-letter (“main dot t s”) or as a whole word (“main dot swift”).</li>
-              <li>Or lead with “at” for a bare mention: “at main” → @main.</li>
-              <li>The @-mention lands in your editor and its file autocomplete disambiguates the rest.</li>
+              <li>Enable Meme Generator in Settings › Plugins.</li>
+              <li>Select text in any app (or select nothing), then tap Refine as usual.</li>
+              <li>Say an instruction beginning with “create a meme”, “make a meme” or “generate a meme”.</li>
+              <li>The refine session ends without inserting anything into your document — the plugin window is the output.</li>
             </ol>
             <div class="say-block">
               <p class="say-label">Say</p>
               <ul class="say-list">
-                <li>“main dot t s” → @main.ts</li>
-                <li>“index dot j s x” → @index.jsx</li>
-                <li>“main dot swift” → @main.swift</li>
-                <li>“at main” → @main</li>
-                <li>“open main dot t s and fix it” → open @main.ts and fix it</li>
+                <li>“create a meme based on that” — with text selected anywhere, builds the meme from your selection</li>
+                <li>“create a meme about the deploy that broke everything” — nothing selected, the description is what you just said</li>
+                <li>“create a meme expanding brain: typing, dictating, refining, shipping” — your four items, verbatim, in the four panels</li>
+                <li>“сделай мем …” / “создай мем …” — the same, in Russian</li>
               </ul>
             </div>
-            <p class="g-note">Works in Cursor and Windsurf when the Settings toggle is on — OpenWhisp only converts spoken filenames while one of those editors is frontmost, so ordinary dictation everywhere else (chat, docs) is never touched. Off by default. An optional AX read of the open workspace to auto-pick the exact extension is still a stretch goal.</p>
+            <p class="g-note">Nothing is typed into your app on a routed command: the meme window is the destination, and the refine model never sees the instruction. If the plugin is switched off, the phrase is treated as an ordinary refine and a hint explains the missing window. Any plugin can declare its own trigger phrases in any language.</p>
           </div>
         </details>
       </li>
@@ -949,24 +354,24 @@
         <details class="entry">
           <summary>
             <div class="sum-left">
-              <h3>Use your Claude or Codex CLI as the AI cleanup engine</h3>
-              <p>Pipe your dictation through a coding-agent CLI you already have installed — claude, codex, or any command that reads stdin — and reuse the subscription you already pay for as the cleanup model. No separate API key, no extra service: it's the inverse of Agent Bridge, consuming an agent as the refine engine.</p>
+              <h3>The Scratchpad is a real editor now — list, Markdown preview, export</h3>
+              <p>The pad's plain multi-note list became a proper sidebar: every note shows a title, a relative date, and a snippet of its content, with a toolbar and keyboard shortcuts for New (⌘N), Delete, Preview (⌘⇧P) and Export (⌘E). ⌘⇧P swaps the editor for a rendered Markdown view of the same note — headings, lists, bold, code blocks, quotes — and ⌘E saves it as .md or .txt, or copies it as Markdown. Notes are Markdown source, so exporting one is a verbatim passthrough rather than a lossy round-trip.</p>
             </div>
             <div class="sum-right">
               <span class="try">How to use<svg class="howto-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span>
-              <div class="receipts"><span class="tag ticket">MAK-44</span><span class="tag pr">#130</span></div>
+              <div class="receipts"><span class="tag ticket">MAK-95</span><span class="tag ticket">MAK-96</span><span class="tag pr">#239</span></div>
             </div>
           </summary>
           <div class="guide">
             <span class="avail live">Available now</span>
-            <p class="g-sum">Point OpenWhisp at a local agent CLI (e.g. claude -p) and it cleans up each dictation using your own subscription.</p>
+            <p class="g-sum">Open the Scratchpad from the menu bar, then use the new toolbar — Preview (⌘⇧P) and Export (⌘E).</p>
             <ol>
-              <li>Open Settings › Cleanup › AI Model and set Provider to “Agent CLI (Claude / Codex)”.</li>
-              <li>Pick a preset — Claude Code (claude -p) or Codex (codex exec) — or choose Custom and enter any command that reads stdin and writes the cleaned text to stdout.</li>
-              <li>Turn on “Improve every dictation automatically” below (or use Refine on demand). OpenWhisp feeds your transcript to the CLI on stdin — never on the command line, so nothing you say can be interpreted as a command — and uses its output as the refined text.</li>
-              <li>If the CLI is missing, errors, times out, or returns nothing, OpenWhisp keeps your original words — you never lose a dictation.</li>
+              <li>Open the Scratchpad from the menu bar or via openwhisp://scratchpad.</li>
+              <li>The sidebar lists your notes with titles, dates and snippets; ⌘N makes a new one.</li>
+              <li>⌘⇧P toggles the rendered Markdown preview; flipping back keeps your editing state.</li>
+              <li>⌘E saves the note as Markdown, or use the Export menu for .txt and “Copy as Markdown”.</li>
             </ol>
-            <p class="g-note">Reuses your locally-installed CLI and its own login — no API key needed here. Where your text goes depends on which CLI you pick (a cloud coding agent, or a fully local model).</p>
+            <p class="g-note">The renderer covers a practical Markdown subset and is built to never lose or reorder content — anything it doesn't recognize renders as plain text. A note in Cyrillic (or any non-Latin script) exports with a filename in that script rather than an empty one. The scratchpad.json format is unchanged.</p>
           </div>
         </details>
       </li>
@@ -974,23 +379,24 @@
         <details class="entry">
           <summary>
             <div class="sum-left">
-              <h3>Send your dictation straight into a macOS Shortcut</h3>
-              <p>Route the final transcript into any Shortcut you've built — add it to Things or Reminders, append to a note, fire a webhook, run AppleScript. One OS-level integration reaches the whole Shortcuts ecosystem, and if the shortcut can't run, your text falls back to normal insertion so nothing is ever lost.</p>
+              <h3>Find things in the Scratchpad — live search, #tags, and ⌘F inside a note</h3>
+              <p>Search filters the note list as you type, matching the full body rather than just the title, because the sentence you remember is usually buried in a long dictation. Tags are derived from the text itself — write #work in a note and it becomes a filter, with a menu listing every tag and its note count, and chips on each row. Inside a note, ⌘F opens the standard macOS find bar with incremental highlighting and Enter/⇧Enter navigation, and matches for the list-wide query are painted over the open note so you can see where they are in a long meeting transcript.</p>
             </div>
             <div class="sum-right">
               <span class="try">How to use<svg class="howto-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span>
-              <div class="receipts"><span class="tag ticket">MAK-13</span><span class="tag pr">#129</span><span class="tag pr">#134</span></div>
+              <div class="receipts"><span class="tag ticket">MAK-97</span><span class="tag pr">#239</span><span class="tag pr">#240</span></div>
             </div>
           </summary>
           <div class="guide">
             <span class="avail live">Available now</span>
-            <p class="g-sum">Pick a Shortcut in Settings; OpenWhisp runs it with your transcript as the input.</p>
+            <p class="g-sum">⌘F finds inside the open note; ⌘⇧F filters across all notes; type #tags anywhere in a note.</p>
             <ol>
-              <li>Build a Shortcut in Shortcuts.app that starts with “Receive input” (text) and does whatever you want with it.</li>
-              <li>Open Settings › Output › Output target and choose Shortcut, then pick your Shortcut from the list (or type its name and Refresh).</li>
-              <li>Dictate as usual — OpenWhisp runs `shortcuts run &lt;name&gt;` with your transcript on stdin and hands the text off.</li>
+              <li>Type in the search field (⌘⇧F) to filter the note list by any word in the body.</li>
+              <li>Write a #tag anywhere in a note — it's picked up automatically and appears in the tag menu with a count.</li>
+              <li>Combine a tag and a query; they narrow together. The X button clears both.</li>
+              <li>Inside a note, ⌘F opens the native find bar for incremental search within that note.</li>
             </ol>
-            <p class="g-note">Live now. Runs on the final transcript only (live-typing always goes to the focused app). On any error or timeout it fails open to normal insertion, so your words are never lost.</p>
+            <p class="g-note">Tags are recomputed from the text, never stored, so they can't drift out of sync with what the note says — and “#1”, “issue#5” and URL fragments deliberately don't count as tags. Search is correctly case-insensitive in non-Latin scripts. If the note you're editing filters out of the list, the editor keeps showing it rather than silently moving you somewhere else.</p>
           </div>
         </details>
       </li>
@@ -998,23 +404,24 @@
         <details class="entry">
           <summary>
             <div class="sum-left">
-              <h3>Adjustable AI cleanup, from a light touch to a full polish</h3>
-              <p>Pick how much the AI reshapes your words — None, Low, Medium, or High — and OpenWhisp always keeps your raw transcript so you can revert to exactly what you said in one click.</p>
+              <h3>Two AI actions in the Scratchpad — reformat in place, or summarize into a new note</h3>
+              <p>“Format as Markdown” restructures a messy dictation into headings and lists without changing what it says, replacing the note's text in place — as a single undo step, so ⌘Z gives you the original back and the Edit menu reads “Undo Format as Markdown”. “Summarize” is non-destructive: the summary becomes a new note and the source is left alone. The pad gets its own model override, so you can point these at a different (or larger) model than your dictation cleanup uses, without touching the cleanup setting.</p>
             </div>
             <div class="sum-right">
               <span class="try">How to use<svg class="howto-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span>
-              <div class="receipts"><span class="tag ticket">MAK-35</span><span class="tag pr">#121</span></div>
+              <div class="receipts"><span class="tag ticket">MAK-99</span><span class="tag pr">#241</span></div>
             </div>
           </summary>
           <div class="guide">
             <span class="avail live">Available now</span>
-            <p class="g-sum">Choose a cleanup level in Settings; revert to your exact words anytime.</p>
+            <p class="g-sum">The wand menu in the Scratchpad toolbar — Format as Markdown, or Summarize.</p>
             <ol>
-              <li>Open Settings › Cleanup › Automatic Cleanup and pick a level on the dial: None (verbatim, no AI pass), Low (fixes caps, punctuation, spelling), Medium (also removes fillers and lightly rephrases), or High (also resolves spoken self-corrections like “3, no wait, 4” → “4”).</li>
-              <li>Dictate as usual — the level you chose is applied automatically to each final transcript. None skips the AI entirely.</li>
-              <li>In Settings › Privacy › History, click the revert (↺) button next to any entry the AI reshaped to swap the cleaned text back to your raw words — the originals are copied to your clipboard.</li>
+              <li>Open a note in the Scratchpad and click the wand menu in the toolbar.</li>
+              <li>“Format as Markdown” rewrites the note in place — ⌘Z undoes the whole transform in one step.</li>
+              <li>“Summarize” leaves the note untouched and creates “Summary — &lt;note title&gt;” alongside it.</li>
+              <li>Use the gear popover in the pad to pick a different provider/model for these actions; leaving it alone uses your normal cleanup model.</li>
             </ol>
-            <p class="g-note">Live now. The dial is the single source of truth for AI cleanup — the old on/off “Improve every dictation” toggle (tray + onboarding) now just reflects it. Higher levels trade literal fidelity for polish; the revert button appears only when the AI actually changed your words. Revert currently covers the standard preview and insert-at-end dictation modes (not the live-streaming per-chunk mode, which pastes as it types). It lives in History and, right after a dictation lands, in the post-dictation overlay — a one-tap “Revert to original” pill that swaps the cleaned text back to your raw words in place when it safely can, and otherwise leaves them on the clipboard for ⌘V.</p>
+            <p class="g-note">The reformat is guarded: if the result drops too much of your content, translates it into another language, or comes back as a refusal, the note is kept as-is and the status line says why. A result can only ever land in the note that asked for it — switching notes, closing the pad, or cancelling invalidates delivery, so a slow reply can't paint into the wrong note.</p>
           </div>
         </details>
       </li>
@@ -1022,35 +429,23 @@
         <details class="entry">
           <summary>
             <div class="sum-left">
-              <h3>Voice editing — “scratch that”, “delete last sentence”, “undo”</h3>
-              <p>Fix a misspoken phrase without deleting and re-dictating. A deterministic, offline command layer edits the in-progress text before it's committed. No AI required.</p>
+              <h3>Open a transcribed file in the Scratchpad</h3>
+              <p>Batch file transcription's results were a read-only three-line preview. A finished job now opens as an editable Scratchpad note in one click — the file name, date and duration as a header, then the transcript — matching what meeting transcripts already do.</p>
             </div>
             <div class="sum-right">
               <span class="try">How to use<svg class="howto-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span>
-              <div class="receipts"><span class="tag ticket">MAK-19</span><span class="tag pr">#117</span><span class="tag pr">#136</span></div>
+              <div class="receipts"><span class="tag ticket">MAK-98</span><span class="tag pr">#241</span></div>
             </div>
           </summary>
           <div class="guide">
             <span class="avail live">Available now</span>
-            <p class="g-sum">In Preview mode, say the command on its own and it edits the pending text.</p>
+            <p class="g-sum">Settings › Files → “Open in Scratchpad” on any completed job.</p>
             <ol>
-              <li>Set Settings › Output › Delivery to “Preview, then insert” (the mode that holds the text on-screen until you release the key).</li>
-              <li>Leave “Spoken edit commands” on in that same Delivery section (it’s on by default).</li>
-              <li>Dictate as usual, then pause and say a command on its own — “scratch that” drops the last thing you said, “undo” brings it back.</li>
-              <li>Release the key: the edited text is what gets inserted.</li>
+              <li>Transcribe an audio or video file as usual.</li>
+              <li>On a completed row, click “Open in Scratchpad” (also in the row's menu).</li>
+              <li>The transcript opens as an editable note you can clean up, annotate, or dictate into.</li>
             </ol>
-            <div class="say-block">
-              <p class="say-label">Say</p>
-              <ul class="say-list">
-                <li>“scratch that” — drop the last thing you said</li>
-                <li>“delete last word”</li>
-                <li>“delete last sentence”</li>
-                <li>“new paragraph”</li>
-                <li>“new line”</li>
-                <li>“undo” — reverse the last edit</li>
-              </ul>
-            </div>
-            <p class="g-note">Works in Preview mode (the text is held until release, so an edit can still change it). A command is recognized only when the WHOLE phrase is spoken on its own — say it as its own short utterance, with a pause, so the recognizer punctuates it as a separate sentence. A command buried inside a longer phrase (“finish the report scratch that let me redo”) is left as plain text on purpose, so ordinary speech like “scratch the surface” is never eaten. Parser is case- and punctuation-tolerant (including … and curly quotes).</p>
+            <p class="g-note">Each export makes a fresh note rather than overwriting an earlier one, so re-exporting can never clobber edits you've already made. Jobs that finished with no text don't offer the button.</p>
           </div>
         </details>
       </li>
@@ -1058,25 +453,23 @@
         <details class="entry">
           <summary>
             <div class="sum-left">
-              <h3>A self-learning dictionary — star, sort by use, and accept corrections it proposes</h3>
-              <p>Your Substitutions list now sorts your starred and most-used rules to the top and shows how often each has fired. And when you fix a single misheard word right after dictating, OpenWhisp proposes that fix for you to accept into the dictionary — learned and stored entirely on your Mac, never uploaded.</p>
+              <h3>You can see the model loading now — no more dead first dictation</h3>
+              <p>The first dictation after a launch or an update waited several seconds while the speech model loaded, with nothing on screen saying so — pressing the hotkey in that window simply felt broken. The menu bar now shows “Loading …” or a download percentage while the selected engine is working, pressing the hotkey early brings up the overlay with “Loading model…” instead of nothing, and the overlay no longer claims “Listening…” over a microphone that isn't live yet. When the model is ready the row disappears, so a warm app shows no clutter.</p>
             </div>
             <div class="sum-right">
               <span class="try">How to use<svg class="howto-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span>
-              <div class="receipts"><span class="tag ticket">MAK-41</span><span class="tag pr">#120</span><span class="tag pr">#137</span></div>
+              <div class="receipts"><span class="tag ticket">MAK-94</span><span class="tag pr">#237</span></div>
             </div>
           </summary>
           <div class="guide">
             <span class="avail live">Available now</span>
-            <p class="g-sum">Star and reorder your rules by use, and accept the corrections OpenWhisp learns from your type-overs.</p>
+            <p class="g-sum">Nothing to turn on — press the hotkey right after launch and the overlay tells you the truth.</p>
             <ol>
-              <li>Open Settings › Cleanup › Vocabulary. Your Substitutions open sorted starred-first then most-used, each with a 'used N×' count; 'Sort by use' re-sorts on demand (rows stay put while you type so nothing jumps under the cursor).</li>
-              <li>Click the star on any rule to keep it at the top on the next sort.</li>
-              <li>Dictate into a normal text field, then immediately type over a single misheard word to fix it (e.g. 'kubernetis' → 'kubernetes').</li>
-              <li>OpenWhisp adds that fix to 'Suggested corrections' at the top of the Vocabulary section — click Add to make it a rule, or Dismiss to never be offered it again.</li>
-              <li>Turn the whole capture off with 'Learn corrections as I type over them' if you don't want it.</li>
+              <li>Launch OpenWhisp and open the menu bar during the first few seconds: a disabled row reports the model downloading or loading.</li>
+              <li>Press your dictation hotkey immediately — the overlay appears and says “Loading model…”, then starts listening once the model is genuinely ready.</li>
+              <li>If a load fails, the menu row says why instead of leaving you guessing.</li>
             </ol>
-            <p class="g-note">Live today: star + usage sort + per-rule usage counts, and the full accept/dismiss flow — an accepted suggestion becomes a real substitution that rewrites future transcripts, and nothing is ever added silently. How a suggestion appears today: after an insert made via the Accessibility path, if you type over ONE word within a couple of seconds while the SAME field stays focused and its text is readable via Accessibility, that edit is captured and run through the conservative learner (single-word casing/spelling fixes only). Deferred: capture is a single short-delay re-read, not continuous observation — corrections you make after that window, in paste-only or some web/Electron fields (where the field text isn't Accessibility-readable), or that span multiple words, aren't captured yet. You can always add those rules by hand in the same list.</p>
+            <p class="g-note">Downloading and loading are now reported separately — the load is the wait you pay on every launch after the first. A genuinely wedged load errors out loudly rather than spinning forever.</p>
           </div>
         </details>
       </li>
@@ -1084,129 +477,24 @@
         <details class="entry">
           <summary>
             <div class="sum-left">
-              <h3>Richer local formatting — numbers, lists, and markdown</h3>
-              <p>Opt-in rules turn spoken structure into clean text: "bullet…" into a list, "twenty twenty-six" into 2026, "bold that" into markdown — all deterministic, all off by default so nothing surprises you.</p>
+              <h3>A live voice-command counter on the stream overlay</h3>
+              <p>For streamers who want a widget rather than subtitles: set a trigger phrase and the overlay keeps a running count of how many times you say it, ticking up live on the same local caption page you already point OBS at. Captions and the counter toggle independently, so you can run the counter with subtitles switched off.</p>
             </div>
             <div class="sum-right">
               <span class="try">How to use<svg class="howto-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span>
-              <div class="receipts"><span class="tag ticket">MAK-20</span><span class="tag pr">#119</span></div>
+              <div class="receipts"><span class="tag pr">#232</span></div>
             </div>
           </summary>
           <div class="guide">
             <span class="avail live">Available now</span>
-            <p class="g-sum">Turn on the rule groups you want in Settings, then just speak the structure.</p>
+            <p class="g-sum">Settings › Stream Overlay → set a counter phrase, and add the overlay URL to OBS as a Browser source.</p>
             <ol>
-              <li>In Settings › Cleanup › Formatting, turn on the groups you want — Numbers and years, Currency, Spoken lists, Markdown commands. They're independent and off by default.</li>
-              <li>Dictate naturally — the rules rewrite structure locally, on-device, no LLM.</li>
+              <li>Turn on the Stream Overlay and add its URL to OBS (or any streaming app) as a Browser source.</li>
+              <li>Set the phrase you want counted.</li>
+              <li>Say it while streaming — the count updates live on the overlay.</li>
+              <li>Turn captions off if you only want the counter; the two are independent.</li>
             </ol>
-            <div class="say-block">
-              <p class="say-label">Say</p>
-              <ul class="say-list">
-                <li>“five dollars” → $5,  “ten cents” → 10¢</li>
-                <li>“twenty twenty six” → 2026  (spoken times like “ten thirty” are left alone)</li>
-                <li>“bullet buy milk” → - buy milk,  “number one …” → 1. …</li>
-                <li>“heading intro” → # intro,  “bold ship it” → **ship it**</li>
-              </ul>
-            </div>
-            <p class="g-note">Live now. Each group is off by default so it never touches ordinary prose until you turn it on.</p>
-          </div>
-        </details>
-      </li>
-      <li>
-        <details class="entry">
-          <summary>
-            <div class="sum-left">
-              <h3>Send dictations beyond the focused app</h3>
-              <p>Foundational plumbing for routing a transcript somewhere other than the app you're in — a file, a Shortcut, a webhook. Built to fail open: if a target can't take it, your text still lands where it always did. Never dropped.</p>
-            </div>
-            <div class="sum-right">
-              <span class="try">How to use<svg class="howto-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span>
-              <div class="receipts"><span class="tag ticket">MAK-11</span><span class="tag pr">#122</span><span class="tag pr">#134</span></div>
-            </div>
-          </summary>
-          <div class="guide">
-            <span class="avail live">Available now</span>
-            <p class="g-sum">Route a dictation to a file, Shortcut, or webhook instead of the focused app.</p>
-            <ol>
-              <li>Open Settings › Output › Output target and pick a destination: Focused app (default), File, Shortcut, or Webhook.</li>
-              <li>Fill in that target's details (a file path, a Shortcut, or a webhook URL).</li>
-              <li>Dictate as usual — the final text goes to your chosen target. If it isn't configured or a delivery fails, your words still land in the focused app — never dropped.</li>
-            </ol>
-            <p class="g-note">Live now. The choice is global (one destination for all apps) for this version. Live-typing (“Type live as you speak”) always goes to the focused app; only the final transcript is routed.</p>
-          </div>
-        </details>
-      </li>
-      <li>
-        <details class="entry">
-          <summary>
-            <div class="sum-left">
-              <h3>Dictate straight into a Markdown or text file</h3>
-              <p>Point OpenWhisp at a file — an Obsidian daily note, a Logseq journal, a scratch .md — and your dictation gets appended there instead of typed into the focused app. Add a dated heading if you like, or overwrite for a rolling "last dictation" buffer. All local; if the file can't be written, your words still land in the focused app — never dropped.</p>
-            </div>
-            <div class="sum-right">
-              <span class="try">How to use<svg class="howto-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span>
-              <div class="receipts"><span class="tag ticket">MAK-12</span><span class="tag pr">#127</span><span class="tag pr">#134</span></div>
-            </div>
-          </summary>
-          <div class="guide">
-            <span class="avail live">Available now</span>
-            <p class="g-sum">Choose File as the output target; each dictation is appended with an optional dated heading.</p>
-            <ol>
-              <li>Open Settings › Output › Output target and choose File, then Choose… the file to write to (any .md or .txt — e.g. your vault's daily note).</li>
-              <li>Optionally set a heading template with {{date}}, {{time}}, or {{datetime}} tokens (e.g. "## {{datetime}}") to stamp each entry.</li>
-              <li>Choose Append (add each dictation to the end, blank-line separated) or Overwrite (keep only the latest).</li>
-              <li>Dictate — the final text is written to the file; live partials are ignored so you get one clean entry.</li>
-            </ol>
-            <p class="g-note">Live now. All local; if the file can't be written, your words still land in the focused app — never dropped.</p>
-          </div>
-        </details>
-      </li>
-      <li>
-        <details class="entry">
-          <summary>
-            <div class="sum-left">
-              <h3>Send a dictation straight to a webhook (Notion, Obsidian, Zapier, n8n…)</h3>
-              <p>POST your finished transcript as JSON — text, language, app, and timestamp — to any URL you configure, with optional auth headers. If the endpoint is down or slow, your words still land in the focused app as usual. Never dropped.</p>
-            </div>
-            <div class="sum-right">
-              <span class="try">How to use<svg class="howto-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span>
-              <div class="receipts"><span class="tag ticket">MAK-14</span><span class="tag pr">#128</span><span class="tag pr">#134</span></div>
-            </div>
-          </summary>
-          <div class="guide">
-            <span class="avail live">Available now</span>
-            <p class="g-sum">Point the output target at a URL; OpenWhisp POSTs each dictation there as JSON.</p>
-            <ol>
-              <li>Open Settings › Output › Output target and choose Webhook, then enter your URL and add any headers your endpoint needs (e.g. an Authorization token).</li>
-              <li>Dictate as usual — OpenWhisp POSTs { text, language, appBundleID, timestamp } as JSON to your URL.</li>
-              <li>If the POST fails (non-2xx, network error, or timeout), the same text is typed into the focused app instead — you never lose it.</li>
-            </ol>
-            <p class="g-note">Live now. Content-Type: application/json is always set; your custom headers are applied verbatim, with a short timeout so a slow endpoint fails open quickly.</p>
-          </div>
-        </details>
-      </li>
-      <li>
-        <details class="entry">
-          <summary>
-            <div class="sum-left">
-              <h3>Quiet-dictation mode — whisper into your mic and still get clean text</h3>
-              <p>A new toggle tuned for whispering and very soft speech. It applies a much stronger on-device audio boost (a high-gain normalizer with a hard no-clip limiter) and lowers the speech-detection threshold so quiet words still register as speech instead of being dropped as silence. Pair it with getting close to the mic in a quiet room. Off by default; everything runs locally.</p>
-            </div>
-            <div class="sum-right">
-              <span class="try">How to use<svg class="howto-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span>
-              <div class="receipts"><span class="tag ticket">MAK-45</span><span class="tag pr">#153</span></div>
-            </div>
-          </summary>
-          <div class="guide">
-            <span class="avail live">Available now</span>
-            <p class="g-sum">Settings › Dictation › Microphone › turn on “Quiet-dictation mode”, get within a few inches of the mic, and dictate softly.</p>
-            <ol>
-              <li>Open Settings › Dictation › Microphone.</li>
-              <li>Turn on “Quiet-dictation mode”. (Leave “Auto-boost quiet microphone” on too — quiet mode is the stronger boost curve.)</li>
-              <li>Position the mic within a few inches of your mouth and pick a quiet spot — the boost is aggressive, so it will also lift background noise.</li>
-              <li>Dictate softly or whisper; the lowered speech threshold keeps quiet words from being treated as silence.</li>
-            </ol>
-            <p class="g-note">v1 is a preprocessing preset — a stronger auto-gain plus whisper-friendly VAD/silence thresholds — not a custom whisper model. The boost never clips (hard-limited), and it won't amplify near-silence into hiss. In a noisy room the aggressive gain can raise background noise, so quiet mode is best close to the mic.</p>
+            <p class="g-note">It's a local web server on loopback — the page is served from your own Mac and nothing is uploaded.</p>
           </div>
         </details>
       </li>
@@ -1218,83 +506,38 @@
     <div class="sec-head">
       <span class="dot fix"></span>
       <h2>Fixes</h2>
-      <span class="count">15 shipped</span>
+      <span class="count">6 shipped</span>
     </div>
     <ul class="entries">
       <li class="entry">
-        <h3>Russian is no longer mistaken for Ukrainian mid-sentence</h3>
-        <p>With Auto Detect on, the live translation preview would sometimes claim your language pair wasn't downloaded — because on short Cyrillic fragments the language detector's first guess for Russian speech is often Ukrainian, and that pair genuinely wasn't installed. Detection now prefers the best-confidence language whose pair you actually have downloaded, so the preview stops reporting a problem that isn't there.</p>
-        <div class="receipts"><span class="tag pr">#235</span></div>
+        <h3>⌘V works again — everywhere in the app</h3>
+        <p>Paste was dead in every OpenWhisp window, and had been since the app's first day. As a menu-bar accessory the app never installed a main menu, and macOS routes the standard edit shortcuts through exactly that menu — so ⌘V, ⌘C, ⌘X, ⌘A and ⌘Z did nothing in the Scratchpad, in Settings text fields, everywhere. The app now installs the standard menu and all of them work.</p>
+        <div class="receipts"><span class="tag pr">#242</span></div>
       </li>
       <li class="entry">
-        <h3>Swapping headphones mid-dictation no longer kills the mic</h3>
-        <p>Changing your input device while dictating — plugging in headphones, switching to a different mic — could silently stop capture on several engines, and on Parakeet a config-change loop could kill the mic outright. Capture now restarts cleanly on a device change across every engine, and a slow engine finishing its final words no longer gets cut off, so trailing words stop going missing.</p>
-        <div class="receipts"><span class="tag pr">#224</span><span class="tag pr">#225</span><span class="tag pr">#226</span><span class="tag pr">#227</span></div>
+        <h3>Your vocabulary rules now work when you're translating</h3>
+        <p>Substitution rules key on what the engine actually heard, in the language you spoke — “пара кит” → “parakeet”. On a translating session they never fired: the text was translated first and the rules then ran against English, by which point the mishearing had already been mangled into something no source-language rule could match. Substitutions now run on the raw transcript before translation, so the corrected words are what gets translated — and if translation fails you still get the corrected transcript rather than the raw one.</p>
+        <div class="receipts"><span class="tag pr">#238</span></div>
       </li>
       <li class="entry">
-        <h3>31 verified fixes — races, silent data loss, and release builds that weren't optimised</h3>
-        <p>Another adversarial bug hunt: 31 confirmed issues fixed across the app, including data races, paths that could silently drop a transcript, hot-path performance, and a build flaw where release binaries were being compiled without optimisation.</p>
-        <div class="receipts"><span class="tag pr">#218</span></div>
+        <h3>Russian is no longer auto-detected as Ukrainian</h3>
+        <p>With Auto Detect on, short Cyrillic fragments were often guessed as Ukrainian — a language pair most Russian speakers had never downloaded — so translation reported a missing download that wasn't really the problem. Detection now prefers the best-confidence language whose pair you actually have installed.</p>
+        <div class="receipts"><span class="tag pr">#235</span><span class="tag pr">#238</span></div>
       </li>
       <li class="entry">
-        <h3>Custom vocabulary now works on Parakeet (files, meetings, and re-transcribes)</h3>
-        <p>Custom vocabulary was silently doing nothing on Parakeet — the default engine. It now biases Parakeet's transcription of files, meetings, and history re-transcribes toward your terms (via FluidAudio's built-in keyword spotting). It's batch-only on this engine, so it doesn't apply to live dictation — the Settings footnote says so plainly — and it always fails open: if biasing can't run, you still get your transcript.</p>
-        <div class="receipts"><span class="tag ticket">MAK-71</span><span class="tag ticket">MAK-70</span><span class="tag pr">#178</span></div>
+        <h3>The Scratchpad no longer saves everything on every keystroke</h3>
+        <p>Typing in a note used to re-encode every note's full text to disk and rebuild the whole list on each individual keystroke, which got slower the more notes you had. Edits are now coalesced and written on a background queue, while structural changes — creating or deleting a note — still save immediately. A pending write can never land after a delete and resurrect a note you removed, and everything is flushed when the pad closes or the app quits.</p>
+        <div class="receipts"><span class="tag ticket">MAK-95</span><span class="tag pr">#239</span></div>
       </li>
       <li class="entry">
-        <h3>A 28-fix stability sweep — Scratchpad layout, Settings reset, and a snappier app</h3>
-        <p>A broad bug-hunt across the recent releases fixed 28 verified issues. Highlights: the Scratchpad's note list no longer dwarfs the editor (and the panel remembers its size), “Reset all settings” now actually resets everything it promised, and the app feels faster — the Parakeet audio path was moved off the main thread, removing a source of UI lag during dictation.</p>
-        <div class="receipts"><span class="tag pr">#166</span></div>
+        <h3>“Model: Not checked” no longer sits in the menu</h3>
+        <p>The menu bar could report a model as “Not checked” indefinitely, which told you nothing actionable. Model state is now derived from what the selected engine is actually doing — downloading, loading, ready, or failed with a reason.</p>
+        <div class="receipts"><span class="tag ticket">MAK-94</span><span class="tag pr">#237</span></div>
       </li>
       <li class="entry">
-        <h3>Meeting summary failures now tell you what actually went wrong</h3>
-        <p>When a meeting summary failed, the UI showed a generic error even when the real cause was specific — the provider was unreachable, the model missing, the request rejected. The failure now surfaces the underlying reason so you can fix the right thing instead of guessing.</p>
-        <div class="receipts"><span class="tag pr">#161</span></div>
-      </li>
-      <li class="entry">
-        <h3>Cleanup can no longer silently translate your dictation</h3>
-        <p>Dictating in Russian (or any non-Latin script) with automatic AI cleanup on, a small cleanup model would sometimes translate your text to English — the overlay showed your Russian words but the pasted text came back in English. OpenWhisp now checks the cleaned text against what you dictated: if the cleanup dropped your writing system for Latin, it's treated as a bad translation and your original transcript is kept instead (the same fail-open path used when the LLM errors). The check is deliberately conservative — same-language cleanups, Latin-to-Latin, short phrases, and Russian prose mixed with English code or URLs all pass untouched — and it never runs when you actually asked to translate (Translate to English, Improve-translation mode, a spoken refine instruction, or an agent-bridge refine). The cleanup prompts were hardened too.</p>
-        <div class="receipts"><span class="tag pr">#157</span></div>
-      </li>
-      <li class="entry">
-        <h3>Refining an English dictation can no longer come back in another language</h3>
-        <p>That language guard was one-directional: it caught Russian-cleaned-to-English, but not the inverse. If the “Improve translation” target-language picker was ever left on Russian, an English dictation you refined with AI would come back in Russian — the picker told the polish prompt to produce Russian even though the engine only ever translates <em>to</em> English. Now the improve-translation flow always polishes in English, the stale (and un-honorable) target-language picker is gone, and the language guard is symmetric: it rejects a cleanup that swapped your writing system in either direction, while genuinely-intended translations still pass because their expected target script is declared. Same conservative thresholds — same-language cleanups, short phrases, and mixed code/URLs are untouched, and spoken-instruction, agent-bridge, and custom-Mode refines still own their language contract.</p>
-        <div class="receipts"><span class="tag pr">#162</span></div>
-      </li>
-      <li class="entry">
-        <h3>Silence no longer errors on one backend but not the other</h3>
-        <p>Dictating nothing now quietly produces nothing on both whisper backends — no more stray error toast depending on which engine you'd picked in Advanced settings.</p>
-        <div class="receipts"><span class="tag ticket">MAK-23</span><span class="tag pr">#123</span></div>
-      </li>
-      <li class="entry">
-        <h3>OpenWhisp can't accidentally kill your other whisper servers</h3>
-        <p>The engine now checks a process is one it actually launched — by full path, not just name — before signaling it, so your own Homebrew or hand-built whisper-server is safe. Plus a fix for a startup port race.</p>
-        <div class="receipts"><span class="tag ticket">MAK-27</span><span class="tag ticket">MAK-28</span><span class="tag pr">#118</span></div>
-      </li>
-      <li class="entry">
-        <h3>A data race in Apple Speech dictation, closed</h3>
-        <p>Session state is now confined to a single context, so a late recognition callback can never leak a partial from one dictation into the next.</p>
-        <div class="receipts"><span class="tag ticket">MAK-29</span><span class="tag pr">#116</span></div>
-      </li>
-      <li class="entry">
-        <h3>Agent rate limiting counts sessions on one honest clock</h3>
-        <p>The per-client session cap could be bypassed by a long-running session straddling the window edge. It now measures membership and expiry on the same clock, so the cap holds.</p>
-        <div class="receipts"><span class="tag ticket">MAK-31</span><span class="tag pr">#112</span></div>
-      </li>
-      <li class="entry">
-        <h3>Post-processing scripts clean up after themselves</h3>
-        <p>Timed-out post-processing scripts now reap reliably — honest about best-effort process-group isolation, with a guarded kill that can never signal OpenWhisp's own processes.</p>
-        <div class="receipts"><span class="tag ticket">MAK-30</span><span class="tag pr">#115</span></div>
-      </li>
-      <li class="entry">
-        <h3>The audio-device watcher tears down cleanly</h3>
-        <p>The CoreAudio listener that notices when you plug in a mic now removes itself symmetrically — no lingering, unremovable observer.</p>
-        <div class="receipts"><span class="tag ticket">MAK-33</span><span class="tag pr">#114</span></div>
-      </li>
-      <li class="entry">
-        <h3>Onboarding catches a dead hotkey before you test it</h3>
-        <p>The setup flow now does a live Input Monitoring check on the hotkey step. If OpenWhisp can't detect key presses, you get an inline “Open System Settings → Input Monitoring” fix that re-checks itself — so you never reach the “try it” step with a push-to-talk key that silently can't fire.</p>
-        <div class="receipts"><span class="tag ticket">MAK-24</span><span class="tag pr">#140</span></div>
+        <h3>A brand-new note no longer says it was updated “in 0s”</h3>
+        <p>A freshly created note's timestamp could land a rounding hair in the future, which the relative date formatter rendered as the nonsensical “in 0s” in the sidebar. Anything under a minute old now reads “now”.</p>
+        <div class="receipts"><span class="tag pr">#240</span></div>
       </li>
     </ul>
   </section>
@@ -1304,76 +547,23 @@
     <div class="sec-head">
       <span class="dot improve"></span>
       <h2>Under the hood</h2>
-      <span class="count">12 shipped</span>
+      <span class="count">3 shipped</span>
     </div>
     <ul class="entries">
       <li class="entry">
-        <h3>macOS 15 is the new minimum — and every engine can translate now</h3>
-        <p>OpenWhisp now requires macOS 15 (Sequoia) or later. That floor is what lets on-device translation work the same way for every transcription engine: translation moved off the speech engines and onto Apple's text translation, so Parakeet — the default, fastest engine — can translate too, which it never could before. The whisper.cpp and WhisperKit engines are still included and still work; they're simply no longer the recommended picks.</p>
-        <div class="receipts"><span class="tag ticket">MAK-90</span><span class="tag ticket">MAK-91</span><span class="tag ticket">MAK-93</span><span class="tag pr">#233</span></div>
+        <h3>Plugins are built to be inspectable, and to fail visibly</h3>
+        <p>Every decision a plugin makes — which template matches, which plugin claims a spoken phrase, which shortcut it's granted, what it's allowed to receive — lives in the tested core rather than in window code, so it's covered by the same suite as the rest of the app. The build pipeline verifies the shipped binary actually contains the plugins, because plugins live outside the app's main source glob: a broken source list would otherwise produce an app that builds, runs, and simply has an empty Plugins pane with no error anywhere. CI now builds both configurations — with plugins and without.</p>
+        <div class="receipts"><span class="tag ticket">MAK-100</span><span class="tag pr">#244</span></div>
       </li>
       <li class="entry">
-        <h3>The self-learning dictionary now catches multi-word corrections</h3>
-        <p>When you fix a transcription by typing over it, OpenWhisp used to notice only single-word corrections. It now picks up short multi-word fixes as well, and weighs how often you've made the same correction before proposing it — so the dictionary gets smarter from the way you already work, with no telemetry.</p>
-        <div class="receipts"><span class="tag ticket">MAK-86</span><span class="tag pr">#216</span></div>
+        <h3>Developer probes are compiled out of the app you install</h3>
+        <p>The meme plugin's tracing and its launch-triggered debug hooks are now behind the same instrumentation flag the LLM bench already used, so they don't exist in a shipped build. An environment variable that opens a window and drives a generation is a reasonable debugging tool and a poor thing to leave reachable in a signed app holding microphone and Accessibility permissions.</p>
+        <div class="receipts"><span class="tag ticket">MAK-100</span><span class="tag pr">#244</span></div>
       </li>
       <li class="entry">
-        <h3>“Nothing leaves your Mac” — now with a proof you can run yourself</h3>
-        <p>A new privacy page documents exactly what does and doesn't touch the network, backed by an audit script you can run against your own copy: it watches OpenWhisp's network activity while you dictate and prints a verdict. The claim is checkable, not just stated.</p>
-        <div class="receipts"><span class="tag ticket">MAK-78</span><span class="tag pr">#208</span></div>
-      </li>
-      <li class="entry">
-        <h3>A calmer Settings — a short everyday list, power-user panes tucked away</h3>
-        <p>The Settings sidebar had grown to a wall of 15 rows. It's now a short Setup section with the panes you actually touch, plus a collapsible “More features” group for the rest (it auto-opens if you deep-link into one). A few power-user controls moved out of the first-run flow too — so a fresh install can be productive without changing a single setting. Nothing was removed or renamed; your existing settings are untouched.</p>
-        <div class="receipts"><span class="tag ticket">MAK-62</span><span class="tag pr">#194</span></div>
-      </li>
-      <li class="entry">
-        <h3>Five-minute “voice for your agent” setup guides</h3>
-        <p>New setup guides walk you through giving your coding agent a voice in about five minutes — one page each for Claude Code, Cursor, and any generic MCP client, plus an honest comparison of OpenWhisp against Claude Code /voice, VoiceMode, and Spokenly. The Claude Code guide has dedicated sections for API-key / Amazon Bedrock users, SSH / remote sessions, and HIPAA / privacy-locked orgs — exactly the setups where a cloud voice feature can't go.</p>
-        <div class="receipts"><span class="tag ticket">MAK-60</span><span class="tag pr">#187</span></div>
-      </li>
-      <li>
-        <details class="entry">
-          <summary>
-            <div class="sum-left">
-              <h3>Parakeet is now the default, recommended transcription engine</h3>
-              <p>After testing well, the Parakeet realtime engine is promoted from experimental to the default: a fresh install downloads and uses it from the very first launch, and it carries the “Recommended” badge in Settings › Models. The change is safe for existing users — anyone already on WhisperKit (or any engine they chose) is left exactly where they were, so an update never swaps a working engine out from under you.</p>
-            </div>
-            <div class="sum-right">
-              <div class="receipts"><span class="tag ticket">MAK-46</span><span class="tag pr">#172</span></div>
-            </div>
-          </summary>
-        </details>
-      </li>
-      <li class="entry">
-        <h3>Discover what OpenWhisp can do — a Tips &amp; Commands cheat sheet + first-run overlay hints</h3>
-        <p>A new "Tips &amp; Commands" menu item opens a cheat sheet of every gesture, spoken command, and feature that actually ships — with the real Settings path for each. Onboarding now ends with a short "What's next" card, and for your first few sessions the dictation overlay rotates a dismissible one-line tip ("say 'scratch that' to undo") so the deeper features aren't buried. Hints auto-off after the first-run window and never interrupt an agent question or a refine.</p>
-        <div class="receipts"><span class="tag ticket">MAK-25</span><span class="tag pr">#149</span></div>
-      </li>
-      <li class="entry">
-        <h3>One place for text transforms</h3>
-        <p>The dictation pipeline now runs through a single, ordered post-processing chain — the groundwork that lets new transforms and output targets drop in cleanly, with behavior verified byte-for-byte against the old path.</p>
-        <div class="receipts"><span class="tag ticket">MAK-15</span><span class="tag pr">#124</span></div>
-      </li>
-      <li class="entry">
-        <h3>Corrupt settings files can't take the app down</h3>
-        <p>All five on-device data stores now share one hardened loader: a bad file is quarantined and the app carries on with sane defaults, instead of a fix living in only one of them.</p>
-        <div class="receipts"><span class="tag ticket">MAK-22</span><span class="tag pr">#113</span></div>
-      </li>
-      <li class="entry">
-        <h3>End-to-end audio testing, so features stay working</h3>
-        <p>A full regression suite now feeds pre-recorded audio through the whole pipeline — the reason "1458 tests passing" is more than a number. Every feature above ships with coverage.</p>
-        <div class="receipts"><span class="tag ticket">E2E</span><span class="tag pr">#107–110</span></div>
-      </li>
-      <li class="entry">
-        <h3>One subprocess lifecycle for both bundled servers</h3>
-        <p>OpenWhisp runs two local helper processes — whisper-server for transcription and llama-server for on-device refine. Their start/stop/cleanup code was copy-pasted between the two; now it lives in one shared, tested place, so a fix to how a server is launched or reaped applies to both. The port a server binds is also acquired more safely, closing a race where two starts could collide on one port.</p>
-        <div class="receipts"><span class="tag ticket">MAK-21</span><span class="tag pr">#152</span></div>
-      </li>
-      <li class="entry">
-        <h3>Sturdier agent bridge — the MCP adapter now speaks a typed protocol and holds one connection</h3>
-        <p>The MCP server that lets coding agents drive OpenWhisp was rebuilt on the same typed, tested message envelopes the rest of the bridge uses, instead of hand-assembled JSON. It also keeps a single connection to the app open across tool calls (reconnecting by itself if the app restarts) rather than reconnecting every time — fewer moving parts, same behavior, now covered by its own tests.</p>
-        <div class="receipts"><span class="tag ticket">MAK-5</span><span class="tag pr">#154</span></div>
+        <h3>The plugin system is documented, including what it can't do yet</h3>
+        <p>docs/PLUGINS.md is the reference: the architecture, the full manifest schema, how to write a plugin today, and — deliberately — the honest limits. The network-hosts list is a disclosure and not a sandbox; the clipboard gate is real at the host but can't bind an in-process plugin; real enforcement only arrives at a process boundary. The route to installing a plugin without rebuilding the app is written down as a committed plan rather than left as an open question.</p>
+        <div class="receipts"><span class="tag ticket">MAK-100</span><span class="tag pr">#244</span></div>
       </li>
     </ul>
   </section>
@@ -1383,7 +573,7 @@
   </div>
 
   <div class="foot">
-    <span>OpenWhisp · shipped July 10, 2026</span>
+    <span>OpenWhisp · shipped August 4, 2026</span>
     <span><a href="https://github.com/initcore0/openwhisp">github.com/initcore0/openwhisp</a></span>
   </div>
 </div>
