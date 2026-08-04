@@ -652,28 +652,13 @@ final class ParakeetStreamingEngine: NSObject, StreamingTranscriptionEngine {
         if inFlightLoad == failed { inFlightLoad = nil }
     }
 
-    /// Rate-limits download-progress reports before they hop to the main actor:
-    /// FluidAudio's ProgressHandler fires per byte-chunk (hundreds/sec on a fast
-    /// link), and each report is a main-actor Task. Whole-percent granularity is
-    /// all the UI renders anyway.
-    private final class ProgressThrottle: @unchecked Sendable {
-        private let lock = NSLock()
-        private var lastPercent = -1
-        /// Returns true when `fraction` crossed into a new whole percent.
-        func shouldReport(_ fraction: Double) -> Bool {
-            let percent = Int((fraction * 100).rounded(.down))
-            lock.lock(); defer { lock.unlock() }
-            guard percent != lastPercent else { return false }
-            lastPercent = percent
-            return true
-        }
-    }
-
     @MainActor
     private func loadTaskOnMain() -> Task<any ParakeetStreamSession, Error> {
         if let existing = inFlightLoad { return existing }
         let variant = variantID
-        let throttle = ProgressThrottle()
+        // Whole-percent throttle (ParakeetProgressThrottle, shared with the
+        // batch engine) so per-byte-chunk reports don't flood the main actor.
+        let throttle = ParakeetProgressThrottle()
         // Forward real download/compile progress into the readiness stream
         // (menu row + onboarding bar). Weak: a replaced engine must not keep
         // reporting into the tracker.

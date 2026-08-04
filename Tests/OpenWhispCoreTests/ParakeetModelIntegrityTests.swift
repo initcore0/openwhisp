@@ -165,6 +165,87 @@ final class ParakeetModelIntegrityTests: XCTestCase {
         )
     }
 
+    // MARK: - Non-variant repos (batch TDT v3 + CTC biasing manifests)
+
+    private var batchListing: Set<String> {
+        [
+            "Preprocessor.mlmodelc/coremldata.bin",
+            "Encoder.mlmodelc/coremldata.bin",
+            "Decoder.mlmodelc/coremldata.bin",
+            "JointDecisionv3.mlmodelc/coremldata.bin",
+            "parakeet_vocab.json",
+        ]
+    }
+
+    private var ctcListing: Set<String> {
+        [
+            "MelSpectrogram.mlmodelc/coremldata.bin",
+            "AudioEncoder.mlmodelc/coremldata.bin",
+            "vocab.json",
+            "tokenizer.json",
+        ]
+    }
+
+    func testNonVariantRepoFoldersMatchFluidAudioLayout() {
+        // Pin the folder names the batch/CTC purge-and-redownload repairs key
+        // on. FluidAudio derives most from the HF repo name minus "-coreml" —
+        // but NOT the CTC folder, which keeps the suffix (`Repo.folderName`).
+        XCTAssertEqual(ParakeetModelIntegrity.batchRepoFolder, "parakeet-tdt-0.6b-v3")
+        XCTAssertEqual(ParakeetModelIntegrity.ctcBiasRepoFolder, "parakeet-ctc-110m-coreml")
+    }
+
+    func testBatchCompleteRepoIsComplete() {
+        XCTAssertEqual(
+            ParakeetModelIntegrity.verdict(
+                requiredPaths: ParakeetModelIntegrity.batchRequiredPaths, listing: batchListing),
+            .complete
+        )
+    }
+
+    func testBatchMissingFolderIsNotDownloaded() {
+        XCTAssertEqual(
+            ParakeetModelIntegrity.verdict(
+                requiredPaths: ParakeetModelIntegrity.batchRequiredPaths, listing: nil),
+            .notDownloaded
+        )
+    }
+
+    func testBatchTornEncoderBundleIsIncomplete() {
+        // The batch flavor of the fresh-install trap: the encoder .mlmodelc
+        // directory exists (FluidAudio's `modelsExist` fileExists check passes,
+        // so the download is skipped forever) but its coremldata.bin never
+        // landed — the file engine must not treat this repo as installed.
+        var listing = batchListing
+        listing.remove("Encoder.mlmodelc/coremldata.bin")
+        listing.insert("Encoder.mlmodelc/model.mil")
+        XCTAssertEqual(
+            ParakeetModelIntegrity.verdict(
+                requiredPaths: ParakeetModelIntegrity.batchRequiredPaths, listing: listing),
+            .incomplete(missing: ["Encoder.mlmodelc/coremldata.bin"])
+        )
+    }
+
+    func testCtcBiasCompleteRepoIsComplete() {
+        XCTAssertEqual(
+            ParakeetModelIntegrity.verdict(
+                requiredPaths: ParakeetModelIntegrity.ctcBiasRequiredPaths, listing: ctcListing),
+            .complete
+        )
+    }
+
+    func testCtcBiasManifestRequiresTheTokenizerJson() {
+        // FluidAudio's own presence gate never checks tokenizer.json — the
+        // models load fine and tokenization then fails. The manifest treats a
+        // tokenizer-less cache as torn so the repair path covers it too.
+        var listing = ctcListing
+        listing.remove("tokenizer.json")
+        XCTAssertEqual(
+            ParakeetModelIntegrity.verdict(
+                requiredPaths: ParakeetModelIntegrity.ctcBiasRequiredPaths, listing: listing),
+            .incomplete(missing: ["tokenizer.json"])
+        )
+    }
+
     // MARK: - Verdict → badge mapping (the picker rows)
 
     func testVerdictStateMapping() {

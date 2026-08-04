@@ -34,6 +34,16 @@ enum FluidAudioModelsLocator {
         ParakeetModelIntegrity.verdict(forVariant: id, listing: fileListing(forVariant: id))
     }
 
+    /// Completeness verdict for a non-variant repo (the batch TDT v3 model, the
+    /// CTC biasing model) against its explicit manifest — same check as
+    /// `verdict(forVariant:)` for repos that aren't ParakeetCatalog variants.
+    static func verdict(forRepoFolder folder: String, requiredPaths: [String])
+        -> ParakeetModelIntegrity.Verdict
+    {
+        ParakeetModelIntegrity.verdict(
+            requiredPaths: requiredPaths, listing: fileListing(forRepoFolder: folder))
+    }
+
     /// Recursive file listing (relative paths) of a variant's repo folder, or
     /// nil when the folder doesn't exist. Names only — no attributes — so it's
     /// cheap even for the ~600 MB repos (a few dozen entries).
