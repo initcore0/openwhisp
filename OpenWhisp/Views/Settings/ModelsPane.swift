@@ -6,6 +6,9 @@ import Cocoa
 /// and Advanced → Storage sections.
 struct ModelsPane: View {
     @ObservedObject var appState: AppState
+    /// Live engine readiness (real Parakeet download percentage / compile phase /
+    /// mapped failure), for the status row under the variant picker.
+    @ObservedObject private var readinessTracker = ModelReadinessTracker.shared
 
     // Model storage: the scanned list (refreshed on appear + after a delete) and
     // the item pending a delete confirmation.
@@ -13,10 +16,11 @@ struct ModelsPane: View {
     @State private var storageDeleteTarget: ModelStorage.Item?
     @State private var storageMessage: String = ""
     @State private var showAllWhisperModels = false
-    /// Cached FluidAudio repo folders present on disk, so the Parakeet variant
-    /// rows never walk the directory during rendering (refreshed on appear and
+    /// Cached per-variant completeness verdicts, so the Parakeet variant rows
+    /// never walk the directory during rendering (refreshed on appear and
     /// whenever a prefetch finishes, i.e. `parakeetInFlightVariants` changes).
-    @State private var parakeetInstalledFolders: Set<String> = []
+    /// Verdict-based — a torn download reads "Not downloaded", never installed.
+    @State private var parakeetVerdicts: [String: ParakeetModelIntegrity.Verdict] = [:]
 
     private var isWhisperCpp: Bool { appState.transcriptionEngine == "whisper" }
     private var isWhisperKit: Bool { appState.transcriptionEngine == "whisperKit" }
@@ -48,16 +52,16 @@ struct ModelsPane: View {
         .onAppear {
             appState.refreshWhisperKitStagedModels()
             refreshStorage()
-            parakeetInstalledFolders = AppState.installedFluidAudioFolders()
+            refreshParakeetVerdicts()
         }
         // Sizes refresh automatically after downloads finish — no manual button.
         .onChange(of: appState.isModelDownloading) { refreshStorage() }
         .onChange(of: appState.whisperKitDownloadingModel) { refreshStorage() }
         .onChange(of: appState.isLLMModelDownloading) { refreshStorage() }
-        // A Parakeet prefetch finishing flips the in-flight set — rescan the
-        // installed folders (and sizes) once, in event context, not per render.
+        // A Parakeet prefetch finishing flips the in-flight set — re-verify the
+        // variants (and sizes) once, in event context, not per render.
         .onChange(of: appState.parakeetInFlightVariants) {
-            parakeetInstalledFolders = AppState.installedFluidAudioFolders()
+            refreshParakeetVerdicts()
             refreshStorage()
         }
         .confirmationDialog(
@@ -175,15 +179,16 @@ struct ModelsPane: View {
 
     /// Parakeet variant picker (MAK-46). FluidAudio stages the model itself on
     /// first use (HuggingFace → ~/Library/Application Support/FluidAudio);
-    /// selecting a variant prefetches it in the background. FluidAudio exposes no
-    /// download progress, so each row shows a COARSE state — "Not downloaded" /
-    /// "Downloading…" / (installed → no badge) — via ParakeetDownloadStatePolicy.
+    /// selecting a variant prefetches it in the background. Each row shows a
+    /// verified state — "Not downloaded" / "Downloading…" / (installed → no
+    /// badge) — and the status row underneath carries the live percentage,
+    /// integrity result, and the Redownload repair for the selected variant.
     private var parakeetModelSection: some View {
         Section {
             ForEach(ParakeetCatalog.variants, id: \.id) { variant in
                 let state = ParakeetDownloadStatePolicy.state(
                     forVariant: variant.id,
-                    installedFolders: parakeetInstalledFolders,
+                    verdict: parakeetVerdicts[variant.id] ?? .notDownloaded,
                     inFlightVariants: appState.parakeetInFlightVariants
                 )
                 SelectableRow(
@@ -192,11 +197,92 @@ struct ModelsPane: View {
                     isSelected: appState.parakeetVariant == variant.id
                 ) { appState.parakeetVariant = variant.id }
             }
+
+            parakeetStatusView
         } header: {
             Text("Model")
         } footer: {
-            SettingsFootnote("The model downloads automatically the first time it's needed and is cached under Application Support/FluidAudio. All transcription stays on your Mac.")
+            SettingsFootnote("Models download automatically the first time they're needed and are cached under Application Support/FluidAudio. Files are verified on disk; Redownload replaces a damaged copy. All transcription stays on your Mac.")
         }
+    }
+
+    /// Live status for the SELECTED variant: download percentage while fetching,
+    /// the compile phase, a verified checkmark when complete, and — on failure
+    /// or an incomplete cache — the explicit Redownload repair the menu-bar
+    /// "Model unavailable" error previously had no answer to.
+    @ViewBuilder private var parakeetStatusView: some View {
+        let selectedVerdict =
+            parakeetVerdicts[ParakeetCatalog.normalize(appState.parakeetVariant)] ?? .notDownloaded
+        switch readinessTracker.readiness {
+        case .downloading(let progress):
+            VStack(alignment: .leading, spacing: 6) {
+                if let progress, progress > 0 {
+                    ProgressView(value: min(progress, 1)).frame(maxWidth: 280)
+                    Text("Downloading… \(Int(min(progress, 1) * 100))%")
+                        .font(.caption).foregroundColor(.secondary)
+                } else {
+                    HStack(spacing: 8) {
+                        ProgressView().controlSize(.small)
+                        Text("Downloading…").font(.caption).foregroundColor(.secondary)
+                    }
+                }
+            }
+            .padding(.vertical, 4)
+        case .loading:
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text("Loading the model…").font(.caption).foregroundColor(.secondary)
+            }
+            .padding(.vertical, 4)
+        case .failed(let reason):
+            VStack(alignment: .leading, spacing: 8) {
+                Label(reason, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundColor(.orange)
+                Button("Redownload Model") { redownloadSelectedParakeetVariant() }
+            }
+            .padding(.vertical, 4)
+        default:
+            switch selectedVerdict {
+            case .complete:
+                Label("Model files verified", systemImage: "checkmark.seal")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .padding(.vertical, 2)
+            case .incomplete:
+                VStack(alignment: .leading, spacing: 8) {
+                    Label("Model files are incomplete — redownload to repair.",
+                          systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundColor(.orange)
+                    Button("Redownload Model") { redownloadSelectedParakeetVariant() }
+                }
+                .padding(.vertical, 4)
+            case .notDownloaded:
+                EmptyView()
+            }
+        }
+    }
+
+    /// Purge the selected variant's repo folder and prefetch it again — the
+    /// explicit repair for a damaged cache (also reachable implicitly: a failed
+    /// load with files present triggers the engine's own purge-and-redownload).
+    private func redownloadSelectedParakeetVariant() {
+        let variant = ParakeetCatalog.normalize(appState.parakeetVariant)
+        if let folder = ParakeetDownloadStatePolicy.repoFolder(forVariant: variant) {
+            try? FluidAudioModelsLocator.removeRepoFolder(folder)
+        }
+        refreshParakeetVerdicts()
+        refreshStorage()
+        appState.prefetchParakeetVariant()
+    }
+
+    /// Re-verify every catalog variant's on-disk completeness (event context
+    /// only — never during render).
+    private func refreshParakeetVerdicts() {
+        parakeetVerdicts = Dictionary(uniqueKeysWithValues: ParakeetCatalog.variants.map {
+            ($0.id, FluidAudioModelsLocator.verdict(forVariant: $0.id))
+        })
     }
 
     /// Variant subtitle with the coarse download-state badge appended (installed

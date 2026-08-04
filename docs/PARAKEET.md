@@ -188,8 +188,11 @@ the level-tick clock finishes the session once the window elapses. Pure timing i
    a separate model family — a possible follow-up.
 2. **Utterance-onset clipping** on the streaming Unified tier (drops a leading word at
    onset). The TDT v3 file engine and the multilingual streaming variant do not clip.
-3. **No download progress.** FluidAudio exposes no progress callback; the Models pane
-   shows a coarse three-state indicator instead of a percentage.
+3. ~~**No download progress.**~~ Resolved: FluidAudio 0.15.5's `ProgressHandler` is
+   threaded through `ParakeetBridge.loadStreamSession` — the menu bar, onboarding,
+   and the Models pane show a real percentage, and `ParakeetModelIntegrity` verifies
+   the cache on disk (a corrupt/torn download is purged and redownloaded once
+   automatically; Settings → Models has an explicit "Redownload Model" repair).
 4. **Meeting speaker attribution** uses the existing Me/Them heuristic; Parakeet
    token timestamps could feed diarization, and FluidAudio ships an offline diarizer
    — a follow-up if Parakeet backs meetings with per-speaker labels.

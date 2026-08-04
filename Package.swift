@@ -48,6 +48,7 @@ let package = Package(
                 "ParakeetTailHallucination.swift",
                 "AgentContextVocabulary.swift",
                 "ParakeetDownloadState.swift",
+                "ParakeetModelIntegrity.swift",
                 "AgentEouAutoStop.swift",
                 "StreamingRoutePolicy.swift",
                 "SpeechAnalyzerAvailability.swift",

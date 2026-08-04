@@ -599,26 +599,23 @@ final class ParakeetStreamingEngine: NSObject, StreamingTranscriptionEngine {
         }
         // MAK-94: report the phase we're about to enter. FluidAudio downloads
         // into the variant's repo folder and only then compiles + loads the
-        // CoreML session, so "folder on disk" is the honest download/load split —
-        // and it's the LOAD that the user hits on every launch after the first.
-        // FluidAudio exposes no progress callback, hence the nil progress.
-        let onDisk = ParakeetDownloadStatePolicy.state(
-            forVariant: variantID,
-            installedFolders: FluidAudioModelsLocator.installedFolders(),
-            inFlightVariants: []
-        ) == .installed
+        // CoreML session, so "files verified complete" is the honest
+        // download/load split — and it's the LOAD that the user hits on every
+        // launch after the first. Verified completeness, not folder presence: a
+        // torn first-run download leaves a folder that FluidAudio's presence
+        // gate accepts but that still has a (re)download ahead of it.
+        // Real fractions replace the nil the moment the downloader reports.
+        let onDisk = FluidAudioModelsLocator.verdict(forVariant: variantID) == .complete
         reportReadiness(onDisk ? .loading : .downloading(progress: nil))
         // Route through ensureLoaded so a FAILED load clears `inFlightLoad`
         // (clearFailedLoad) before the error is swallowed — otherwise a failed
         // download poisons the cache and later prefetches no-op forever.
+        // ensureLoaded reports the terminal readiness edge (.ready/.failed)
+        // itself, so the lazy session-start path stays in sync too.
         do {
             _ = try await ensureLoaded()
-            // A download that just completed transitions through .loading before
-            // the session lands; emitting .ready here is the terminal edge.
-            reportReadiness(.ready)
             return true
         } catch {
-            reportReadiness(.failed(error.localizedDescription))
             return false
         }
     }
@@ -630,9 +627,19 @@ final class ParakeetStreamingEngine: NSObject, StreamingTranscriptionEngine {
         do {
             let session = try await task.value
             await storeSession(session)
+            // Terminal readiness edge here (not only in prefetchAwaiting) so a
+            // LAZY load — first dictation triggering the download — also lands
+            // the menu/overlay on .ready instead of a stale "Downloading…".
+            await reportReadiness(.ready)
             return session
         } catch {
             await clearFailedLoad(task)
+            // Cancellation is a variant switch replacing this engine, not a
+            // failure of the model — reporting it would flash a bogus error
+            // (and the successor engine re-reports through its own callback).
+            if !(error is CancellationError) {
+                await reportReadiness(.failed(error.localizedDescription))
+            }
             throw error
         }
     }
@@ -645,15 +652,75 @@ final class ParakeetStreamingEngine: NSObject, StreamingTranscriptionEngine {
         if inFlightLoad == failed { inFlightLoad = nil }
     }
 
+    /// Rate-limits download-progress reports before they hop to the main actor:
+    /// FluidAudio's ProgressHandler fires per byte-chunk (hundreds/sec on a fast
+    /// link), and each report is a main-actor Task. Whole-percent granularity is
+    /// all the UI renders anyway.
+    private final class ProgressThrottle: @unchecked Sendable {
+        private let lock = NSLock()
+        private var lastPercent = -1
+        /// Returns true when `fraction` crossed into a new whole percent.
+        func shouldReport(_ fraction: Double) -> Bool {
+            let percent = Int((fraction * 100).rounded(.down))
+            lock.lock(); defer { lock.unlock() }
+            guard percent != lastPercent else { return false }
+            lastPercent = percent
+            return true
+        }
+    }
+
     @MainActor
     private func loadTaskOnMain() -> Task<any ParakeetStreamSession, Error> {
         if let existing = inFlightLoad { return existing }
         let variant = variantID
+        let throttle = ProgressThrottle()
+        // Forward real download/compile progress into the readiness stream
+        // (menu row + onboarding bar). Weak: a replaced engine must not keep
+        // reporting into the tracker.
+        let onProgress: @Sendable (ParakeetLoadPhase) -> Void = { [weak self] phase in
+            switch phase {
+            case .downloading(let fraction):
+                guard throttle.shouldReport(fraction) else { return }
+                Task { @MainActor [weak self] in
+                    self?.reportReadiness(.downloading(progress: fraction))
+                }
+            case .compiling:
+                Task { @MainActor [weak self] in
+                    self?.reportReadiness(.loading)
+                }
+            }
+        }
         let task = Task<any ParakeetStreamSession, Error> {
             NSLog("[Parakeet] loading variant '%@'…", variant)
-            let session = try await ParakeetBridge.loadStreamSession(variantID: variant)
-            NSLog("[Parakeet] variant loaded.")
-            return session
+            do {
+                let session = try await ParakeetBridge.loadStreamSession(
+                    variantID: variant, onProgress: onProgress)
+                NSLog("[Parakeet] variant loaded.")
+                return session
+            } catch let error as ParakeetBridgeError {
+                // Corrupt-cache repair (the fresh-install trap): the repo folder
+                // exists — so FluidAudio's presence gate will skip the download
+                // forever — but the model can't load (torn/interrupted first-run
+                // download). Purge the variant's repo and redownload once, inside
+                // the single-flight task so concurrent waiters share one repair.
+                // A download error is NOT repairable by deleting bytes, and
+                // cancellation never reaches here (it stays untyped).
+                guard case .load(let underlying) = error,
+                      let folder = ParakeetDownloadStatePolicy.repoFolder(forVariant: variant),
+                      FluidAudioModelsLocator.installedFolders().contains(folder)
+                else { throw error }
+                NSLog(
+                    "[Parakeet] load failed with model files present (%@) — purging '%@' and redownloading once",
+                    underlying, folder)
+                try? FluidAudioModelsLocator.removeRepoFolder(folder)
+                Task { @MainActor [weak self] in
+                    self?.reportReadiness(.downloading(progress: nil))
+                }
+                let session = try await ParakeetBridge.loadStreamSession(
+                    variantID: variant, onProgress: onProgress)
+                NSLog("[Parakeet] variant loaded after cache repair.")
+                return session
+            }
         }
         inFlightLoad = task
         return task

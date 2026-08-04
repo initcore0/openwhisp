@@ -147,11 +147,9 @@ final class ModelReadinessTracker: ObservableObject {
         let variant = ParakeetCatalog.normalize(appState.parakeetVariant)
         let observation = EngineReadinessResolver.ParakeetObservation(
             prefetchInFlight: appState.parakeetInFlightVariants.contains(variant),
-            modelOnDisk: ParakeetDownloadStatePolicy.state(
-                forVariant: variant,
-                installedFolders: AppState.installedFluidAudioFolders(),
-                inFlightVariants: []
-            ) == .installed,
+            // Verified completeness, not folder presence — a torn download must
+            // resolve as "still downloading", never as bytes-staged .loading.
+            modelOnDisk: FluidAudioModelsLocator.verdict(forVariant: variant) == .complete,
             sessionLoaded: appState.parakeetStreamEngine?.isSessionLoaded ?? false,
             prefetchFailed: appState.parakeetPrefetchFailed
         )

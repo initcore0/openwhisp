@@ -11,6 +11,43 @@ import FluidAudio
 ///     streaming manager shapes (`any StreamingAsrManager` and the Nemotron
 ///     multilingual actor);
 ///   - the batch (TDT v3) handle used by ParakeetFileEngine.
+/// Coarse load-progress phases the bridge forwards to the engine. Collapses
+/// FluidAudio's `DownloadProgress` (fraction + listing/downloading/compiling
+/// phase) into what the readiness UI can render.
+enum ParakeetLoadPhase: Sendable {
+    /// Bytes are coming down; `fraction` is 0…1 of the whole operation.
+    case downloading(fraction: Double)
+    /// Post-download CoreML compilation — reported as `.loading` upstream.
+    case compiling
+}
+
+/// Typed error over the FluidAudio load path, so callers can distinguish a
+/// network failure (retry when online) from a load failure over bytes already
+/// on disk (the corrupt-cache case the purge-and-redownload repair targets) —
+/// without importing FluidAudio themselves. `LocalizedError` so every existing
+/// `error.localizedDescription` sink (menu row, onboarding failure card,
+/// session error toast) gets the user-facing copy instead of CoreML's raw
+/// `Unable to load model: file://…` string; the raw detail stays in the case
+/// payload for logs.
+enum ParakeetBridgeError: Error, LocalizedError {
+    case download(underlying: String)
+    case load(underlying: String)
+
+    var errorDescription: String? {
+        switch self {
+        case .download: return ParakeetFailureCopy.downloadFailed
+        case .load:     return ParakeetFailureCopy.loadFailed
+        }
+    }
+
+    /// The raw underlying message, for NSLog only — never for the UI.
+    var underlying: String {
+        switch self {
+        case .download(let raw), .load(let raw): return raw
+        }
+    }
+}
+
 enum ParakeetBridge {
 
     // MARK: - Streaming manager loading
@@ -22,24 +59,68 @@ enum ParakeetBridge {
     /// The id was normalized by the catalog, but an id FluidAudio doesn't know
     /// (catalog/library drift after a version bump) still falls back to the
     /// default variant rather than failing the session.
-    static func loadStreamSession(variantID: String) async throws -> any ParakeetStreamSession {
+    ///
+    /// `onProgress` receives byte-granular download fractions and the compile
+    /// phase (FluidAudio's `ProgressHandler`, called on an arbitrary queue).
+    /// Errors are rethrown as `ParakeetBridgeError` — except cancellation,
+    /// which passes through untyped so a variant-switch mid-load can't be
+    /// mistaken for a corrupt cache and trigger a purge.
+    static func loadStreamSession(
+        variantID: String,
+        onProgress: (@Sendable (ParakeetLoadPhase) -> Void)? = nil
+    ) async throws -> any ParakeetStreamSession {
         let variant = ParakeetCatalog.variant(for: variantID)
-        if variant.multilingual {
-            // Nemotron multilingual: separate manager type + repo download.
-            let chunkMs = variant.multilingualChunkMs ?? 1120
-            let dir = try await StreamingNemotronMultilingualAsrManager.downloadVariant(
-                languageCode: "auto", chunkMs: chunkMs)
-            let manager = StreamingNemotronMultilingualAsrManager()
-            try await manager.loadModels(from: dir)
-            return NemotronMultilingualStreamSession(manager: manager)
+        let progressHandler: ProgressHandler? = onProgress.map { report in
+            { progress in
+                switch progress.phase {
+                case .listing, .downloading:
+                    report(.downloading(fraction: progress.fractionCompleted))
+                case .compiling:
+                    report(.compiling)
+                }
+            }
         }
-        // English streaming families (Unified / EOU), wrapped in the unified adapter.
-        let fluidVariant = StreamingModelVariant(rawValue: variant.id)
-            ?? StreamingModelVariant(rawValue: ParakeetCatalog.defaultVariantID)
-            ?? .parakeetUnified320ms
-        let manager = fluidVariant.createManager()
-        try await manager.loadModels()
-        return StreamingAsrManagerSession(manager: manager)
+        do {
+            if variant.multilingual {
+                // Nemotron multilingual: separate manager type + repo download.
+                let chunkMs = variant.multilingualChunkMs ?? 1120
+                let dir = try await StreamingNemotronMultilingualAsrManager.downloadVariant(
+                    languageCode: "auto", chunkMs: chunkMs, progressHandler: progressHandler)
+                let manager = StreamingNemotronMultilingualAsrManager()
+                try await manager.loadModels(from: dir)
+                return NemotronMultilingualStreamSession(manager: manager)
+            }
+            // English streaming families (Unified / EOU), wrapped in the unified adapter.
+            let fluidVariant = StreamingModelVariant(rawValue: variant.id)
+                ?? StreamingModelVariant(rawValue: ParakeetCatalog.defaultVariantID)
+                ?? .parakeetUnified320ms
+            let manager = fluidVariant.createManager()
+            // The `StreamingAsrManager` protocol's no-arg `loadModels()` drops
+            // the progress callback on the floor — downcast to the concrete
+            // managers to reach their `progressHandler:` overloads.
+            if let unified = manager as? StreamingUnifiedAsrManager {
+                try await unified.loadModels(progressHandler: progressHandler)
+            } else if let eou = manager as? StreamingEouAsrManager {
+                try await eou.loadModels(progressHandler: progressHandler)
+            } else {
+                try await manager.loadModels()
+            }
+            return StreamingAsrManagerSession(manager: manager)
+        } catch {
+            throw classified(error)
+        }
+    }
+
+    /// Map a FluidAudio-path error onto the bridge's typed cases. Network-side
+    /// failures (FluidAudio's own `DownloadError`, URLSession errors) become
+    /// `.download`; everything else — above all CoreML failing to open bytes
+    /// already on disk — is `.load`. Cancellation passes through unchanged.
+    private static func classified(_ error: Error) -> Error {
+        if error is CancellationError { return error }
+        if error is DownloadError || error is URLError {
+            return ParakeetBridgeError.download(underlying: error.localizedDescription)
+        }
+        return ParakeetBridgeError.load(underlying: error.localizedDescription)
     }
 
     // MARK: - Batch (TDT v3) — ParakeetFileEngine backend

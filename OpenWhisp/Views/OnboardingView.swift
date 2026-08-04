@@ -21,10 +21,15 @@ struct OnboardingView: View {
     // Live Input-Monitoring status, refreshed by the same poll timer. Drives the
     // hotkey step's readiness and the "try it" hotkey-is-dead guard (MAK-24).
     @State private var inputMonitoringStatus: OnboardingHotkeyGate.InputMonitoringStatus = .unknown
-    // FluidAudio repo folders on disk, so the model step can tell whether the
-    // (default) Parakeet model has finished downloading. Refreshed by the poll
-    // timer — cheap dir listing — so "downloading…" flips to "ready" on its own.
-    @State private var parakeetInstalledFolders: Set<String> = []
+    // Whether the (default) Parakeet model's files VERIFY complete on disk —
+    // not mere folder presence, which a torn first-run download also satisfies.
+    // Refreshed by the poll timer — a cheap name-only walk — so "downloading…"
+    // flips to "ready" on its own.
+    @State private var parakeetModelComplete = false
+    // The Parakeet engine's live readiness (real download percentage, the
+    // compile phase, the mapped failure reason), mirrored from
+    // ModelReadinessTracker by the same poll.
+    @State private var parakeetReadiness: EngineReadiness = .idle
 
     private let pollTimer = Timer.publish(every: 1.0, on: .main, in: .common).autoconnect()
 
@@ -145,16 +150,18 @@ struct OnboardingView: View {
     /// poll refreshes the underlying signals).
     private var modelStatus: OnboardingModelStatus.State {
         let variant = ParakeetCatalog.normalize(appState.parakeetVariant)
-        let parakeetState = ParakeetDownloadStatePolicy.state(
-            forVariant: variant,
-            installedFolders: parakeetInstalledFolders,
-            inFlightVariants: appState.parakeetInFlightVariants
-        )
+        let parakeetProgress: Double?
+        if case .downloading(let fraction) = parakeetReadiness {
+            parakeetProgress = fraction
+        } else {
+            parakeetProgress = nil
+        }
         return OnboardingModelStatus.state(
             engine: appState.transcriptionEngine,
-            parakeetInstalled: parakeetState == .installed,
-            parakeetInFlight: parakeetState == .downloading,
+            parakeetInstalled: parakeetModelComplete,
+            parakeetInFlight: appState.parakeetInFlightVariants.contains(variant),
             parakeetFailed: appState.parakeetPrefetchFailed,
+            parakeetProgress: parakeetProgress,
             whisperCppDownloading: appState.isModelDownloading,
             whisperCppProgress: appState.modelDownloadProgress,
             whisperCppFailed: appState.modelDownloadFailed,
@@ -210,8 +217,8 @@ struct OnboardingView: View {
     }
 
     /// Progress caption during a download. whisper.cpp publishes a rich status
-    /// string (bytes/percent); the streaming engines (Parakeet / WhisperKit
-    /// preload) don't, so fall back to a plain one-liner for them.
+    /// string (bytes/percent); Parakeet's percentage and compile phase come from
+    /// the readiness tracker; WhisperKit carries its own status string.
     private var modelDownloadCaption: String {
         if appState.transcriptionEngine == "whisper", !appState.modelDownloadStatus.isEmpty {
             return appState.modelDownloadStatus
@@ -220,11 +227,26 @@ struct OnboardingView: View {
            appState.transcriptionEngine == "whisperKit" {
             return appState.whisperKitDownloadStatus
         }
+        if appState.transcriptionEngine == "parakeet" {
+            switch parakeetReadiness {
+            case .loading:
+                // Post-download CoreML compile/load — a download caption here
+                // would look like a stalled fetch.
+                return "Optimizing the model for your Mac…"
+            case .downloading(let fraction):
+                if let fraction, fraction > 0 {
+                    return "Downloading the speech model… \(Int(min(fraction, 1) * 100))%"
+                }
+            default:
+                break
+            }
+        }
         return "Downloading the speech model…"
     }
 
-    /// Failure caption. whisper.cpp and WhisperKit carry specific status strings;
-    /// the streaming engines (Parakeet) don't, so fall back to a plain one-liner.
+    /// Failure caption. whisper.cpp and WhisperKit carry specific status
+    /// strings; Parakeet surfaces the readiness tracker's mapped reason (network
+    /// vs corrupt-cache), so the card says what actually went wrong.
     private var modelFailureDetail: String {
         if appState.transcriptionEngine == "whisper", !appState.modelDownloadStatus.isEmpty {
             return appState.modelDownloadStatus
@@ -232,13 +254,19 @@ struct OnboardingView: View {
         if appState.transcriptionEngine == "whisperKit", !appState.whisperKitDownloadStatus.isEmpty {
             return appState.whisperKitDownloadStatus
         }
+        if appState.transcriptionEngine == "parakeet",
+           case .failed(let reason) = parakeetReadiness {
+            return "Couldn't prepare the speech model: \(reason). Retry redownloads it."
+        }
         return "Couldn't reach the model server. Check your connection and retry."
     }
 
     /// Engine-aware retry: whisper.cpp re-runs its GGML download; Parakeet
-    /// re-kicks its FluidAudio prefetch (which also clears the failure flag);
-    /// WhisperKit re-runs the model-manager download for the selected model
-    /// (its start clears `whisperKitDownloadFailed`).
+    /// re-kicks its FluidAudio prefetch (which clears the failure flag, and —
+    /// when the failure was a corrupt cache — triggers the engine's
+    /// purge-and-redownload repair); WhisperKit re-runs the model-manager
+    /// download for the selected model (its start clears
+    /// `whisperKitDownloadFailed`).
     private func retryModelDownload() {
         switch appState.transcriptionEngine {
         case "parakeet":
@@ -525,10 +553,13 @@ struct OnboardingView: View {
         micGranted = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
         accessibilityGranted = AXIsProcessTrusted()
         inputMonitoringStatus = appState.liveInputMonitoringStatus
-        // Only the Parakeet path needs the on-disk folder scan; skip the listing
-        // for the other engines so the poll stays cheap.
+        // Only the Parakeet path needs the on-disk scan + readiness mirror;
+        // skip both for the other engines so the poll stays cheap.
         if appState.transcriptionEngine == "parakeet" {
-            parakeetInstalledFolders = AppState.installedFluidAudioFolders()
+            let variant = ParakeetCatalog.normalize(appState.parakeetVariant)
+            parakeetModelComplete =
+                FluidAudioModelsLocator.verdict(forVariant: variant) == .complete
+            parakeetReadiness = ModelReadinessTracker.shared.readiness
         }
         appState.refreshPermissionLabels()
     }
