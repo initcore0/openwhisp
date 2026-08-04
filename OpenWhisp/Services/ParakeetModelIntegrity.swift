@@ -67,6 +67,41 @@ public enum ParakeetModelIntegrity {
         ]
     }
 
+    // MARK: - Non-variant repos (batch TDT v3 + CTC biasing)
+
+    /// Repo folder of the batch (TDT v3) model — `ParakeetFileEngine`'s backend
+    /// for every non-live path (files, meetings, history re-transcribe). Not a
+    /// ParakeetCatalog variant, so it gets its own manifest here. Mirrors
+    /// FluidAudio's `Repo.parakeetV3.folderName`.
+    public static let batchRepoFolder = "parakeet-tdt-0.6b-v3"
+
+    /// Required paths for the batch model at the app's default int8 encoder
+    /// precision — FluidAudio's `ModelNames.ASR.requiredModelsV3(.int8)` plus
+    /// the vocabulary JSON its `AsrModels.load` also needs.
+    public static let batchRequiredPaths: [String] = [
+        "Preprocessor.mlmodelc/coremldata.bin",
+        "Encoder.mlmodelc/coremldata.bin",
+        "Decoder.mlmodelc/coremldata.bin",
+        "JointDecisionv3.mlmodelc/coremldata.bin",
+        "parakeet_vocab.json",
+    ]
+
+    /// Repo folder of the CTC-WS vocabulary-biasing model (MAK-71). Unlike the
+    /// other repos FluidAudio keeps the `-coreml` suffix in this folder name.
+    public static let ctcBiasRepoFolder = "parakeet-ctc-110m-coreml"
+
+    /// Required paths for the CTC biasing model: the two CoreML bundles plus
+    /// BOTH root JSONs — `vocab.json` (`CtcModels.load`) and `tokenizer.json`
+    /// (`CtcTokenizer.load`). FluidAudio's own presence gate never checks the
+    /// tokenizer, so a cache missing only that file loads the models fine and
+    /// then fails tokenization — same torn-cache family, different file.
+    public static let ctcBiasRequiredPaths: [String] = [
+        "MelSpectrogram.mlmodelc/coremldata.bin",
+        "AudioEncoder.mlmodelc/coremldata.bin",
+        "vocab.json",
+        "tokenizer.json",
+    ]
+
     /// Verify a variant against its repo folder's recursive file listing
     /// (relative paths; nil = the folder doesn't exist).
     ///
@@ -77,10 +112,17 @@ public enum ParakeetModelIntegrity {
     public static func verdict(forVariant id: String, listing: Set<String>?) -> Verdict {
         guard let listing else { return .notDownloaded }
         if let required = requiredPaths(forVariant: id) {
-            let missing = required.filter { !listing.contains($0) }
-            return missing.isEmpty ? .complete : .incomplete(missing: missing.sorted())
+            return verdict(requiredPaths: required, listing: listing)
         }
         return genericVerdict(listing: listing)
+    }
+
+    /// Verify an explicit manifest (the batch/CTC repos, which aren't catalog
+    /// variants) against a repo folder's recursive file listing.
+    public static func verdict(requiredPaths: [String], listing: Set<String>?) -> Verdict {
+        guard let listing else { return .notDownloaded }
+        let missing = requiredPaths.filter { !listing.contains($0) }
+        return missing.isEmpty ? .complete : .incomplete(missing: missing.sorted())
     }
 
     /// Generic rule for manifest-less variants: the folder must hold at least

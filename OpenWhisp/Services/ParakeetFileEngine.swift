@@ -118,13 +118,58 @@ final class ParakeetFileEngine: FileTranscriptionEngine {
         if let handle = loadedHandle { return (loadGeneration, Task { handle }) }
         if let existing = inFlightLoad { return (loadGeneration, existing) }
         let status = onWorkerStatus
+        // Real download/compile progress into the worker-status line (the file
+        // engine has no readiness stream — this is its one status seam),
+        // throttled to whole percents before the main-actor hop.
+        let throttle = ParakeetProgressThrottle()
+        let onProgress: @Sendable (ParakeetLoadPhase) -> Void = { phase in
+            switch phase {
+            case .downloading(let fraction):
+                guard throttle.shouldReport(fraction) else { return }
+                let percent = Int((fraction * 100).rounded(.down))
+                Task { @MainActor in status?("Downloading Parakeet model… \(percent)%") }
+            case .compiling:
+                Task { @MainActor in status?("Preparing Parakeet model…") }
+            }
+        }
         let task = Task<ParakeetBridge.BatchHandle, Error> {
             NSLog("[Parakeet] loading TDT v3 batch model…")
-            await MainActor.run { status?("Preparing Parakeet model…") }
-            let handle = try await ParakeetBridge.loadBatch()
-            NSLog("[Parakeet] TDT v3 batch model loaded.")
-            await MainActor.run { status?("Parakeet ready") }
-            return handle
+            // Verified completeness (not folder presence) picks the honest
+            // initial status: a torn first-run download still has the (re)download
+            // ahead of it. Real fractions replace this the moment bytes flow.
+            let onDisk = FluidAudioModelsLocator.verdict(
+                forRepoFolder: ParakeetModelIntegrity.batchRepoFolder,
+                requiredPaths: ParakeetModelIntegrity.batchRequiredPaths) == .complete
+            await MainActor.run {
+                status?(onDisk ? "Preparing Parakeet model…" : "Downloading Parakeet model…")
+            }
+            do {
+                let handle = try await ParakeetBridge.loadBatch(onProgress: onProgress)
+                NSLog("[Parakeet] TDT v3 batch model loaded.")
+                await MainActor.run { status?("Parakeet ready") }
+                return handle
+            } catch let error as ParakeetBridgeError {
+                // Corrupt-cache repair (mirrors ParakeetStreamingEngine): the
+                // repo folder exists — so FluidAudio's presence gate will skip
+                // the download forever — but the model can't load (torn first-run
+                // download). Purge the batch repo and redownload once, inside the
+                // single-flight task so concurrent waiters share one repair. A
+                // download error is NOT repairable by deleting bytes, and
+                // cancellation never reaches here (it stays untyped).
+                guard case .load(let underlying) = error,
+                      FluidAudioModelsLocator.installedFolders()
+                          .contains(ParakeetModelIntegrity.batchRepoFolder)
+                else { throw error }
+                NSLog(
+                    "[Parakeet] batch load failed with model files present (%@) — purging '%@' and redownloading once",
+                    underlying, ParakeetModelIntegrity.batchRepoFolder)
+                try? FluidAudioModelsLocator.removeRepoFolder(ParakeetModelIntegrity.batchRepoFolder)
+                await MainActor.run { status?("Downloading Parakeet model…") }
+                let handle = try await ParakeetBridge.loadBatch(onProgress: onProgress)
+                NSLog("[Parakeet] TDT v3 batch model loaded after cache repair.")
+                await MainActor.run { status?("Parakeet ready") }
+                return handle
+            }
         }
         inFlightLoad = task
         return (loadGeneration, task)

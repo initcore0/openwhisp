@@ -48,6 +48,23 @@ enum ParakeetBridgeError: Error, LocalizedError {
     }
 }
 
+/// Rate-limits download-progress reports before they hop to the main actor:
+/// FluidAudio's ProgressHandler fires per byte-chunk (hundreds/sec on a fast
+/// link), and each report is a main-actor Task. Whole-percent granularity is
+/// all the UI renders anyway. Shared by the streaming and batch engines.
+final class ParakeetProgressThrottle: @unchecked Sendable {
+    private let lock = NSLock()
+    private var lastPercent = -1
+    /// Returns true when `fraction` crossed into a new whole percent.
+    func shouldReport(_ fraction: Double) -> Bool {
+        let percent = Int((fraction * 100).rounded(.down))
+        lock.lock(); defer { lock.unlock() }
+        guard percent != lastPercent else { return false }
+        lastPercent = percent
+        return true
+    }
+}
+
 enum ParakeetBridge {
 
     // MARK: - Streaming manager loading
@@ -70,16 +87,7 @@ enum ParakeetBridge {
         onProgress: (@Sendable (ParakeetLoadPhase) -> Void)? = nil
     ) async throws -> any ParakeetStreamSession {
         let variant = ParakeetCatalog.variant(for: variantID)
-        let progressHandler: ProgressHandler? = onProgress.map { report in
-            { progress in
-                switch progress.phase {
-                case .listing, .downloading:
-                    report(.downloading(fraction: progress.fractionCompleted))
-                case .compiling:
-                    report(.compiling)
-                }
-            }
-        }
+        let progressHandler = fluidProgressHandler(for: onProgress)
         do {
             if variant.multilingual {
                 // Nemotron multilingual: separate manager type + repo download.
@@ -111,11 +119,31 @@ enum ParakeetBridge {
         }
     }
 
+    /// Collapse FluidAudio's byte-granular `DownloadProgress` into the coarse
+    /// `ParakeetLoadPhase`s the readiness/status UIs render. Shared by the
+    /// streaming and batch loaders.
+    private static func fluidProgressHandler(
+        for onProgress: (@Sendable (ParakeetLoadPhase) -> Void)?
+    ) -> ProgressHandler? {
+        onProgress.map { report in
+            { progress in
+                switch progress.phase {
+                case .listing, .downloading:
+                    report(.downloading(fraction: progress.fractionCompleted))
+                case .compiling:
+                    report(.compiling)
+                }
+            }
+        }
+    }
+
     /// Map a FluidAudio-path error onto the bridge's typed cases. Network-side
     /// failures (FluidAudio's own `DownloadError`, URLSession errors) become
     /// `.download`; everything else — above all CoreML failing to open bytes
     /// already on disk — is `.load`. Cancellation passes through unchanged.
-    private static func classified(_ error: Error) -> Error {
+    /// (`fileprivate`, not `private`: ParakeetVocabularyBiaser below classifies
+    /// its CTC load path through the same mapping.)
+    fileprivate static func classified(_ error: Error) -> Error {
         if error is CancellationError { return error }
         if error is DownloadError || error is URLError {
             return ParakeetBridgeError.download(underlying: error.localizedDescription)
@@ -133,12 +161,24 @@ enum ParakeetBridge {
     }
 
     /// Download (first use) + load Parakeet TDT v3 for batch/file transcription.
-    static func loadBatch() async throws -> BatchHandle {
-        let models = try await AsrModels.downloadAndLoad(version: .v3)
-        let manager = AsrManager()
-        try await manager.loadModels(models)
-        let layers = await manager.decoderLayerCount
-        return BatchHandle(manager: manager, decoderLayers: layers)
+    ///
+    /// Same contract as `loadStreamSession`: `onProgress` gets byte-granular
+    /// download fractions + the compile phase, and errors are rethrown as
+    /// `ParakeetBridgeError` (cancellation stays untyped) so ParakeetFileEngine
+    /// can run the corrupt-cache repair without importing FluidAudio.
+    static func loadBatch(
+        onProgress: (@Sendable (ParakeetLoadPhase) -> Void)? = nil
+    ) async throws -> BatchHandle {
+        do {
+            let models = try await AsrModels.downloadAndLoad(
+                version: .v3, progressHandler: fluidProgressHandler(for: onProgress))
+            let manager = AsrManager()
+            try await manager.loadModels(models)
+            let layers = await manager.decoderLayerCount
+            return BatchHandle(manager: manager, decoderLayers: layers)
+        } catch {
+            throw classified(error)
+        }
     }
 
     /// Transcribe a WAV file with the batch model. `languageCode` is the bare
@@ -262,16 +302,54 @@ actor ParakeetVocabularyBiaser {
         if loadFailed { return nil }
         if let models, let tokenizer { return (models, tokenizer) }
         do {
-            let loadedModels = try await CtcModels.downloadAndLoad(variant: .ctc110m)
-            let loadedTokenizer = try await CtcTokenizer.load()
+            let (loadedModels, loadedTokenizer) = try await Self.loadRepairingCorruptCache()
             models = loadedModels
             tokenizer = loadedTokenizer
             return (loadedModels, loadedTokenizer)
+        } catch is CancellationError {
+            // A cancelled transcription must not disable biasing for the whole
+            // session — the next file gets a fresh attempt.
+            return nil
         } catch {
             // One shot: a missing/failed CTC model shouldn't re-download per file.
             loadFailed = true
             NSLog("[Parakeet] CTC biasing model unavailable: %@", error.localizedDescription)
             return nil
+        }
+    }
+
+    /// Load with the same corrupt-cache repair as the transcription engines:
+    /// FluidAudio's presence gate skips the download over a torn cache forever,
+    /// so a LOAD failure with the repo folder present purges it and redownloads
+    /// once. Download failures aren't repairable by deleting bytes, and
+    /// cancellation passes through untyped — neither ever purges. Fail-open
+    /// stays the caller's job (`ensureLoaded` swallows whatever this throws).
+    private static func loadRepairingCorruptCache() async throws -> (CtcModels, CtcTokenizer) {
+        do {
+            return try await loadOnce()
+        } catch let error as ParakeetBridgeError {
+            guard case .load(let underlying) = error,
+                  FluidAudioModelsLocator.installedFolders()
+                      .contains(ParakeetModelIntegrity.ctcBiasRepoFolder)
+            else { throw error }
+            NSLog(
+                "[Parakeet] CTC load failed with model files present (%@) — purging '%@' and redownloading once",
+                underlying, ParakeetModelIntegrity.ctcBiasRepoFolder)
+            try? FluidAudioModelsLocator.removeRepoFolder(ParakeetModelIntegrity.ctcBiasRepoFolder)
+            return try await loadOnce()
+        }
+    }
+
+    private static func loadOnce() async throws -> (CtcModels, CtcTokenizer) {
+        do {
+            let models = try await CtcModels.downloadAndLoad(variant: .ctc110m)
+            // The tokenizer reads tokenizer.json from the same repo folder; a
+            // cache missing only that file fails HERE, not in downloadAndLoad —
+            // classifying it as `.load` is what makes it repairable above.
+            let tokenizer = try await CtcTokenizer.load()
+            return (models, tokenizer)
+        } catch {
+            throw ParakeetBridge.classified(error)
         }
     }
 }
