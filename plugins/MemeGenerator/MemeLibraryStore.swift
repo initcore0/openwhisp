@@ -1,7 +1,7 @@
 import AppKit
 import Foundation
 
-/// Disk IO for the Meme Generator's user template library and catalog cache (v3).
+/// Disk IO for the Meme Generator's user template library and catalog cache.
 ///
 /// The *policy* lives in the pure, tested `MemeUserLibrary` and `MemeCatalogCache`;
 /// this type does only the reading, writing, and image copying. That split is the same
@@ -57,7 +57,7 @@ enum MemeLibraryStore {
                 at: templatesDirectory, withIntermediateDirectories: true)
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-            // The index is small and hand-inspectable on purpose: this is a spike, and
+            // The index is small and hand-inspectable on purpose:
             // a user who wants to rename twenty templates should be able to open the
             // file and do it.
             try encoder.encode(index).write(to: indexURL, options: .atomic)
@@ -199,7 +199,7 @@ enum MemeLibraryStore {
         }
     }
 
-    // MARK: - Template affinity (v6)
+    // MARK: - Template affinity
 
     private static var affinityURL: URL {
         pluginDirectory.appendingPathComponent(MemeTemplateAffinity.fileName)

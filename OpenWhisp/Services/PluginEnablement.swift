@@ -1,6 +1,6 @@
 import Foundation
 
-/// Which plugins the user has turned on (spike).
+/// Which plugins the user has turned on.
 ///
 /// Plugins are OPTIONAL and **off by default**: installing the app must not silently
 /// add surfaces, network calls, or menu rows the user never asked for. A plugin only
@@ -48,8 +48,8 @@ public struct PluginEnablement: Equatable, Sendable {
 
     /// The subset of `discovered` the host should surface as active tabs/menu rows:
     /// enabled AND actually runnable. An external plugin can be toggled on in the
-    /// pane, but the spike still won't open a window for it — being enabled is not
-    /// the same as being loadable, and conflating the two is how a prototype starts
+    /// pane, but the host still won't open a window for it — being enabled is not
+    /// the same as being loadable, and conflating the two is how a system starts
     /// lying about what it can do.
     public func activePlugins(
         from discovered: [PluginDiscovery.Discovered]

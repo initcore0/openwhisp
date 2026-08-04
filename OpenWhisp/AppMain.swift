@@ -121,14 +121,27 @@ class OpenWhispApp: NSObject, NSApplicationDelegate {
         showOnboardingIfNeeded()
         print("[OpenWhisp] Ready")
 
-        // v9 spike: the meme plugin's runtime-proof probe. Opens the plugin window and
-        // drives the real Generate from `OPENWHISP_MEME_PROBE_PROMPT`, so a build
-        // script can capture what the SHIPPING binary decides instead of another
-        // reading of the source. Absent the env var this is a no-op.
+        // The meme plugin's runtime-proof probes. DEVELOPER-ONLY: compiled in only
+        // under INSTRUMENTATION=1, so a consumer build has no env-var-driven entry
+        // point into the plugin at all. See `startMemeProbeIfRequested`.
+        #if OPENWHISP_INSTRUMENTATION
         startMemeProbeIfRequested()
+        #endif
     }
 
-    /// Launch-time entry for the meme plugin's runtime proof (spike v9).
+    #if OPENWHISP_INSTRUMENTATION
+    // MARK: - Meme plugin runtime proofs (INSTRUMENTATION=1 only)
+    //
+    // These drive the real plugin flows from environment variables so a harness can
+    // capture what the SHIPPING binary decides instead of another reading of the
+    // source (`scripts/meme-runtime-proof.sh`, `scripts/meme-voice-command-proof.sh`).
+    //
+    // They are compiled out of consumer builds on purpose. An env var that opens a
+    // window and drives a generate is a fine debugging tool and a poor thing to leave
+    // reachable in a signed, notarized app holding Accessibility and microphone
+    // grants — the gate is the same one `LLMBenchRunner` and `LLMLabView` already use.
+
+    /// Launch-time entry for the meme plugin's runtime proof.
     ///
     /// Deliberately routed through `PluginHost.open` rather than constructing the
     /// controller directly: the probe is only worth anything if it exercises the same
@@ -138,11 +151,11 @@ class OpenWhispApp: NSObject, NSApplicationDelegate {
     private func startMemeProbeIfRequested() {
         let env = ProcessInfo.processInfo.environment
 
-        // v10: the VOICE-COMMAND probe. Drives the refine route — the same
+        // The VOICE-COMMAND probe. Drives the refine route — the same
         // `PluginHost.routeVoiceCommand` AppState calls on a real dictation — so the
-        // proof covers the TRIGGER LAYER, not just Generate. Both of the owner's
-        // flows are expressible: `..._REFINE_CONTENT` set = CASE 1 (a selection is
-        // the material), unset = CASE 2 (the spoken remainder is).
+        // proof covers the TRIGGER LAYER, not just Generate. Both flows are
+        // expressible: `..._REFINE_CONTENT` set = CASE 1 (a selection is the
+        // material), unset = CASE 2 (the spoken remainder is).
         if let instruction = env["OPENWHISP_MEME_PROBE_REFINE"], !instruction.isEmpty {
             startRefineRouteProbe(instruction: instruction,
                                   content: env["OPENWHISP_MEME_PROBE_REFINE_CONTENT"],
@@ -167,12 +180,12 @@ class OpenWhispApp: NSObject, NSApplicationDelegate {
             }
             controller.runTraceProbeIfRequested()
             #else
-            MemeTrace.log("probe ABORTED: build has no plugins (PLUGINS=1 ./build.sh)")
+            MemeTrace.log("probe ABORTED: build has no plugins (PLUGINS=0 build)")
             #endif
         }
     }
 
-    /// Drive the v10 voice-command route from launch and report what it decided.
+    /// Drive the voice-command route from launch and report what it decided.
     ///
     /// Calls `PluginHost.routeVoiceCommand` — the SAME entry point
     /// `AppState.deliverFinalText` uses the moment a mid-dictation refine finalizes,
@@ -203,7 +216,7 @@ class OpenWhispApp: NSObject, NSApplicationDelegate {
                     "refine-route probe: NOT ROUTED -> normal refine "
                     + "(status=\"\(appState.statusMessage)\")")
             }
-            // Report the canvas after the generate settles, like the v9 probe.
+            // Report the canvas after the generate settles, like the generate probe.
             let deadline = Double(
                 ProcessInfo.processInfo.environment["OPENWHISP_MEME_PROBE_SECONDS"] ?? "") ?? 90
             #if OPENWHISP_PLUGINS
@@ -215,10 +228,11 @@ class OpenWhispApp: NSObject, NSApplicationDelegate {
             }
             controller.reportCanvasAfter(seconds: deadline)
             #else
-            MemeTrace.log("refine-route probe: build has no plugins (PLUGINS=1 ./build.sh)")
+            MemeTrace.log("refine-route probe: build has no plugins (PLUGINS=0 build)")
             #endif
         }
     }
+    #endif  // OPENWHISP_INSTRUMENTATION — meme plugin runtime proofs
 
     /// Re-check permissions whenever the app becomes active. This is what makes
     /// the missing-permission banner AUTO-CLEAR: the user grants the permission

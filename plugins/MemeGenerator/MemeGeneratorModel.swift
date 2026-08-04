@@ -1,7 +1,7 @@
 import AppKit
 import SwiftUI
 
-/// The observable state behind the Meme Generator window (spike v3).
+/// The observable state behind the Meme Generator window.
 ///
 /// The pipeline, end to end:
 ///
@@ -46,7 +46,7 @@ final class MemeGeneratorModel: ObservableObject {
     @Published private(set) var meme: NSImage?
 
     /// Human-readable status, shown under the buttons. Doubles as the error channel —
-    /// this is a prototype surface, so failures are stated plainly rather than
+    /// failures are stated plainly rather than
     /// swallowed.
     @Published private(set) var status: String = ""
 
@@ -72,7 +72,7 @@ final class MemeGeneratorModel: ObservableObject {
     @Published private(set) var catalog: [MemeTemplate] = []
 
     /// The model's one-line justification for its top pick, shown as the candidate
-    /// strip's tooltip (v6).
+    /// strip's tooltip.
     ///
     /// This is what replaced the v5 prompt's discarded "think about which ones could
     /// carry the joke" invitation: the same request for reasoning, but routed somewhere
@@ -80,10 +80,10 @@ final class MemeGeneratorModel: ObservableObject {
     @Published private(set) var candidateReason: String = ""
 
     /// The box currently being dragged, whose burned-in caption is suppressed while the
-    /// drag handle carries the text (v9). Nil at rest.
+    /// drag handle carries the text. Nil at rest.
     private var draggingBoxID: UUID?
 
-    /// The ids of the boxes the last AI seed minted (v6).
+    /// The ids of the boxes the last AI seed minted.
     ///
     /// This is the whole mechanism behind "Generate replaces AI boxes and preserves
     /// yours" — see `MemeCaptionLayout.merging`. Anything on the canvas whose id ISN'T
@@ -92,7 +92,7 @@ final class MemeGeneratorModel: ObservableObject {
     private var seededBoxIDs: Set<UUID> = []
 
     /// The learned per-template boosts, loaded once per window and persisted on every
-    /// correction (v6).
+    /// correction.
     private var affinity = MemeTemplateAffinity()
 
     /// True when the model named only templates that don't exist in the corpus and we
@@ -111,7 +111,7 @@ final class MemeGeneratorModel: ObservableObject {
     @Published private(set) var catalogFailed: Bool = false
 
     /// Set when a TEMPLATE IMAGE failed to load. Drives its own Retry affordance
-    /// (v4).
+    ///.
     ///
     /// Separate from `catalogFailed` because they fail independently and recover
     /// differently: a catalog failure retries the fetch, an image failure retries one
@@ -170,7 +170,7 @@ final class MemeGeneratorModel: ObservableObject {
     private var resolveAIModel: () -> SummaryModelResolver.Resolved = {
         .init(provider: "", model: "", endpoint: "")
     }
-    /// Warms the LLM and REPORTS READINESS (v4).
+    /// Warms the LLM and REPORTS READINESS.
     ///
     /// The completion carries whether the model can actually take a request — it is
     /// driven by llama-server's `/health` poll, not by a timer. v3's seam returned
@@ -292,7 +292,7 @@ final class MemeGeneratorModel: ObservableObject {
     /// upgrades it. A refresh that fails while templates are on screen is silent —
     /// reporting it would make a working plugin look broken.
     func openCatalog(forceRefresh: Bool = false) {
-        // An explicit Retry / force-refresh throws the HTTP session away first (v5).
+        // An explicit Retry / force-refresh throws the HTTP session away first.
         // Same reason `retryTemplate` does: a refresh that reuses a wedged connection
         // pool is a no-op however many times the user presses it.
         if forceRefresh { MemeTemplateService.invalidateSession() }
@@ -492,7 +492,7 @@ final class MemeGeneratorModel: ObservableObject {
     }
 
     /// Run the LLM round-trip, retrying while the failure is "the server isn't
-    /// accepting connections yet" (v4).
+    /// accepting connections yet".
     ///
     /// This is the second line of defence behind the readiness gate. Readiness covers
     /// the cold start; this covers the gap readiness cannot see — llama-server can
@@ -560,7 +560,7 @@ final class MemeGeneratorModel: ObservableObject {
         status = "Cancelled."
     }
 
-    // MARK: - New meme (v5)
+    // MARK: - New meme
 
     /// The current composition, projected into the pure, testable value.
     ///
@@ -587,7 +587,7 @@ final class MemeGeneratorModel: ObservableObject {
     /// Whether New meme has anything to do — drives the button's enabled state.
     var canStartNewMeme: Bool { !composition.isEmpty }
 
-    /// Start from scratch (v5).
+    /// Start from scratch.
     ///
     /// The owner asked for a way back to an empty sheet, and the important word is
     /// BACK: this has to abandon in-flight work as well as clear what is on screen.
@@ -793,7 +793,7 @@ final class MemeGeneratorModel: ObservableObject {
         }
     }
 
-    // MARK: - Learning signal (v6)
+    // MARK: - Learning signal
 
     /// Note that the user picked `template` instead of the candidate on offer.
     ///
@@ -808,7 +808,7 @@ final class MemeGeneratorModel: ObservableObject {
         MemeLibraryStore.saveAffinity(affinity)
     }
 
-    // MARK: - Caption refit (v6)
+    // MARK: - Caption refit
 
     /// Re-fit the captions when the newly-chosen template has a DIFFERENT number of
     /// slots than the captions currently on the canvas.
@@ -845,7 +845,7 @@ final class MemeGeneratorModel: ObservableObject {
             status: "Refitting the captions to \(template.name)…")
     }
 
-    /// Run the refit round-trip: rewrite `current` into exactly `slots` captions (v7).
+    /// Run the refit round-trip: rewrite `current` into exactly `slots` captions.
     ///
     /// Extracted from `refitCaptionsIfNeeded` so the GENERATE path can reach it too.
     /// That is the point of the v7 change: a caption count that doesn't match the
@@ -992,7 +992,7 @@ final class MemeGeneratorModel: ObservableObject {
         }
         failedTemplate = template
         imageFailed = true
-        // Name the transport's history when it has one (v5). After a day of uptime the
+        // Name the transport's history when it has one. After a day of uptime the
         // useful question is whether the connection has already been rebuilt — that is
         // the difference between "the network blipped" and "something is genuinely
         // wrong", and it is the datum the owner's next report will need.
@@ -1030,7 +1030,7 @@ final class MemeGeneratorModel: ObservableObject {
             template: baseImage, boxes: MemeCaptionLayout.hidingText(of: draggingBoxID, in: boxes))
     }
 
-    // MARK: - Drag (v9)
+    // MARK: - Drag
 
     /// Begin dragging a caption box: hide its burned-in copy so the handle's own copy
     /// is the only one on screen.
@@ -1095,7 +1095,7 @@ final class MemeGeneratorModel: ObservableObject {
     ///
     /// Returns how many were imported so the caller can report a partial failure —
     /// dropping five files and silently getting four templates would be the kind of
-    /// quiet data loss this spike keeps trying to eliminate.
+    /// quiet data loss this plugin works hard to avoid.
     @discardableResult
     func importTemplates(from urls: [URL]) -> Int {
         var imported: MemeUserLibrary.Entry?

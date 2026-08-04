@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// The Meme Generator plugin's window content (spike v3).
+/// The Meme Generator plugin's window content.
 ///
 /// Voice-first by construction: the description field is the first responder when the
 /// window opens, so pressing the dictation hotkey and speaking lands the words here
@@ -225,7 +225,7 @@ struct MemeGeneratorView: View {
                     .keyboardShortcut(.cancelAction)
             }
 
-            // Start from scratch (v5). ALWAYS present rather than appearing once
+            // Start from scratch. ALWAYS present rather than appearing once
             // there's something to clear — a control that materializes is harder to
             // find than one that is simply dimmed, and this is the button a user
             // reaches for when the surface is in a state they don't understand.
@@ -271,7 +271,7 @@ struct MemeGeneratorView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-                // A failed template image gets its OWN Retry (v4) — the catalog Retry
+                // A failed template image gets its OWN Retry — the catalog Retry
                 // above re-fetches the catalog, which does nothing for an image that
                 // failed to download.
                 if model.imageFailed {
@@ -295,7 +295,7 @@ struct MemeGeneratorView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
-                // The model's own justification for its top pick (v6). This is where
+                // The model's own justification for its top pick. This is where
                 // the reasoning the v5 prompt asked for and threw away now goes: on
                 // hover the user reads WHY the first thumbnail is first, instead of
                 // guessing. Only shown when the model actually gave one.
@@ -367,7 +367,7 @@ struct MemeGeneratorView: View {
                             .font(.largeTitle)
                             .foregroundStyle(.tertiary)
                         // The empty state INVITES the next action rather than just
-                        // being blank (v5) — this is what the user is looking at
+                        // being blank — this is what the user is looking at
                         // straight after ⌘N, so it has to say what to do next.
                         Text(MemeComposition.emptyHint)
                             .font(.callout)
@@ -747,7 +747,7 @@ private struct TemplateThumbnail: View {
     let template: MemeTemplate
     let isSelected: Bool
     let width: CGFloat
-    /// An extra line for the tooltip — the model's reason, on the top candidate (v6).
+    /// An extra line for the tooltip — the model's reason, on the top candidate.
     var note: String = ""
 
     /// The tooltip: what this template is, where it came from, how many captions it

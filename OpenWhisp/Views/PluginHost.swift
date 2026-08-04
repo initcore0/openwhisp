@@ -1,7 +1,7 @@
 import AppKit
 import SwiftUI
 
-/// The app-side plugin host (spike/plugin-system).
+/// The app-side plugin host.
 ///
 /// Owns everything about plugins that AppState would otherwise have to: the
 /// discovered list, the enabled set, and the windows enabled plugins open. AppState
@@ -154,7 +154,7 @@ final class PluginHost: ObservableObject {
         #endif
         default:
             // Either the plugin's sources weren't compiled into this build
-            // (PLUGINS=1 ./build.sh) or the id has no window. Both are honest
+            // (a PLUGINS=0 build) or the id has no window. Both are honest
             // no-ops rather than a crash.
             return nil
         }
@@ -183,7 +183,7 @@ final class PluginHost: ObservableObject {
     }
 }
 
-/// A plugin window that needs to know when it is shown again (v5).
+/// A plugin window that needs to know when it is shown again.
 ///
 /// Plugin window controllers are created once and REUSED — `PluginHost` caches them so
 /// reopening restores the user's window rather than throwing their work away. That

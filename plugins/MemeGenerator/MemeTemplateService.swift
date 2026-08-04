@@ -1,7 +1,7 @@
 import AppKit
 import Foundation
 
-/// The Meme Generator's network access (spike v3).
+/// The Meme Generator's network access.
 ///
 /// Read-only GETs against two public, key-less catalogs plus their image CDNs:
 ///
@@ -48,7 +48,7 @@ enum MemeTemplateService {
 
     // MARK: - Session
 
-    /// The HTTP session, REPLACEABLE (v5).
+    /// The HTTP session, REPLACEABLE.
     ///
     /// ## Why this stopped being a `static let`
     ///
@@ -75,7 +75,7 @@ enum MemeTemplateService {
 
     /// How many times the pool has been thrown away this launch.
     ///
-    /// Not test-reachable (this file is behind `PLUGINS=1`, outside the `swift test`
+    /// Not test-reachable (this file is app-layer, outside the `swift test`
     /// target), so it earns its place as a DIAGNOSTIC instead: if the owner reports
     /// downloads dying again, this number distinguishes "the pool was never recycled,
     /// so the recycle predicate is too narrow" from "it recycled repeatedly and still
@@ -238,7 +238,7 @@ enum MemeTemplateService {
 
         // A per-request ceiling on top of the session's, so one wedged image GET can't
         // outlive the UI's own download timeout and land a result into a surface that
-        // has already recovered. A FRESH `URLRequest` every call (v5) — see `get` —
+        // has already recovered. A FRESH `URLRequest` every call — see `get` —
         // so pressing Retry re-asks rather than replaying the attempt that hung.
         let (data, _) = try await get(
             url, host: url.host ?? "the template host", timeout: imageTimeout)

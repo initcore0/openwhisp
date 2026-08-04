@@ -1,6 +1,6 @@
 import Foundation
 
-/// The disk-cache policy for the merged template catalog (spike v3).
+/// The disk-cache policy for the merged template catalog.
 ///
 /// Two owner requirements drive this: browsing must be **instant**, and the plugin
 /// must **work offline after the first fetch**. Both fall out of the same rule —

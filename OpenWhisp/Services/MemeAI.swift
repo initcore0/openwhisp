@@ -26,7 +26,7 @@ public indirect enum JSONValue: Encodable, Equatable, Sendable {
     }
 }
 
-/// The pure rules behind the Meme Generator plugin's LLM step (spike).
+/// The pure rules behind the Meme Generator plugin's LLM step.
 ///
 /// One round-trip turns a spoken description ("make me the distracted boyfriend one
 /// where the guy is looking at Rust and his girlfriend is Python") into a **ranked
@@ -41,7 +41,7 @@ public indirect enum JSONValue: Encodable, Equatable, Sendable {
 /// dig the object out (`ScratchpadAI`'s posture), but a response missing the fields
 /// is REJECTED rather than silently rendered as an empty meme.
 ///
-/// ## Why ranked candidates (v2)
+/// ## Why ranked candidates
 ///
 /// v1 asked for a single free-text `template_query` and matched it lexically against
 /// the catalog. That silently produced nonsense: "yoda meme" isn't in imgflip's top
@@ -57,7 +57,7 @@ public indirect enum JSONValue: Encodable, Equatable, Sendable {
 ///
 /// The v1 single-query prompt and parser were deleted rather than kept as a
 /// fallback: two parsers where only one runs is exactly the dead-wiring trap this
-/// spike is supposed to expose, not commit.
+/// review is supposed to expose, not commit.
 public enum MemeAI {
 
     // MARK: - Response
@@ -162,7 +162,7 @@ public enum MemeAI {
     to the user, so write it for them, not for yourself.
     """
 
-    /// How many templates the LLM is asked to rank (v4).
+    /// How many templates the LLM is asked to rank.
     ///
     /// The shortlist is built LOCALLY by `MemeTemplateCatalog.prefilter` scoring the
     /// user's own description against the whole merged corpus, so this cap is no
@@ -211,7 +211,7 @@ public enum MemeAI {
     /// rather than an error, which is the worst kind to hunt.
     public static let firstCandidateNumber = 1
 
-    /// One prompt line per shortlisted template, carrying its caption-slot count (v6).
+    /// One prompt line per shortlisted template, carrying its caption-slot count.
     ///
     /// The count has to be IN the list because the model chooses its first candidate
     /// and writes that candidate's captions in the same reply — it cannot be told the
@@ -258,7 +258,7 @@ public enum MemeAI {
         /// templates that don't exist — the honest "not in this corpus" signal.
         public let templateNames: [String]
 
-        /// The captions in PANEL ORDER (v6), one per slot the model was asked for.
+        /// The captions in PANEL ORDER, one per slot the model was asked for.
         ///
         /// Replaces v5's `topText`/`bottomText` pair. The array is the general case:
         /// a two-slot response is `[top, bottom]`, which is exactly what the legacy
@@ -272,7 +272,7 @@ public enum MemeAI {
         public let reason: String
 
         /// True when the captions came from the legacy `top_text`/`bottom_text` pair
-        /// rather than a `captions` array (v7).
+        /// rather than a `captions` array.
         ///
         /// Recorded because the two shapes mean different things even when they carry
         /// the same two strings: an ARRAY of two is a model answering a 2-slot question,
@@ -320,7 +320,7 @@ public enum MemeAI {
             templateNames.isEmpty && captions.allSatisfy(\.isEmpty)
         }
 
-        /// The same pick, with the captions replaced by the user's own words (v7).
+        /// The same pick, with the captions replaced by the user's own words.
         ///
         /// Used when `MemeCaptionExtraction` read a list out of the description: the
         /// model's TEMPLATE choice is kept (that is the judgement we wanted from it) and
@@ -334,7 +334,7 @@ public enum MemeAI {
         }
     }
 
-    /// One candidate reference as the model wrote it: a number or a name (v6).
+    /// One candidate reference as the model wrote it: a number or a name.
     ///
     /// Modelled explicitly rather than collapsing both into a string, because the two
     /// resolve against completely different things — a number indexes the shortlist,
@@ -347,14 +347,14 @@ public enum MemeAI {
 
     /// The wire shape. Decoded leniently on purpose: `templates` may arrive as an
     /// array of numbers (the v6 contract), an array of strings, a mix of both, a bare
-    /// number, or a single string; captions may arrive as an array (v6) or as
+    /// number, or a single string; captions may arrive as an array or as
     /// `top_text`/`bottom_text` (v5 and any model that saw a two-line meme and reached
     /// for the classic keys).
     private struct RankedWire: Decodable {
         let templates: [CandidateRef]
         let captions: [String]
         let reason: String
-        /// Whether `captions` was reconstructed from `top_text`/`bottom_text` (v7).
+        /// Whether `captions` was reconstructed from `top_text`/`bottom_text`.
         let wasLegacyShape: Bool
 
         private enum CodingKeys: String, CodingKey {
@@ -615,7 +615,7 @@ public enum MemeAI {
 
     // MARK: - v7: the host decides what a caption count MEANS
 
-    /// What to do with a caption response, given the template it has to fill (v7).
+    /// What to do with a caption response, given the template it has to fill.
     ///
     /// ## The v6 bug this type exists to make impossible
     ///
@@ -744,7 +744,7 @@ public enum MemeAI {
     ///
     /// These are built as values rather than raw JSON strings so `swift test` can
     /// assert their contents; a schema stored as a string literal would be exactly the
-    /// kind of untested wiring this spike exists to avoid shipping.
+    /// kind of untested wiring this codebase keeps getting caught by.
     public enum Schema {
 
         /// The ranked-pick schema: numeric template indices plus a caption array.

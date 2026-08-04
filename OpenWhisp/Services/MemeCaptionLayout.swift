@@ -1,6 +1,6 @@
 import Foundation
 
-/// The pure text rules behind classic meme captioning (spike).
+/// The pure text rules behind classic meme captioning.
 ///
 /// Everything here is Foundation-only arithmetic and string work so `swift test`
 /// pins it; the app layer owns only the actual CoreGraphics drawing. The split is
@@ -195,7 +195,7 @@ public enum MemeCaptionLayout {
         return out
     }
 
-    /// Blank the TEXT of one box, keeping every box and all geometry (v9).
+    /// Blank the TEXT of one box, keeping every box and all geometry.
     ///
     /// Used for the live drag: the box being dragged has its caption drawn by the drag
     /// handle, travelling with the cursor, so the burned-in render must not draw it a
@@ -241,7 +241,7 @@ public enum MemeCaptionLayout {
         seedBoxes(captions: [topText, bottomText], slots: 2)
     }
 
-    // MARK: - Per-template caption slots (v6)
+    // MARK: - Per-template caption slots
 
     /// Where a template's `n` caption slots sit, as normalized centers.
     ///
@@ -270,7 +270,7 @@ public enum MemeCaptionLayout {
     ///   two thirds of the corpus (166 of memegen's 212, 66 of imgflip's 100) and
     ///   regressing the common case to gain the rare one is a bad trade.
     /// * **3 and 4** — a STACKED LEFT COLUMN: evenly spaced rows, left-aligned by
-    ///   sitting at x = 0.30 with a narrower width. This is the spike-grade choice and
+    ///   sitting at x = 0.30 with a narrower width. This is a deliberate compromise, and
     ///   it is a genuine compromise, so here is the reasoning. The 3- and 4-slot
     ///   templates that matter (Drake, Distracted Boyfriend, Expanding Brain, Galaxy
     ///   Brain) are PANEL memes: their captions belong beside or inside stacked panels,
@@ -286,7 +286,7 @@ public enum MemeCaptionLayout {
     ///
     /// The real fix is per-template geometry, which needs a data source none of the
     /// key-less APIs provide — a bundled table of hand-measured boxes for the top ~30
-    /// templates would do it, and that is a deliberate non-goal for a spike.
+    /// templates would do it, and that is a deliberate non-goal.
     public static func slotCenters(slots: Int) -> [(x: Double, y: Double)] {
         let count = MemeCaptionSlots.clamp(slots)
         switch count {
@@ -328,7 +328,7 @@ public enum MemeCaptionLayout {
         MemeCaptionSlots.clamp(slots) <= 2 ? CaptionBox.defaultFontSizeShare : 0.07
     }
 
-    /// Seed one box per caption slot, laid out for a template of that structure (v6).
+    /// Seed one box per caption slot, laid out for a template of that structure.
     ///
     /// The caption list is fitted to the slot count rather than trusted: a model that
     /// returns three captions for a two-slot template has its extra dropped, and one
@@ -354,7 +354,7 @@ public enum MemeCaptionLayout {
         }
     }
 
-    // MARK: - What a regenerate is allowed to destroy (v6)
+    // MARK: - What a regenerate is allowed to destroy
 
     /// Merge a fresh AI seed over the boxes already on the canvas.
     ///

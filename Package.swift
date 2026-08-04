@@ -166,10 +166,14 @@ let package = Package(
                 "MeetingOrphanScan.swift",
                 "StreamOverlay.swift",
                 "StreamIngest.swift",
-                // Plugin system spike (spike/plugin-system) + the in-repo meme plugin's
-                // pure rules. Sources live under plugins/MemeGenerator/ for the app-layer
-                // UI; the testable logic sits here so `swift test` covers it.
+                // Plugin system (docs/PLUGINS.md) + the in-repo meme plugin's pure
+                // rules. The app-layer UI lives under plugins/MemeGenerator/ and is
+                // outside this target; every DECISION sits here so `swift test` covers
+                // it. New pure plugin files must be added to this list by hand — the
+                // target uses an explicit `sources:` list, so an unregistered file is
+                // silently untested rather than a build error.
                 "PluginManifest.swift",
+                "PluginInvocationContext.swift",
                 "PluginVoiceCommandRouter.swift",
                 "PluginDiscovery.swift",
                 "PluginEnablement.swift",

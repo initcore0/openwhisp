@@ -1,7 +1,7 @@
 import AppKit
 import SwiftUI
 
-/// The Meme Generator plugin's window (spike).
+/// The Meme Generator plugin's window.
 ///
 /// Deliberately thin, like `ScratchpadWindowController`: it owns the window's
 /// lifecycle, the LLM wiring, and the dictation seam. All state lives in
@@ -54,7 +54,7 @@ final class MemeGeneratorWindowController: NSWindowController, NSWindowDelegate,
     /// guarantees for free — busy-reject while dictating, bundled-engine bracketing,
     /// fail-closed on the agent-CLI provider, and exactly-once delivery.
     ///
-    /// Note the plugin does NOT get its own model picker in this spike: it follows
+    /// Note the plugin does NOT get its own model picker: it follows
     /// the Scratchpad's resolution (its override, else the cleanup settings). A real
     /// plugin config surface would put that on the plugin's own defaults keys.
     private func wireAI() {
@@ -99,24 +99,26 @@ final class MemeGeneratorWindowController: NSWindowController, NSWindowDelegate,
             })
     }
 
-    // MARK: - Runtime proof hook (v9)
+    // MARK: - Runtime proof hooks (INSTRUMENTATION=1 only)
 
+    #if OPENWHISP_INSTRUMENTATION
     /// Drive the REAL generate path from a launch argument, and log what it produced.
     ///
     /// ## Why a hook rather than another read of the code
     ///
-    /// v7 and v8 each fixed the "four items, two captions" report by tracing the wiring
-    /// and declaring it correct. The owner then ran a hash-verified v8 build and got
-    /// two boxes anyway. At that point the code's appearance had been wrong twice, so
-    /// the only evidence worth anything is what the running binary does — and driving
-    /// Generate by hand through the UI is not something a build script can do.
+    /// Two rounds each fixed the "four items, two captions" report by tracing the
+    /// wiring and declaring it correct. The owner then ran a hash-verified build and
+    /// got two boxes anyway. At that point the code's appearance had been wrong twice,
+    /// so the only evidence worth anything is what the running binary does — and
+    /// driving Generate by hand through the UI is not something a build script can do.
     ///
     /// This runs `model.generate()` — the same method the Generate button calls, with
     /// no branch of its own — after seeding `description` exactly as the user's typing
     /// would. Everything downstream (extraction, shortlist, the LLM round-trip, the
     /// seeding) is the production path, and `MemeTrace` reports what each step decided.
     ///
-    /// It is gated on an env var, so a normal launch never touches it.
+    /// Compiled in only under `INSTRUMENTATION=1`, and gated on an env var even then,
+    /// so no consumer build carries a launch-time path that drives the plugin.
     func runTraceProbeIfRequested() {
         let env = ProcessInfo.processInfo.environment
         guard let prompt = env["OPENWHISP_MEME_PROBE_PROMPT"], !prompt.isEmpty else { return }
@@ -132,7 +134,7 @@ final class MemeGeneratorWindowController: NSWindowController, NSWindowDelegate,
     ///
     /// The probe cannot know when the LLM answers, so it samples on a deadline and
     /// states what it found — a probe that reported nothing would look like a crash.
-    /// Shared by the v9 prompt probe and the v10 voice-command probe so both prove the
+    /// Shared by the prompt probe and the voice-command probe so both prove the
     /// outcome the same way: N boxes, and the text in them.
     func reportCanvasAfter(seconds: Double) {
         Task { @MainActor [model] in
@@ -143,10 +145,11 @@ final class MemeGeneratorWindowController: NSWindowController, NSWindowDelegate,
             MemeTrace.log("probe done")
         }
     }
+    #endif  // OPENWHISP_INSTRUMENTATION
 
     // MARK: - PluginWindowLifecycle
 
-    /// The window is being shown again after a close (v5).
+    /// The window is being shown again after a close.
     ///
     /// `PluginHost` caches this controller forever, so without this hook the model's
     /// `windowDidOpen` ran exactly once — at `init` — while `windowWillClose` ran on
@@ -159,7 +162,7 @@ final class MemeGeneratorWindowController: NSWindowController, NSWindowDelegate,
         model.windowDidOpen()
     }
 
-    // MARK: - PluginVoiceCommandSink (v10)
+    // MARK: - PluginVoiceCommandSink
 
     /// Run a meme from a spoken refine command ("create a meme …").
     ///
@@ -167,10 +170,16 @@ final class MemeGeneratorWindowController: NSWindowController, NSWindowDelegate,
     /// into ANOTHER app, so it must not append to whatever is sitting in the window
     /// from an earlier session — `startNewMeme()` clears first, then the material
     /// becomes the description and Generate runs. That is the same
-    /// `description` + `generate()` pair the Generate button and the v9 probe use, so
-    /// the voice route inherits the whole production path (extraction, shortlist, LLM,
-    /// seeding) with no branch of its own.
-    func runVoiceCommand(material: String) {
+    /// `description` + `generate()` pair the Generate button uses, so the voice route
+    /// inherits the whole production path (extraction, shortlist, LLM, seeding) with
+    /// no branch of its own.
+    ///
+    /// The meme plugin does not declare `clipboardAccess`, so `context.clipboard` is
+    /// always nil here — the material is the whole input. That is deliberate: the
+    /// plugin has an explicit ⌘V import for template IMAGES, and a caption source that
+    /// silently pulled from the clipboard would be a surprise rather than a feature.
+    func runVoiceCommand(_ context: PluginInvocationContext) {
+        let material = context.material
         MemeTrace.log("runVoiceCommand material=\"\(material)\"")
         // The window was just opened/focused by the host; make sure the model is in
         // its open state (clears `isCancelled` if the window had been closed before).

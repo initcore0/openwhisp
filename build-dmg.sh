@@ -78,6 +78,17 @@ resolve_sparkle_args
 source "$PROJECT_DIR/scripts/instrumentation-args.sh"
 resolve_instrumentation_args
 
+# In-repo plugins (ON by default, PLUGINS=0 for a lean build). Shared with build.sh
+# so the released DMG compiles the plugins exactly the way a local build does —
+# without this the shipped app would silently be the only build with no Plugins pane
+# content. Plugins remain DISABLED at runtime until the user enables one; see
+# docs/PLUGINS.md. (Word-split into SWIFT_FILES, matching this script's convention;
+# build paths have no spaces by construction.)
+# shellcheck source=scripts/plugin-source-args.sh
+source "$PROJECT_DIR/scripts/plugin-source-args.sh"
+resolve_plugin_source_args
+SWIFT_FILES="$SWIFT_FILES ${PLUGIN_SOURCES[*]+${PLUGIN_SOURCES[*]}}"
+
 # Optimization: same policy as build.sh — release DMGs ship optimized code.
 # Without this the CONFIG argument was dead in the compile step and every
 # released DMG's app binary was -Onone.
@@ -106,6 +117,7 @@ xcrun swiftc \
     "${FLUIDAUDIO_ARGS[@]+"${FLUIDAUDIO_ARGS[@]}"}" \
     "${SPARKLE_ARGS[@]+"${SPARKLE_ARGS[@]}"}" \
     "${INSTRUMENTATION_ARGS[@]+"${INSTRUMENTATION_ARGS[@]}"}" \
+    "${PLUGIN_DEFINE_ARGS[@]+"${PLUGIN_DEFINE_ARGS[@]}"}" \
     $SWIFT_FILES \
     -o "$BUILD_DIR/OpenWhisp"
 
@@ -117,6 +129,12 @@ verify_whisperkit_binary "$BUILD_DIR/OpenWhisp"
 # shellcheck source=scripts/verify-parakeet-binary.sh
 source "$PROJECT_DIR/scripts/verify-parakeet-binary.sh"
 verify_parakeet_binary "$BUILD_DIR/OpenWhisp"
+# Same guard for the in-repo plugins (on by default; PLUGINS=0 opts out). This is
+# the shipped artifact, so it is the build that most needs the assertion: plugins
+# come from outside the OpenWhisp/ glob and their absence is not a compile error.
+# shellcheck source=scripts/verify-plugins-binary.sh
+source "$PROJECT_DIR/scripts/verify-plugins-binary.sh"
+verify_plugins_binary "$BUILD_DIR/OpenWhisp"
 
 # Build the openwhisp CLI / MCP adapter (separate SwiftPM executable). Bundled
 # into Contents/Helpers and signed inside-out with the hardened runtime below.

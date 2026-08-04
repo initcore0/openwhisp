@@ -1,6 +1,6 @@
 import Foundation
 
-/// Routes a spoken REFINE instruction to a plugin that claims it (spike v10).
+/// Routes a spoken REFINE instruction to a plugin that claims it.
 ///
 /// ## What this is for
 ///

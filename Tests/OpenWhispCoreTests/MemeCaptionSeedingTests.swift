@@ -9,7 +9,7 @@ import XCTest
 /// re-implemented the app's sequence (extract → replace → fit → seed) inside the test
 /// body, with `slots: 4` written as a literal. The code that actually chained those
 /// steps lived in `plugins/MemeGenerator/MemeGeneratorModel.swift`, which compiles only
-/// under `PLUGINS=1` and is outside the `swift test` target, so the chain itself was
+/// in the app target, outside the `swift test` target, so the chain itself was
 /// untested by construction. A test spelling out the right sequence proves nothing about
 /// an app that performs a different one — which is exactly what v6 did:
 ///

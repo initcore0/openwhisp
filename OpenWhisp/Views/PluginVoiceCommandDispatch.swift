@@ -54,7 +54,7 @@ extension PluginHost {
         activePlugins.contains { !$0.manifest.normalizedVoiceTriggers.isEmpty }
     }
 
-    /// The refine pipeline's single entry point (v10).
+    /// The refine pipeline's single entry point.
     ///
     /// Consults the plugins and applies the only side effect that belongs to the
     /// CALLER's state — the disabled hint — returning the teardown effect when a
@@ -137,13 +137,37 @@ extension PluginHost {
             MemeTrace.log("voice command ABORTED: \(match.pluginID) has no command sink")
             return .notHandled
         }
-        sink.runVoiceCommand(material: material)
-        MemeTrace.log("voice command dispatched to \(match.pluginID), material=\"\(material)\"")
+        let context = invocationContext(for: manifest, material: material)
+        sink.runVoiceCommand(context)
+        MemeTrace.log(
+            "voice command dispatched to \(match.pluginID), material=\"\(material)\", "
+            + "clipboard=\(context.clipboard == nil ? "none" : "\(context.clipboard!.count) chars")")
         return .handled(status: PluginVoiceCommandRouter.acknowledgment(pluginName: name))
+    }
+
+    /// Build the invocation context for a plugin, reading the pasteboard ONLY if the
+    /// manifest declared `clipboardAccess` (MAK-100).
+    ///
+    /// The read is guarded by `needsPasteboard` before it happens, so a plugin that
+    /// never asked for the clipboard causes no `NSPasteboard` access at all — the gate
+    /// is a real withholding, not a value discarded after the fact.
+    ///
+    /// A nil manifest (the plugin vanished between match and dispatch — possible, since
+    /// discovery re-reads disk) is treated as declaring NOTHING. Failing closed is the
+    /// only safe default for a capability check.
+    func invocationContext(
+        for manifest: PluginManifest?, material: String
+    ) -> PluginInvocationContext {
+        guard let manifest else { return PluginInvocationContext(material: material) }
+        let pasteboard: String? = PluginInvocationContext.needsPasteboard(manifest)
+            ? NSPasteboard.general.string(forType: .string)
+            : nil
+        return PluginInvocationContext.make(
+            manifest: manifest, material: material, pasteboardString: pasteboard)
     }
 }
 
-/// A plugin window that can be driven by a spoken command (v10).
+/// A plugin window that can be driven by a spoken command.
 ///
 /// The third plugin seam, alongside `PluginWindowLifecycle` and `PluginDictationSink`.
 /// Distinct from the dictation sink on purpose: that one APPENDS text to whatever the
@@ -152,6 +176,11 @@ extension PluginHost {
 /// this material."
 @MainActor
 protocol PluginVoiceCommandSink: AnyObject {
-    /// Seed the plugin with `material` and run its primary action.
-    func runVoiceCommand(material: String)
+    /// Seed the plugin from `context` and run its primary action.
+    ///
+    /// Takes the whole `PluginInvocationContext` rather than a bare string so that
+    /// adding a capability (clipboard today, more later) does not change this
+    /// signature and every conforming plugin with it. The context is also the only
+    /// way a plugin receives a declared capability — there is no second channel.
+    func runVoiceCommand(_ context: PluginInvocationContext)
 }

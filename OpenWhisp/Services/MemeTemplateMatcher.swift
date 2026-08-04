@@ -31,7 +31,7 @@ public struct MemeTemplate: Equatable, Sendable, Codable, Identifiable {
     /// multi-lingual corpus findable — see `MemeTemplateCatalog.search`.
     public let keywords: [String]
 
-    /// How many caption slots this template actually has (v6).
+    /// How many caption slots this template actually has.
     ///
     /// ## Why this exists
     ///
@@ -90,7 +90,7 @@ public struct MemeTemplate: Equatable, Sendable, Codable, Identifiable {
     }
 }
 
-/// How many caption slots a template has, and what a sane value looks like (v6).
+/// How many caption slots a template has, and what a sane value looks like.
 ///
 /// A tiny namespace rather than loose constants because the clamp is a RULE with a
 /// reason, applied at three boundaries (imgflip's `box_count`, memegen's `lines`, and
@@ -131,7 +131,7 @@ public struct MemeTemplateCatalogResponse: Decodable, Sendable {
         public let url: String
         public let width: Int
         public let height: Int
-        /// How many caption boxes the template really has (v6). imgflip has shipped
+        /// How many caption boxes the template really has. imgflip has shipped
         /// this on `get_memes` all along and v5 threw it away, which is why Distracted
         /// Boyfriend (3) and Expanding Brain (4) were captioned top-and-bottom.
         /// Optional so a response missing it decodes to the 2-slot default rather than
@@ -173,7 +173,7 @@ public struct MemeTemplateCatalogResponse: Decodable, Sendable {
     }
 }
 
-/// The memegen.link `/templates` response (spike v3).
+/// The memegen.link `/templates` response.
 ///
 /// A second key-less, read-only catalog — ~200 templates, many of which imgflip's
 /// top-100 popularity list doesn't carry. Like imgflip it is used ONLY to locate a
@@ -192,7 +192,7 @@ public struct MemegenTemplateResponse: Decodable, Sendable {
         public let blank: String
         /// Alternate names — the field that makes a merged corpus searchable.
         public let keywords: [String]?
-        /// How many caption lines the template takes (v6).
+        /// How many caption lines the template takes.
         ///
         /// memegen's `/templates` reports this per template — verified against the live
         /// API: of its 212 templates, 166 are 2-line, 23 are 3-line, 7 are 4-line, and
@@ -238,7 +238,7 @@ public struct MemegenTemplateResponse: Decodable, Sendable {
     }
 }
 
-/// Local, lexical template lookup over the catalog (spike).
+/// Local, lexical template lookup over the catalog.
 ///
 /// Matching is LOCAL — the catalog is ~100 short English names, so a token-overlap
 /// score beats anything heavier and keeps the whole decision pure and testable. No
@@ -262,7 +262,7 @@ public struct MemegenTemplateResponse: Decodable, Sendable {
 /// user's own query over the whole corpus).
 public enum MemeTemplateMatcher {
 
-    // MARK: - Fallback ranking (v2)
+    // MARK: - Fallback ranking
 
     /// Rank the catalog by how well each name scores against a free-text query,
     /// keeping only entries that score at all.
@@ -368,7 +368,7 @@ public enum MemeTemplateMatcher {
             .joined(separator: " ")
     }
 
-    /// Tokens for SEARCH scoring (v4).
+    /// Tokens for SEARCH scoring.
     ///
     /// Like `tokens`, but it degrades gracefully instead of vanishing: a query made
     /// entirely of stopwords ("the man") would tokenize to nothing and silently reset

@@ -1,6 +1,6 @@
 import Foundation
 
-/// What the user's own picks teach the ranker (spike v6).
+/// What the user's own picks teach the ranker.
 ///
 /// ## The signal, and why it is worth having
 ///
@@ -16,7 +16,7 @@ import Foundation
 /// signal is worse than the failure mode of not having one: a boost that can outrun the
 /// lexical score would eventually put the user's favourite template at the top of every
 /// shortlist regardless of what they said, which is a personalized version of exactly
-/// the confident-Drake bug this spike exists to kill.
+/// the confident-Drake bug this ranking exists to kill.
 ///
 /// ## The bounds, and why each one
 ///
@@ -92,7 +92,7 @@ public struct MemeTemplateAffinity: Equatable, Sendable, Codable {
 
     /// Decoding re-applies the clamp, so a hand-edited or corrupt file can't inject a
     /// boost large enough to dominate the ranking. The store is user-writable by
-    /// design (it's a spike, and the file is meant to be inspectable), which makes this
+    /// design (the file is meant to be hand-inspectable), which makes this
     /// the boundary where the cap has to be enforced rather than assumed.
     public init(from decoder: Decoder) throws {
         let container = try decoder.singleValueContainer()

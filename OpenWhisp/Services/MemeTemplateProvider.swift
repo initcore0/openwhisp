@@ -1,6 +1,6 @@
 import Foundation
 
-/// Where a template came from (spike v3).
+/// Where a template came from.
 ///
 /// The owner's report was that the corpus was "too limited and America-centric".
 /// One catalog can't fix that — imgflip's top 100 is an English-language popularity
@@ -29,7 +29,7 @@ public enum MemeTemplateSource: String, Equatable, Sendable, Codable, CaseIterab
     }
 }
 
-/// A merged, de-duplicated, searchable template catalog (spike v3).
+/// A merged, de-duplicated, searchable template catalog.
 ///
 /// This is the pure half of the provider system: given templates from any number of
 /// sources, it decides which survive, in what order, and which ones a query matches.
@@ -121,7 +121,7 @@ public enum MemeTemplateCatalog {
     ///
     /// What did NOT change: this still **never falls back**. A query that matches
     /// nothing at all returns an EMPTY list, because a silently substituted popular
-    /// template is the original bug this whole spike exists to fix. "Rank partial
+    /// template is the original bug this whole ranking exists to fix. "Rank partial
     /// matches" and "invent a match" are different things.
     public static func search(_ query: String, in catalog: [MemeTemplate]) -> [MemeTemplate] {
         ranked(query, in: catalog, limit: catalog.count).map(\.template)
@@ -180,7 +180,7 @@ public enum MemeTemplateCatalog {
         for (index, template) in catalog.enumerated() {
             let value = score(queryTokens: queryTokens, normalizedQuery: normalizedQuery,
                               template: template)
-            // The affinity boost applies ONLY to a template that already matched (v6).
+            // The affinity boost applies ONLY to a template that already matched.
             // This guard is the whole safety property: a learned preference can reorder
             // things the query already found, and can never conjure a hit for a query
             // that found nothing. "No template matches" therefore stays reachable no
@@ -259,7 +259,7 @@ public enum MemeTemplateCatalog {
     /// The templates handed to the LLM to rank, chosen by LOCAL relevance to the
     /// user's description rather than by raw popularity.
     ///
-    /// ## Why this exists (v4)
+    /// ## Why this exists
     ///
     /// v3 gave the model `promptNames(catalog, limit: 100)` — the first hundred
     /// templates in popularity order, names only. That has two failures the owner hit:
@@ -352,7 +352,7 @@ public enum MemeTemplateCatalog {
 
     /// One prompt line per template: the name, plus its keywords in parentheses.
     ///
-    /// The keywords are the point (v4). "Worst Day Of My Life So Far" carries aliases
+    /// The keywords are the point. "Worst Day Of My Life So Far" carries aliases
     /// a user's description will hit even when the NAME shares no words with it, so
     /// showing the model only names throws away the very signal that connects a
     /// content description to a template. Templates with no keywords render as a bare
@@ -373,7 +373,7 @@ public enum MemeTemplateCatalog {
     }
 
     /// The caption-slot count per shortlisted template, positionally aligned with
-    /// `promptLines` and `promptNames` (v6).
+    /// `promptLines` and `promptNames`.
     ///
     /// Three parallel arrays rather than one array of triples because the call site
     /// hands each to a different consumer (the prompt gets lines, the resolver gets

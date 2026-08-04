@@ -35,30 +35,15 @@ done < <(find "$PROJECT_DIR/OpenWhisp" -name "*.swift" -not -path "*/SyncLoopbac
 # harness). Its main.swift has top-level executable code + an OpenWhispCore import,
 # so it must NOT be folded into the mac app's single-module glob.
 
-# In-repo plugins (spike/plugin-system). OFF BY DEFAULT: plugins are an OPTIONAL
-# surface, so a stock build carries none of their code at all — `PLUGINS=1
-# ./build.sh` compiles the in-repo plugins under plugins/ into the app, where the
-# compile-time PluginRegistry picks them up and the Plugins settings pane lists
-# them. The pure plugin core (PluginManifest/Discovery/Enablement/Registry and the
-# meme rules) lives under OpenWhisp/Services and is always compiled + always
-# tested; this flag only controls the plugins' own AppKit/SwiftUI surfaces.
-#
-# NOTE (spike honesty): this is a compile-time toggle, not a plugin loader. It
-# exists so the prototype can demo an optional surface without pretending it can
-# load third-party code — docs/ROADMAP.md §6 rejects in-process third-party
-# plugins outright for an app holding Accessibility + clipboard rights.
-PLUGIN_DEFINE_ARGS=()
-if [ "${PLUGINS:-0}" != "0" ]; then
-    plugin_count=0
-    while IFS= read -r f; do
-        SWIFT_FILES+=("$f")
-        plugin_count=$((plugin_count + 1))
-    done < <(find "$PROJECT_DIR/plugins" -name "*.swift")
-    PLUGIN_DEFINE_ARGS=( -DOPENWHISP_PLUGINS )
-    echo "Plugins: ENABLED (${plugin_count} source file(s) from plugins/)"
-else
-    echo "Plugins: disabled (PLUGINS=1 ./build.sh to compile in-repo plugins)"
-fi
+# In-repo plugins (docs/PLUGINS.md). ON BY DEFAULT, like WHISPERKIT and PARAKEET;
+# opt out with PLUGINS=0 ./build.sh for a lean build. Shared with build-dmg.sh via
+# the same helper so a released DMG carries plugins exactly the way a local build
+# does. This is a compile-time toggle, NOT a loader — see the helper's header and
+# docs/PLUGINS.md §"Path to hot-swappable".
+# shellcheck source=scripts/plugin-source-args.sh
+source "$PROJECT_DIR/scripts/plugin-source-args.sh"
+resolve_plugin_source_args
+SWIFT_FILES+=("${PLUGIN_SOURCES[@]+"${PLUGIN_SOURCES[@]}"}")
 
 # Stamp the build with its git commit (shown in Settings › Advanced) — the
 # generated file lives in build/, outside the source glob, and is regenerated

@@ -1,6 +1,6 @@
 import Foundation
 
-/// The user's own imported meme templates (spike v3).
+/// The user's own imported meme templates.
 ///
 /// This is the plugin's answer to "the corpus is America-centric". imgflip's top 100
 /// and memegen's ~200 are both English-language, US-internet lists; no amount of

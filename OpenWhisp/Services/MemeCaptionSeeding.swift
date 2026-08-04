@@ -1,16 +1,17 @@
 import Foundation
 
-/// The whole "captions → boxes" decision, in one pure place (spike v8).
+/// The whole "captions → boxes" decision, in one pure place.
 ///
 /// ## Why this type exists — the test gap that let v6 ship
 ///
 /// v6 rendered the owner's four-item Expanding Brain prompt as TWO captions. The fix
-/// (v7) was real, but it was verified by tests that re-implemented the app's steps
+/// was real, but it was verified by tests that re-implemented the app's steps
 /// rather than calling the app's code: each core piece — `MemeCaptionExtraction`,
 /// `RankedSpec.replacingCaptions`, `MemeAI.fit`, `MemeCaptionLayout.seedBoxes` — was
 /// proved correct in isolation, while the code that CHAINS them lived in
 /// `MemeGeneratorModel.applyRanked`, inside `plugins/`, which compiles only under
-/// `PLUGINS=1` and is outside the `swift test` target.
+/// the app target (dropped only by PLUGINS=0) and is outside
+/// the `swift test` target.
 ///
 /// So the sequence was untested by construction, and a test asserting "extract, then
 /// replace, then fit with slots: 4" could pass forever while the app passed
@@ -31,7 +32,7 @@ import Foundation
 /// user's hand-added boxes, and running the async refit round-trip.
 ///
 /// The property that matters: a caption-count regression now fails `swift test`
-/// against the SAME function the app calls, on a stock build, with no `PLUGINS=1`.
+/// against the SAME function the app calls, on a stock build.
 public enum MemeCaptionSeeding {
 
     /// A resolved seeding decision: the boxes to show now, and what is still owed.

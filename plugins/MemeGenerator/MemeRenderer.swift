@@ -1,7 +1,7 @@
 import AppKit
 import Foundation
 
-/// Draws classic meme captions onto a template image (spike).
+/// Draws classic meme captions onto a template image.
 ///
 /// Rendering is entirely LOCAL — there is no captioning API and no API key. We
 /// download the blank template from imgflip's CDN and do the text ourselves with

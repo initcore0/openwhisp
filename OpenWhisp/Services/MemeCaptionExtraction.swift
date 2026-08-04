@@ -1,6 +1,6 @@
 import Foundation
 
-/// Reading the captions straight out of what the user said (spike v7).
+/// Reading the captions straight out of what the user said.
 ///
 /// ## Why this exists — the v6 failure it removes
 ///

@@ -1,6 +1,6 @@
 import Foundation
 
-/// The Meme Generator's busy-state machine (spike v3).
+/// The Meme Generator's busy-state machine.
 ///
 /// ## Why this is a type instead of a `Bool`
 ///
@@ -165,7 +165,7 @@ public struct MemeGenerationState: Equatable, Sendable {
         phase = .idle
     }
 
-    /// Return to idle unconditionally, refusing every outstanding result (v4).
+    /// Return to idle unconditionally, refusing every outstanding result.
     ///
     /// Distinct from `cancel()` only in intent, and worth its own name for that
     /// reason: `cancel` is "the user or the window stopped this", `reset` is "this
@@ -180,7 +180,7 @@ public struct MemeGenerationState: Equatable, Sendable {
     /// Whether a result carrying `incoming` is still wanted.
     public func accepts(ticket incoming: Int) -> Bool { incoming == ticket }
 
-    // MARK: - Transport health (v5)
+    // MARK: - Transport health
 
     /// Whether a failure means the shared HTTP session should be THROWN AWAY before
     /// the next attempt.
@@ -236,7 +236,7 @@ public struct MemeGenerationState: Equatable, Sendable {
         "The model didn't answer within \(Int(generateTimeout)) seconds. It may still be "
         + "loading — try Generate again, or pick a template yourself with Browse all."
 
-    /// The ceiling on ONE template-image download (v4).
+    /// The ceiling on ONE template-image download.
     ///
     /// Much tighter than `generateTimeout`, because the two waits are not comparable:
     /// a local model loading a multi-gigabyte file legitimately takes a minute, while
@@ -255,7 +255,7 @@ public struct MemeGenerationState: Equatable, Sendable {
     }
 }
 
-/// The Meme Generator's composition — everything "this meme" consists of (v5).
+/// The Meme Generator's composition — everything "this meme" consists of.
 ///
 /// ## Why this is a type
 ///
@@ -369,7 +369,7 @@ public struct MemeComposition: Equatable, Sendable {
         "Describe the meme out loud, or pick a template on the left."
 }
 
-/// When a failed generate request is worth retrying rather than reporting (v4).
+/// When a failed generate request is worth retrying rather than reporting.
 ///
 /// ## Why a policy type
 ///

@@ -1,19 +1,19 @@
 import Foundation
 
-/// Finds the plugins available to the host and decides which ones win (spike).
+/// Finds the plugins available to the host and decides which ones win.
 ///
 /// Two sources, merged with a fixed precedence:
 ///
 /// 1. **Built-in** — the compile-time list handed in by `PluginRegistry`. These are
 ///    in-repo plugins under `plugins/<id>/`, reviewed and maintained alongside the
-///    app, and are the only ones that can actually RUN in the spike.
+///    app, and are the only ones that can actually RUN today.
 /// 2. **External** — `~/Library/Application Support/OpenWhisp/Plugins/<id>/manifest.json`.
 ///    Discovered and listed so the pane can show the user what's on disk, but flagged
 ///    non-runnable (no loader exists).
 ///
 /// **Built-in always wins a conflicting id.** A dropped-in folder must never be able
 /// to shadow a reviewed in-repo plugin — that would turn a writable directory into
-/// code-substitution against a mic-and-Accessibility-entitled app. The spike can't
+/// code-substitution against a mic-and-Accessibility-entitled app. The host cannot
 /// execute external plugins at all, so this is belt-and-braces today, but the
 /// precedence is the part worth pinning now because a future loader inherits it.
 ///
@@ -34,7 +34,7 @@ public enum PluginDiscovery {
         }
 
         /// Whether the host can actually open this plugin. External plugins are
-        /// listed but never runnable in the spike, regardless of what their manifest
+        /// listed but never runnable today, regardless of what their manifest
         /// claims its entry kind is — a manifest cannot promote itself.
         public var isRunnable: Bool {
             source == .builtIn && manifest.entry.isRunnable
@@ -43,7 +43,7 @@ public enum PluginDiscovery {
         /// Why this plugin can't run, if it can't.
         public var unavailableReason: String? {
             if source == .external {
-                return "Installed plugins can't be loaded yet — this prototype only runs plugins that ship with the app."
+                return "Installed plugins can't be loaded yet — OpenWhisp currently runs only plugins that ship with the app."
             }
             return manifest.entry.unavailableReason
         }
@@ -115,7 +115,7 @@ public enum PluginDiscovery {
         }
     }
 
-    /// Convenience for the two sources the spike has, in trust order.
+    /// Convenience for the two sources that exist today, in trust order.
     public static func merge(
         builtIn: [PluginManifest],
         external: [PluginManifest]

@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Settings → Plugins (spike/plugin-system).
+/// Settings → Plugins (docs/PLUGINS.md).
 ///
 /// Lists every discovered plugin with an enable toggle, its network disclosure, and
 /// its per-plugin configuration surface. Plugins are OPTIONAL and off by default, so
@@ -49,7 +49,8 @@ struct PluginsPane: View {
                 .foregroundStyle(.secondary)
         } footer: {
             SettingsFootnote(
-                "In-repo plugins are compiled in with PLUGINS=1 ./build.sh.")
+                "Plugins ship with OpenWhisp by default. This build was made with "
+                + "PLUGINS=0, which leaves them out entirely.")
         }
     }
 
@@ -66,7 +67,7 @@ struct PluginsPane: View {
             .disabled(!plugin.isRunnable)
 
             // Honest about what this build can actually run: an external plugin is
-            // listed so the user knows it was found, but the spike has no loader.
+            // listed so the user knows it was found, but there is no loader yet.
             if let reason = plugin.unavailableReason {
                 SettingsCallout(.warning, reason)
             }
@@ -77,7 +78,14 @@ struct PluginsPane: View {
                 SettingsCallout(.info, disclosure)
             }
 
-            // Where to find it, and the shortcut that opens it (v5). A shortcut the
+            // The clipboard is a bigger privacy fact than a network host — it routinely
+            // holds passwords, tokens, and other people's messages — so a plugin that
+            // receives it discloses that in the same place, before the user enables it.
+            if let disclosure = plugin.manifest.clipboardDisclosure {
+                SettingsCallout(.info, disclosure)
+            }
+
+            // Where to find it, and the shortcut that opens it. A shortcut the
             // user is never told about may as well not exist, and the menu row it
             // appears on is two clicks away inside a submenu.
             if host.isEnabled(plugin.id), plugin.isRunnable {
@@ -112,10 +120,10 @@ struct PluginsPane: View {
 
     /// A plugin's own configuration surface.
     ///
-    /// In the spike this is a fixed switch on the plugin id — the honest shape for a
-    /// prototype with one plugin. A real system would have the manifest declare its
-    /// settings schema (or the plugin vend its own view), which is exactly the part
-    /// that gets hard once plugins are third-party.
+    /// Today this is a fixed switch on the plugin id — the honest shape while every
+    /// plugin ships in this repo and is reviewed with it. The next step is for the
+    /// manifest to declare its settings schema (or the plugin to vend its own view),
+    /// which is exactly the part that gets hard once plugins are third-party.
     @ViewBuilder
     private func configuration(for plugin: PluginDiscovery.Discovered) -> some View {
         if plugin.id == PluginRegistry.memeGenerator.id {
@@ -147,7 +155,7 @@ struct PluginsPane: View {
         } footer: {
             SettingsFootnote(
                 "Drop a plugin folder containing manifest.json here and reopen this pane to "
-                + "see it listed. This prototype lists installed plugins but can't load them — "
+                + "see it listed. Installed plugins are listed but can't be loaded yet — "
                 + "only plugins that ship with the app can run.")
         }
     }
