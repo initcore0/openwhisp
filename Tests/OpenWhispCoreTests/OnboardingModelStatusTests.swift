@@ -13,6 +13,7 @@ final class OnboardingModelStatusTests: XCTestCase {
         parakeetInstalled: Bool = false,
         parakeetInFlight: Bool = false,
         parakeetFailed: Bool = false,
+        parakeetProgress: Double? = nil,
         whisperCppDownloading: Bool = false,
         whisperCppProgress: Double? = nil,
         whisperCppFailed: Bool = false,
@@ -26,6 +27,7 @@ final class OnboardingModelStatusTests: XCTestCase {
             parakeetInstalled: parakeetInstalled,
             parakeetInFlight: parakeetInFlight,
             parakeetFailed: parakeetFailed,
+            parakeetProgress: parakeetProgress,
             whisperCppDownloading: whisperCppDownloading,
             whisperCppProgress: whisperCppProgress,
             whisperCppFailed: whisperCppFailed,
@@ -99,11 +101,28 @@ final class OnboardingModelStatusTests: XCTestCase {
         XCTAssertEqual(status(engine: "parakeet", parakeetInstalled: true), .ready)
     }
 
-    func testParakeetInFlightIsIndeterminateDownloading() {
-        // FluidAudio exposes no percentage — must be an indeterminate spinner,
-        // never a determinate bar stuck at 0.
+    func testParakeetInFlightIsIndeterminateDownloadingBeforeFirstReport() {
+        // No fraction reported yet — an indeterminate spinner, never a
+        // determinate bar stuck at 0.
         XCTAssertEqual(
             status(engine: "parakeet", parakeetInFlight: true),
+            .downloading(progress: nil)
+        )
+    }
+
+    func testParakeetInFlightCarriesTheRealFraction() {
+        // FluidAudio's ProgressHandler reports byte-granular fractions through
+        // the readiness tracker — the step must render the determinate bar.
+        XCTAssertEqual(
+            status(engine: "parakeet", parakeetInFlight: true, parakeetProgress: 0.42),
+            .downloading(progress: 0.42)
+        )
+    }
+
+    func testParakeetProgressAtZeroStaysIndeterminate() {
+        // 0.0 means "started, nothing yet" — indeterminate, not a stuck-empty bar.
+        XCTAssertEqual(
+            status(engine: "parakeet", parakeetInFlight: true, parakeetProgress: 0),
             .downloading(progress: nil)
         )
     }
@@ -130,11 +149,15 @@ final class OnboardingModelStatusTests: XCTestCase {
         )
     }
 
-    func testParakeetInstalledBeatsAStaleFailure() {
-        // Model is on disk — ready wins over any leftover failure flag.
+    func testParakeetFailureBeatsFilesOnDisk() {
+        // The corrupt-cache trap (fresh-install torn download): files can pass
+        // the on-disk check while the model still cannot load — the engine sets
+        // the failure flag after its purge-and-redownload repair also failed.
+        // "Ready" here was the green lie that contradicted the menu bar's
+        // "Model unavailable"; the failure card (with Retry) must win.
         XCTAssertEqual(
             status(engine: "parakeet", parakeetInstalled: true, parakeetFailed: true),
-            .ready
+            .failed
         )
     }
 

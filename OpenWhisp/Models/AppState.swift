@@ -1202,16 +1202,15 @@ class AppState: ObservableObject {
     /// selected when the OS supports it (SpeechAnalyzerAvailability).
     var speechAnalyzerStreamEngine: StreamingTranscriptionEngine!
     /// Variant ids with a Parakeet model prefetch/warm in flight — drives the
-    /// coarse "Downloading…" badge in the Models pane (FluidAudio has no progress
-    /// callback, so this is presence-of-folder + this in-flight flag). Cleared
-    /// when the variant's repo folder appears on disk (polled by the pane).
+    /// "Downloading…" badge in the Models pane (real percentages flow separately
+    /// through `ModelReadinessTracker`). Cleared when the prefetch completes.
     @Published var parakeetInFlightVariants: Set<String> = []
-    /// True when the last Parakeet model prefetch FAILED (e.g. offline first-run)
-    /// and its repo folder never landed. FluidAudio exposes no progress or error
-    /// callback, so this is the only failure signal — it lets onboarding show a
-    /// retryable "couldn't download" state instead of a perpetual spinner. Set
-    /// when `prefetchAwaiting()` returns false with the folder still absent;
-    /// cleared whenever a fresh prefetch is kicked (the Retry path).
+    /// True when the last Parakeet model prefetch FAILED for the still-current
+    /// engine — a download failure (offline first-run) OR a model that won't
+    /// load even after the engine's purge-and-redownload repair. Lets onboarding
+    /// show a retryable failure card instead of a perpetual spinner (or, worse,
+    /// a green "ready" over a corrupt cache). Cleared whenever a fresh prefetch
+    /// is kicked (the Retry path).
     @Published var parakeetPrefetchFailed = false
     var translationService: OpenAITranslationService!
     var hotkeyMonitor: HotkeyControlling!
@@ -3122,22 +3121,22 @@ class AppState: ObservableObject {
     }
 
     /// Kick the streaming-variant model prefetch and mark it in-flight so the
-    /// Models pane shows a coarse "Downloading…" badge (FluidAudio gives no
-    /// progress). Event-driven: the badge clears when the engine's load task
-    /// completes — success or failure (on failure the row honestly reverts to
-    /// "Not downloaded"). No disk polling, and no state mutation during view
-    /// rendering. Idempotent (the engine coalesces concurrent loads).
+    /// Models pane shows a "Downloading…" badge (real percentages flow through
+    /// the readiness tracker). Event-driven: the badge clears when the engine's
+    /// load task completes — success or failure (on failure the row honestly
+    /// reverts to "Not downloaded"). No disk polling, and no state mutation
+    /// during view rendering. Idempotent (the engine coalesces concurrent loads).
     func prefetchParakeetVariant() {
         let variant = ParakeetCatalog.normalize(parakeetVariant)
         // A new prefetch attempt clears any stale failure — this doubles as the
         // Retry path (onboarding re-kicks this on the retry button).
         parakeetPrefetchFailed = false
-        // If the repo is already on disk there's nothing to download — don't
+        // If the model files verify complete there's nothing to download — don't
         // flash a badge; still prefetch (it warms the loaded model cheaply).
-        let installed = Self.installedFluidAudioFolders()
-        if ParakeetDownloadStatePolicy.state(
-            forVariant: variant, installedFolders: installed, inFlightVariants: []
-        ) != .installed {
+        // Verified completeness, not folder presence: a torn first-run download
+        // leaves a present-but-unloadable folder that still needs the badge
+        // while the engine repairs (purges + redownloads) it.
+        if FluidAudioModelsLocator.verdict(forVariant: variant) != .complete {
             parakeetInFlightVariants.insert(variant)
         }
         // Capture THIS engine instance: if the user switches variant mid-prefetch,
@@ -3148,17 +3147,15 @@ class AppState: ObservableObject {
         Task { @MainActor in
             let ok = await engine?.prefetchAwaiting() ?? false
             parakeetInFlightVariants.remove(variant)
-            // Only report a failure when the model genuinely isn't on disk. A load
-            // can "fail" for reasons unrelated to the download (e.g. the engine was
-            // replaced by a variant switch) while the bytes are already staged; a
-            // present folder means the user is not stuck, so don't cry failure.
-            if !ok {
-                let onDisk = ParakeetDownloadStatePolicy.state(
-                    forVariant: variant,
-                    installedFolders: Self.installedFluidAudioFolders(),
-                    inFlightVariants: []
-                ) == .installed
-                parakeetPrefetchFailed = !onDisk
+            // A false return from the engine that is STILL current means the
+            // user genuinely has no working model — including present-but-corrupt
+            // files (the engine already tried its purge-and-redownload repair).
+            // The old "folder on disk ⇒ don't cry failure" heuristic is exactly
+            // how a torn download showed a green "ready" in onboarding while the
+            // menu bar said "Model unavailable". Only a prefetch orphaned by a
+            // variant switch stays quiet: its successor re-warms and re-reports.
+            if !ok, engine != nil, engine === parakeetStreamEngine {
+                parakeetPrefetchFailed = true
             }
         }
     }

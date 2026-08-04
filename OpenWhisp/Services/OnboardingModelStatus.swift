@@ -7,15 +7,13 @@ import Foundation
 /// flags (`isModelDownloading` / `modelDownloadProgress` / `modelDownloadStatus`
 /// / `modelDownloadFailed`). Once Parakeet became the default engine (MAK-46),
 /// a fresh install downloads a Parakeet model whose progress lives in a totally
-/// separate place (`parakeetInFlightVariants` — a coarse in-flight flag, no
-/// percentage, since FluidAudio exposes none). With the old wiring the step
-/// would cheerfully say "Your speech model is ready" while Parakeet was still
-/// downloading in the background, and the first dictation would stall.
+/// separate place. With the old wiring the step would cheerfully say "Your
+/// speech model is ready" while Parakeet was still downloading in the
+/// background, and the first dictation would stall.
 ///
 /// This maps whichever engine is active to the ONE readiness state the step
 /// renders, so the copy, icon, and progress bar always describe the model that's
-/// actually being fetched. Parakeet (and WhisperKit-preloading) report only
-/// indeterminate progress; whisper.cpp still carries a real percentage.
+/// actually being fetched.
 public enum OnboardingModelStatus {
     /// What the onboarding model step should display.
     public enum State: Equatable {
@@ -23,12 +21,11 @@ public enum OnboardingModelStatus {
         /// Speech) — the step shows the green "ready" card.
         case ready
         /// A download is running. `progress` is the 0…1 fraction when the engine
-        /// reports one (whisper.cpp), or nil for engines that only expose a coarse
-        /// in-flight state (Parakeet / a WhisperKit preload) — the step then shows
-        /// an indeterminate spinner.
+        /// reports one (whisper.cpp, WhisperKit, Parakeet via the readiness
+        /// tracker), or nil when none is available yet — the step then shows an
+        /// indeterminate spinner.
         case downloading(progress: Double?)
-        /// The download failed and can be retried (only the whisper.cpp path
-        /// surfaces a discrete failure today).
+        /// The download failed and can be retried.
         case failed
     }
 
@@ -37,13 +34,18 @@ public enum OnboardingModelStatus {
     ///
     /// - Parameters:
     ///   - engine: the `transcriptionEngine` setting value.
-    ///   - parakeetInstalled: whether the selected Parakeet variant's repo folder
-    ///     is on disk (`ParakeetDownloadStatePolicy` → `.installed`).
+    ///   - parakeetInstalled: whether the selected Parakeet variant's model files
+    ///     VERIFIED complete on disk (`ParakeetModelIntegrity` → `.complete`).
     ///   - parakeetInFlight: whether a Parakeet prefetch is running for the
     ///     selected variant.
-    ///   - parakeetFailed: the last Parakeet prefetch failed and the model isn't
-    ///     on disk (`AppState.parakeetPrefetchFailed`) — surfaces the retryable
-    ///     failure card instead of a perpetual spinner.
+    ///   - parakeetFailed: the last Parakeet prefetch failed
+    ///     (`AppState.parakeetPrefetchFailed`) — surfaces the retryable failure
+    ///     card instead of a perpetual spinner. Outranks `parakeetInstalled`: a
+    ///     present-but-corrupt cache can pass the file check while the model
+    ///     still cannot load, and "ready" there was the green lie that hid the
+    ///     fresh-install torn-download trap.
+    ///   - parakeetProgress: the download fraction (0…1) from the readiness
+    ///     tracker, when a download is reporting one.
     ///   - whisperCppDownloading: `isModelDownloading` (whisper.cpp GGML fetch).
     ///   - whisperCppProgress: `modelDownloadProgress` (0…1) or nil.
     ///   - whisperCppFailed: `modelDownloadFailed`.
@@ -60,6 +62,7 @@ public enum OnboardingModelStatus {
         parakeetInstalled: Bool,
         parakeetInFlight: Bool,
         parakeetFailed: Bool = false,
+        parakeetProgress: Double? = nil,
         whisperCppDownloading: Bool,
         whisperCppProgress: Double?,
         whisperCppFailed: Bool,
@@ -70,15 +73,20 @@ public enum OnboardingModelStatus {
     ) -> State {
         switch engine {
         case "parakeet":
-            if parakeetInstalled { return .ready }
-            if parakeetInFlight { return .downloading(progress: nil) }
-            // A finished-but-failed prefetch (offline first-run) with no model on
-            // disk: show the retryable failure card, not a spinner that never ends.
+            // A running prefetch outranks everything (a retry must show progress,
+            // not a lingering failure card) — with the real fraction when the
+            // download is reporting one.
+            if parakeetInFlight { return .downloading(progress: normalizedProgress(parakeetProgress)) }
+            // A finished-but-failed prefetch: the retryable failure card — even
+            // when files are present on disk. Present-but-unloadable is the
+            // corrupt-cache state the engine's repair path exists for; claiming
+            // "ready" here contradicted the menu bar's "Model unavailable".
             if parakeetFailed { return .failed }
+            if parakeetInstalled { return .ready }
             // Not on disk and no prefetch running yet — the launch prefetch kicks
             // it momentarily; show downloading so the copy is honest rather than
             // claiming "ready" for a model that isn't there.
-            return .downloading(progress: nil)
+            return .downloading(progress: normalizedProgress(parakeetProgress))
         case "whisperKit":
             if whisperKitStaged { return .ready }
             if whisperKitDownloading {

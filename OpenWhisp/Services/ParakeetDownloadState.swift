@@ -1,19 +1,19 @@
 import Foundation
 
 /// Coarse per-variant download state for the Parakeet variant picker (MAK-46
-/// Phase 4). FluidAudio has no progress callback, so the honest thing is a
-/// three-state indicator — installed / downloading… / not downloaded — derived
-/// from (a) whether the variant's CoreML repo folder exists on disk and (b)
-/// whether a prefetch is in flight. No fake percentages.
+/// Phase 4) — installed / downloading… / not downloaded — derived from (a)
+/// whether the variant's model files are complete on disk and (b) whether a
+/// prefetch is in flight. (Real download percentages live on the readiness
+/// path — `EngineReadiness.downloading(progress:)` — not on these badges.)
 ///
 /// Pure + Foundation-only so the mapping (variant → repo folder → state) is
 /// unit-tested; the disk walk + in-flight tracking stay app-side.
 public enum ParakeetDownloadState: Equatable {
-    /// The variant's repo folder isn't on disk yet.
+    /// The variant's model files aren't (fully) on disk yet.
     case notDownloaded
-    /// A prefetch/load is running (indeterminate — no percentage available).
+    /// A prefetch/load is running.
     case downloading
-    /// The repo folder is present on disk.
+    /// The variant's model files are complete on disk.
     case installed
 
     /// Short suffix for the variant row subtitle. `installed` returns nil (no
@@ -63,6 +63,23 @@ public enum ParakeetDownloadStatePolicy {
         if let folder = repoFolder(forVariant: id), installedFolders.contains(folder) {
             return .installed
         }
+        if inFlightVariants.contains(ParakeetCatalog.normalize(id)) {
+            return .downloading
+        }
+        return .notDownloaded
+    }
+
+    /// Verdict-based state: `installed` means the variant's files VERIFIED
+    /// complete, not merely that the repo folder exists. This is the resolver
+    /// the UI should prefer — the folder-presence overload above predates
+    /// `ParakeetModelIntegrity` and can call a torn first-run download
+    /// "installed" (the fresh-install onboarding bug).
+    public static func state(
+        forVariant id: String,
+        verdict: ParakeetModelIntegrity.Verdict,
+        inFlightVariants: Set<String>
+    ) -> ParakeetDownloadState {
+        if verdict == .complete { return .installed }
         if inFlightVariants.contains(ParakeetCatalog.normalize(id)) {
             return .downloading
         }

@@ -20,8 +20,8 @@ public enum EngineReadiness: Equatable {
     /// worth reporting in the menu (no work is happening to report).
     case idle
     /// Model bytes are being fetched. `progress` is 0...1 when the backend
-    /// reports it (WhisperKit) and nil when it does not (FluidAudio/Parakeet has
-    /// no progress callback — an indeterminate "Downloading…" is the honest UI).
+    /// reports it (WhisperKit's Progress callback, FluidAudio's ProgressHandler)
+    /// and nil before the first report — an indeterminate "Downloading…" then.
     case downloading(progress: Double?)
     /// Bytes are on disk; the model/session is being loaded into memory (the
     /// several-second CoreML/ANE compile+load that the owner reported as a dead
@@ -134,7 +134,8 @@ public enum EngineReadinessResolver {
     public struct ParakeetObservation: Equatable {
         /// A prefetch/load task is running for the selected variant.
         public var prefetchInFlight: Bool
-        /// The variant's repo folder is present on disk (bytes downloaded).
+        /// The variant's model files verified complete on disk (bytes down;
+        /// `ParakeetModelIntegrity` → `.complete`, not mere folder presence).
         public var modelOnDisk: Bool
         /// The engine holds a loaded `ParakeetStreamSession` — the one true
         /// "can start capturing now" signal.
@@ -167,10 +168,12 @@ public enum EngineReadinessResolver {
         // A loaded session outranks everything: the engine can capture now, even
         // if a redundant prefetch is still settling.
         if o.sessionLoaded { return .ready }
-        if o.prefetchFailed { return .failed("download failed — check your connection") }
+        if o.prefetchFailed { return .failed(ParakeetFailureCopy.downloadFailed) }
         if o.prefetchInFlight {
             // Bytes present → this is the in-memory load; otherwise it's the
-            // first-run fetch. FluidAudio reports no progress, hence nil.
+            // first-run fetch. Real fractions arrive via the engine's own
+            // readiness callback, which outranks this resolver — nil is only
+            // the before-first-report placeholder.
             return o.modelOnDisk ? .loading : .downloading(progress: nil)
         }
         // Nothing in flight: the model will load lazily at the first session.
