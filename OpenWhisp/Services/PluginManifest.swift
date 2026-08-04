@@ -73,6 +73,24 @@ public struct PluginManifest: Codable, Equatable, Sendable, Identifiable {
     /// including any already sitting in the user's plugins folder — still decodes.
     public let keyEquivalent: String?
 
+    /// Spoken PREFIX phrases that route a refine instruction to this plugin (v10),
+    /// e.g. `["create a meme", "make a meme", "сделай мем"]`.
+    ///
+    /// This is the MAK-100 trigger layer: the refine pipeline asks
+    /// `PluginVoiceCommandRouter` which plugin (if any) claims an instruction, and the
+    /// answer comes from THESE strings rather than from a hardcoded list next to the
+    /// one plugin that wants them. A second plugin gains voice commands by shipping a
+    /// manifest — no host change.
+    ///
+    /// Deliberately PREFIX-only and exact-phrase: an instruction is routed away from
+    /// the user's normal refine, so a loose match (substring/fuzzy) would hijack
+    /// dictations the user meant to keep. See `PluginVoiceCommandRouter` for the
+    /// matching rules and `normalizedVoiceTriggers` for what survives validation.
+    ///
+    /// Decoded with a default, like every field added after v1 — a manifest written
+    /// before this existed still decodes rather than dropping the plugin from the list.
+    public let voiceTriggers: [String]
+
     public init(
         id: String,
         name: String,
@@ -81,7 +99,8 @@ public struct PluginManifest: Codable, Equatable, Sendable, Identifiable {
         symbol: String,
         entry: PluginEntryKind,
         networkHosts: [String] = [],
-        keyEquivalent: String? = nil
+        keyEquivalent: String? = nil,
+        voiceTriggers: [String] = []
     ) {
         self.id = id
         self.name = name
@@ -91,6 +110,7 @@ public struct PluginManifest: Codable, Equatable, Sendable, Identifiable {
         self.entry = entry
         self.networkHosts = networkHosts
         self.keyEquivalent = keyEquivalent
+        self.voiceTriggers = voiceTriggers
     }
 
     /// Forward-compatible decode: `networkHosts` and `keyEquivalent` are optional in
@@ -106,6 +126,23 @@ public struct PluginManifest: Codable, Equatable, Sendable, Identifiable {
         entry = try container.decodeIfPresent(PluginEntryKind.self, forKey: .entry) ?? .builtIn
         networkHosts = try container.decodeIfPresent([String].self, forKey: .networkHosts) ?? []
         keyEquivalent = try container.decodeIfPresent(String.self, forKey: .keyEquivalent)
+        voiceTriggers = try container.decodeIfPresent([String].self, forKey: .voiceTriggers) ?? []
+    }
+
+    /// The voice triggers this manifest may actually be routed on: trimmed,
+    /// lowercased, de-duplicated, and with anything empty dropped.
+    ///
+    /// The router consumes THIS rather than the raw array, so a manifest carrying
+    /// `["", "  ", "Create A Meme"]` contributes exactly one usable phrase instead of
+    /// matching every instruction on the empty string — an empty prefix matches
+    /// EVERYTHING, which would silently swallow every refine the user ever spoke.
+    public var normalizedVoiceTriggers: [String] {
+        var seen = Set<String>()
+        return voiceTriggers.compactMap { raw in
+            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard !trimmed.isEmpty, seen.insert(trimmed).inserted else { return nil }
+            return trimmed
+        }
     }
 
     /// The shortcut as it should be DISPLAYED, e.g. `"⌘M"`, or nil when this manifest
@@ -136,6 +173,10 @@ public struct PluginManifest: Codable, Equatable, Sendable, Identifiable {
         case emptySymbol
         /// The manifest asked for a shortcut that isn't a single character (v5).
         case invalidKeyEquivalent(String)
+        /// The manifest declared `voiceTriggers` but not one of them survived
+        /// normalization — e.g. `[""]` or `["   "]` (v10). Reported so a plugin
+        /// author sees it, but never fatal: see `isValid`.
+        case emptyVoiceTriggers
     }
 
     /// Characters allowed in an id: lowercase alphanumerics plus `-` and `.`.
@@ -163,6 +204,13 @@ public struct PluginManifest: Codable, Equatable, Sendable, Identifiable {
            PluginKeyEquivalent.normalized(requested) == nil {
             return .invalidKeyEquivalent(requested)
         }
+        // Same trade as the shortcut: a manifest whose declared triggers all normalize
+        // away loses its VOICE ROUTE (the router simply never matches it) and keeps
+        // everything else. Fatal here would mean a stray `""` in a JSON file costs the
+        // user a whole working plugin.
+        if !voiceTriggers.isEmpty, normalizedVoiceTriggers.isEmpty {
+            return .emptyVoiceTriggers
+        }
         return nil
     }
 
@@ -174,7 +222,7 @@ public struct PluginManifest: Codable, Equatable, Sendable, Identifiable {
     /// nothing else.
     public var isValid: Bool {
         switch validate() {
-        case nil, .invalidKeyEquivalent: return true
+        case nil, .invalidKeyEquivalent, .emptyVoiceTriggers: return true
         default: return false
         }
     }

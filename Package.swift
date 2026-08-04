@@ -170,6 +170,7 @@ let package = Package(
                 // pure rules. Sources live under plugins/MemeGenerator/ for the app-layer
                 // UI; the testable logic sits here so `swift test` covers it.
                 "PluginManifest.swift",
+                "PluginVoiceCommandRouter.swift",
                 "PluginDiscovery.swift",
                 "PluginEnablement.swift",
                 "PluginRegistry.swift",

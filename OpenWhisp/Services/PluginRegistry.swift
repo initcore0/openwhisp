@@ -53,6 +53,19 @@ public enum PluginRegistry {
         // ⌘M opens the window from the menu bar, the way ⌘S opens the Scratchpad.
         // Declared here rather than hardcoded in `AppMain` so a second plugin needs no
         // host change — the host resolves collisions (`PluginKeyEquivalent`).
-        keyEquivalent: "m"
+        keyEquivalent: "m",
+        // v10: the spoken phrases that route a REFINE instruction here instead of to
+        // the refine LLM (MAK-100 trigger layer). Declared on the manifest — the
+        // refine pipeline asks `PluginVoiceCommandRouter`, which knows only about
+        // manifests, so a second plugin gains voice commands without a host change.
+        //
+        // English + Russian because the owner dictates in both. Kept to the natural
+        // imperative openings for "make me a meme" and nothing looser: each phrase
+        // here REDIRECTS a dictation away from the user's editor, so a phrase that
+        // could plausibly begin an ordinary sentence would cost them text.
+        voiceTriggers: [
+            "create a meme", "make a meme", "generate a meme",
+            "сделай мем", "создай мем",
+        ]
     )
 }
