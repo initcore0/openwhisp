@@ -109,6 +109,7 @@ final class OpenAITranslationService {
         endpoint: LLMEndpoint,
         model: String,
         customInstruction: String? = nil,
+        responseFormat: ResponseFormat? = nil,
         completion: @escaping (Result<String, Error>) -> Void
     ) {
         let key = endpoint.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -133,7 +134,8 @@ final class OpenAITranslationService {
             messages: [
                 Message(role: "system", content: instruction),
                 Message(role: "user", content: trimmedText)
-            ]
+            ],
+            responseFormat: responseFormat
         )
 
         var request = URLRequest(url: url)
@@ -235,7 +237,62 @@ private struct ChatCompletionRequest: Encodable {
     let model: String
     let temperature: Double
     let messages: [Message]
+    /// OpenAI-compatible constrained decoding (spike v7).
+    ///
+    /// llama-server implements `response_format: {"type": "json_schema", ...}` by
+    /// compiling the schema to a GBNF grammar and constraining the sampler, so a
+    /// response that violates the schema is not merely rejected after the fact — it
+    /// is UNREPRESENTABLE. That is the difference between the parser catching a
+    /// bad shape and the bad shape never existing.
+    ///
+    /// Optional and omitted when nil (`encodeIfPresent`), so every existing caller's
+    /// request bytes are byte-identical to v6. Endpoints that don't understand the
+    /// key are unaffected because they never receive it.
+    let responseFormat: ResponseFormat?
+
+    private enum CodingKeys: String, CodingKey {
+        case model, temperature, messages
+        case responseFormat = "response_format"
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(model, forKey: .model)
+        try c.encode(temperature, forKey: .temperature)
+        try c.encode(messages, forKey: .messages)
+        // Omitted rather than null: a null `response_format` is a different request
+        // than an absent one to some servers, and "unchanged for everyone who didn't
+        // ask" is the whole safety property of this addition.
+        try c.encodeIfPresent(responseFormat, forKey: .responseFormat)
+    }
 }
+
+/// The `response_format` envelope llama-server and the OpenAI API both accept.
+struct ResponseFormat: Encodable {
+    let type: String
+    let jsonSchema: SchemaEnvelope
+
+    private enum CodingKeys: String, CodingKey {
+        case type
+        case jsonSchema = "json_schema"
+    }
+
+    struct SchemaEnvelope: Encodable {
+        let name: String
+        let strict: Bool
+        let schema: JSONValue
+    }
+
+    /// Build a `json_schema` response format around a raw schema.
+    static func jsonSchema(name: String, schema: JSONValue) -> ResponseFormat {
+        ResponseFormat(
+            type: "json_schema",
+            jsonSchema: SchemaEnvelope(name: name, strict: true, schema: schema))
+    }
+}
+
+// `JSONValue` lives in MemeAI.swift — it has to be inside OpenWhispCore so the
+// schemas that use it are reachable from `swift test`.
 
 private struct Message: Codable {
     let role: String

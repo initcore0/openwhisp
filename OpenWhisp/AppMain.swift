@@ -120,6 +120,104 @@ class OpenWhispApp: NSObject, NSApplicationDelegate {
         // First-run onboarding
         showOnboardingIfNeeded()
         print("[OpenWhisp] Ready")
+
+        // v9 spike: the meme plugin's runtime-proof probe. Opens the plugin window and
+        // drives the real Generate from `OPENWHISP_MEME_PROBE_PROMPT`, so a build
+        // script can capture what the SHIPPING binary decides instead of another
+        // reading of the source. Absent the env var this is a no-op.
+        startMemeProbeIfRequested()
+    }
+
+    /// Launch-time entry for the meme plugin's runtime proof (spike v9).
+    ///
+    /// Deliberately routed through `PluginHost.open` rather than constructing the
+    /// controller directly: the probe is only worth anything if it exercises the same
+    /// window the menu item opens, including the enablement gate and the cached-window
+    /// reuse. A probe with its own construction path could pass while the real one
+    /// failed — which is the exact class of mistake this whole exercise is about.
+    private func startMemeProbeIfRequested() {
+        let env = ProcessInfo.processInfo.environment
+
+        // v10: the VOICE-COMMAND probe. Drives the refine route — the same
+        // `PluginHost.routeVoiceCommand` AppState calls on a real dictation — so the
+        // proof covers the TRIGGER LAYER, not just Generate. Both of the owner's
+        // flows are expressible: `..._REFINE_CONTENT` set = CASE 1 (a selection is
+        // the material), unset = CASE 2 (the spoken remainder is).
+        if let instruction = env["OPENWHISP_MEME_PROBE_REFINE"], !instruction.isEmpty {
+            startRefineRouteProbe(instruction: instruction,
+                                  content: env["OPENWHISP_MEME_PROBE_REFINE_CONTENT"],
+                                  delay: Double(env["OPENWHISP_MEME_PROBE_DELAY"] ?? "") ?? 6)
+            return
+        }
+
+        guard let prompt = env["OPENWHISP_MEME_PROBE_PROMPT"], !prompt.isEmpty else { return }
+        MemeTrace.log("probe requested at launch")
+
+        // The catalog and the LLM warm on window open; give them a moment before
+        // firing Generate, exactly as a human opening the window and speaking would.
+        let delay = Double(env["OPENWHISP_MEME_PROBE_DELAY"] ?? "") ?? 6
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+            PluginHost.shared.open(pluginID: PluginRegistry.memeGenerator.id)
+            #if OPENWHISP_PLUGINS
+            guard let controller = PluginHost.shared.windowController(
+                for: PluginRegistry.memeGenerator.id) as? MemeGeneratorWindowController
+            else {
+                MemeTrace.log("probe ABORTED: no meme window controller (plugin disabled?)")
+                return
+            }
+            controller.runTraceProbeIfRequested()
+            #else
+            MemeTrace.log("probe ABORTED: build has no plugins (PLUGINS=1 ./build.sh)")
+            #endif
+        }
+    }
+
+    /// Drive the v10 voice-command route from launch and report what it decided.
+    ///
+    /// Calls `PluginHost.routeVoiceCommand` — the SAME entry point
+    /// `AppState.deliverFinalText` uses the moment a mid-dictation refine finalizes,
+    /// with the same (instruction, content) pair. Nothing about the routing decision,
+    /// the enablement gate, the window open, or the generate is probe-specific; only
+    /// the source of the two strings differs (env vars instead of the mic).
+    ///
+    /// That matters because the wiring is exactly what a source read keeps getting
+    /// wrong: a trigger that matches in `swift test` proves the ROUTER, not that the
+    /// refine pipeline ever reaches it. This drives the pipeline's own seam.
+    private func startRefineRouteProbe(instruction: String, content: String?, delay: Double) {
+        MemeTrace.log(
+            "refine-route probe requested: instruction=\"\(instruction)\" "
+            + "content=\(content.map { "\"\($0)\"" } ?? "nil")")
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+            guard let appState = self.appState else {
+                MemeTrace.log("refine-route probe ABORTED: no appState")
+                return
+            }
+            let effect = PluginHost.shared.routeVoiceCommand(
+                instruction: instruction, content: content, on: appState)
+            // nil = the router declined and the pipeline would run a NORMAL refine.
+            // That is the near-miss case's expected outcome, and it must be visible.
+            if let effect {
+                MemeTrace.log("refine-route probe: ROUTED, refine effect=\(effect)")
+            } else {
+                MemeTrace.log(
+                    "refine-route probe: NOT ROUTED -> normal refine "
+                    + "(status=\"\(appState.statusMessage)\")")
+            }
+            // Report the canvas after the generate settles, like the v9 probe.
+            let deadline = Double(
+                ProcessInfo.processInfo.environment["OPENWHISP_MEME_PROBE_SECONDS"] ?? "") ?? 90
+            #if OPENWHISP_PLUGINS
+            guard let controller = PluginHost.shared.windowController(
+                for: PluginRegistry.memeGenerator.id) as? MemeGeneratorWindowController
+            else {
+                MemeTrace.log("refine-route probe done (no meme window was opened)")
+                return
+            }
+            controller.reportCanvasAfter(seconds: deadline)
+            #else
+            MemeTrace.log("refine-route probe: build has no plugins (PLUGINS=1 ./build.sh)")
+            #endif
+        }
     }
 
     /// Re-check permissions whenever the app becomes active. This is what makes
@@ -381,6 +479,36 @@ class OpenWhispApp: NSObject, NSApplicationDelegate {
         // Floating Scratchpad (MAK-49): a target-free surface to dictate into.
         menu.addItem(menuItem("Scratchpad", symbol: "note.text", action: #selector(openScratchpad), keyEquivalent: "s"))
 
+        // Plugins (spike/plugin-system): one row per ENABLED plugin, folded into a
+        // submenu so an optional feature never crowds the main menu. Absent entirely
+        // when nothing is enabled — which is the default.
+        let activePlugins = PluginHost.shared.activePlugins
+        if !activePlugins.isEmpty {
+            let pluginsItem = NSMenuItem(title: "Plugins", action: nil, keyEquivalent: "")
+            pluginsItem.image = NSImage(
+                systemSymbolName: "puzzlepiece.extension", accessibilityDescription: nil)
+            let submenu = NSMenu()
+            // Shortcuts are DECLARED by each manifest and GRANTED by the host (v5):
+            // the plugin can't see the app's own menu, so it asks for a key and
+            // `PluginKeyEquivalent` resolves it against what's already bound — the
+            // app's reserved set first, then earlier plugins in this same list. A
+            // refusal is silent; the row still opens on a click.
+            let shortcuts = PluginKeyEquivalent.assign(
+                requests: activePlugins.map { ($0.id, $0.manifest.keyEquivalent) })
+            for plugin in activePlugins {
+                let item = menuItem(
+                    plugin.manifest.name,
+                    symbol: plugin.manifest.symbol,
+                    action: #selector(openPlugin(_:)),
+                    keyEquivalent: shortcuts[plugin.id] ?? "")
+                item.representedObject = plugin.id
+                item.target = self
+                submenu.addItem(item)
+            }
+            pluginsItem.submenu = submenu
+            menu.addItem(pluginsItem)
+        }
+
         menu.addItem(.separator())
 
         // Quick mid-use toggles only. Engine, live-chunk plumbing, etc. live in
@@ -586,6 +714,13 @@ class OpenWhispApp: NSObject, NSApplicationDelegate {
     }
 
     @objc private func openScratchpad() { appState.openScratchpad() }
+
+    /// Open an enabled plugin's window. The id rides on `representedObject` so one
+    /// selector serves every plugin row (the host re-checks enabled+runnable).
+    @objc private func openPlugin(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String else { return }
+        PluginHost.shared.open(pluginID: id)
+    }
     @objc private func startDictation() { appState.startDictation() }
     @objc private func stopDictation()  { appState.stopDictation() }
     @objc private func cancelDictation() { appState.cancelDictation() }

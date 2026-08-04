@@ -37,6 +37,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
     case agentBridge
     case sync
     case streamOverlay
+    case plugins
 
     var id: String { rawValue }
 
@@ -51,7 +52,8 @@ enum SettingsPane: String, CaseIterable, Identifiable {
         switch self {
         case .general, .dictation, .models, .cleanup, .output, .privacy, .advanced:
             return .setup
-        case .insights, .modes, .rules, .files, .meetings, .profiles, .agentBridge, .sync, .streamOverlay:
+        case .insights, .modes, .rules, .files, .meetings, .profiles, .agentBridge, .sync,
+             .streamOverlay, .plugins:
             return .moreFeatures
         }
     }
@@ -75,6 +77,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
         case .agentBridge: return "Agent Bridge"
         case .sync:        return "Sync"
         case .streamOverlay: return "Stream Overlay"
+        case .plugins:     return "Plugins"
         case .privacy:     return "Privacy & Permissions"
         case .advanced:    return "Advanced"
         }
@@ -96,6 +99,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
         case .agentBridge: return "point.3.connected.trianglepath.dotted"
         case .sync:        return "arrow.triangle.2.circlepath"
         case .streamOverlay: return "captions.bubble"
+        case .plugins:     return "puzzlepiece.extension"
         case .privacy:     return "lock.shield"
         case .advanced:    return "wrench.and.screwdriver"
         }
@@ -198,6 +202,9 @@ struct SettingsView: View {
         case .agentBridge: AgentBridgePane(appState: appState)
         case .sync:      SyncPane(appState: appState)
         case .streamOverlay: StreamOverlayPane(overlay: appState.streamOverlay, dictationLanguage: appState.language)
+        // Plugin state lives on PluginHost (its own defaults key), not AppState —
+        // the MAK-32 ratchet is at zero headroom.
+        case .plugins:   PluginsPane(host: PluginHost.shared)
         case .privacy:   PrivacyPane(appState: appState)
         case .advanced:  AdvancedPane(appState: appState)
         }

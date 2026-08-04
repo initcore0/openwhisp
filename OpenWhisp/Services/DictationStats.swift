@@ -29,6 +29,49 @@ struct DictationEvent: Equatable {
     static func words(in text: String) -> Int {
         text.split(whereSeparator: { $0.isWhitespace || $0.isNewline }).count
     }
+
+    /// Which model identifier to record for a completed dictation, given the
+    /// active `engine` id and each engine's own model-selection setting. Engines
+    /// that don't have a distinct model concept (Apple's on-device engines) record
+    /// `nil` rather than a misleading placeholder. Kept as a single pure switch so
+    /// `recordStats` and any future stats consumer resolve the model the same way;
+    /// static + pure so it's unit-tested directly against fixture engine ids.
+    static func engineModel(
+        engine: String, whisperKitModel: String, parakeetVariant: String, modelName: String
+    ) -> String? {
+        switch engine {
+        case "whisperKit":     return whisperKitModel
+        case "parakeet":       return parakeetVariant
+        case "appleSpeech":    return nil
+        case "speechAnalyzer": return nil
+        default:               return modelName
+        }
+    }
+
+    /// Build the event for a just-completed dictation from the already-trimmed
+    /// final `text` and the session's timing/engine inputs. Pure aggregation of
+    /// `words(in:)` + `engineModel` + the two elapsed-time computations
+    /// (`recordStats` still owns the pre-checks: secure field, empty transcript,
+    /// unknown start time — those are early-return GUARDS, not part of the value
+    /// being built, so they stay in AppState). `now` is threaded in rather than
+    /// read internally so callers and tests can pin the clock.
+    static func make(
+        trimmedText: String, now: Date, startedAt: Date, transcriptionStartedAt: Date?,
+        engine: String, whisperKitModel: String, parakeetVariant: String, modelName: String,
+        outputMode: String, appBundleID: String?
+    ) -> DictationEvent {
+        DictationEvent(
+            date: now,
+            wordCount: words(in: trimmedText),
+            charCount: trimmedText.count,
+            durationSeconds: now.timeIntervalSince(startedAt),
+            engine: engine,
+            model: engineModel(engine: engine, whisperKitModel: whisperKitModel, parakeetVariant: parakeetVariant, modelName: modelName),
+            outputMode: outputMode,
+            appBundleID: appBundleID,
+            transcriptionLatencySeconds: transcriptionStartedAt.map { now.timeIntervalSince($0) }
+        )
+    }
 }
 
 /// Per-day rollup bucket. Keyed by an ISO `yyyy-MM-dd` day string (UTC) in the

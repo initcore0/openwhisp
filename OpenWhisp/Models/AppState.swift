@@ -385,8 +385,7 @@ class AppState: ObservableObject {
                 // First enable with the built-in provider should work with zero
                 // setup: provision the model if it isn't on disk yet (no-ops and
                 // warms when it is).
-                if llmProvider == "bundled" { ensureLLMModelExists() }
-                else { warmLlamaServerIfPossible() }
+                if llmProvider == "bundled" { ensureLLMModelExists() } else { warmLlamaServerIfPossible() }
             } else {
                 llamaEngine?.stopServer()
             }
@@ -443,10 +442,8 @@ class AppState: ObservableObject {
                 // Provision/warm only when AI cleanup is actually on — switching
                 // the provider (or Reset All Settings) with cleanup off must not
                 // kick off a model download behind the user's back.
-                if openAIEnhancementEnabled {
-                    ensureLLMModelExists()
-                    warmLlamaServerIfPossible()
-                }
+                // `ensureLLMModelExists` warms on completion, so it is the only call.
+                if openAIEnhancementEnabled { ensureLLMModelExists() }
             } else {
                 // Free the ~0.7-1.5 GB the built-in LLM holds when it's not the
                 // active provider.
@@ -578,7 +575,7 @@ class AppState: ObservableObject {
 
     /// Lazily-created engine that manages the bundled llama-server subprocess.
     private var llamaEngine: LlamaServerEngine?
-    private func ensureLlamaEngine() -> LlamaServerEngine {
+    func ensureLlamaEngine() -> LlamaServerEngine {
         if let engine = llamaEngine { return engine }
         let engine = LlamaServerEngine()
         llamaEngine = engine
@@ -1522,8 +1519,7 @@ class AppState: ObservableObject {
     /// provider is active, so tiny on-device models get the terser, stricter
     /// system prompt (see OpenAITranslationService.instructionForMode).
     private func refinementMode(_ mode: String) -> String {
-        guard llmProvider == "bundled" else { return mode }
-        return mode == "rephrase" ? "bundled-rephrase" : "bundled-improve"
+        EnhancementProvider.refinementMode(mode, llmProvider: llmProvider)
     }
 
     /// The whole-text final AI step, expressed as the `AsyncTextRefiner` seam
@@ -2786,24 +2782,12 @@ class AppState: ObservableObject {
         cachedBundledLLMManifest
     }
 
-    /// True when a resident whisper.cpp server is held in memory at the same time
-    /// the built-in LLM would run. Both load a model, so on small-RAM Macs they
-    /// can race for memory. (WhisperKit/AppleSpeech keep no resident server.)
-    private var whisperServerResident: Bool {
+    /// True when a resident whisper.cpp server is held in memory at the same time the
+    /// built-in LLM would run. (WhisperKit/AppleSpeech keep no resident server.)
+    /// Internal rather than private: the warm path lives in `LLMWarmReadiness.swift`
+    /// (MAK-32 — new AppState logic goes to core, not into the god object).
+    var whisperServerResident: Bool {
         transcriptionEngine == "whisper" && whisperBackend == "serverAPI"
-    }
-
-    /// Start the bundled llama-server if the built-in provider is the active,
-    /// enabled, downloaded one. Idempotent (the engine no-ops if already healthy).
-    func warmLlamaServerIfPossible() {
-        guard llmProvider == "bundled",
-              openAIEnhancementEnabled,
-              bundledLLMModelInstalled else { return }
-        let engine = ensureLlamaEngine()
-        // Shorter idle teardown when a whisper-server is also resident, to relieve
-        // dual-engine memory pressure sooner.
-        engine.idleTimeout = whisperServerResident ? 30 : 90
-        engine.ensureRunning(modelPath: selectedLLMModelPath()) { _ in }
     }
 
     /// Gate a refinement call behind the bundled server being healthy. For the
@@ -4238,6 +4222,17 @@ class AppState: ObservableObject {
             let instruction = instructionSuffix(fullFinal: finalText, content: content)
             refineActiveInstruction = instruction
             refineDebug("completeFinalText MID-REFINE content=\"\(content.prefix(20))\" instr=\"\(instruction.prefix(20))\" fromSelection=\(fromSelection)")
+
+            // v10: a plugin may claim this instruction by its spoken PREFIX ("create a
+            // meme …") — asked BEFORE the refine LLM and before any insert, because a
+            // claimed command delivers NOTHING to the focused app. A non-match falls
+            // through to the normal refine below, so the words are never lost.
+            if let quietly = PluginHost.shared.routeVoiceCommand(
+                instruction: instruction, content: content, on: self) {
+                refineFlow.reset(); refineActiveInstruction = nil
+                executeRefineEffects([quietly]); return
+            }
+
             isTranscribing = true
             // Drive the machine: engage with the content as step-1, then feed the
             // instruction.
@@ -4436,8 +4431,15 @@ class AppState: ObservableObject {
             content = sel
             fromSelection = true
         } else {
-            statusMessage = "Nothing to refine yet — dictate first, then tap Refine"
-            return
+            // v10: no content still arms IF a plugin can claim the instruction by
+            // voice — that command carries its own material. See
+            // `PluginHost.armsWithoutContent`.
+            guard PluginHost.shared.armsWithoutContent else {
+                statusMessage = "Nothing to refine yet — dictate first, then tap Refine"
+                return
+            }
+            content = ""
+            fromSelection = false
         }
         refineContentSnapshot = content
         refineContentFromSelection = fromSelection
@@ -4659,14 +4661,14 @@ class AppState: ObservableObject {
         let pastesWholeOnce = !isLiveChunkSession || isPreviewSession
         if pastesWholeOnce {
             let insertion = addTrailingSpace ? "\(text) " : text
-            // Scratchpad (MAK-49): when our own floating pad is the frontmost key
-            // window, the user is dictating INTO it with no other target. The
-            // focused-app insert path can't serve this (its paste fallback
-            // deliberately declines when OUR app is frontmost), so append straight
-            // into the active note's model + text view instead. This is the
-            // target-free capture the pad exists for; it never touches the
-            // clipboard and always lands the text.
-            if scratchpadController.appendDictationIfKey(text) {
+            // Scratchpad (MAK-49) / plugin windows (spike/plugin-system): when one of
+            // OUR windows is the frontmost key window, the user is dictating INTO it
+            // with no other target. The focused-app insert path can't serve this (its
+            // paste fallback deliberately declines when OUR app is frontmost), so
+            // append straight into that window instead — target-free capture that
+            // never touches the clipboard and always lands the text. Only one window
+            // can be key, so at most one of these accepts.
+            if scratchpadController.appendDictationIfKey(text) || PluginHost.shared.appendDictationIfKey(text) {
                 lastInsertedIntoFocusedApp = nil
             } else {
             // Output target (MAK-11..14): when the user has selected AND configured a
@@ -4717,14 +4719,14 @@ class AppState: ObservableObject {
                 router.route(payload) { _ in }
             }
             } // end: not routed to the Scratchpad
-        } else if scratchpadController.appendDictationIfKey(text) {
-            // Scratchpad (MAK-49) in liveChunks mode: the per-chunk live pastes all
-            // fell back to the clipboard because OUR pad is frontmost (the focused-app
-            // insert declines when OpenWhisp is key), so NOTHING landed in the note.
-            // Route the WHOLE session text into the active note once here — the honest
-            // completion-time fix for the data loss (per-chunk live typing into the pad
-            // is out of scope). Skip the clipboard-only finish below entirely; the pad
-            // owns the text and never touches the clipboard.
+        } else if scratchpadController.appendDictationIfKey(text) || PluginHost.shared.appendDictationIfKey(text) {
+            // Scratchpad (MAK-49) / plugin window in liveChunks mode: the per-chunk
+            // live pastes all fell back to the clipboard because OUR window is
+            // frontmost (the focused-app insert declines when OpenWhisp is key), so
+            // NOTHING landed in it. Route the WHOLE session text there once here —
+            // the honest completion-time fix for the data loss (per-chunk live typing
+            // is out of scope). Skip the clipboard-only finish below; the window owns
+            // the text and never touches the clipboard.
             lastInsertedIntoFocusedApp = nil
         } else {
             // liveChunks: the text was already pasted incrementally (no trailing space).
@@ -4865,23 +4867,18 @@ class AppState: ObservableObject {
     /// fires on a `suppressOutput` (agent) session if it explicitly opted in.
     private func fireRules(hook: RuleHook, text: String) {
         guard !ruleSet.rules.isEmpty else { return }
-        let context = RuleContext(
-            hook: hook,
-            text: text,
-            appBundleID: targetApplication?.bundleIdentifier,
-            isAgentSession: suppressOutput
-        )
-        let payload = OutputPayload(
-            text: text,
-            language: outputLanguageForCleaning,
-            targetAppBundleID: targetApplication?.bundleIdentifier,
-            isLiveChunk: false
-        )
         // Planning happens on the runner's queue, not here: matching can evaluate a
         // user-supplied regex, and even the matcher's backtracking time budget must
         // never be spent on the finalize path. `ruleSet` is a value type — the
-        // runner gets an immutable snapshot.
-        ruleEngineRunner.planAndRun(rules: ruleSet, context: context, payload: payload)
+        // runner gets an immutable snapshot. The (context, payload) construction is
+        // pure and lives in `RuleContext.firing` where `swift test` pins it.
+        let firing = RuleContext.firing(
+            hook: hook, text: text,
+            appBundleID: targetApplication?.bundleIdentifier,
+            isAgentSession: suppressOutput,
+            language: outputLanguageForCleaning)
+        ruleEngineRunner.planAndRun(
+            rules: ruleSet, context: firing.context, payload: firing.payload)
     }
 
     /// Instance method (called only from `screenContext`'s didSet, where `self`
@@ -5090,16 +5087,21 @@ class AppState: ObservableObject {
         }
     }
 
+    /// The learner's state as the pure pipeline models it — the (proposals,
+    /// confidence) pair is always read and written together.
+    private var correctionState: CorrectionLearningPipeline.State {
+        get { .init(proposals: correctionProposals, confidence: correctionConfidence) }
+        set { correctionProposals = newValue.proposals; correctionConfidence = newValue.confidence }
+    }
+
     /// A captured (inserted, surviving) edit — single- or multi-word (MAK-86): the
     /// pure `CorrectionLearningPipeline` decides ignore / propose / auto-add. Only a
     /// repeat-corroborated auto-add mutates the dictionary (never a one-off).
     private func handleObservedCorrection(inserted: String, surviving: String) {
         let (newState, outcome) = CorrectionLearningPipeline.decide(
             inserted: inserted, surviving: surviving,
-            existingSubstitutions: vocabulary.substitutions,
-            state: .init(proposals: correctionProposals, confidence: correctionConfidence))
-        correctionProposals = newState.proposals
-        correctionConfidence = newState.confidence
+            existingSubstitutions: vocabulary.substitutions, state: correctionState)
+        correctionState = newState
         vocabulary = CorrectionLearningPipeline.applying(outcome, to: vocabulary)
     }
 
@@ -5115,10 +5117,7 @@ class AppState: ObservableObject {
     /// Reject a pending correction proposal: dequeue it and remember not to re-offer
     /// the same fix. Does not touch the dictionary.
     func rejectCorrectionProposal(_ id: CorrectionProposal.ID) {
-        let next = CorrectionLearningPipeline.rejecting(
-            id, state: .init(proposals: correctionProposals, confidence: correctionConfidence))
-        correctionProposals = next.proposals
-        correctionConfidence = next.confidence
+        correctionState = CorrectionLearningPipeline.rejecting(id, state: correctionState)
     }
 
     /// File-tagging (MAK-48) fires ONLY when the user opted in AND the app being
@@ -5945,26 +5944,11 @@ class AppState: ObservableObject {
         guard !trimmed.isEmpty else { return }
         guard let startedAt = recordingStartedAt else { return }
 
-        let now = Date()
-        let model: String? = switch transcriptionEngine {
-        case "whisperKit":  whisperKitModel
-        case "parakeet":    parakeetVariant
-        case "appleSpeech": nil
-        case "speechAnalyzer": nil
-        default:            modelName
-        }
-        let latency = transcriptionStartedAt.map { now.timeIntervalSince($0) }
-
-        let event = DictationEvent(
-            date: now,
-            wordCount: DictationEvent.words(in: trimmed),
-            charCount: trimmed.count,
-            durationSeconds: now.timeIntervalSince(startedAt),
-            engine: transcriptionEngine,
-            model: model,
-            outputMode: outputMode,
-            appBundleID: targetApplication?.bundleIdentifier,
-            transcriptionLatencySeconds: latency
+        let event = DictationEvent.make(
+            trimmedText: trimmed, now: Date(), startedAt: startedAt, transcriptionStartedAt: transcriptionStartedAt,
+            engine: transcriptionEngine, whisperKitModel: whisperKitModel,
+            parakeetVariant: parakeetVariant, modelName: modelName,
+            outputMode: outputMode, appBundleID: targetApplication?.bundleIdentifier
         )
         dictationStats.record(event)
         // Same off-main-actor write as persistHistory(): stats save on every
@@ -6529,8 +6513,8 @@ extension AppState: AgentBridgeHost {
     /// bundled engine when the resolved provider is bundled.
     func summarizeResolved(
         text: String, instruction: String, resolved: SummaryModelResolver.Resolved,
-        completion: @escaping (Result<String, BridgeWire.ErrorObject>) -> Void
-    ) {
+        responseFormat: ResponseFormat? = nil, // v7: grammar-constrained decoding
+        completion: @escaping (Result<String, BridgeWire.ErrorObject>) -> Void) {
         // Busy-reject while dictating (same guarantee refineText gives): warming
         // the bundled LLM would stop a live whisper-server.
         guard !sessionActive, !isRecording, !isTranscribing else {
@@ -6573,7 +6557,7 @@ extension AppState: AgentBridgeHost {
                 targetLanguage: self.translationTargetLanguage,
                 endpoint: endpoint,
                 model: model,
-                customInstruction: systemDirective
+                customInstruction: systemDirective, responseFormat: responseFormat
             ) { [weak self] result in
                 Task { @MainActor in
                     done()
@@ -6841,38 +6825,27 @@ extension AppState: AgentBridgeHost {
         consentDecision(record: agentClients.record(for: clientName), clientName: clientName, scope: scope)
     }
 
-    /// Same, with the record already fetched — bridge.hello resolves every scope
-    /// at once and must not re-scan the records array once per scope.
+    /// Same, with the record already fetched (bridge.hello resolves every scope at
+    /// once, so it must not re-scan records per scope); supplies the this-run
+    /// grant to the pure `AgentScope.consentDecision`.
     private func consentDecision(
         record: AgentClientRecord?, clientName: String, scope: AgentScope
     ) -> AgentConsentDecision {
-        guard let policy = record?.policy(for: scope) else { return .prompt }
         let grantedThisRun = consentGrantedThisRun[clientName]?.contains(scope) ?? false
-        return policy.decision(grantedThisRun: grantedThisRun)
+        return AgentScope.consentDecision(record: record, grantedThisRun: grantedThisRun, scope: scope)
     }
 
-    /// The posture advertised in `bridge.hello` (never prompts): a per-scope map
-    /// plus a summary scalar — `.granted` only if EVERY scope is already allowed,
-    /// `.denied` only if every scope is denied, else `.pending`. The scalar alone
-    /// is too lossy for real clients (a dictate-only agent with an explicit deny
-    /// would read "pending" forever); adapters that care which capability is
-    /// usable read the map. Prompting still happens per call.
+    /// The posture advertised in `bridge.hello` (never prompts). Resolves every
+    /// scope's decision here (the client record + this-run grants AppState owns)
+    /// and hands the pure aggregation to `AgentScope.consentSnapshot` (see
+    /// its doc for the summary-scalar semantics). Prompting still happens per call.
     func bridgeConsentSnapshot(clientName: String) -> (summary: BridgeWire.ConsentState, scopes: [String: BridgeWire.ConsentState]) {
         let record = agentClients.record(for: clientName)
-        var scopes: [String: BridgeWire.ConsentState] = [:]
-        var allAllow = true
-        var allDeny = true
+        var decisions: [AgentScope: AgentConsentDecision] = [:]
         for scope in AgentScope.allCases {
-            let decision = consentDecision(record: record, clientName: clientName, scope: scope)
-            switch decision {
-            case .allow:  scopes[scope.rawValue] = .granted
-            case .deny:   scopes[scope.rawValue] = .denied
-            case .prompt: scopes[scope.rawValue] = .pending
-            }
-            allAllow = allAllow && decision == .allow
-            allDeny = allDeny && decision == .deny
+            decisions[scope] = consentDecision(record: record, clientName: clientName, scope: scope)
         }
-        return (allAllow ? .granted : (allDeny ? .denied : .pending), scopes)
+        return AgentScope.consentSnapshot(decisions: decisions)
     }
 
     /// Note a completed agent call on the client's record (for the settings pane).
