@@ -137,6 +137,19 @@ class OpenWhispApp: NSObject, NSApplicationDelegate {
     /// failed — which is the exact class of mistake this whole exercise is about.
     private func startMemeProbeIfRequested() {
         let env = ProcessInfo.processInfo.environment
+
+        // v10: the VOICE-COMMAND probe. Drives the refine route — the same
+        // `PluginHost.routeVoiceCommand` AppState calls on a real dictation — so the
+        // proof covers the TRIGGER LAYER, not just Generate. Both of the owner's
+        // flows are expressible: `..._REFINE_CONTENT` set = CASE 1 (a selection is
+        // the material), unset = CASE 2 (the spoken remainder is).
+        if let instruction = env["OPENWHISP_MEME_PROBE_REFINE"], !instruction.isEmpty {
+            startRefineRouteProbe(instruction: instruction,
+                                  content: env["OPENWHISP_MEME_PROBE_REFINE_CONTENT"],
+                                  delay: Double(env["OPENWHISP_MEME_PROBE_DELAY"] ?? "") ?? 6)
+            return
+        }
+
         guard let prompt = env["OPENWHISP_MEME_PROBE_PROMPT"], !prompt.isEmpty else { return }
         MemeTrace.log("probe requested at launch")
 
@@ -155,6 +168,54 @@ class OpenWhispApp: NSObject, NSApplicationDelegate {
             controller.runTraceProbeIfRequested()
             #else
             MemeTrace.log("probe ABORTED: build has no plugins (PLUGINS=1 ./build.sh)")
+            #endif
+        }
+    }
+
+    /// Drive the v10 voice-command route from launch and report what it decided.
+    ///
+    /// Calls `PluginHost.routeVoiceCommand` — the SAME entry point
+    /// `AppState.deliverFinalText` uses the moment a mid-dictation refine finalizes,
+    /// with the same (instruction, content) pair. Nothing about the routing decision,
+    /// the enablement gate, the window open, or the generate is probe-specific; only
+    /// the source of the two strings differs (env vars instead of the mic).
+    ///
+    /// That matters because the wiring is exactly what a source read keeps getting
+    /// wrong: a trigger that matches in `swift test` proves the ROUTER, not that the
+    /// refine pipeline ever reaches it. This drives the pipeline's own seam.
+    private func startRefineRouteProbe(instruction: String, content: String?, delay: Double) {
+        MemeTrace.log(
+            "refine-route probe requested: instruction=\"\(instruction)\" "
+            + "content=\(content.map { "\"\($0)\"" } ?? "nil")")
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+            guard let appState = self.appState else {
+                MemeTrace.log("refine-route probe ABORTED: no appState")
+                return
+            }
+            let effect = PluginHost.shared.routeVoiceCommand(
+                instruction: instruction, content: content, on: appState)
+            // nil = the router declined and the pipeline would run a NORMAL refine.
+            // That is the near-miss case's expected outcome, and it must be visible.
+            if let effect {
+                MemeTrace.log("refine-route probe: ROUTED, refine effect=\(effect)")
+            } else {
+                MemeTrace.log(
+                    "refine-route probe: NOT ROUTED -> normal refine "
+                    + "(status=\"\(appState.statusMessage)\")")
+            }
+            // Report the canvas after the generate settles, like the v9 probe.
+            let deadline = Double(
+                ProcessInfo.processInfo.environment["OPENWHISP_MEME_PROBE_SECONDS"] ?? "") ?? 90
+            #if OPENWHISP_PLUGINS
+            guard let controller = PluginHost.shared.windowController(
+                for: PluginRegistry.memeGenerator.id) as? MemeGeneratorWindowController
+            else {
+                MemeTrace.log("refine-route probe done (no meme window was opened)")
+                return
+            }
+            controller.reportCanvasAfter(seconds: deadline)
+            #else
+            MemeTrace.log("refine-route probe: build has no plugins (PLUGINS=1 ./build.sh)")
             #endif
         }
     }
