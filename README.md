@@ -113,6 +113,7 @@ Everything below is on-device too, and off unless you want it.
 - **Automation** — `openwhisp://` URLs for Raycast, Alfred, and Shortcuts; send transcripts to a file, a webhook, or your own script
 - **Scratchpad** — a floating note that's always ready for your voice
 - **Insights** — your words, speed, and streaks, visible only to you
+- **Plugins** — optional add-ons with their own window and voice commands, off until you enable one; the first turns a spoken description into a captioned meme, rendered on your Mac ([docs](docs/PLUGINS.md))
 
 ---
 
@@ -134,7 +135,7 @@ Wispr Flow and Aqua are polished but cloud-based. Superwhisper and MacWhisper ar
 
 ## Docs
 
-[Agent Bridge & MCP](docs/AGENT_BRIDGE.md) · [Architecture](docs/ARCHITECTURE.md) · [Settings](docs/SETTINGS.md) · [Engine Benchmarks](docs/BENCHMARKS.md) · [Privacy & Security](SECURITY.md) · [Roadmap](docs/ROADMAP.md) · [Contributing](CONTRIBUTING.md)
+[Agent Bridge & MCP](docs/AGENT_BRIDGE.md) · [Architecture](docs/ARCHITECTURE.md) · [Plugins](docs/PLUGINS.md) · [Settings](docs/SETTINGS.md) · [Engine Benchmarks](docs/BENCHMARKS.md) · [Privacy & Security](SECURITY.md) · [Roadmap](docs/ROADMAP.md) · [Contributing](CONTRIBUTING.md)
 
 Mirror for regions where the main site is blocked: [initcore0.github.io/openwhisp-mirror](https://initcore0.github.io/openwhisp-mirror/)
 

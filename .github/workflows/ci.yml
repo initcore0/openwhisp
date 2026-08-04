@@ -48,8 +48,8 @@ jobs:
     # catches type errors in the AppKit/SwiftUI layer before they reach a release
     # build (MAK-63).
     #
-    # Runs in the LEAN configuration (WHISPERKIT=0 PARAKEET=0): this is the ONE
-    # sanctioned use of WHISPERKIT=0 — CI only. Lean mode swaps WhisperKit /
+    # Runs in the LEAN configuration (WHISPERKIT=0 PARAKEET=0 PLUGINS=0): this is
+    # the ONE sanctioned use of WHISPERKIT=0 — CI only. Lean mode swaps WhisperKit /
     # FluidAudio for stub engines, so it skips the WhisperKit fork checkout and
     # the long CoreML/native builds while STILL type-checking all the app source
     # (the engine protocol seam is identical). Sparkle stays ON (default) so its
@@ -57,7 +57,14 @@ jobs:
     # native build. No git submodules are needed in lean mode (whisper.cpp /
     # llama.cpp are only pulled in by the full-fat engine builds), so checkout
     # stays shallow and fast.
-    name: build mac app (lean)
+    #
+    # PLUGINS=0 is pinned here on purpose. Plugins are ON by default, so without
+    # the flag this job would silently stop testing the lean path and the escape
+    # hatch would rot — the `build-app-plugins` job below covers the default
+    # (plugins-in) configuration, so the two together pin BOTH sides of the flag.
+    # The lean job also proves the pure plugin core still compiles with every
+    # plugin surface absent, which is the property PLUGINS=0 actually promises.
+    name: build mac app (lean, no plugins)
     runs-on: macos-14
     timeout-minutes: 15
     steps:
@@ -82,8 +89,51 @@ jobs:
         with:
           path: build/sparkle
           key: sparkle-${{ runner.os }}-${{ hashFiles('scripts/fetch-sparkle.sh') }}
-      - name: Build mac app (lean, WHISPERKIT=0 PARAKEET=0)
+      - name: Build mac app (lean, WHISPERKIT=0 PARAKEET=0 PLUGINS=0)
+        run: WHISPERKIT=0 PARAKEET=0 PLUGINS=0 ./build.sh
+
+  build-app-plugins:
+    # Compiles the app WITH the in-repo plugins — the DEFAULT configuration, and
+    # therefore the one users actually get (docs/PLUGINS.md).
+    #
+    # Separate from `build-app` rather than folded into it because the two jobs
+    # pin opposite sides of the same flag: that job proves PLUGINS=0 still
+    # compiles (the lean escape hatch), this one proves the shipped default does.
+    # Collapsing them into one build would leave whichever side wasn't chosen
+    # untested, and the plugin surface is exactly the kind of code that breaks
+    # without anyone noticing — it lives outside build.sh's OpenWhisp/ glob, so
+    # dropping it is not a compile error.
+    #
+    # Stays lean on the ENGINES (WHISPERKIT=0 PARAKEET=0) for the same reason
+    # build-app does: the engines are irrelevant to whether the plugin layer
+    # type-checks, and skipping them keeps the job to minutes instead of an hour.
+    name: build mac app (with plugins)
+    runs-on: macos-14
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Xcode
+        # Third-party action pinned by commit SHA (v1.6.0) so a moved tag can't
+        # run unreviewed code in CI.
+        uses: maxim-lobanov/setup-xcode@60606e260d2fc5762a71e64e74b2174e8ea3c8bd # v1.6.0
+        with:
+          xcode-version: latest-stable
+      - name: Cache Sparkle framework
+        uses: actions/cache@v4
+        with:
+          path: build/sparkle
+          key: sparkle-${{ runner.os }}-${{ hashFiles('scripts/fetch-sparkle.sh') }}
+      - name: Build mac app with plugins (WHISPERKIT=0 PARAKEET=0, PLUGINS default on)
         run: WHISPERKIT=0 PARAKEET=0 ./build.sh
+      - name: Verify the plugins actually linked
+        # The build succeeding is NOT evidence the plugins were compiled in — a
+        # broken source list yields a working app with an empty Plugins pane and
+        # no error anywhere. This is the same guard package.sh and build-dmg.sh
+        # run before shipping, so CI fails on the drift instead of a user finding
+        # it. It is proven non-vacuous: it fails on a PLUGINS=0 binary.
+        run: |
+          source scripts/verify-plugins-binary.sh
+          verify_plugins_binary build/OpenWhisp
 
   ios-libraries:
     # Guards the iOS consumability of the library products (MAK-51): a

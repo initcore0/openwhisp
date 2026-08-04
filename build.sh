@@ -35,6 +35,16 @@ done < <(find "$PROJECT_DIR/OpenWhisp" -name "*.swift" -not -path "*/SyncLoopbac
 # harness). Its main.swift has top-level executable code + an OpenWhispCore import,
 # so it must NOT be folded into the mac app's single-module glob.
 
+# In-repo plugins (docs/PLUGINS.md). ON BY DEFAULT, like WHISPERKIT and PARAKEET;
+# opt out with PLUGINS=0 ./build.sh for a lean build. Shared with build-dmg.sh via
+# the same helper so a released DMG carries plugins exactly the way a local build
+# does. This is a compile-time toggle, NOT a loader — see the helper's header and
+# docs/PLUGINS.md §"Path to hot-swappable".
+# shellcheck source=scripts/plugin-source-args.sh
+source "$PROJECT_DIR/scripts/plugin-source-args.sh"
+resolve_plugin_source_args
+SWIFT_FILES+=("${PLUGIN_SOURCES[@]+"${PLUGIN_SOURCES[@]}"}")
+
 # Stamp the build with its git commit (shown in Settings › Advanced) — the
 # generated file lives in build/, outside the source glob, and is regenerated
 # every build.
@@ -111,6 +121,7 @@ if xcrun swiftc \
     "${FLUIDAUDIO_ARGS[@]+"${FLUIDAUDIO_ARGS[@]}"}" \
     "${SPARKLE_ARGS[@]+"${SPARKLE_ARGS[@]}"}" \
     "${INSTRUMENTATION_ARGS[@]+"${INSTRUMENTATION_ARGS[@]}"}" \
+    "${PLUGIN_DEFINE_ARGS[@]+"${PLUGIN_DEFINE_ARGS[@]}"}" \
     "${SWIFT_FILES[@]}" \
     -o "$BUILD_DIR/OpenWhisp" \
     2>&1

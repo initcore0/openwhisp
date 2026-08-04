@@ -41,6 +41,49 @@ public enum AgentScope: String, Codable, Equatable, Sendable, CaseIterable {
     /// to every migrated "always allow" client.
     public static let legacyV1Scopes: [AgentScope] = [.dictate, .history, .refine]
 
+    /// The consent decision for one client/scope, given its (possibly absent)
+    /// stored record and whether a `.whileRunning` grant already happened this app
+    /// run. A record with no stored policy for `scope` has no decision yet, so it
+    /// always prompts — matching a brand-new scope added after the client was
+    /// first seen. Pure: callers own the record lookup and the this-run grant
+    /// lookup (both are AppState-owned state), so this stays testable in
+    /// isolation from the store's on-disk shape.
+    public static func consentDecision(
+        record: AgentClientRecord?, grantedThisRun: Bool, scope: AgentScope
+    ) -> AgentConsentDecision {
+        guard let policy = record?.policy(for: scope) else { return .prompt }
+        return policy.decision(grantedThisRun: grantedThisRun)
+    }
+
+    /// Aggregate a per-scope ``AgentConsentDecision`` map (already resolved by the
+    /// caller — this function does no record lookups, so it stays pure and
+    /// Foundation-only) into the `bridge.hello` consent posture: a per-scope wire
+    /// map plus a summary scalar. The summary is `.granted` only if EVERY scope
+    /// decided `.allow`, `.denied` only if every scope decided `.deny`, and
+    /// `.pending` otherwise — a mixed bag (e.g. dictate allowed, refine denied)
+    /// reads as `.pending` because no single scalar can represent it, and callers
+    /// that care which capability is usable should read the per-scope map instead.
+    /// `decisions` should have one entry per `AgentScope.allCases`; a missing scope
+    /// is simply omitted from the returned map (never surfaced as `.pending` on
+    /// its own) and does not affect the summary aggregation.
+    public static func consentSnapshot(
+        decisions: [AgentScope: AgentConsentDecision]
+    ) -> (summary: BridgeWire.ConsentState, scopes: [String: BridgeWire.ConsentState]) {
+        var scopes: [String: BridgeWire.ConsentState] = [:]
+        var allAllow = true
+        var allDeny = true
+        for (scope, decision) in decisions {
+            switch decision {
+            case .allow:  scopes[scope.rawValue] = .granted
+            case .deny:   scopes[scope.rawValue] = .denied
+            case .prompt: scopes[scope.rawValue] = .pending
+            }
+            allAllow = allAllow && decision == .allow
+            allDeny = allDeny && decision == .deny
+        }
+        return (allAllow ? .granted : (allDeny ? .denied : .pending), scopes)
+    }
+
     /// A short human label for the consent window / settings pane.
     public var title: String {
         switch self {

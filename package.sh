@@ -39,6 +39,12 @@ verify_whisperkit_binary "$BUILD_DIR/OpenWhisp"
 # shellcheck source=scripts/verify-parakeet-binary.sh
 source "$PROJECT_DIR/scripts/verify-parakeet-binary.sh"
 verify_parakeet_binary "$BUILD_DIR/OpenWhisp"
+# Same guard for the in-repo plugins (on by default; PLUGINS=0 opts out). Plugins
+# live outside build.sh's OpenWhisp/ glob, so a broken source list drops them all
+# with no compile error — see docs/PLUGINS.md.
+# shellcheck source=scripts/verify-plugins-binary.sh
+source "$PROJECT_DIR/scripts/verify-plugins-binary.sh"
+verify_plugins_binary "$BUILD_DIR/OpenWhisp"
 
 # Build the openwhisp CLI + MCP adapter (a separate SwiftPM executable, so it
 # never picks up the GUI app's `main`). Bundled into Contents/Helpers below; the

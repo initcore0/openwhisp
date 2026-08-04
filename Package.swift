@@ -165,7 +165,31 @@ let package = Package(
                 "TranscriptInterleaver.swift",
                 "MeetingOrphanScan.swift",
                 "StreamOverlay.swift",
-                "StreamIngest.swift"
+                "StreamIngest.swift",
+                // Plugin system (docs/PLUGINS.md) + the in-repo meme plugin's pure
+                // rules. The app-layer UI lives under plugins/MemeGenerator/ and is
+                // outside this target; every DECISION sits here so `swift test` covers
+                // it. New pure plugin files must be added to this list by hand — the
+                // target uses an explicit `sources:` list, so an unregistered file is
+                // silently untested rather than a build error.
+                "PluginManifest.swift",
+                "PluginInvocationContext.swift",
+                "PluginVoiceCommandRouter.swift",
+                "PluginDiscovery.swift",
+                "PluginEnablement.swift",
+                "PluginRegistry.swift",
+                "MemeAI.swift",
+                "MemeCaptionExtraction.swift",
+                "MemeCaptionSeeding.swift",
+                "MemeTrace.swift",
+                "MemeTemplateMatcher.swift",
+                "MemeCaptionLayout.swift",
+                "MemeTemplateProvider.swift",
+                "MemeUserLibrary.swift",
+                "MemeGenerationState.swift",
+                "MemeCatalogCache.swift",
+                "MemeTemplateAffinity.swift",
+                "LLMWarmReadiness.swift"
             ]
         ),
         // The Agent Bridge client + MCP stdio adapter. A library (not folded into

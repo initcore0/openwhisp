@@ -262,6 +262,28 @@ struct RuleContext: Equatable {
         self.appBundleID = appBundleID
         self.isAgentSession = isAgentSession
     }
+
+    /// Build the (context, payload) pair one rules-engine firing needs.
+    ///
+    /// Pure, so the shape of what the engine receives is pinned by `swift test`
+    /// rather than only by reading AppState's finalize path — and so AppState carries
+    /// the call, not the construction (MAK-32 ratchet).
+    ///
+    /// `isLiveChunk` is deliberately fixed to `false`: every caller fires this from a
+    /// FINAL transcript, never a streaming chunk.
+    static func firing(
+        hook: RuleHook, text: String, appBundleID: String?,
+        isAgentSession: Bool, language: String
+    ) -> (context: RuleContext, payload: OutputPayload) {
+        (
+            RuleContext(
+                hook: hook, text: text,
+                appBundleID: appBundleID, isAgentSession: isAgentSession),
+            OutputPayload(
+                text: text, language: language,
+                targetAppBundleID: appBundleID, isLiveChunk: false)
+        )
+    }
 }
 
 // MARK: - Matcher

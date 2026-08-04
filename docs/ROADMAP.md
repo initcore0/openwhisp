@@ -106,6 +106,18 @@ Found by reading the code during research, confirmed, and **all three now fixed*
 
 ## 6. Plugin support — design
 
+> **Status: plugin system v1 shipped.** An optional plugin surface (manifest,
+> discovery with trust-ordered providers, per-plugin runtime opt-in, menu-bar
+> shortcut, and voice-command routing) plus the first in-repo plugin. Compiled in
+> by default (`PLUGINS=0` for a lean build) and **disabled at runtime** until the
+> user enables one. The §6 verdicts below are unchanged and were the design
+> constraints it was built to: no in-process third-party code, declare network
+> use, default-deny/fail-open. What v1 does **not** yet do is install a plugin
+> without rebuilding — see **docs/[PLUGINS.md](PLUGINS.md) § Path to
+> hot-swappable**, which commits to manifest-driven plugins first and
+> out-of-process executables next, reusing the helper-binary and local-socket
+> precedents this app already ships. Dylibs stay rejected, per the table below.
+
 ### Recommendation (decisive)
 Build on the **existing `PostProcessor` protocol** — do **not** add a SwiftPM /
 dynamic-library plugin API. In-process third-party code is unacceptable in an app
@@ -176,7 +188,8 @@ lowest-priority, highest-effort item; defer.
 | Config-only "packs" (prompt presets, rule packs, profile/vocab JSON) | ✅ no code runs | easy (share JSON / Discussions) | S–M | **Do first** |
 | `ScriptPostProcessor` (stdin→stdout, timeout, opt-in, default-deny) | ⚠️ runs user's own code, sandbox via opt-in | easy (share a script) | M | **Do (P2)** — power-user wedge |
 | macOS Shortcuts integration | ✅ OS-mediated | easy | M | **Do (P3)** as an output target |
-| Manifest + sandboxed external process | ⚠️ contained | medium | L–XL | Only on demand |
+| In-repo plugins behind a manifest (own window, voice triggers, runtime opt-in) | ✅ reviewed with the app; no third-party code | ships with the app (no install yet) | L | **Shipped (v1)** — [docs/PLUGINS.md](PLUGINS.md) |
+| Manifest + sandboxed external process | ⚠️ contained | medium | L–XL | **Next** — the route to install-without-rebuild |
 | SwiftPM / dylib in-process plugins | ❌ unacceptable (keylog/exfil) | hard | XL | **Reject** |
 
 Principles: **default-deny, fail-open** (a failing plugin must never block a

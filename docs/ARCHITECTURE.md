@@ -18,6 +18,7 @@ as the app grows).
 | `Tests/` | `swift test` suites (core, bridge, sync). See [E2E_AUDIO_TESTING.md](E2E_AUDIO_TESTING.md). |
 | `third_party/` | whisper.cpp / llama.cpp submodules (built by `scripts/build-*.sh`). |
 | `integrations/` | Editor/agent setup helpers. |
+| `plugins/` | In-repo plugins (app-layer UI only — their rules live in `Services/` and are tested). Compiled in by default; `PLUGINS=0` for a lean build. See [PLUGINS.md](PLUGINS.md). |
 
 ## The dictation pipeline
 
