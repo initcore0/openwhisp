@@ -343,6 +343,17 @@ public enum EnhancementProvider: Equatable {
         providerID == agentCLIID
     }
 
+    /// Remap a generic refine mode ("rephrase" / "improve") onto the bundled
+    /// llama.cpp model's own prompt-variant ids when `llmProvider == "bundled"`;
+    /// every other provider passes `mode` through unchanged. The bundled model
+    /// ships two dedicated prompt variants (tuned smaller/cheaper than the cloud
+    /// prompts), so the caller's generic mode string needs translating only for
+    /// that one provider.
+    public static func refinementMode(_ mode: String, llmProvider: String) -> String {
+        guard llmProvider == "bundled" else { return mode }
+        return mode == "rephrase" ? "bundled-rephrase" : "bundled-improve"
+    }
+
     /// The command the app would spawn for the agent-CLI provider, given the user's
     /// persisted selection — or a `BuildError` if the config is unusable (empty
     /// command, transcript-in-argv). Pure: this is the seam a test drives to prove

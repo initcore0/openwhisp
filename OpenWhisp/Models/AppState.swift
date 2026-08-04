@@ -1519,8 +1519,7 @@ class AppState: ObservableObject {
     /// provider is active, so tiny on-device models get the terser, stricter
     /// system prompt (see OpenAITranslationService.instructionForMode).
     private func refinementMode(_ mode: String) -> String {
-        guard llmProvider == "bundled" else { return mode }
-        return mode == "rephrase" ? "bundled-rephrase" : "bundled-improve"
+        EnhancementProvider.refinementMode(mode, llmProvider: llmProvider)
     }
 
     /// The whole-text final AI step, expressed as the `AsyncTextRefiner` seam
@@ -4223,6 +4222,17 @@ class AppState: ObservableObject {
             let instruction = instructionSuffix(fullFinal: finalText, content: content)
             refineActiveInstruction = instruction
             refineDebug("completeFinalText MID-REFINE content=\"\(content.prefix(20))\" instr=\"\(instruction.prefix(20))\" fromSelection=\(fromSelection)")
+
+            // v10: a plugin may claim this instruction by its spoken PREFIX ("create a
+            // meme …") — asked BEFORE the refine LLM and before any insert, because a
+            // claimed command delivers NOTHING to the focused app. A non-match falls
+            // through to the normal refine below, so the words are never lost.
+            if let quietly = PluginHost.shared.routeVoiceCommand(
+                instruction: instruction, content: content, on: self) {
+                refineFlow.reset(); refineActiveInstruction = nil
+                executeRefineEffects([quietly]); return
+            }
+
             isTranscribing = true
             // Drive the machine: engage with the content as step-1, then feed the
             // instruction.
@@ -4421,8 +4431,15 @@ class AppState: ObservableObject {
             content = sel
             fromSelection = true
         } else {
-            statusMessage = "Nothing to refine yet — dictate first, then tap Refine"
-            return
+            // v10: no content still arms IF a plugin can claim the instruction by
+            // voice — that command carries its own material. See
+            // `PluginHost.armsWithoutContent`.
+            guard PluginHost.shared.armsWithoutContent else {
+                statusMessage = "Nothing to refine yet — dictate first, then tap Refine"
+                return
+            }
+            content = ""
+            fromSelection = false
         }
         refineContentSnapshot = content
         refineContentFromSelection = fromSelection
@@ -4850,23 +4867,18 @@ class AppState: ObservableObject {
     /// fires on a `suppressOutput` (agent) session if it explicitly opted in.
     private func fireRules(hook: RuleHook, text: String) {
         guard !ruleSet.rules.isEmpty else { return }
-        let context = RuleContext(
-            hook: hook,
-            text: text,
-            appBundleID: targetApplication?.bundleIdentifier,
-            isAgentSession: suppressOutput
-        )
-        let payload = OutputPayload(
-            text: text,
-            language: outputLanguageForCleaning,
-            targetAppBundleID: targetApplication?.bundleIdentifier,
-            isLiveChunk: false
-        )
         // Planning happens on the runner's queue, not here: matching can evaluate a
         // user-supplied regex, and even the matcher's backtracking time budget must
         // never be spent on the finalize path. `ruleSet` is a value type — the
-        // runner gets an immutable snapshot.
-        ruleEngineRunner.planAndRun(rules: ruleSet, context: context, payload: payload)
+        // runner gets an immutable snapshot. The (context, payload) construction is
+        // pure and lives in `RuleContext.firing` where `swift test` pins it.
+        let firing = RuleContext.firing(
+            hook: hook, text: text,
+            appBundleID: targetApplication?.bundleIdentifier,
+            isAgentSession: suppressOutput,
+            language: outputLanguageForCleaning)
+        ruleEngineRunner.planAndRun(
+            rules: ruleSet, context: firing.context, payload: firing.payload)
     }
 
     /// Instance method (called only from `screenContext`'s didSet, where `self`
@@ -5075,16 +5087,21 @@ class AppState: ObservableObject {
         }
     }
 
+    /// The learner's state as the pure pipeline models it — the (proposals,
+    /// confidence) pair is always read and written together.
+    private var correctionState: CorrectionLearningPipeline.State {
+        get { .init(proposals: correctionProposals, confidence: correctionConfidence) }
+        set { correctionProposals = newValue.proposals; correctionConfidence = newValue.confidence }
+    }
+
     /// A captured (inserted, surviving) edit — single- or multi-word (MAK-86): the
     /// pure `CorrectionLearningPipeline` decides ignore / propose / auto-add. Only a
     /// repeat-corroborated auto-add mutates the dictionary (never a one-off).
     private func handleObservedCorrection(inserted: String, surviving: String) {
         let (newState, outcome) = CorrectionLearningPipeline.decide(
             inserted: inserted, surviving: surviving,
-            existingSubstitutions: vocabulary.substitutions,
-            state: .init(proposals: correctionProposals, confidence: correctionConfidence))
-        correctionProposals = newState.proposals
-        correctionConfidence = newState.confidence
+            existingSubstitutions: vocabulary.substitutions, state: correctionState)
+        correctionState = newState
         vocabulary = CorrectionLearningPipeline.applying(outcome, to: vocabulary)
     }
 
@@ -5100,10 +5117,7 @@ class AppState: ObservableObject {
     /// Reject a pending correction proposal: dequeue it and remember not to re-offer
     /// the same fix. Does not touch the dictionary.
     func rejectCorrectionProposal(_ id: CorrectionProposal.ID) {
-        let next = CorrectionLearningPipeline.rejecting(
-            id, state: .init(proposals: correctionProposals, confidence: correctionConfidence))
-        correctionProposals = next.proposals
-        correctionConfidence = next.confidence
+        correctionState = CorrectionLearningPipeline.rejecting(id, state: correctionState)
     }
 
     /// File-tagging (MAK-48) fires ONLY when the user opted in AND the app being
@@ -5930,26 +5944,11 @@ class AppState: ObservableObject {
         guard !trimmed.isEmpty else { return }
         guard let startedAt = recordingStartedAt else { return }
 
-        let now = Date()
-        let model: String? = switch transcriptionEngine {
-        case "whisperKit":  whisperKitModel
-        case "parakeet":    parakeetVariant
-        case "appleSpeech": nil
-        case "speechAnalyzer": nil
-        default:            modelName
-        }
-        let latency = transcriptionStartedAt.map { now.timeIntervalSince($0) }
-
-        let event = DictationEvent(
-            date: now,
-            wordCount: DictationEvent.words(in: trimmed),
-            charCount: trimmed.count,
-            durationSeconds: now.timeIntervalSince(startedAt),
-            engine: transcriptionEngine,
-            model: model,
-            outputMode: outputMode,
-            appBundleID: targetApplication?.bundleIdentifier,
-            transcriptionLatencySeconds: latency
+        let event = DictationEvent.make(
+            trimmedText: trimmed, now: Date(), startedAt: startedAt, transcriptionStartedAt: transcriptionStartedAt,
+            engine: transcriptionEngine, whisperKitModel: whisperKitModel,
+            parakeetVariant: parakeetVariant, modelName: modelName,
+            outputMode: outputMode, appBundleID: targetApplication?.bundleIdentifier
         )
         dictationStats.record(event)
         // Same off-main-actor write as persistHistory(): stats save on every
@@ -6826,38 +6825,27 @@ extension AppState: AgentBridgeHost {
         consentDecision(record: agentClients.record(for: clientName), clientName: clientName, scope: scope)
     }
 
-    /// Same, with the record already fetched — bridge.hello resolves every scope
-    /// at once and must not re-scan the records array once per scope.
+    /// Same, with the record already fetched (bridge.hello resolves every scope at
+    /// once, so it must not re-scan records per scope); supplies the this-run
+    /// grant to the pure `AgentScope.consentDecision`.
     private func consentDecision(
         record: AgentClientRecord?, clientName: String, scope: AgentScope
     ) -> AgentConsentDecision {
-        guard let policy = record?.policy(for: scope) else { return .prompt }
         let grantedThisRun = consentGrantedThisRun[clientName]?.contains(scope) ?? false
-        return policy.decision(grantedThisRun: grantedThisRun)
+        return AgentScope.consentDecision(record: record, grantedThisRun: grantedThisRun, scope: scope)
     }
 
-    /// The posture advertised in `bridge.hello` (never prompts): a per-scope map
-    /// plus a summary scalar — `.granted` only if EVERY scope is already allowed,
-    /// `.denied` only if every scope is denied, else `.pending`. The scalar alone
-    /// is too lossy for real clients (a dictate-only agent with an explicit deny
-    /// would read "pending" forever); adapters that care which capability is
-    /// usable read the map. Prompting still happens per call.
+    /// The posture advertised in `bridge.hello` (never prompts). Resolves every
+    /// scope's decision here (the client record + this-run grants AppState owns)
+    /// and hands the pure aggregation to `AgentScope.consentSnapshot` (see
+    /// its doc for the summary-scalar semantics). Prompting still happens per call.
     func bridgeConsentSnapshot(clientName: String) -> (summary: BridgeWire.ConsentState, scopes: [String: BridgeWire.ConsentState]) {
         let record = agentClients.record(for: clientName)
-        var scopes: [String: BridgeWire.ConsentState] = [:]
-        var allAllow = true
-        var allDeny = true
+        var decisions: [AgentScope: AgentConsentDecision] = [:]
         for scope in AgentScope.allCases {
-            let decision = consentDecision(record: record, clientName: clientName, scope: scope)
-            switch decision {
-            case .allow:  scopes[scope.rawValue] = .granted
-            case .deny:   scopes[scope.rawValue] = .denied
-            case .prompt: scopes[scope.rawValue] = .pending
-            }
-            allAllow = allAllow && decision == .allow
-            allDeny = allDeny && decision == .deny
+            decisions[scope] = consentDecision(record: record, clientName: clientName, scope: scope)
         }
-        return (allAllow ? .granted : (allDeny ? .denied : .pending), scopes)
+        return AgentScope.consentSnapshot(decisions: decisions)
     }
 
     /// Note a completed agent call on the client's record (for the settings pane).

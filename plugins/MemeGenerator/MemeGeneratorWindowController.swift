@@ -13,7 +13,7 @@ import SwiftUI
 /// dictation can land in it — that is what makes `appendDictationIfKey` fire.
 @MainActor
 final class MemeGeneratorWindowController: NSWindowController, NSWindowDelegate,
-    PluginDictationSink, PluginWindowLifecycle {
+    PluginDictationSink, PluginWindowLifecycle, PluginVoiceCommandSink {
 
     private let model = MemeGeneratorModel()
 
@@ -125,12 +125,18 @@ final class MemeGeneratorWindowController: NSWindowController, NSWindowDelegate,
         model.description = prompt
         model.generate()
 
-        // Report the canvas after the generate settles. The probe cannot know when the
-        // LLM answers, so it samples on a deadline and states what it found — a probe
-        // that reported nothing would look like a crash.
-        let deadline = Double(env["OPENWHISP_MEME_PROBE_SECONDS"] ?? "") ?? 90
+        reportCanvasAfter(seconds: Double(env["OPENWHISP_MEME_PROBE_SECONDS"] ?? "") ?? 90)
+    }
+
+    /// Report the canvas after the generate settles.
+    ///
+    /// The probe cannot know when the LLM answers, so it samples on a deadline and
+    /// states what it found — a probe that reported nothing would look like a crash.
+    /// Shared by the v9 prompt probe and the v10 voice-command probe so both prove the
+    /// outcome the same way: N boxes, and the text in them.
+    func reportCanvasAfter(seconds: Double) {
         Task { @MainActor [model] in
-            try? await Task.sleep(nanoseconds: UInt64(deadline * 1_000_000_000))
+            try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
             MemeTrace.log(
                 "probe result: \(model.boxes.count) boxes on canvas, "
                 + "texts=\(model.boxes.map(\.text))")
@@ -151,6 +157,27 @@ final class MemeGeneratorWindowController: NSWindowController, NSWindowDelegate,
     /// closing the window at some point during that day is what armed it.
     func pluginWindowWillShow() {
         model.windowDidOpen()
+    }
+
+    // MARK: - PluginVoiceCommandSink (v10)
+
+    /// Run a meme from a spoken refine command ("create a meme …").
+    ///
+    /// Unlike `appendDictationIfKey`, this arrives from a dictation the user spoke
+    /// into ANOTHER app, so it must not append to whatever is sitting in the window
+    /// from an earlier session — `startNewMeme()` clears first, then the material
+    /// becomes the description and Generate runs. That is the same
+    /// `description` + `generate()` pair the Generate button and the v9 probe use, so
+    /// the voice route inherits the whole production path (extraction, shortlist, LLM,
+    /// seeding) with no branch of its own.
+    func runVoiceCommand(material: String) {
+        MemeTrace.log("runVoiceCommand material=\"\(material)\"")
+        // The window was just opened/focused by the host; make sure the model is in
+        // its open state (clears `isCancelled` if the window had been closed before).
+        model.windowDidOpen()
+        model.startNewMeme()
+        model.description = material
+        model.generate()
     }
 
     // MARK: - PluginDictationSink
