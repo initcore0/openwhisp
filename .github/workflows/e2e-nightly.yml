@@ -38,12 +38,14 @@ jobs:
 
   full-build:
     # Full-fat compile of the mac app with EVERY backend on (WhisperKit +
-    # Parakeet + Sparkle, the release default) plus ./package.sh, which bundles
-    # the runtimes and CLI and runs the binary-verify guards
-    # (verify-whisperkit-binary.sh / verify-parakeet-binary.sh) that assert the
-    # real engines actually linked. ci.yml's build-app job proves the app
-    # type-checks in LEAN mode fast on every PR; this nightly job proves the
-    # full-fat link + package path the release DMG actually uses still works.
+    # Parakeet + Sparkle + plugins, the release default) plus ./package.sh, which
+    # bundles the runtimes and CLI and runs the binary-verify guards
+    # (verify-whisperkit-binary.sh / verify-parakeet-binary.sh /
+    # verify-plugins-binary.sh) that assert the real engines and the in-repo
+    # plugins actually linked. ci.yml's build-app job proves the app type-checks
+    # in LEAN mode fast on every PR, and build-app-plugins proves the
+    # plugins-included default compiles; this nightly job proves the full-fat
+    # link + package path the release DMG actually uses still works.
     # Advisory (non-blocking) like the rest of this workflow; no signing secrets
     # (package.sh does ad-hoc --deep codesign only — build-dmg.sh handles
     # notarized release signing).
