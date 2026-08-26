@@ -11,11 +11,14 @@ Two provenances, both **off until you turn one on**:
   a description, and it picks a template, writes the captions, renders them
   locally, and lets you edit, export, or share.
 - **Installed** — a folder you drop into the plugins directory. Runs as a
-  [script plugin](#script-plugins), with no rebuild and no relaunch.
+  [script plugin](#script-plugins), with no rebuild and no relaunch. A
+  [starter pack](#starter-plugins) ships with the app and installs into that
+  same folder in one click.
 
 - [Architecture](#architecture)
 - [Manifest schema](#manifest-schema)
 - [Script plugins](#script-plugins)
+- [Starter plugins](#starter-plugins)
 - [Writing an in-repo plugin](#writing-an-in-repo-plugin)
 - [Security and trust](#security-and-trust)
 - [Path to hot-swappable](#path-to-hot-swappable)
@@ -40,12 +43,13 @@ Two layers, split on the line the codebase already draws: pure rules in
 | `PluginVoiceCommandRouter` | Which plugin (if any) claims a spoken refine instruction. |
 | `PluginInvocationContext` | What a plugin actually receives when invoked, including declared capabilities. |
 | `PluginScriptPlan` | The **script tier's whole decision layer**: step validation, the error taxonomy, consent derivation, prompt expansion. Alongside it, `PluginScriptPath` (a script must stay inside its own plugin folder) and `PluginScriptConsent` (the separate permission to execute code). |
+| `PluginStarterPack` | The [starter pack's](#starter-plugins) install decision layer: enumerating the bundled folder, the **never-overwrite** collision policy, the id safety re-check, and which scripts need their exec bit restored. |
 
 ### App
 
 | Type | Responsibility |
 |---|---|
-| `PluginHost` | The provider list, the enabled set, the script consent, and the plugin windows. Deliberately **not** on `AppState`. |
+| `PluginHost` | The provider list, the enabled set, the script consent, the plugin windows, and the starter-pack copy. Deliberately **not** on `AppState`. |
 | `PluginScriptRunner` | Performs the IO for an already-resolved plan — LLM call, file write, subprocess, cursor insert. **No decisions**, so nothing testable is stranded outside `swift test`. |
 | `PluginsPane` | Settings → Plugins, including the pre-enable disclosures and the script-consent switch. |
 | Menu bar → Plugins | A submenu, present only when something is enabled. |
@@ -234,8 +238,9 @@ every step; the plugin contributes no code to this process.
 }
 ```
 
-A working example lives at `Tests/Fixtures/Plugins/commit-message/` — copy that
-folder into the plugins directory to try it.
+That example ships with the app — it is one of the [starter
+plugins](#starter-plugins), installable in one click from Settings → Plugins.
+Its source lives at `OpenWhisp/Resources/StarterPlugins/commit-message/`.
 
 ### The step schema
 
@@ -340,6 +345,92 @@ Note the `entry` case was a real bug fixed by this tier: `decodeIfPresent`
 **throws** on an unrecognized enum value rather than returning nil, so before
 this, a manifest saying `"entry": "script"` failed to decode and the plugin
 vanished from the pane entirely.
+
+---
+
+## Starter plugins
+
+A small curated pack ships **inside the app bundle** at
+`Contents/Resources/StarterPlugins/`, and Settings → Plugins → **Starter
+plugins** installs any of them with one click. Sources live in the repo at
+`OpenWhisp/Resources/StarterPlugins/<id>/`.
+
+| Plugin | Pipeline | What it does |
+|---|---|---|
+| **Commit Message** | `llm` → `runScript` → `insertAtCursor` | Describe a change; get a commit message pasted where you're typing. The script step strips the ``` fences a chatty model adds — and is the pack's demonstration of the **separate script consent**. |
+| **Daily Note** | `writeFile` | Appends the dictation to `~/Documents/OpenWhisp/Daily Note.md` under a `## {{datetime}}` heading. **No LLM and no script** — the simplest possible plugin, and proof the tier is useful without a model. |
+| **Task Capture** | `llm` → `writeFile` | Turns a spoken to-do into one `- [ ]` markdown line and appends it to `~/Documents/OpenWhisp/Tasks.md`. Voice → structured data. |
+| **Polish** | `llm` → `insertAtCursor` | Cleans a rambling dictation into clear prose and pastes it back. |
+
+Every one is **local-only** (no `networkHosts`) and reachable both by its voice
+triggers and from the menu bar over the clipboard.
+
+### Installing is a real install
+
+The pack does **not** get its own `PluginDiscovery.Provider`. Installing
+**copies** the folder into
+`~/Library/Application Support/OpenWhisp/Plugins/<id>/`, after which the
+ordinary external provider discovers it, the ordinary pane enables it, and the
+ordinary runner runs it — no starter-specific route anywhere.
+
+Two reasons that is worth the copy:
+
+- **It dogfoods the real path.** A bundled read-only tier would prove nothing
+  about the tier third parties actually use, and a path exercised only by its
+  author is a path that breaks quietly.
+- **The installed plugin is yours.** Edit `manifest.json` — change the prompt,
+  change the file path, delete it. A read-only bundled plugin would be a feature
+  with a manifest, not a plugin.
+
+### Collision policy: never overwrite
+
+If a folder with that id already exists, the install is **refused** and says so.
+Your copy wins, always — it may contain your edits, and a button that could
+silently destroy them is not a button worth having. Reinstalling means deleting
+the folder in the Finder first, which is a deliberate act.
+
+"Already installed" is an ordinary outcome, not an error; the pane shows
+*Installed* rather than a greyed-out button. The pack deliberately cannot tell
+whether an installed copy came from it or matches its version — so there is no
+"update" button, because there is no honest way to write one.
+
+### Where the rules live
+
+`PluginStarterPack` (core, `swift test`) owns enumeration, the collision policy,
+the id safety re-check, and which scripts need their executable bit restored.
+`PluginHost.installStarter` does the copy and the `chmod` and nothing else —
+the same split `PluginScriptPlan` / `PluginScriptRunner` draws, for the same
+reason: the pane is outside `swift test`.
+
+The id is re-validated **at install time**, not merely trusted from decode: this
+is the moment an id becomes a directory that gets *written to*, and a
+traversal-shaped one would write outside the plugins folder entirely.
+
+Tests decode and `PluginScriptPlan.resolve` **every shipped manifest** against
+the real resolver. A starter plugin that failed to resolve would install
+cleanly, list cleanly, and refuse only when the user finally spoke to it —
+nothing else in the build reads those files, so the suite has to be what
+notices.
+
+### Packaging
+
+The pack rides `package.sh`'s existing `cp -Rp OpenWhisp/Resources/*
+Contents/Resources/` rather than having a bundling step of its own (`-p` keeps
+the scripts executable). `verify_starter_pack` in
+`scripts/verify-plugins-binary.sh` then asserts it actually landed, in both
+`package.sh` and `build-dmg.sh` — the copy is an implicit dependency, and the
+failure mode is an invisibly missing section in the pane.
+
+### Starter plugins work in a `PLUGINS=0` build
+
+**`PLUGINS=0` drops only the *compiled* plugin surfaces** under `plugins/` (the
+meme generator's window). Script plugins are executed by the host itself, so a
+lean build still ships the starter pack, still installs it, and still runs it.
+The Plugins pane says so rather than claiming plugins are unavailable.
+
+That is why `verify_starter_pack` is **not** gated on `PLUGINS` the way
+`verify_plugins_binary` is: a lean build is precisely the configuration with
+nothing else to fall back on.
 
 ---
 
@@ -524,7 +615,7 @@ every diff.
 | Command | What you get |
 |---|---|
 | `./build.sh` | Plugins **on** (the default and the shipped configuration). |
-| `PLUGINS=0 ./build.sh` | Lean build with no plugin surfaces at all. The pure plugin core still compiles and is still tested. |
+| `PLUGINS=0 ./build.sh` | Lean build with no **compiled** plugin surfaces. The pure plugin core still compiles and is still tested — and **script plugins, including the whole [starter pack](#starter-plugins), still install and run**, because the host executes their steps itself. |
 | `INSTRUMENTATION=1 ./build.sh` | Adds the `MemeTrace` breadcrumbs and the runtime-proof probes. **Required** by the proof harnesses. |
 
 `PLUGINS` is resolved by `scripts/plugin-source-args.sh`, shared by `build.sh`
@@ -534,7 +625,8 @@ and `build-dmg.sh` so the release DMG and a local build never drift.
 fails the build if the plugin symbols are missing. Plugins live outside the
 `OpenWhisp/` glob, so a broken source list produces a **working app with an
 empty Plugins pane and no error** — the guard turns that silent failure into a
-loud one.
+loud one. The same file's `verify_starter_pack` does the equivalent for the
+bundled [starter pack](#starter-plugins), and is **not** gated on `PLUGINS`.
 
 ### CI
 
