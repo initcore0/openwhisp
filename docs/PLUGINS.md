@@ -1,16 +1,21 @@
 # Plugins
 
 Optional surfaces layered on top of OpenWhisp. A plugin contributes its own
-window, its own configuration in Settings, and — if it declares them — a
-menu-bar shortcut and spoken commands that route mid-dictation.
+configuration in Settings and — if it declares them — a menu-bar shortcut and
+spoken commands that route mid-dictation. Some contribute a window; **script
+plugins** just run a declared pipeline over your text.
 
-Plugins ship with the app but are **off until you turn one on**. The first one
-is a voice-driven meme generator: dictate a description, and it picks a
-template, writes the captions, renders them locally, and lets you edit, export,
-or share.
+Two provenances, both **off until you turn one on**:
+
+- **Built in** — compiled into the app. The meme generator is the first: dictate
+  a description, and it picks a template, writes the captions, renders them
+  locally, and lets you edit, export, or share.
+- **Installed** — a folder you drop into the plugins directory. Runs as a
+  [script plugin](#script-plugins), with no rebuild and no relaunch.
 
 - [Architecture](#architecture)
 - [Manifest schema](#manifest-schema)
+- [Script plugins](#script-plugins)
 - [Writing an in-repo plugin](#writing-an-in-repo-plugin)
 - [Security and trust](#security-and-trust)
 - [Path to hot-swappable](#path-to-hot-swappable)
@@ -34,13 +39,15 @@ Two layers, split on the line the codebase already draws: pure rules in
 | `PluginKeyEquivalent` | Which plugin gets which ⌘-shortcut, and who is refused. |
 | `PluginVoiceCommandRouter` | Which plugin (if any) claims a spoken refine instruction. |
 | `PluginInvocationContext` | What a plugin actually receives when invoked, including declared capabilities. |
+| `PluginScriptPlan` | The **script tier's whole decision layer**: step validation, the error taxonomy, consent derivation, prompt expansion. Alongside it, `PluginScriptPath` (a script must stay inside its own plugin folder) and `PluginScriptConsent` (the separate permission to execute code). |
 
 ### App
 
 | Type | Responsibility |
 |---|---|
-| `PluginHost` | The provider list, the enabled set, and the plugin windows. Deliberately **not** on `AppState`. |
-| `PluginsPane` | Settings → Plugins. |
+| `PluginHost` | The provider list, the enabled set, the script consent, and the plugin windows. Deliberately **not** on `AppState`. |
+| `PluginScriptRunner` | Performs the IO for an already-resolved plan — LLM call, file write, subprocess, cursor insert. **No decisions**, so nothing testable is stranded outside `swift test`. |
+| `PluginsPane` | Settings → Plugins, including the pre-enable disclosures and the script-consent switch. |
 | Menu bar → Plugins | A submenu, present only when something is enabled. |
 
 ### The provider seam
@@ -60,8 +67,9 @@ private static var providers: [PluginDiscovery.Provider] {
 The registry is **one entry in that list**. The disk provider re-reads
 `~/Library/Application Support/OpenWhisp/Plugins/<id>/manifest.json` on every
 `reload()`, so a manifest dropped there shows up in the pane without a rebuild
-or a relaunch — the *listing* half of hot-swap already works. What is missing is
-a **runner**, not a restructure.
+or a relaunch. The **runner** (`PluginScriptRunner`) is now there too, so a
+dropped-in script plugin doesn't just list — it runs. See
+[Script plugins](#script-plugins).
 
 Providers are passed in **descending trust order** and earlier wins, so a
 writable directory can never shadow a reviewed plugin. That property is pinned
@@ -118,7 +126,8 @@ The two must agree — a test asserts it.
 | `symbol` | string | **required** | SF Symbol for every surface. Menu rows in this app always carry a symbol — never an emoji in the title. |
 | `version` | string | `"0.0.0"` | Display only today; a future loader compares it against a compatibility floor. |
 | `summary` | string | `""` | One line under the name. |
-| `entry` | enum | `builtIn` | How the host runs it: `builtIn`, `dynamicLibrary`, `externalProcess`. Only `builtIn` is runnable. |
+| `entry` | enum | `builtIn` | How the host runs it: `builtIn`, `script`, `dynamicLibrary`, `externalProcess`. `builtIn` runs only when compiled in; **`script` is the runnable kind for an installed plugin** — see [Script plugins](#script-plugins). An unknown value decodes to `unsupported`. |
+| `steps` | [step] | `[]` | The pipeline a **script** plugin runs. Ignored for other entry kinds. See [the step schema](#the-step-schema). |
 | `networkHosts` | [string] | `[]` | Hosts the plugin contacts. Rendered verbatim as a disclosure next to the enable toggle. Empty = fully local. **A label, not a sandbox.** |
 | `keyEquivalent` | string? | `nil` | A single character **requested** as a ⌘-shortcut. The host decides — see below. |
 | `voiceTriggers` | [string] | `[]` | Spoken **prefix** phrases that route a refine instruction here. |
@@ -200,6 +209,140 @@ stays **valid and runnable**, and `effectiveDestination` falls back to
 
 ---
 
+## Script plugins
+
+**The tier that delivers install-without-rebuild.** A folder in
+`~/Library/Application Support/OpenWhisp/Plugins/<id>/` whose manifest says
+`"entry": "script"` and declares a linear pipeline of steps. The host executes
+every step; the plugin contributes no code to this process.
+
+```json
+{
+  "id": "commit-message",
+  "name": "Commit Message",
+  "version": "1.0.0",
+  "summary": "Turn a spoken description of a change into a commit message.",
+  "symbol": "text.badge.checkmark",
+  "entry": "script",
+  "voiceTriggers": ["write a commit message"],
+  "clipboardAccess": true,
+  "steps": [
+    { "type": "llm", "prompt": "Rewrite as a git commit message:\n\n{{text}}" },
+    { "type": "runScript", "script": "strip-fences.sh" },
+    { "type": "insertAtCursor" }
+  ]
+}
+```
+
+A working example lives at `Tests/Fixtures/Plugins/commit-message/` — copy that
+folder into the plugins directory to try it.
+
+### The step schema
+
+Steps compose **linearly**: the output of each is the input of the next, starting
+from the invocation material (the spoken remainder, the selection, or both). A
+step that delivers rather than transforms passes its input through unchanged, so
+a pipeline can write a file *and* keep going.
+
+| `type` | Extra fields | What the host does |
+|---|---|---|
+| `llm` | `prompt` | Runs the prompt through **your configured model**, via the same `summarizeResolved` path the Scratchpad uses. `{{text}}` is the step's input; a prompt without the token gets the input appended. |
+| `runScript` | `script` | Runs a script **inside the plugin's own folder** through the hardened `ScriptRunner`: input on stdin, replacement on stdout, 2 s timeout, SIGTERM→SIGKILL. A failure (no launch, non-zero exit, timeout, empty output) **stops the pipeline** — see below. |
+| `writeFile` | `file` | Appends or overwrites via `FileOutputTarget` — the same writer, heading tokens, and separator logic Settings → Files uses. `file` is `{ "path", "template", "mode" }`. |
+| `insertAtCursor` | — | Pastes at the cursor in the frontmost app, the way a dictation lands. The output route for a plugin with no window. |
+
+Every field but `type` is optional. A step with **no** `type` is the one fatal
+case: no default for "what does this do" is safe when every option has side
+effects, so the step list decodes to empty and the plugin is listed as broken
+rather than partially run. A pipeline may declare at most
+`PluginScriptPlan.stepLimit` (16) steps.
+
+**A plugin step does not inherit `ScriptRunner`'s fail-open contract.** On the
+dictation finalize path, a broken script keeps the original transcript — the
+user's words must survive. In a plugin pipeline the user asked for a *transform*,
+so passing the untransformed text along would paste the wrong thing and report
+success. A failed step stops the run and says so.
+
+### Invoking a script plugin
+
+| From | Material |
+|---|---|
+| **Voice** (`voiceTriggers`) | What you said after the trigger, plus your selection — the same material any plugin gets. |
+| **Menu bar / ⌘-shortcut** | The **clipboard**, and only if the manifest declares `clipboardAccess`. There is no dictation to act on, and running a text transform over an empty string just asks the model to invent something. |
+
+### Consent
+
+The host owns every capability, so the pane states **before** the toggle exactly
+what a script plugin will do — file paths, script filenames, cursor insertion,
+model use. Those strings come from `PluginConsent` and are pinned by `swift
+test`: a disclosure the view could quietly reword is not a disclosure.
+
+**Running a shell script needs its own separate switch.** "I turned this plugin
+on" is not the same statement as "I have read this script and agree it may run",
+and folding the two together is how a plugins folder becomes an execution
+vector. Consent is default-deny, stored under its own key, and **pruned on
+reload** — delete a plugin and drop a different one in under the same id, and it
+must ask again.
+
+### Where a script may live
+
+Inside the plugin's own directory, named by a relative path. No absolute paths,
+no `~`, no traversal. Containment is checked three ways, and the last one is the
+interesting one:
+
+1. **Syntactically** — no leading `/` or `~`, no `..` component.
+2. **Lexically** — the joined path, standardized, must still be under the plugin
+   folder. Catches combinations like `a/../../b` that a component check misses.
+3. **By real path, with symlinks resolved.** `standardizedFileURL` collapses `..`
+   textually but does *not* follow links, so a plugin shipping `esc -> /bin` and
+   declaring `esc/sh` passes checks 1 and 2 while pointing outside the folder
+   entirely. A plugin author controls the contents of their own directory,
+   symlinks included, so **the string form of a path proves nothing about where
+   it lands.**
+
+`PluginScriptPath.resolve` is the only thing that turns a declared script name
+into a URL, so no call site can skip these.
+
+This is the same seriousness the id validation gets, for the same reason: the
+plugins directory is user-writable and this app holds Accessibility, microphone,
+and clipboard rights. A manifest that could name `/usr/bin/osascript` would turn
+"drop a JSON file in a folder" into arbitrary local execution.
+
+### What an installed plugin still cannot do
+
+An on-disk folder runs **only** as a script plugin. One declaring `"entry":
+"builtIn"` is listed and refused, whatever it claims — a manifest cannot promote
+itself into compiled code, and built-in still wins an id collision. So installing
+a plugin gained exactly one capability (composing host actions) and no path at
+all to the in-process execution `docs/ROADMAP.md` §6 rules out.
+
+### Hot-swap: the manifest is re-read at invocation
+
+The runner resolves from the manifest **on disk at the moment it runs**, not from
+the copy the pane listed. Edit `manifest.json`, run the plugin again, and the
+edit takes effect — no reload, no relaunch. This is called out because the
+opposite bug (serving a value cached long after the source of truth changed) has
+already shipped in this repo once.
+
+### Forward compatibility
+
+Both directions are handled, because a manifest in a user's folder has no
+migration path:
+
+| Situation | Behavior |
+|---|---|
+| Old manifest, new app | Decodes; `steps` defaults to empty. |
+| **Unknown `entry`** (a newer OpenWhisp's kind) | Decodes to `unsupported`. Listed, refused with a reason. |
+| **Unknown step `type`** | Carried as `unsupported(name)`. The plugin is listed and **refuses to run**, naming the step — running a pipeline with the unrecognized step silently skipped would be strictly worse. |
+| Malformed `steps` | Degrades to no steps; the plugin is listed and refused. |
+
+Note the `entry` case was a real bug fixed by this tier: `decodeIfPresent`
+**throws** on an unrecognized enum value rather than returning nil, so before
+this, a manifest saying `"entry": "script"` failed to decode and the plugin
+vanished from the pane entirely.
+
+---
+
 ## Writing an in-repo plugin
 
 1. **Create `plugins/YourPlugin/`.** Everything here is app-layer: AppKit,
@@ -253,9 +396,12 @@ user-writable, and without the rule, dropping a folder named after a built-in
 plugin would be code substitution against an app holding Accessibility,
 microphone, and clipboard rights.
 
-**External plugins are listed, never run.** Discovery surfaces what is on disk
-so the pane can be honest about it, and flags it non-runnable regardless of what
-the manifest's `entry` claims — **a manifest cannot promote itself**.
+**External plugins run only as script plugins.** An on-disk folder is executed
+only through the host's own step runner, never as compiled code: one declaring
+`"entry": "builtIn"` is listed and refused no matter what it claims — **a
+manifest cannot promote itself**. So the capability an installed plugin gained is
+"compose actions the host already performs", and the one it did not gain is
+in-process execution.
 
 **`networkHosts` is disclosure, not a sandbox.** Nothing enforces it. It is an
 honest label that drives a user-visible string, and it is only trustworthy
@@ -265,17 +411,23 @@ from a plugin that didn't declare it, but an **in-process** plugin could still
 reach `NSPasteboard` itself. Enforcement only becomes real at a process
 boundary.
 
-**What third-party plugins would require**, none of which exists today:
+**What third-party plugins require, and where the script tier stands:**
 
-- a capability list the user consents to per-plugin
-- enforcement **outside** the plugin's own manifest — a manifest can never be
-  trusted to declare its own limits
-- a signature / provenance check
-- a kill switch
+| Requirement | Status |
+|---|---|
+| A capability list the user consents to per-plugin | ✅ `PluginConsent` — disclosed before the toggle, with a separate switch for shell execution. |
+| Enforcement **outside** the plugin's own manifest | ✅ For script plugins. The host performs every step, so the manifest *requests* and the host *decides* — a script plugin cannot exceed its declared steps because it never runs code that could. |
+| A signature / provenance check | ❌ Not built. A dropped-in folder is trusted because the user put it there, and because what it can express is bounded. |
+| A kill switch | ⚠️ Partial. Disabling stops it, and revoking script consent takes effect on the next invocation — but there is no remote or per-publisher revocation. |
 
-While plugins are owner-reviewed and in-repo, the trust question is **deferred,
-not answered** — which is precisely why the ordering rule and the
-"external is never runnable" rule are already in place.
+The honest summary: for **script** plugins the trust question is answered by
+*constraining what a plugin can express*, not by verifying who wrote it. That is
+sufficient precisely because the step set is small and host-executed, and it is
+why `dynamicLibrary` stays rejected — there is no equivalent bound on native code.
+
+`networkHosts` remains the weak spot: a script plugin cannot make a network call
+at all today (no step does), so the label is currently unreachable rather than
+unenforced.
 
 **Trigger surface is a scarce resource.** MAK-100 caps the exposed voice-tool
 surface (~15), so the host must arbitrate ranking and the cap. `appAffinity` and
@@ -290,19 +442,20 @@ self-assign priority, for the same reason `networkHosts` is a label.
 The compile-time registry is fine while every plugin is in-repo, and it is not
 the destination. This is the committed roadmap, not an open question.
 
-### 1. Script / manifest-driven plugins — **first shipped tier**
+### 1. Script / manifest-driven plugins — ✅ **SHIPPED**
 
-Declarative UI plus a constrained action set the host executes (call the LLM,
-fetch a URL, run a shell script, write a file). `ScriptPostProcessor` and
-`ConfigPack` are already this shape, and `docs/ROADMAP.md` §6 already ranks
-config packs and scripted post-processing as the things to do first.
+A constrained action set the host executes over one input string. **Drop a
+folder into the plugins directory, enable it, and it runs — no rebuild, no
+relaunch.** That is the shipping requirement, and it is met.
 
 - **Security:** the host owns every capability, so a plugin can only compose
   things the user already consented to. Reviewable by reading a manifest.
-- **Cost:** lowest. Ships fastest, and delivers install-without-rebuild on its
-  own.
 - **Limit:** can't express a live preview like the meme editor's. Good for text
-  and actions, weak for custom UI.
+  and actions, weak for custom UI — no declarative UI system was built, by
+  design.
+
+See [Script plugins](#script-plugins) for the schema, the steps, and the
+consent rules.
 
 ### 2. Out-of-process plugin executables — **next**
 

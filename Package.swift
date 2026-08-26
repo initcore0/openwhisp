@@ -174,6 +174,7 @@ let package = Package(
                 // target uses an explicit `sources:` list, so an unregistered file is
                 // silently untested rather than a build error.
                 "PluginManifest.swift",
+                "PluginScriptPlan.swift",
                 "PluginInvocationContext.swift",
                 "PluginVoiceCommandRouter.swift",
                 "PluginDiscovery.swift",

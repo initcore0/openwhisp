@@ -17,7 +17,10 @@ import Foundation
 /// note-taking / daily-log case) or overwrites the file with the latest one (a
 /// scratch "last dictation" buffer). Persisted, so the raw values are a stored
 /// contract — pin them.
-enum FileOutputMode: String, Codable, CaseIterable, Equatable {
+/// `public` so a script plugin's `writeFile` step can name it: the plugin schema
+/// reuses this config rather than inventing a second one, so there is exactly one
+/// file-output contract to review and one writer to trust.
+public enum FileOutputMode: String, Codable, CaseIterable, Equatable, Sendable {
     /// Add the entry to the end of the existing file, separated from prior content.
     case append
     /// Replace the whole file with just this entry.
@@ -38,19 +41,19 @@ enum FileOutputMode: String, Codable, CaseIterable, Equatable {
 ///   - `{{datetime}}` → `yyyy-MM-dd HH:mm`
 /// e.g. `template: "## {{datetime}}"` renders `## 2026-07-09 14:30` above the text.
 /// When `template` is nil or blank, the entry is just the dictation text (no heading).
-struct FileOutputConfig: Codable, Equatable {
+public struct FileOutputConfig: Codable, Equatable, Sendable {
     /// Absolute path to the target file (e.g. an Obsidian daily note). A relative
     /// path is resolved by the writer against the user's home directory; the
     /// formatter itself never touches the path — it only renders content.
-    var path: String
+    public var path: String
     /// Optional heading/prefix template rendered above the text. See the type doc
     /// for the supported `{{date}}` / `{{time}}` / `{{datetime}}` tokens. nil/blank
     /// = no heading.
-    var template: String?
+    public var template: String?
     /// Append to the file or overwrite it.
-    var mode: FileOutputMode
+    public var mode: FileOutputMode
 
-    init(path: String, template: String? = nil, mode: FileOutputMode = .append) {
+    public init(path: String, template: String? = nil, mode: FileOutputMode = .append) {
         self.path = path
         self.template = template
         self.mode = mode

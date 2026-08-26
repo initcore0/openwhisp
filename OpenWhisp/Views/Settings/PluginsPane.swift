@@ -36,8 +36,9 @@ struct PluginsPane: View {
     private var introSection: some View {
         Section {
             SettingsFootnote(
-                "Plugins are optional add-ons. Each one you enable gets its own window, "
-                + "reachable from the menu bar under Plugins. They're off until you turn them on.")
+                "Plugins are optional add-ons, reachable from the menu bar under Plugins "
+                + "and by voice. Some open a window; script plugins just run their steps "
+                + "on your text. They're off until you turn them on.")
         } header: {
             Text("Plugins")
         }
@@ -57,6 +58,12 @@ struct PluginsPane: View {
     @ViewBuilder
     private func pluginSection(_ plugin: PluginDiscovery.Discovered) -> some View {
         Section {
+            // A script plugin's capabilities come BEFORE its toggle, because unlike a
+            // built-in it was not reviewed by anyone — the manifest is the only thing
+            // describing what it will do, and the user is the reviewer. Reading first,
+            // then deciding, is the whole point.
+            scriptDisclosures(for: plugin)
+
             SubtitledToggle(
                 plugin.manifest.name,
                 subtitle: plugin.manifest.summary,
@@ -65,6 +72,26 @@ struct PluginsPane: View {
                     set: { host.setEnabled($0, for: plugin.id) })
             )
             .disabled(!plugin.isRunnable)
+
+            // Running a shell script is its own decision, so it gets its own switch.
+            // Folding it into the enable toggle would mean the user agreed to execute
+            // code by agreeing to try a plugin — the two are not the same statement.
+            if let consent = host.consent(for: plugin), consent.requiresScriptConsent {
+                SubtitledToggle(
+                    "Allow this plugin to run its script",
+                    subtitle: consent.scriptConsentPrompt,
+                    isOn: Binding(
+                        get: { host.hasScriptConsent(plugin.id) },
+                        set: { host.setScriptConsent($0, for: plugin.id) })
+                )
+                .disabled(!plugin.isRunnable)
+            }
+
+            // A plugin that WILL fail says so here, rather than at the moment the user
+            // dictates into it and gets nothing.
+            if host.isEnabled(plugin.id), let problem = host.scriptPlanProblem(for: plugin) {
+                SettingsCallout(.warning, problem)
+            }
 
             // Honest about what this build can actually run: an external plugin is
             // listed so the user knows it was found, but there is no loader yet.
@@ -89,9 +116,22 @@ struct PluginsPane: View {
             // user is never told about may as well not exist, and the menu row it
             // appears on is two clicks away inside a submenu.
             if host.isEnabled(plugin.id), plugin.isRunnable {
-                LabeledContent("Open from the menu bar") {
+                // A script plugin has no window — the menu row RUNS it — so the label
+                // says what the row actually does rather than promising a window that
+                // will never appear.
+                LabeledContent(
+                    plugin.manifest.entry == .script
+                        ? "Run from the menu bar" : "Open from the menu bar"
+                ) {
                     Text(shortcutSubtitle(for: plugin))
                         .foregroundStyle(.secondary)
+                }
+
+                if !plugin.manifest.normalizedVoiceTriggers.isEmpty {
+                    LabeledContent("Voice command") {
+                        Text("“\(plugin.manifest.normalizedVoiceTriggers[0]) …”")
+                            .foregroundStyle(.secondary)
+                    }
                 }
 
                 configuration(for: plugin)
@@ -102,6 +142,25 @@ struct PluginsPane: View {
             SettingsFootnote(
                 "Version \(plugin.manifest.version) · "
                 + (plugin.source == .builtIn ? "Built in" : "Installed"))
+        }
+    }
+
+    /// What a script plugin will do, stated before the user turns it on.
+    ///
+    /// The strings come from `PluginConsent`, which `swift test` pins, rather than being
+    /// composed here: a privacy-facing disclosure the view could quietly reword is not a
+    /// disclosure. Same reasoning as `networkDisclosure` and `clipboardDisclosure`.
+    @ViewBuilder
+    private func scriptDisclosures(for plugin: PluginDiscovery.Discovered) -> some View {
+        if let consent = host.consent(for: plugin), !consent.disclosures.isEmpty {
+            ForEach(consent.disclosures, id: \.self) { line in
+                // A shell script is the one capability that can do anything at all, so
+                // it reads as a warning while the rest are statements of fact.
+                SettingsCallout(
+                    consent.requiresScriptConsent && line == consent.disclosures.first
+                        ? .warning : .info,
+                    line)
+            }
         }
     }
 
@@ -155,8 +214,10 @@ struct PluginsPane: View {
         } footer: {
             SettingsFootnote(
                 "Drop a plugin folder containing manifest.json here and reopen this pane to "
-                + "see it listed. Installed plugins are listed but can't be loaded yet — "
-                + "only plugins that ship with the app can run.")
+                + "see it listed — no rebuild or relaunch. Installed plugins run as script "
+                + "plugins (\"entry\": \"script\"): a list of steps OpenWhisp performs for "
+                + "them, so they can only do what you see disclosed above. A folder claiming "
+                + "to be built in is listed but never run.")
         }
     }
 }

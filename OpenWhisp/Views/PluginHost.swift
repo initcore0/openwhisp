@@ -27,6 +27,14 @@ final class PluginHost: ObservableObject {
     /// sync; persisted through `PluginEnablement` on its own defaults key.
     @Published private(set) var enablement = PluginEnablement()
 
+    /// Which script plugins may run their bundled script.
+    ///
+    /// A SECOND consent, deliberately separate from `enablement`: turning a plugin on
+    /// and allowing it to execute code are different decisions, and the pane asks them
+    /// separately. Pruned on reload, so deleting a plugin folder and dropping a
+    /// different one in under the same id does not inherit the old permission.
+    @Published private(set) var scriptConsent = PluginScriptConsent()
+
     /// One window per plugin id, created on first open and reused after.
     private var windows: [String: NSWindowController] = [:]
 
@@ -42,9 +50,11 @@ final class PluginHost: ObservableObject {
     /// into the plugins directory shows up without relaunching.
     func reload() {
         discovered = PluginDiscovery.merge(providers: Self.providers)
+        let available = Set(discovered.map(\.id))
         enablement = PluginEnablement.load(
-            from: UserDefaults.standard,
-            availableIDs: Set(discovered.map(\.id)))
+            from: UserDefaults.standard, availableIDs: available)
+        scriptConsent = PluginScriptConsent.load(
+            from: UserDefaults.standard, availableIDs: available)
     }
 
     /// The manifest sources, in DESCENDING trust order (earlier wins an id
@@ -97,6 +107,60 @@ final class PluginHost: ObservableObject {
         enablement.activePlugins(from: discovered)
     }
 
+    // MARK: - Script consent
+
+    func hasScriptConsent(_ id: String) -> Bool { scriptConsent.hasConsent(id) }
+
+    /// Grant or revoke a plugin's permission to run its bundled script.
+    ///
+    /// Revoking takes effect on the next invocation with no further bookkeeping,
+    /// because the runner re-checks consent every time it resolves a plan rather than
+    /// capturing it when the plugin was enabled.
+    func setScriptConsent(_ isGranted: Bool, for id: String) {
+        scriptConsent.setConsent(isGranted, for: id)
+        scriptConsent.save(to: UserDefaults.standard)
+    }
+
+    /// What a script plugin will do, for the pane's pre-enable disclosures.
+    func consent(for plugin: PluginDiscovery.Discovered) -> PluginConsent? {
+        guard plugin.manifest.entry == .script else { return nil }
+        return PluginConsent.derive(from: plugin.manifest)
+    }
+
+    /// Why a script plugin can't run, or nil when it can. Surfaced in the pane so a
+    /// plugin that will fail says so BEFORE the user dictates into it.
+    func scriptPlanProblem(for plugin: PluginDiscovery.Discovered) -> String? {
+        guard plugin.manifest.entry == .script else { return nil }
+        guard case let .failure(failure) = PluginScriptPlan.resolve(
+            manifest: plugin.manifest, hasScriptConsent: hasScriptConsent(plugin.id))
+        else { return nil }
+        return failure.reason
+    }
+
+    // MARK: - Script plugins
+
+    /// Run a script plugin over `material`, reporting the outcome to the status line.
+    ///
+    /// The manifest is re-read from disk inside the runner, so this deliberately passes
+    /// an ID rather than the listed manifest — an edited `manifest.json` takes effect on
+    /// the next invocation without a reload.
+    func runScriptPlugin(id: String, material: String) {
+        PluginScriptRunner.run(
+            pluginID: id,
+            material: material,
+            directoryRoot: Self.externalDirectory,
+            hasScriptConsent: hasScriptConsent(id)
+        ) { outcome in
+            let name = self.discovered.first { $0.id == id }?.manifest.name ?? id
+            switch outcome {
+            case .completed:
+                AppState.shared.statusMessage = "\(name) — done"
+            case .failed(let reason):
+                AppState.shared.statusMessage = "\(name) — \(reason)"
+            }
+        }
+    }
+
     // MARK: - Windows
 
     /// Open (or focus) a plugin's window.
@@ -105,6 +169,27 @@ final class PluginHost: ObservableObject {
     /// hand-crafted call can't surface a plugin the user hasn't turned on.
     func open(pluginID: String) {
         guard let plugin = activePlugins.first(where: { $0.id == pluginID }) else { return }
+
+        // A script plugin has no window: "open" means RUN it, over whatever is on the
+        // clipboard.
+        //
+        // The menu bar carries no dictation, and a text transform needs text — running
+        // one on an empty string asks the model to rewrite nothing and pastes whatever
+        // it invents. The clipboard is the material the user can actually supply by
+        // hand (copy, then pick the plugin), and it is gated on the manifest declaring
+        // `clipboardAccess` through the same `PluginInvocationContext` rule every other
+        // plugin invocation uses — so this adds no capability, it reuses one.
+        if plugin.manifest.entry == .script {
+            let context = invocationContext(for: plugin.manifest, material: "")
+            guard let material = context.clipboard, !material.isEmpty else {
+                AppState.shared.statusMessage = plugin.manifest.clipboardAccess
+                    ? "\(plugin.manifest.name) — copy some text first"
+                    : "\(plugin.manifest.name) — say the command while dictating to run it"
+                return
+            }
+            runScriptPlugin(id: pluginID, material: material)
+            return
+        }
 
         if let existing = windows[pluginID] {
             existing.window?.makeKeyAndOrderFront(nil)

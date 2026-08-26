@@ -135,6 +135,21 @@ public struct PluginManifest: Codable, Equatable, Sendable, Identifiable {
     /// doing something else. See `PluginDestination`.
     public let destination: PluginDestination
 
+    /// The linear pipeline a SCRIPT plugin runs over its input text — the first shipped
+    /// tier of docs/PLUGINS.md § "Path to hot-swappable".
+    ///
+    /// Meaningful only when `entry == .script`; a built-in plugin's behavior is its
+    /// compiled code, not a step list. Each step is one host-executed action (call the
+    /// LLM, write a file, run a bundled script, insert at the cursor) and the output of
+    /// one is the input of the next. The plugin never runs code in this process: it
+    /// composes capabilities the HOST owns, which is what makes a script plugin
+    /// reviewable by reading its JSON.
+    ///
+    /// Defaulted like every field added after v1, so a manifest predating it decodes.
+    /// The rules for what a step list MEANS — validity, ordering, consent, and what an
+    /// unrecognized step type does — live in `PluginScriptPlan`, not here.
+    public let steps: [PluginStep]
+
     public init(
         id: String,
         name: String,
@@ -147,7 +162,8 @@ public struct PluginManifest: Codable, Equatable, Sendable, Identifiable {
         voiceTriggers: [String] = [],
         appAffinity: [String] = [],
         clipboardAccess: Bool = false,
-        destination: PluginDestination = .ownWindow
+        destination: PluginDestination = .ownWindow,
+        steps: [PluginStep] = []
     ) {
         self.id = id
         self.name = name
@@ -161,6 +177,7 @@ public struct PluginManifest: Codable, Equatable, Sendable, Identifiable {
         self.appAffinity = appAffinity
         self.clipboardAccess = clipboardAccess
         self.destination = destination
+        self.steps = steps
     }
 
     /// Forward-compatible decode: every field except `id`/`name`/`symbol` is optional
@@ -179,7 +196,17 @@ public struct PluginManifest: Codable, Equatable, Sendable, Identifiable {
         version = try container.decodeIfPresent(String.self, forKey: .version) ?? "0.0.0"
         summary = try container.decodeIfPresent(String.self, forKey: .summary) ?? ""
         symbol = try container.decode(String.self, forKey: .symbol)
-        entry = try container.decodeIfPresent(PluginEntryKind.self, forKey: .entry) ?? .builtIn
+        // An UNKNOWN entry kind decodes to `.unsupported` rather than throwing.
+        //
+        // This is not hypothetical caution: before script plugins existed, a manifest
+        // saying `"entry": "script"` failed this decode outright — `decodeIfPresent`
+        // THROWS on an unrecognized enum value rather than returning nil — and the whole
+        // plugin vanished from the pane instead of being listed as unrunnable. That is
+        // exactly the migration the schema promises never to require, so the fallback
+        // lives here for every future entry kind too.
+        entry = (try? container.decodeIfPresent(PluginEntryKind.self, forKey: .entry))
+            .flatMap { $0 }
+            ?? (container.contains(.entry) ? .unsupported : .builtIn)
         networkHosts = try container.decodeIfPresent([String].self, forKey: .networkHosts) ?? []
         keyEquivalent = try container.decodeIfPresent(String.self, forKey: .keyEquivalent)
         voiceTriggers = try container.decodeIfPresent([String].self, forKey: .voiceTriggers) ?? []
@@ -193,6 +220,13 @@ public struct PluginManifest: Codable, Equatable, Sendable, Identifiable {
         destination =
             (try? container.decodeIfPresent(PluginDestination.self, forKey: .destination))
             .flatMap { $0 } ?? .ownWindow
+        // A step list that fails to decode (a step with no `type`, or a `steps` value
+        // that isn't an array) yields NO steps rather than throwing the plugin out of
+        // the list. The plugin is then listed and refused by `PluginScriptPlan` with a
+        // reason the user can act on — the same trade every other field here makes.
+        // An unknown step TYPE is not a decode failure at all; see `PluginStepKind`.
+        steps = (try? container.decodeIfPresent([PluginStep].self, forKey: .steps))
+            .flatMap { $0 } ?? []
     }
 
     /// The voice triggers this manifest may actually be routed on: trimmed,
@@ -283,6 +317,19 @@ public struct PluginManifest: Codable, Equatable, Sendable, Identifiable {
     /// before it is ever joined onto a directory URL.
     private static let allowedIDCharacters = CharacterSet(
         charactersIn: "abcdefghijklmnopqrstuvwxyz0123456789-.")
+
+    /// Whether a string is safe to use as the plugin directory's path component.
+    ///
+    /// The id rule, exposed so anything that JOINS an id onto a URL can re-check it at
+    /// the point of use rather than trusting that validation happened earlier. Cheap,
+    /// and the failure it guards against — a traversal-shaped id reaching a file API —
+    /// is not the kind that should depend on call order.
+    public static func isSafePathComponent(_ id: String) -> Bool {
+        guard !id.isEmpty else { return false }
+        guard !id.unicodeScalars.contains(where: { !allowedIDCharacters.contains($0) })
+        else { return false }
+        return !id.allSatisfy { $0 == "." }
+    }
 
     /// Validate a manifest's invariants. Returns `nil` when the manifest is usable.
     public func validate() -> ValidationError? {
@@ -467,8 +514,20 @@ public enum PluginKeyEquivalent {
 public enum PluginEntryKind: String, Codable, Equatable, Sendable, CaseIterable {
 
     /// Compiled into the app from `plugins/<id>/` and declared in `PluginRegistry`.
-    /// The only kind the host can actually run today.
     case builtIn
+
+    /// A MANIFEST-DRIVEN plugin: a step list the host executes over the input text.
+    /// Runnable from the external plugins directory — this is the tier that delivers
+    /// install-without-rebuild (docs/PLUGINS.md § "Path to hot-swappable" §1).
+    ///
+    /// No third-party code enters this process. Every step is an action the host
+    /// already performs for the user (`summarizeResolved`, `FileOutputTarget`,
+    /// `ScriptRunner`, the text inserter), so the entitlement objection that rules out
+    /// `dynamicLibrary` does not apply: a script plugin composes capabilities the user
+    /// consented to and cannot reach past them. The one step that DOES execute code —
+    /// `runScript` — is bounded to the plugin's own directory and carries its own
+    /// separate consent. See `PluginScriptPlan`.
+    case script
 
     /// A dynamically-loaded bundle. NOT IMPLEMENTED — loading third-party native
     /// code into a signed, entitled, mic-and-Accessibility-holding app inherits every
@@ -480,14 +539,26 @@ public enum PluginEntryKind: String, Codable, Equatable, Sendable, CaseIterable 
     /// of scope today — see docs/PLUGINS.md 'Path to hot-swappable'.
     case externalProcess
 
+    /// An entry kind this build does not know — a manifest written for a NEWER
+    /// OpenWhisp. Never written by a manifest author; produced only by decoding an
+    /// unrecognized value, so such a plugin is LISTED and refused with a reason rather
+    /// than disappearing from the pane. See `PluginManifest.init(from:)`.
+    case unsupported
+
     /// Whether the host can run this kind of plugin today.
-    public var isRunnable: Bool { self == .builtIn }
+    ///
+    /// `.script` joins `.builtIn` here, and the two are runnable for opposite reasons:
+    /// a built-in is trusted because it was compiled in and reviewed; a script plugin,
+    /// because it cannot do anything the host doesn't do on its behalf.
+    public var isRunnable: Bool { self == .builtIn || self == .script }
 
     /// Why a non-runnable plugin can't run, shown in the Plugins pane.
     public var unavailableReason: String? {
         switch self {
-        case .builtIn:
+        case .builtIn, .script:
             return nil
+        case .unsupported:
+            return "This plugin needs a newer version of OpenWhisp — it uses a kind of entry point this version doesn't support."
         case .dynamicLibrary:
             return "Loadable plugin bundles aren't supported — OpenWhisp only runs plugins compiled into the app."
         case .externalProcess:
