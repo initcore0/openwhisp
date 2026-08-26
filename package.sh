@@ -74,10 +74,16 @@ cp "$CLI_BIN" "$APP_DIR/Contents/Helpers/openwhisp"
 # Copy Info.plist
 cp "$PROJECT_DIR/OpenWhisp/Info.plist" "$APP_DIR/Contents/"
 
-# Copy packaged resources
+# Copy packaged resources. This carries the starter plugin pack (MAK-101) at
+# Resources/StarterPlugins — `-p` preserves the mode bits so a starter plugin's script
+# arrives executable rather than needing the app to repair it on install.
 if [ -d "$PROJECT_DIR/OpenWhisp/Resources" ]; then
-    cp -R "$PROJECT_DIR/OpenWhisp/Resources/"* "$APP_DIR/Contents/Resources/"
+    cp -Rp "$PROJECT_DIR/OpenWhisp/Resources/"* "$APP_DIR/Contents/Resources/"
 fi
+
+# The starter pack must actually be in the bundle. It has no bundling step of its own
+# (it rides the copy above), so a selective rewrite of that copy would drop it silently.
+verify_starter_pack "$APP_DIR"
 
 # Bundle whisper.cpp runtime binaries and dylibs when available.
 WHISPER_BIN_DIR="${WHISPER_BIN_DIR:-$PROJECT_DIR/third_party/whisper.cpp/build/bin}"

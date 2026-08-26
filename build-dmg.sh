@@ -160,9 +160,14 @@ cp "$PROJECT_DIR/OpenWhisp/Info.plist" "$APP_DIR/Contents/"
 # Don't copy it into Contents/: an unsigned stray file there fails `codesign --verify
 # --deep --strict` (and would break notarization).
 
+# Carries the starter plugin pack (MAK-101) at Resources/StarterPlugins. `-p` preserves
+# the mode bits so a starter's script arrives executable — the release path and package.sh
+# must not drift on this, which is why both copy the same way and both verify.
 if [ -d "$PROJECT_DIR/OpenWhisp/Resources" ]; then
-    cp -R "$PROJECT_DIR/OpenWhisp/Resources/"* "$APP_DIR/Contents/Resources/"
+    cp -Rp "$PROJECT_DIR/OpenWhisp/Resources/"* "$APP_DIR/Contents/Resources/"
 fi
+
+verify_starter_pack "$APP_DIR"
 
 echo ""
 echo "Step 3: Bundling whisper.cpp runtime..."

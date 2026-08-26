@@ -51,3 +51,60 @@ verify_plugins_binary() {
     echo "       intentionally for a lean build. See docs/PLUGINS.md." >&2
     return 1
 }
+
+# Assert the STARTER PLUGIN PACK (MAK-101) actually landed in an assembled .app.
+#
+# The pack rides package.sh's existing `cp -R OpenWhisp/Resources/* Contents/Resources/`
+# rather than having a bundling step of its own, which is one fewer script that can stop
+# copying — but it is also exactly the kind of implicit dependency that breaks silently
+# when someone rewrites that copy to be selective. The symptom would be a Plugins pane
+# with the "Starter plugins" section quietly absent, which is invisible in CI.
+#
+# NOT gated on PLUGINS. `PLUGINS=0` drops the COMPILED plugin surfaces; starter plugins
+# are script plugins the host executes itself, so they ship and work in a lean build too.
+# Skipping this check under PLUGINS=0 would let the pack vanish from exactly the build
+# configuration that has nothing else to fall back on.
+#
+# Usage:  verify_starter_pack <path-to-.app>
+verify_starter_pack() {
+    local app="$1"
+    local pack="$app/Contents/Resources/StarterPlugins"
+
+    if [ ! -d "$pack" ]; then
+        echo "ERROR: Starter pack verify FAILED — no $pack in the bundle." >&2
+        echo "       Settings → Plugins would offer no starter plugins at all." >&2
+        echo "       package.sh copies OpenWhisp/Resources/* into Contents/Resources;" >&2
+        echo "       check that copy and that OpenWhisp/Resources/StarterPlugins exists." >&2
+        return 1
+    fi
+
+    # Every entry must carry a manifest.json — a folder without one is skipped silently
+    # by PluginStarterPack.offerings, so an empty-handed copy would look like success.
+    local count=0
+    local dir
+    for dir in "$pack"/*/; do
+        [ -f "$dir/manifest.json" ] || continue
+        count=$((count + 1))
+    done
+
+    if [ "$count" -eq 0 ]; then
+        echo "ERROR: Starter pack verify FAILED — $pack has no plugin folders." >&2
+        return 1
+    fi
+
+    # Declared scripts must survive the copy EXECUTABLE. A stripped exec bit installs a
+    # plugin that fails the moment the user speaks to it, with a message about chmod. The
+    # app restores the bit on install, but a non-executable source means the repo itself
+    # is wrong, and that should fail here rather than in a user's hands.
+    local script
+    while IFS= read -r script; do
+        if [ ! -x "$script" ]; then
+            echo "ERROR: Starter pack verify FAILED — '$script' is not executable." >&2
+            echo "       Run: chmod +x on the source under OpenWhisp/Resources/StarterPlugins." >&2
+            return 1
+        fi
+    done < <(find "$pack" -name "*.sh")
+
+    echo "Starter pack verify: OK ($count starter plugin(s) in the bundle)." >&2
+    return 0
+}
