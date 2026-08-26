@@ -33,17 +33,33 @@ public enum PluginDiscovery {
             self.source = source
         }
 
-        /// Whether the host can actually open this plugin. External plugins are
-        /// listed but never runnable today, regardless of what their manifest
-        /// claims its entry kind is — a manifest cannot promote itself.
+        /// Whether the host can actually run this plugin.
+        ///
+        /// Two disjoint routes, and the asymmetry is the security property:
+        ///
+        /// - **Built-in** — compiled in and reviewed, so it may declare `.builtIn` and
+        ///   get a window.
+        /// - **External** — a folder on disk may run ONLY as a `.script` plugin, whose
+        ///   every action the host performs itself. It can never run as `.builtIn`,
+        ///   whatever its manifest claims: **a manifest cannot promote itself** into
+        ///   compiled code, and an on-disk folder declaring `.builtIn` names a Swift
+        ///   type that would have to already exist in this binary.
+        ///
+        /// So a dropped-in folder gained exactly one capability — composing host
+        /// actions — and gained no path at all to the in-process execution
+        /// docs/ROADMAP.md §6 rules out.
         public var isRunnable: Bool {
-            source == .builtIn && manifest.entry.isRunnable
+            switch source {
+            case .builtIn: return manifest.entry.isRunnable
+            case .external: return manifest.entry == .script
+            }
         }
 
         /// Why this plugin can't run, if it can't.
         public var unavailableReason: String? {
-            if source == .external {
-                return "Installed plugins can't be loaded yet — OpenWhisp currently runs only plugins that ship with the app."
+            guard !isRunnable else { return nil }
+            if source == .external, manifest.entry == .builtIn {
+                return "Installed plugins can't be compiled into the app — only script plugins (\"entry\": \"script\") can be installed this way."
             }
             return manifest.entry.unavailableReason
         }
@@ -124,6 +140,43 @@ public enum PluginDiscovery {
             Provider(source: .builtIn) { builtIn },
             Provider(source: .external) { external },
         ])
+    }
+
+    /// The directory one external plugin lives in: `<root>/<id>`.
+    ///
+    /// The id has already been validated as a safe path component (`PluginManifest`
+    /// refuses traversal-shaped ids), and this is the ONLY place that join happens, so
+    /// the runner cannot accidentally build the path a different way.
+    public static func pluginDirectory(id: String, in root: URL) -> URL {
+        root.appendingPathComponent(id, isDirectory: true)
+    }
+
+    /// Re-read ONE plugin's manifest from disk, right now.
+    ///
+    /// The runner calls this at invocation time instead of using the manifest captured
+    /// when the pane last listed. Editing `manifest.json` and running the plugin again
+    /// therefore picks up the edit with no reload, no relaunch, and no rebuild — which
+    /// is the hot-swap promise, and the specific bug this repo has already shipped once
+    /// (a plugin serving a cached value long after the source of truth changed).
+    ///
+    /// Returns nil when the folder is gone, the JSON is malformed, the manifest is
+    /// invalid, or it claims an id other than its own directory — the same rules
+    /// `loadExternalManifests` applies, kept in one place so a plugin cannot be run
+    /// under looser validation than it was listed under.
+    public static func reloadManifest(
+        id: String,
+        in root: URL,
+        fileManager: FileManager = .default
+    ) -> PluginManifest? {
+        guard PluginManifest.isSafePathComponent(id) else { return nil }
+        let url = pluginDirectory(id: id, in: root)
+            .appendingPathComponent("manifest.json")
+        guard let data = try? Data(contentsOf: url),
+              let manifest = try? JSONDecoder().decode(PluginManifest.self, from: data),
+              manifest.isValid,
+              manifest.id == id
+        else { return nil }
+        return manifest
     }
 
     /// Read every `<dir>/<id>/manifest.json` under an external plugins directory.
