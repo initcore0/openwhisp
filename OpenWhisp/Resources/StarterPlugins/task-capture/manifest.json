@@ -1,0 +1,23 @@
+{
+  "id": "task-capture",
+  "name": "Task Capture",
+  "version": "1.0.0",
+  "summary": "Turn a spoken to-do into one markdown checkbox line and append it to your task list.",
+  "symbol": "checklist",
+  "entry": "script",
+  "voiceTriggers": ["capture a task", "add a task"],
+  "clipboardAccess": true,
+  "steps": [
+    {
+      "type": "llm",
+      "prompt": "Rewrite the text below as a single markdown task line beginning with \"- [ ] \". Keep it to one line. Keep the original language and the original wording wherever you can — only tidy it into a task. Do not translate, do not add details that are not there, and do not add any other lines. Reply with the task line and nothing else.\n\n{{text}}"
+    },
+    {
+      "type": "writeFile",
+      "file": {
+        "path": "Documents/OpenWhisp/Tasks.md",
+        "mode": "append"
+      }
+    }
+  ]
+}

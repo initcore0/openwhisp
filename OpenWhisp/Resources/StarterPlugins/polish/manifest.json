@@ -1,0 +1,19 @@
+{
+  "id": "polish",
+  "name": "Polish",
+  "version": "1.0.0",
+  "summary": "Clean a rambling dictation into clear prose and paste it where you're typing.",
+  "symbol": "wand.and.sparkles",
+  "entry": "script",
+  "voiceTriggers": ["polish this", "clean this up"],
+  "clipboardAccess": true,
+  "steps": [
+    {
+      "type": "llm",
+      "prompt": "Rewrite the text below as clear, readable prose. Fix grammar, punctuation, and false starts, and drop filler words. Keep the original language, the original meaning, and the author's own voice — do not translate, do not summarise, and do not add anything that is not already there. Reply with the rewritten text and nothing else.\n\n{{text}}"
+    },
+    {
+      "type": "insertAtCursor"
+    }
+  ]
+}

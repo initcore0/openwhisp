@@ -175,6 +175,7 @@ let package = Package(
                 // silently untested rather than a build error.
                 "PluginManifest.swift",
                 "PluginScriptPlan.swift",
+                "PluginStarterPack.swift",
                 "PluginInvocationContext.swift",
                 "PluginVoiceCommandRouter.swift",
                 "PluginDiscovery.swift",

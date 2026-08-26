@@ -699,12 +699,16 @@ final class PluginScriptPlanTests: XCTestCase {
             .appendingPathComponent("PluginDropInTests-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: root) }
 
-        // 1. The user copies the example plugin into the plugins folder.
+        // 1. The user copies the example plugin into the plugins folder. The example IS
+        //    a shipped starter plugin (MAK-101) rather than a test-only fixture, so this
+        //    drives the exact bytes a user installs — see `PluginStarterPackTests` for
+        //    the one-click path that performs this copy.
         let repoRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         try FileManager.default.copyItem(
-            at: repoRoot.appendingPathComponent("Tests/Fixtures/Plugins/commit-message"),
+            at: repoRoot.appendingPathComponent(
+                "OpenWhisp/Resources/StarterPlugins/commit-message"),
             to: root.appendingPathComponent("commit-message"))
 
         // 2. Discovery finds it — the provider re-reads disk, so no relaunch.
@@ -750,57 +754,5 @@ final class PluginScriptPlanTests: XCTestCase {
         let scriptURL = try XCTUnwrap(
             PluginScriptPath.resolve(resolved.steps[1].script, in: dir))
         XCTAssertTrue(FileManager.default.fileExists(atPath: scriptURL.path))
-    }
-
-    // MARK: - The shipped example plugin
-
-    /// The checked-in example must actually resolve. It is the fixture a starter pack
-    /// builds on and the thing a user copies, so a broken one teaches a broken schema.
-    func testTheCheckedInExamplePluginResolves() throws {
-        let repoRoot = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()  // OpenWhispCoreTests
-            .deletingLastPathComponent()  // Tests
-            .deletingLastPathComponent()  // repo root
-        let url = repoRoot.appendingPathComponent(
-            "Tests/Fixtures/Plugins/commit-message/manifest.json")
-
-        let manifest = try JSONDecoder().decode(
-            PluginManifest.self, from: try Data(contentsOf: url))
-
-        XCTAssertEqual(manifest.id, "commit-message")
-        XCTAssertEqual(manifest.entry, .script)
-        XCTAssertTrue(manifest.isValid)
-        // It declares voice triggers, so the router can reach it like any other plugin.
-        XCTAssertFalse(manifest.normalizedVoiceTriggers.isEmpty)
-
-        guard case let .success(resolved) = plan(manifest) else {
-            return XCTFail("the shipped example plugin must resolve: \(String(describing: failure(manifest)))")
-        }
-        XCTAssertTrue(resolved.deliversAtCursor)
-    }
-
-    /// The example's script sits inside its own folder and exists on disk — the fixture
-    /// proves the containment rule against a real directory, not just a string.
-    func testTheCheckedInExampleScriptResolvesInsideItsOwnFolder() throws {
-        let repoRoot = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-        let dir = repoRoot.appendingPathComponent("Tests/Fixtures/Plugins/commit-message")
-
-        let manifest = try JSONDecoder().decode(
-            PluginManifest.self,
-            from: try Data(contentsOf: dir.appendingPathComponent("manifest.json")))
-
-        let scriptSteps = manifest.steps.filter { $0.kind == .runScript }
-        XCTAssertFalse(scriptSteps.isEmpty, "the example should exercise the script step")
-
-        for step in scriptSteps {
-            guard let resolved = PluginScriptPath.resolve(step.script, in: dir) else {
-                return XCTFail("example script \(step.script ?? "nil") did not resolve")
-            }
-            XCTAssertTrue(
-                FileManager.default.fileExists(atPath: resolved.path),
-                "example script missing on disk at \(resolved.path)")
-            XCTAssertTrue(resolved.path.hasPrefix(dir.standardizedFileURL.path + "/"))
-        }
     }
 }

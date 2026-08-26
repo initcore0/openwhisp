@@ -1,0 +1,20 @@
+{
+  "id": "daily-note",
+  "name": "Daily Note",
+  "version": "1.0.0",
+  "summary": "Append what you dictate to a running daily note, under a dated heading.",
+  "symbol": "calendar.badge.plus",
+  "entry": "script",
+  "voiceTriggers": ["add to my daily note", "note to self"],
+  "clipboardAccess": true,
+  "steps": [
+    {
+      "type": "writeFile",
+      "file": {
+        "path": "Documents/OpenWhisp/Daily Note.md",
+        "template": "## {{datetime}}",
+        "mode": "append"
+      }
+    }
+  ]
+}
