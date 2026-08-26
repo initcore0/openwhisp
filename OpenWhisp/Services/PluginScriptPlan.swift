@@ -351,6 +351,65 @@ public struct PluginConsent: Equatable, Sendable {
     }
 }
 
+// MARK: - Script consent store
+
+/// Which plugins the user has separately allowed to run their bundled script.
+///
+/// Deliberately a SECOND store rather than a flag on `PluginEnablement`: the two
+/// answer different questions ("do I want this plugin?" vs "may this plugin execute
+/// code?"), and collapsing them would make the enable toggle silently carry a consent
+/// the user was never asked for.
+///
+/// Mirrors `PluginEnablement` exactly — its own defaults key, default-DENY, pruned on
+/// load, injected store — so the two behave identically where they overlap and
+/// `swift test` pins both without touching the real defaults domain.
+public struct PluginScriptConsent: Equatable, Sendable {
+
+    /// The defaults key holding the consented ids.
+    public static let defaultsKey = "openwhisp.plugins.scriptConsentIDs"
+
+    private var granted: Set<String>
+
+    public init(granted: Set<String> = []) {
+        self.granted = granted
+    }
+
+    /// Whether the user allowed this plugin to run its script. Unknown ids are DENIED.
+    public func hasConsent(_ id: String) -> Bool { granted.contains(id) }
+
+    public var grantedIDs: [String] { granted.sorted() }
+
+    public mutating func setConsent(_ isGranted: Bool, for id: String) {
+        if isGranted { granted.insert(id) } else { granted.remove(id) }
+    }
+
+    /// Drop consent for plugins that no longer exist.
+    ///
+    /// The important half of the hot-swap story's safety: a plugin folder can be
+    /// deleted and a DIFFERENT plugin dropped in under the same id. Without pruning,
+    /// the new one would inherit permission to run a script the user never saw. Re-
+    /// appearing means re-consenting.
+    public mutating func prune(toAvailable availableIDs: Set<String>) {
+        granted.formIntersection(availableIDs)
+    }
+
+    // MARK: Persistence
+
+    public static func load(
+        from store: PluginEnablement.Store,
+        availableIDs: Set<String>
+    ) -> PluginScriptConsent {
+        var state = PluginScriptConsent(
+            granted: Set(store.stringArray(forKey: defaultsKey) ?? []))
+        state.prune(toAvailable: availableIDs)
+        return state
+    }
+
+    public func save(to store: PluginEnablement.Store) {
+        store.set(grantedIDs, forKey: Self.defaultsKey)
+    }
+}
+
 // MARK: - Plan resolution
 
 /// Turns a manifest into either an executable plan or an honest refusal.

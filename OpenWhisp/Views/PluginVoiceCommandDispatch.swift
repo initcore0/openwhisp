@@ -120,6 +120,19 @@ extension PluginHost {
             .filter { !$0.isEmpty }
             .joined(separator: "\n")
 
+        // A SCRIPT plugin has no window and no command sink — its pipeline IS its
+        // response, so it is dispatched here rather than through the window seams
+        // below. Routed before the empty-material check because an empty input is a
+        // legitimate run for a script plugin (a prompt with nothing to transform still
+        // reaches the model), whereas for a window plugin it means "open and wait".
+        if manifest?.entry == .script {
+            runScriptPlugin(id: match.pluginID, material: material)
+            MemeTrace.log(
+                "voice command dispatched to SCRIPT plugin \(match.pluginID), "
+                + "material=\(material.count) chars")
+            return .handled(status: PluginVoiceCommandRouter.acknowledgment(pluginName: name))
+        }
+
         guard !material.isEmpty else {
             // "create a meme" with nothing selected and nothing said after it. Opening
             // an empty window is still the right answer — the user asked for the meme

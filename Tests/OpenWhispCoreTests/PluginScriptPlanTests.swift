@@ -436,6 +436,64 @@ final class PluginScriptPlanTests: XCTestCase {
         XCTAssertEqual(consent.scriptNames, ["x.sh"])
     }
 
+    // MARK: - Script consent store
+
+    /// Dictionary-backed store so tests never touch the real UserDefaults domain.
+    private final class FakeStore: PluginEnablement.Store {
+        var values: [String: [String]] = [:]
+        func stringArray(forKey key: String) -> [String]? { values[key] }
+        func set(_ value: Any?, forKey key: String) { values[key] = value as? [String] }
+    }
+
+    /// Permission to execute code is default-DENY, and stored separately from the
+    /// enable toggle so turning a plugin on never implies it.
+    func testScriptConsentIsDeniedByDefaultAndStoredSeparately() {
+        XCTAssertFalse(PluginScriptConsent().hasConsent("anything"))
+        XCTAssertNotEqual(PluginScriptConsent.defaultsKey, PluginEnablement.defaultsKey)
+    }
+
+    func testScriptConsentRoundTripsThroughItsStore() {
+        let store = FakeStore()
+        var consent = PluginScriptConsent.load(from: store, availableIDs: ["a", "b"])
+        consent.setConsent(true, for: "a")
+        consent.save(to: store)
+
+        let reloaded = PluginScriptConsent.load(from: store, availableIDs: ["a", "b"])
+        XCTAssertTrue(reloaded.hasConsent("a"))
+        XCTAssertFalse(reloaded.hasConsent("b"))
+        XCTAssertEqual(store.values[PluginScriptConsent.defaultsKey], ["a"])
+    }
+
+    /// The safety half of hot-swap: a folder can be deleted and a DIFFERENT plugin
+    /// dropped in under the same id. Without pruning, the new one would inherit
+    /// permission to run a script the user never saw.
+    func testScriptConsentIsPrunedSoAReplacedPluginMustReconsent() {
+        let store = FakeStore()
+        PluginScriptConsent(granted: ["gone", "still-here"]).save(to: store)
+
+        let loaded = PluginScriptConsent.load(from: store, availableIDs: ["still-here"])
+        XCTAssertFalse(loaded.hasConsent("gone"))
+        XCTAssertTrue(loaded.hasConsent("still-here"))
+    }
+
+    func testRevokingScriptConsentRemovesItFromTheStore() {
+        let store = FakeStore()
+        var consent = PluginScriptConsent(granted: ["a", "b"])
+        consent.setConsent(false, for: "a")
+        consent.save(to: store)
+        XCTAssertEqual(store.values[PluginScriptConsent.defaultsKey], ["b"])
+    }
+
+    /// Revocation takes effect on the NEXT invocation, because the runner re-resolves
+    /// the plan (consent included) every time rather than capturing it at enable-time.
+    func testRevokedConsentBlocksTheNextRun() {
+        let manifest = scriptManifest(steps: [PluginStep(kind: .runScript, script: "run.sh")])
+        guard case .success = plan(manifest, consent: true) else {
+            return XCTFail("expected the granted case to resolve")
+        }
+        XCTAssertEqual(failure(manifest, consent: false), .scriptConsentRequired)
+    }
+
     // MARK: - Prompt expansion
 
     func testPromptTemplateSubstitutesTheStepInput() {
