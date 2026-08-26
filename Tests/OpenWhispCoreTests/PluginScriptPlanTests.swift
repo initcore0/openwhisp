@@ -588,6 +588,74 @@ final class PluginScriptPlanTests: XCTestCase {
         }
     }
 
+    // MARK: - The whole drop-in path
+
+    /// The end-to-end property the tier exists for, driven through the SAME functions
+    /// the app calls: copy a folder into the plugins directory, and it is discovered,
+    /// enableable, active, routable by voice, and resolvable into a runnable plan —
+    /// with no rebuild and no relaunch.
+    ///
+    /// Written as one test on purpose. Each half passing in isolation is exactly how
+    /// this repo has previously shipped a green suite over a broken chain: the pieces
+    /// were fine and nothing connected them.
+    func testAFolderDroppedInIsDiscoveredEnabledRoutedAndRunnable() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("PluginDropInTests-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        // 1. The user copies the example plugin into the plugins folder.
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try FileManager.default.copyItem(
+            at: repoRoot.appendingPathComponent("Tests/Fixtures/Plugins/commit-message"),
+            to: root.appendingPathComponent("commit-message"))
+
+        // 2. Discovery finds it — the provider re-reads disk, so no relaunch.
+        let discovered = PluginDiscovery.merge(providers: [
+            .init(source: .builtIn) { [] },
+            .init(source: .external) { PluginDiscovery.loadExternalManifests(in: root) },
+        ])
+        XCTAssertEqual(discovered.map(\.id), ["commit-message"])
+        XCTAssertTrue(discovered[0].isRunnable, "a dropped-in script plugin must be runnable")
+
+        // 3. Enabling it makes it active — the list the menu bar and the voice router
+        //    both consume.
+        var enablement = PluginEnablement()
+        XCTAssertEqual(enablement.activePlugins(from: discovered).count, 0, "default-off")
+        enablement.setEnabled(true, for: "commit-message")
+        let active = enablement.activePlugins(from: discovered)
+        XCTAssertEqual(active.map(\.id), ["commit-message"])
+
+        // 4. A spoken instruction routes to it.
+        let match = PluginVoiceCommandRouter.match(
+            instruction: "write a commit message fixed the parser crash",
+            enabledPlugins: active.map(\.manifest))
+        XCTAssertEqual(match?.pluginID, "commit-message")
+        XCTAssertEqual(match?.remainder, "fixed the parser crash")
+
+        // 5. The runner re-reads the manifest from disk and resolves a plan. It runs a
+        //    script, so it is refused until the user grants that separate consent…
+        let reloaded = try XCTUnwrap(
+            PluginDiscovery.reloadManifest(id: "commit-message", in: root))
+        XCTAssertEqual(
+            PluginScriptPlan.resolve(manifest: reloaded, hasScriptConsent: false),
+            .failure(.scriptConsentRequired))
+
+        // …and runs once granted.
+        guard case let .success(resolved) = PluginScriptPlan.resolve(
+            manifest: reloaded, hasScriptConsent: true)
+        else { return XCTFail("expected the dropped-in plugin to resolve") }
+        XCTAssertEqual(resolved.steps.map(\.kind), [.llm, .runScript, .insertAtCursor])
+        XCTAssertTrue(resolved.deliversAtCursor)
+
+        // 6. Its script really resolves inside its own copied folder.
+        let dir = PluginDiscovery.pluginDirectory(id: "commit-message", in: root)
+        let scriptURL = try XCTUnwrap(
+            PluginScriptPath.resolve(resolved.steps[1].script, in: dir))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: scriptURL.path))
+    }
+
     // MARK: - The shipped example plugin
 
     /// The checked-in example must actually resolve. It is the fixture a starter pack
