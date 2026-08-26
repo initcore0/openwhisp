@@ -1,0 +1,22 @@
+{
+  "id": "commit-message",
+  "name": "Commit Message",
+  "version": "1.0.0",
+  "summary": "Turn a spoken description of a change into a ready-to-paste commit message.",
+  "symbol": "text.badge.checkmark",
+  "entry": "script",
+  "voiceTriggers": ["write a commit message", "make a commit message"],
+  "steps": [
+    {
+      "type": "llm",
+      "prompt": "Rewrite the following description of a code change as a git commit message. Use a short imperative subject line under 72 characters, then a blank line, then a brief body only if it adds something. Reply with the commit message and nothing else.\n\n{{text}}"
+    },
+    {
+      "type": "runScript",
+      "script": "strip-fences.sh"
+    },
+    {
+      "type": "insertAtCursor"
+    }
+  ]
+}
