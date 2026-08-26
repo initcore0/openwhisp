@@ -13,6 +13,16 @@ struct PluginsPane: View {
 
     @ObservedObject var host: PluginHost
 
+    /// The bundled starter plugins, read when the pane appears and after each install.
+    ///
+    /// Held in `@State` rather than recomputed in `body` because reading it touches the
+    /// filesystem twice (the pack directory and the user's plugins directory), and `body`
+    /// runs on every unrelated redraw.
+    @State private var starters: [PluginStarterPack.Offering] = []
+
+    /// The refusal from the last install attempt, shown inline. Cleared on the next one.
+    @State private var starterProblem: String?
+
     var body: some View {
         Form {
             introSection
@@ -25,12 +35,16 @@ struct PluginsPane: View {
                 }
             }
 
+            starterSection
             installSection
         }
         .formStyle(.grouped)
         // Re-enumerate on appear so a folder dropped into the plugins directory
         // shows up without relaunching the app.
-        .onAppear { host.reload() }
+        .onAppear {
+            host.reload()
+            starters = host.starterOfferings
+        }
     }
 
     private var introSection: some View {
@@ -46,12 +60,17 @@ struct PluginsPane: View {
 
     private var emptySection: some View {
         Section {
-            Text("No plugins are available in this build.")
+            Text("No plugins are installed yet.")
                 .foregroundStyle(.secondary)
         } footer: {
+            // Deliberately does NOT say "this build has no plugins". `PLUGINS=0` drops
+            // only the COMPILED plugin surfaces; script plugins are host-executed, so a
+            // lean build still installs and runs every starter below. Telling a lean-build
+            // user that plugins are unavailable would be false.
             SettingsFootnote(
-                "Plugins ship with OpenWhisp by default. This build was made with "
-                + "PLUGINS=0, which leaves them out entirely.")
+                "Install a starter plugin below, or drop your own folder into the plugins "
+                + "folder. Built-in plugins are left out of a PLUGINS=0 build; script "
+                + "plugins work either way, because OpenWhisp runs their steps itself.")
         }
     }
 
@@ -194,6 +213,72 @@ struct PluginsPane: View {
                 "The meme generator uses your configured cleanup model to turn a spoken "
                 + "description into a template choice and captions. Captions are drawn on "
                 + "your Mac — only the blank template image is downloaded.")
+        }
+    }
+
+    /// Settings → Plugins → **Starter plugins** (MAK-101).
+    ///
+    /// The pack ships inside the app bundle, but installing one is a real COPY into
+    /// `~/Library/Application Support/OpenWhisp/Plugins/` — the same path a third-party
+    /// plugin takes. Two reasons that matters more than a bundled read-only tier would:
+    /// it dogfoods the install route rather than leaving it exercised only by its author,
+    /// and it makes the installed plugin the user's own editable folder.
+    ///
+    /// The section hides itself once every starter is installed, rather than lingering as
+    /// a list of dead buttons.
+    @ViewBuilder
+    private var starterSection: some View {
+        if !starters.isEmpty {
+            Section {
+                if let starterProblem {
+                    SettingsCallout(.warning, starterProblem)
+                }
+
+                ForEach(starters) { offering in
+                    starterRow(offering)
+                }
+            } header: {
+                Label("Starter plugins", systemImage: "shippingbox")
+            } footer: {
+                SettingsFootnote(
+                    "These ship with OpenWhisp and install into your plugins folder — the "
+                    + "same folder any other plugin goes in. Once installed a plugin is "
+                    + "yours: edit its manifest.json to change what it does. Installing "
+                    + "never overwrites a folder you already have, and every starter is "
+                    + "still off until you turn it on above.")
+            }
+        }
+    }
+
+    private func starterRow(_ offering: PluginStarterPack.Offering) -> some View {
+        LabeledContent {
+            if offering.isInstalled {
+                // Not a disabled button: "already installed" is the ordinary outcome, and
+                // a greyed-out Install reads as something broken rather than something
+                // done.
+                Label("Installed", systemImage: "checkmark.circle.fill")
+                    .foregroundStyle(.secondary)
+                    .labelStyle(.titleAndIcon)
+            } else {
+                Button("Install") {
+                    starterProblem = host.installStarter(offering)
+                    starters = host.starterOfferings
+                }
+            }
+        } label: {
+            Label {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(offering.manifest.name)
+                    Text(offering.manifest.summary)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            } icon: {
+                // The manifest's own SF Symbol, so a starter row looks like the plugin
+                // row it becomes once installed.
+                Image(systemName: offering.manifest.symbol)
+            }
         }
     }
 

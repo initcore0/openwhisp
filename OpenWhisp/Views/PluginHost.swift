@@ -87,6 +87,75 @@ final class PluginHost: ObservableObject {
         return PluginDiscovery.externalPluginsDirectory(applicationSupport: support)
     }
 
+    // MARK: - Starter pack
+
+    /// The bundled starter plugins, marked with whether the user already has each one.
+    ///
+    /// Read on demand rather than cached: `isInstalled` is a fact about the filesystem,
+    /// and a cached one goes stale the moment the user deletes a folder in the Finder —
+    /// the same staleness the runner's re-read exists to avoid.
+    var starterOfferings: [PluginStarterPack.Offering] {
+        guard let pack = Self.starterPackDirectory else { return [] }
+        return PluginStarterPack.offerings(
+            in: pack,
+            installedIDs: Set(
+                PluginDiscovery.loadExternalManifests(in: Self.externalDirectory).map(\.id)))
+    }
+
+    /// `Contents/Resources/StarterPlugins` in the running bundle, or nil when the app was
+    /// assembled without it (a bare `build.sh` binary run in place has no bundle
+    /// resources). Nil degrades to "no starters offered" rather than to a crash.
+    static var starterPackDirectory: URL? {
+        Bundle.main.resourceURL?
+            .appendingPathComponent(PluginStarterPack.bundleSubdirectory, isDirectory: true)
+    }
+
+    /// Install one starter plugin into the user's plugins directory.
+    ///
+    /// The DECISION — collision policy, id safety, whether the entry is even runnable —
+    /// belongs to `PluginStarterPack.decide` and is pinned by `swift test`. This method
+    /// performs the two things that genuinely need the filesystem (copy the tree, restore
+    /// the executable bit) and reloads.
+    ///
+    /// Returns nil on success, or a user-facing reason. Note that `.alreadyInstalled` is
+    /// an ordinary outcome rather than a failure: the user has the plugin, and their copy
+    /// wins — the pack never overwrites an edited folder.
+    @discardableResult
+    func installStarter(_ offering: PluginStarterPack.Offering) -> String? {
+        switch PluginStarterPack.decide(offering, destinationRoot: Self.externalDirectory) {
+        case .refuse(let refusal):
+            return refusal.reason
+
+        case .copy(let source, let destination):
+            do {
+                try FileManager.default.createDirectory(
+                    at: Self.externalDirectory, withIntermediateDirectories: true)
+                try FileManager.default.copyItem(at: source, to: destination)
+            } catch {
+                return "Couldn't install this plugin — \(error.localizedDescription)"
+            }
+
+            // Restore the executable bit on the scripts the manifest actually declares.
+            //
+            // `copyItem` preserves POSIX permissions, so this is usually a no-op — but
+            // "usually" is not a contract: a bundle that travelled through a zip, a DMG,
+            // or a codesign step can arrive with the bit stripped, and the symptom is a
+            // plugin that installs perfectly and then fails at the moment the user speaks
+            // to it. Restoring exactly the DECLARED scripts (never "everything that looks
+            // like one") keeps an install from marking arbitrary copied files executable.
+            for name in PluginStarterPack.executableScriptNames(in: offering.manifest) {
+                guard let script = PluginScriptPath.resolve(name, in: destination) else { continue }
+                try? FileManager.default.setAttributes(
+                    [.posixPermissions: 0o755], ofItemAtPath: script.path)
+            }
+
+            // The installed plugin must appear in the ordinary list immediately — it went
+            // in through the ordinary external directory, so a reload is all it takes.
+            reload()
+            return nil
+        }
+    }
+
     // MARK: - Enablement
 
     func isEnabled(_ id: String) -> Bool { enablement.isEnabled(id) }
