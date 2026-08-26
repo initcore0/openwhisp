@@ -232,16 +232,44 @@ public enum PluginScriptPath {
     /// The app calls THIS rather than joining the path itself — the one place a plugin's
     /// script path becomes a URL, so the containment rule cannot be bypassed by a call
     /// site that forgot to validate first.
+    ///
+    /// Containment is checked TWICE, and the second check is the one that matters:
+    ///
+    /// 1. Lexically, against the standardized plugin root — catches `..` and friends.
+    /// 2. Against the **real** path, with symlinks resolved. `standardizedFileURL`
+    ///    collapses `..` textually but does not follow links, so a plugin that ships
+    ///    `esc -> /bin` and names `esc/sh` passes check 1 while pointing outside the
+    ///    folder entirely. A plugin author controls the contents of their own
+    ///    directory, symlinks included, so the string form of a path proves nothing
+    ///    about where it lands.
+    ///
+    /// The real-path check needs the filesystem, which is why it lives in `resolve`
+    /// (given a directory) rather than in the pure `validate`.
     public static func resolve(_ raw: String?, in pluginDirectory: URL) -> URL? {
         guard validate(raw) == nil,
               let path = raw?.trimmingCharacters(in: .whitespacesAndNewlines)
         else { return nil }
         let root = pluginDirectory.standardizedFileURL
         let resolved = root.appendingPathComponent(path).standardizedFileURL
-        // Re-check containment against the REAL directory: `resolve` must not trust
-        // `validate`'s sentinel root to have covered a symlinked or oddly-cased root.
-        guard resolved.path.hasPrefix(root.path + "/") else { return nil }
+        guard isContained(resolved.path, in: root.path) else { return nil }
+
+        // Resolve symlinks on BOTH sides — the plugin root itself may sit under a
+        // symlinked parent (on macOS `/tmp` and `/var` both are), so resolving only
+        // the script would produce a spurious mismatch.
+        let realRoot = root.resolvingSymlinksInPath().path
+        let realScript = resolved.resolvingSymlinksInPath().path
+        guard isContained(realScript, in: realRoot) else { return nil }
         return resolved
+    }
+
+    /// Whether `path` sits strictly inside `root`.
+    ///
+    /// Compares whole path COMPONENTS via the trailing separator, so a sibling
+    /// directory whose name merely starts with the root's (`/plugins/demo-evil`
+    /// against `/plugins/demo`) is not mistaken for a child.
+    private static func isContained(_ path: String, in root: String) -> Bool {
+        let base = root.hasSuffix("/") ? String(root.dropLast()) : root
+        return path.hasPrefix(base + "/")
     }
 }
 
@@ -437,6 +465,18 @@ public enum PluginScriptPlan {
         case missingFilePath(stepIndex: Int)
         /// The plugin runs a script and the user hasn't granted that separate consent.
         case scriptConsentRequired
+        /// The pipeline declares more steps than the host will run in one invocation.
+        case tooManySteps(count: Int, limit: Int)
+        /// A `runScript` step's script didn't produce a result — it failed to launch,
+        /// exited non-zero, timed out, or returned nothing.
+        ///
+        /// A plugin step is NOT the dictation finalize path, so it does not inherit
+        /// `ScriptRunner`'s fail-open contract. There, keeping the original transcript
+        /// is right because the user's words must survive a broken script. Here the
+        /// user asked for a TRANSFORM: passing the untransformed text down the pipeline
+        /// would paste the wrong thing and report success, which is worse than saying
+        /// the step failed.
+        case scriptStepFailed(reason: String)
 
         public var reason: String {
             switch self {
@@ -454,6 +494,10 @@ public enum PluginScriptPlan {
                 return "Step \(index + 1) writes a file but names no path."
             case .scriptConsentRequired:
                 return "This plugin runs a script — allow it in Settings → Plugins first."
+            case .scriptStepFailed(let reason):
+                return "The plugin's script didn't run — \(reason.lowercased())."
+            case .tooManySteps(let count, let limit):
+                return "This plugin declares \(count) steps; the limit is \(limit)."
             }
         }
     }
@@ -480,6 +524,15 @@ public enum PluginScriptPlan {
         }
     }
 
+    /// The most steps one invocation may declare.
+    ///
+    /// Generous for any real pipeline (the shipped example uses three) and bounded, so
+    /// a manifest cannot ask the host to chain an unbounded number of subprocesses,
+    /// model calls, and file writes from one dictation. The runner walks the steps
+    /// recursively, so this also bounds the stack rather than leaving it to a value
+    /// from a file the app does not own.
+    public static let stepLimit = 16
+
     /// Resolve a manifest into a plan, or say why not.
     ///
     /// - Parameters:
@@ -496,6 +549,9 @@ public enum PluginScriptPlan {
     ) -> Result<Plan, Failure> {
         guard manifest.entry == .script else { return .failure(.notAScriptPlugin) }
         guard !manifest.steps.isEmpty else { return .failure(.noSteps) }
+        guard manifest.steps.count <= stepLimit else {
+            return .failure(.tooManySteps(count: manifest.steps.count, limit: stepLimit))
+        }
 
         for (index, step) in manifest.steps.enumerated() {
             switch step.kind {

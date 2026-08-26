@@ -177,6 +177,15 @@ enum PluginScriptRunner {
                     ?? "This plugin's script path isn't usable."))
             return
         }
+        // A directory is "executable" (traversable) to `isExecutableFile`, so check for
+        // one first — otherwise it reaches `ScriptRunner`, fails to launch, and the
+        // failure wears a misleading message.
+        var isDirectory: ObjCBool = false
+        let exists = FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory)
+        guard exists, !isDirectory.boolValue else {
+            completion(.failed(reason: "The plugin's script \(url.lastPathComponent) is missing."))
+            return
+        }
         guard FileManager.default.isExecutableFile(atPath: url.path) else {
             completion(.failed(
                 reason: "The plugin's script isn't executable — run: chmod +x \(url.path)"))
@@ -186,8 +195,22 @@ enum PluginScriptRunner {
         // Off the main thread: `ScriptRunner` is synchronous with a bounded timeout, and
         // a plugin script must never freeze the UI while it runs.
         DispatchQueue.global(qos: .userInitiated).async {
-            let output = ScriptRunner.run(input, scriptPath: url.path)
-            DispatchQueue.main.async { next(output) }
+            // `ScriptRunner.run` collapses every failure into "the original text" —
+            // right for the dictation finalize path, where the user's words must
+            // survive a broken script, and WRONG here. The user asked for a transform;
+            // silently passing the untransformed text on would paste the wrong thing
+            // and report success. So drive the same subprocess through the pure
+            // `ScriptOutcome` resolver and keep the distinction.
+            let outcome = ScriptRunner.outcome(for: input, scriptPath: url.path)
+            DispatchQueue.main.async {
+                switch outcome {
+                case .useOutput(let output):
+                    next(output)
+                case .keepOriginal(let reason):
+                    completion(.failed(
+                        reason: PluginScriptPlan.Failure.scriptStepFailed(reason: reason).reason))
+                }
+            }
         }
     }
 
@@ -208,7 +231,12 @@ enum PluginScriptRunner {
             OutputPayload(
                 text: text, language: "auto", targetAppBundleID: nil, isLiveChunk: false)
         ) { delivery in
-            MainActor.assumeIsolated {
+            // Hop to main explicitly rather than asserting the sink's queue. The write
+            // path does call back on `.main`, but `deliver`'s live-chunk early return
+            // completes SYNCHRONOUSLY on the caller's queue — so an assertion here
+            // would be a crash contingent on an argument, which is not the kind of
+            // guarantee to build on. `async` on main from main is a cheap hop.
+            DispatchQueue.main.async {
                 switch delivery {
                 case .delivered:
                     // The text passes through unchanged: writing a file is a side

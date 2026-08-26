@@ -170,13 +170,24 @@ final class PluginHost: ObservableObject {
     func open(pluginID: String) {
         guard let plugin = activePlugins.first(where: { $0.id == pluginID }) else { return }
 
-        // A script plugin has no window: "open" means run it. From the menu bar there is
-        // no dictation to act on, so it runs over the current selection-free input —
-        // an empty material, which its first step still transforms (a prompt with no
-        // text, a script with empty stdin). Voice invocations carry real material and
-        // go through `runScriptPlugin` directly.
+        // A script plugin has no window: "open" means RUN it, over whatever is on the
+        // clipboard.
+        //
+        // The menu bar carries no dictation, and a text transform needs text — running
+        // one on an empty string asks the model to rewrite nothing and pastes whatever
+        // it invents. The clipboard is the material the user can actually supply by
+        // hand (copy, then pick the plugin), and it is gated on the manifest declaring
+        // `clipboardAccess` through the same `PluginInvocationContext` rule every other
+        // plugin invocation uses — so this adds no capability, it reuses one.
         if plugin.manifest.entry == .script {
-            runScriptPlugin(id: pluginID, material: "")
+            let context = invocationContext(for: plugin.manifest, material: "")
+            guard let material = context.clipboard, !material.isEmpty else {
+                AppState.shared.statusMessage = plugin.manifest.clipboardAccess
+                    ? "\(plugin.manifest.name) — copy some text first"
+                    : "\(plugin.manifest.name) — say the command while dictating to run it"
+                return
+            }
+            runScriptPlugin(id: pluginID, material: material)
             return
         }
 

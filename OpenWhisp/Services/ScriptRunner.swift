@@ -11,10 +11,31 @@ import Foundation
 /// async hop — and its session-race surface — into the finalize path.
 enum ScriptRunner {
     /// - Returns: the text to insert (script output on success, else the input).
+    ///
+    /// The FAIL-OPEN entry point, and the right one for the dictation finalize path:
+    /// the user's words must survive a broken script. A caller that asked for a
+    /// TRANSFORM (a plugin's `runScript` step) wants `outcome(for:scriptPath:)` instead,
+    /// which keeps "it failed" distinguishable from "it echoed its input".
     static func run(_ input: String, scriptPath: String, timeout: TimeInterval = 2.0) -> String {
+        switch outcome(for: input, scriptPath: scriptPath, timeout: timeout) {
+        case .useOutput(let text): return text
+        case .keepOriginal: return input
+        }
+    }
+
+    /// Run the script and report WHAT HAPPENED, not just what text to use.
+    ///
+    /// Same hardened subprocess as `run` — stdin only, bounded timeout, SIGTERM→SIGKILL
+    /// with the `ScriptTimeoutKill` policy — differing only in that the caller gets to
+    /// decide what a failure means. Extracted so a plugin step can refuse rather than
+    /// silently pass its input through; there is exactly one process-spawning
+    /// implementation and both entry points share it.
+    static func outcome(
+        for input: String, scriptPath: String, timeout: TimeInterval = 2.0
+    ) -> ScriptOutcome {
         let path = scriptPath.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !path.isEmpty, FileManager.default.isExecutableFile(atPath: path) else {
-            return ScriptOutcome.resolvedText(
+            return ScriptOutcome.resolve(
                 original: input, stdout: nil, exitCode: nil, timedOut: false, launchFailed: true
             )
         }
@@ -40,7 +61,7 @@ enum ScriptRunner {
         do {
             try process.run()
         } catch {
-            return ScriptOutcome.resolvedText(
+            return ScriptOutcome.resolve(
                 original: input, stdout: nil, exitCode: nil, timedOut: false, launchFailed: true
             )
         }
@@ -129,7 +150,7 @@ enum ScriptRunner {
 
         let exitCode: Int32? = timedOut ? nil : process.terminationStatus
         let stdout = String(data: stdoutData, encoding: .utf8)
-        return ScriptOutcome.resolvedText(
+        return ScriptOutcome.resolve(
             original: input,
             stdout: stdout,
             exitCode: exitCode,

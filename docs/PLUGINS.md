@@ -225,6 +225,7 @@ every step; the plugin contributes no code to this process.
   "symbol": "text.badge.checkmark",
   "entry": "script",
   "voiceTriggers": ["write a commit message"],
+  "clipboardAccess": true,
   "steps": [
     { "type": "llm", "prompt": "Rewrite as a git commit message:\n\n{{text}}" },
     { "type": "runScript", "script": "strip-fences.sh" },
@@ -246,14 +247,28 @@ a pipeline can write a file *and* keep going.
 | `type` | Extra fields | What the host does |
 |---|---|---|
 | `llm` | `prompt` | Runs the prompt through **your configured model**, via the same `summarizeResolved` path the Scratchpad uses. `{{text}}` is the step's input; a prompt without the token gets the input appended. |
-| `runScript` | `script` | Runs a script **inside the plugin's own folder** through the hardened `ScriptRunner`: input on stdin, replacement on stdout, 2 s timeout, SIGTERM→SIGKILL. |
+| `runScript` | `script` | Runs a script **inside the plugin's own folder** through the hardened `ScriptRunner`: input on stdin, replacement on stdout, 2 s timeout, SIGTERM→SIGKILL. A failure (no launch, non-zero exit, timeout, empty output) **stops the pipeline** — see below. |
 | `writeFile` | `file` | Appends or overwrites via `FileOutputTarget` — the same writer, heading tokens, and separator logic Settings → Files uses. `file` is `{ "path", "template", "mode" }`. |
 | `insertAtCursor` | — | Pastes at the cursor in the frontmost app, the way a dictation lands. The output route for a plugin with no window. |
 
 Every field but `type` is optional. A step with **no** `type` is the one fatal
 case: no default for "what does this do" is safe when every option has side
 effects, so the step list decodes to empty and the plugin is listed as broken
-rather than partially run.
+rather than partially run. A pipeline may declare at most
+`PluginScriptPlan.stepLimit` (16) steps.
+
+**A plugin step does not inherit `ScriptRunner`'s fail-open contract.** On the
+dictation finalize path, a broken script keeps the original transcript — the
+user's words must survive. In a plugin pipeline the user asked for a *transform*,
+so passing the untransformed text along would paste the wrong thing and report
+success. A failed step stops the run and says so.
+
+### Invoking a script plugin
+
+| From | Material |
+|---|---|
+| **Voice** (`voiceTriggers`) | What you said after the trigger, plus your selection — the same material any plugin gets. |
+| **Menu bar / ⌘-shortcut** | The **clipboard**, and only if the manifest declares `clipboardAccess`. There is no dictation to act on, and running a text transform over an empty string just asks the model to invent something. |
 
 ### Consent
 
@@ -272,10 +287,21 @@ must ask again.
 ### Where a script may live
 
 Inside the plugin's own directory, named by a relative path. No absolute paths,
-no `~`, no traversal — checked syntactically *and* by resolving the path and
-confirming it is still under the plugin folder, which catches combinations like
-`a/../../b` that a component-wise check alone misses. `PluginScriptPath.resolve`
-is the only thing that turns a declared script name into a URL.
+no `~`, no traversal. Containment is checked three ways, and the last one is the
+interesting one:
+
+1. **Syntactically** — no leading `/` or `~`, no `..` component.
+2. **Lexically** — the joined path, standardized, must still be under the plugin
+   folder. Catches combinations like `a/../../b` that a component check misses.
+3. **By real path, with symlinks resolved.** `standardizedFileURL` collapses `..`
+   textually but does *not* follow links, so a plugin shipping `esc -> /bin` and
+   declaring `esc/sh` passes checks 1 and 2 while pointing outside the folder
+   entirely. A plugin author controls the contents of their own directory,
+   symlinks included, so **the string form of a path proves nothing about where
+   it lands.**
+
+`PluginScriptPath.resolve` is the only thing that turns a declared script name
+into a URL, so no call site can skip these.
 
 This is the same seriousness the id validation gets, for the same reason: the
 plugins directory is user-writable and this app holds Accessibility, microphone,

@@ -6,6 +6,7 @@
   "symbol": "text.badge.checkmark",
   "entry": "script",
   "voiceTriggers": ["write a commit message", "make a commit message"],
+  "clipboardAccess": true,
   "steps": [
     {
       "type": "llm",

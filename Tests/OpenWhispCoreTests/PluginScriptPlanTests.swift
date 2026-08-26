@@ -280,6 +280,61 @@ final class PluginScriptPlanTests: XCTestCase {
             .missingFilePath(stepIndex: 0))
     }
 
+    /// A manifest cannot ask the host to chain an unbounded number of subprocesses,
+    /// model calls, and file writes from one dictation — nor recurse the runner's walk
+    /// arbitrarily deep on a value from a file the app does not own.
+    func testAnAbsurdlyLongPipelineIsRefused() {
+        let overLimit = PluginScriptPlan.stepLimit + 1
+        let manifest = scriptManifest(
+            steps: Array(repeating: PluginStep(kind: .insertAtCursor), count: overLimit))
+
+        XCTAssertEqual(
+            failure(manifest), .tooManySteps(count: overLimit, limit: PluginScriptPlan.stepLimit))
+
+        // Exactly at the limit still runs — the cap is a bound, not a discouragement.
+        let atLimit = scriptManifest(
+            steps: Array(repeating: PluginStep(kind: .insertAtCursor),
+                         count: PluginScriptPlan.stepLimit))
+        guard case .success = plan(atLimit) else {
+            return XCTFail("a pipeline exactly at the limit must resolve")
+        }
+    }
+
+    /// A failing script step must be DISTINGUISHABLE from one that echoed its input.
+    ///
+    /// `ScriptRunner.run` is fail-open by contract — right for the dictation finalize
+    /// path, where the user's words must survive a broken script, and wrong for a
+    /// plugin step, where the user asked for a transform. Passing the untransformed
+    /// text on would paste the wrong thing and report success.
+    func testAFailingScriptIsAnErrorNotAPassThrough() {
+        XCTAssertEqual(
+            ScriptOutcome.resolve(
+                original: "in", stdout: nil, exitCode: nil, timedOut: false, launchFailed: true),
+            .keepOriginal(reason: "Script couldn't run"))
+        XCTAssertEqual(
+            ScriptOutcome.resolve(
+                original: "in", stdout: "", exitCode: 0, timedOut: false, launchFailed: false),
+            .keepOriginal(reason: "Script returned empty output"))
+        XCTAssertEqual(
+            ScriptOutcome.resolve(
+                original: "in", stdout: "out\n", exitCode: 0, timedOut: false, launchFailed: false),
+            .useOutput("out"))
+
+        // And the failure carries a user-facing sentence rather than a bare code.
+        let reason = PluginScriptPlan.Failure.scriptStepFailed(reason: "Script timed out").reason
+        XCTAssertTrue(reason.contains("timed out"), reason)
+    }
+
+    /// The fail-open wrapper still behaves as the finalize path expects — the refactor
+    /// that added `outcome` must not have changed `run`'s contract.
+    func testScriptRunnerRunStillFailsOpen() {
+        XCTAssertEqual(
+            ScriptOutcome.resolvedText(
+                original: "keep me", stdout: nil, exitCode: nil,
+                timedOut: true, launchFailed: false),
+            "keep me")
+    }
+
     // MARK: - Script path containment
 
     /// The security rule of the tier. The plugins folder is user-writable and this app
@@ -324,6 +379,47 @@ final class PluginScriptPlanTests: XCTestCase {
         XCTAssertNil(PluginScriptPath.resolve("/bin/sh", in: dir))
         XCTAssertNil(PluginScriptPath.resolve("~/evil.sh", in: dir))
         XCTAssertNil(PluginScriptPath.resolve(nil, in: dir))
+    }
+
+    /// The escape a purely lexical check misses: a plugin author controls the contents
+    /// of their own folder, symlinks included. `standardizedFileURL` collapses `..`
+    /// textually but does NOT follow links, so `esc -> /bin` plus a declared `esc/sh`
+    /// looks contained as a string while landing outside the folder entirely.
+    ///
+    /// Verified to fail before the real-path check was added: the probe resolved to
+    /// `<plugin>/esc/evil.sh` whose realpath was `<root>/outside/evil.sh`.
+    func testASymlinkInsideThePluginFolderCannotEscapeIt() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("PluginSymlinkTests-\(UUID().uuidString)")
+        let plugin = root.appendingPathComponent("demo")
+        try FileManager.default.createDirectory(at: plugin, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let outside = root.appendingPathComponent("outside")
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+        try "#!/bin/sh\n".write(
+            to: outside.appendingPathComponent("evil.sh"), atomically: true, encoding: .utf8)
+        try FileManager.default.createSymbolicLink(
+            at: plugin.appendingPathComponent("esc"), withDestinationURL: outside)
+
+        XCTAssertNil(
+            PluginScriptPath.resolve("esc/evil.sh", in: plugin),
+            "a symlinked path out of the plugin folder must be refused")
+
+        // …and a genuine file beside it still resolves, so the check isn't just
+        // refusing everything.
+        try "#!/bin/sh\n".write(
+            to: plugin.appendingPathComponent("ok.sh"), atomically: true, encoding: .utf8)
+        XCTAssertNotNil(PluginScriptPath.resolve("ok.sh", in: plugin))
+    }
+
+    /// A sibling folder whose name merely STARTS with the plugin's must not read as a
+    /// child — the containment check compares whole path components.
+    func testASiblingWithASharedNamePrefixIsNotContained() {
+        let plugin = URL(fileURLWithPath: "/plugins/demo", isDirectory: true)
+        // Reachable only via traversal, which is refused earlier — assert the refusal
+        // holds rather than assuming the prefix check is the only thing standing there.
+        XCTAssertNil(PluginScriptPath.resolve("../demo-evil/run.sh", in: plugin))
     }
 
     /// A hostile script path fails PLAN resolution, not just the path validator — the
