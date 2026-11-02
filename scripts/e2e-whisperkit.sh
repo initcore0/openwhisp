@@ -78,6 +78,7 @@ SOURCES=(
     "$SERVICES/ModelStorage.swift"
     "$SERVICES/AudioLevel.swift"
     "$SERVICES/AsyncTimeout.swift"
+    "$SERVICES/AudioCapture.swift"        # AudioDeviceHandle (used by WhisperKitBridge since #226)
 )
 
 OUT="$BUILD_DIR/whisperkit-harness"
