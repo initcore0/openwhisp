@@ -94,6 +94,7 @@ let package = Package(
                 "ConfigBundle.swift",
                 "BridgeWire.swift",
                 "BridgeRouter.swift",
+                "BridgeConnectionPolicy.swift",
                 "SyncMerge.swift",
                 "LANPairing.swift",
                 "URLScheme.swift",

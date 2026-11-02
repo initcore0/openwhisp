@@ -13,7 +13,7 @@ import OpenWhispBridgeKit
 enum ExitCode: Int32 {
     case success = 0
     case internalError = 1     // engine/LLM/unexpected failure
-    case unreachable = 2       // app not running or bridge disabled
+    case unreachable = 2       // app not running, bridge disabled, or app not answering
     case consentDenied = 3
     case busy = 4
     case cancelled = 5
@@ -54,6 +54,10 @@ func failClient(_ error: Error) -> Never {
         fail("version mismatch — reinstall OpenWhisp so the bundled CLI matches the app", .versionMismatch)
     case .protocolError(let m):
         fail("protocol error: \(m)", .internalError)
+    case .timedOut(let method, let seconds):
+        // Exit 2 like `.unreachable`: the app is there but not usable — exactly
+        // what the `status` liveness probe must report.
+        fail("OpenWhisp didn't answer '\(method)' within \(Int(seconds))s — the app may be frozen or busy", .unreachable)
     case .domain(let reason, let message, _):
         switch reason {
         case .consentDenied:                          fail(message, .consentDenied)

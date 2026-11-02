@@ -28,6 +28,9 @@ public typealias BridgeSessionFactory = (_ clientName: String) throws -> BridgeS
 /// frame) — the cache is dropped and the call is retried exactly once on a fresh
 /// connection. A second failure propagates: the app is genuinely down.
 ///
+/// A timeout (`ClientError.timedOut`) drops the cache but is NOT retried: the
+/// app may be wedged or still running the request.
+///
 /// Domain errors (`ClientError.domain`, e.g. `busy` / `consentDenied` /
 /// `llmUnavailable`) are NOT transport failures — they mean the bridge answered.
 /// They propagate immediately without dropping the cache or retrying, so consent
@@ -66,6 +69,13 @@ public final class PersistentBridge {
             // Stale connection (app restarted, or a garbled frame). Reconnect once.
             dropCache()
             return try session().call(method: method, params: params, resultType: resultType)
+        } catch let e as BridgeClient.ClientError {
+            // A timeout leaves the socket desynced (a late reply would be read as
+            // the NEXT call's answer), so drop it — but never retry: the app may
+            // be wedged, or may still be running the request (a re-sent dictate
+            // would reopen the mic).
+            if case .timedOut = e { dropCache() }
+            throw e
         }
     }
 
@@ -74,7 +84,7 @@ public final class PersistentBridge {
     static func isTransportFailure(_ e: BridgeClient.ClientError) -> Bool {
         switch e {
         case .unreachable, .protocolError: return true
-        case .unsupportedVersion, .domain: return false
+        case .unsupportedVersion, .domain, .timedOut: return false
         }
     }
 }

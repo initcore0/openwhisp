@@ -54,6 +54,10 @@ final class AgentBridgeServer {
     /// burst can be logged (and, once the consent UI lands, surfaced).
     private var recentDenials: [Date] = []
 
+    /// Caps concurrent connections (each one holds a thread). Over the cap a
+    /// connection gets a `busy` error frame and is closed.
+    private let connectionLimiter = BridgeConnectionLimiter()
+
     init(host: AgentBridgeHost) {
         self.host = host
     }
@@ -190,8 +194,30 @@ final class AgentBridgeServer {
             // A peer that vanishes mid-call (Ctrl-C'd CLI, MCP host timeout) must
             // surface as EPIPE on our write, not as a SIGPIPE that kills the app.
             _ = fcntl(conn, F_SETNOSIGPIPE, 1)
-            Thread.detachNewThread { [weak self] in self?.handleConnection(conn) }
+            guard connectionLimiter.tryAcquire() else {
+                rejectOverCap(conn)
+                continue
+            }
+            Thread.detachNewThread { [weak self] in
+                guard let self else { close(conn); return }
+                defer { self.connectionLimiter.release() }
+                self.handleConnection(conn)
+            }
         }
+    }
+
+    /// Too many open connections: tell the peer why (a clear `busy` error rather
+    /// than an EOF the client would report as "app not running") and close. Runs
+    /// on the accept thread, so the write is bounded by SO_SNDTIMEO; the frame is
+    /// far smaller than the socket buffer anyway.
+    private func rejectOverCap(_ conn: Int32) {
+        log.notice("Agent Bridge: \(BridgeConnectionPolicy.maxConcurrentConnections) connections open; rejecting")
+        BridgeConnectionPolicy.setTimeouts(fd: conn, read: 1, write: 1)
+        let frame = BridgeConnectionPolicy.busyRejectionFrame()
+        frame.withUnsafeBytes { raw in
+            if let base = raw.baseAddress { _ = write(conn, base, frame.count) }
+        }
+        close(conn)
     }
 
     // MARK: - Per-connection handling
@@ -206,12 +232,21 @@ final class AgentBridgeServer {
 
         var state = ConnectionState()
         var buffer = Data()
-        var chunk = [UInt8](repeating: 0, count: 16384)
+        // Bounded reads (SO_RCVTIMEO/SO_SNDTIMEO): a peer that goes quiet is
+        // closed after the idle timeout, and stop() is noticed within one poll
+        // tick, so no connection thread can be pinned forever.
+        let reader = BridgeConnectionReader(fd: fd, isRunning: { [weak self] in self?.isRunning ?? false })
 
-        while isRunning {
-            let n = read(fd, &chunk, chunk.count)
-            if n <= 0 { break } // EOF or error → connection closed
-            buffer.append(contentsOf: chunk[0..<n])
+        while true {
+            switch reader.next() {
+            case .closed, .stopped:
+                return
+            case .idleTimeout:
+                log.notice("Agent Bridge: closing idle connection")
+                return
+            case .data(let bytes):
+                buffer.append(bytes)
+            }
 
             while let nlIndex = buffer.firstIndex(of: 0x0A) {
                 let lineData = Data(buffer[buffer.startIndex..<nlIndex])
@@ -237,6 +272,8 @@ final class AgentBridgeServer {
                 log.notice("Agent Bridge: frame exceeded cap; closing")
                 break
             }
+            // Time spent executing (a dictate can block for minutes) isn't idle.
+            reader.markActive()
         }
     }
 
@@ -515,15 +552,20 @@ final class AgentBridgeServer {
     private func writeJSON<T: Encodable>(_ fd: Int32, _ value: T) {
         guard var data = try? JSONEncoder().encode(value) else { return }
         data.append(0x0A) // NDJSON frame terminator
-        data.withUnsafeBytes { raw in
-            guard let base = raw.bindMemory(to: UInt8.self).baseAddress else { return }
+        let complete: Bool = data.withUnsafeBytes { raw in
+            guard let base = raw.bindMemory(to: UInt8.self).baseAddress else { return false }
             var offset = 0
             while offset < data.count {
                 let written = write(fd, base + offset, data.count - offset)
-                if written <= 0 { break }
+                if written < 0 && errno == EINTR { continue }
+                if written <= 0 { return false } // EPIPE, or SO_SNDTIMEO expired
                 offset += written
             }
+            return true
         }
+        // A peer that stopped reading (or left) has a torn frame at best: shut
+        // the socket so the connection loop's next read ends the connection.
+        if !complete { shutdown(fd, SHUT_RDWR) }
     }
 }
 

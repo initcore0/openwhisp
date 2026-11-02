@@ -12,6 +12,10 @@ private struct ResponseEnvelope<T: Decodable>: Decodable {
 /// Connects to the app's UNIX-domain socket, performs the `bridge.hello`
 /// handshake, and issues typed request/response calls. Used by both the CLI
 /// verbs and (later) the MCP adapter.
+///
+/// Every step is bounded: connect, each write, and each response read have a
+/// deadline (see ``BridgeTimeouts``), so a wedged app surfaces as
+/// ``ClientError/timedOut(method:seconds:)`` instead of hanging the caller.
 public final class BridgeClient {
 
     /// Failure modes, mapped to CLI exit codes by the caller.
@@ -24,9 +28,19 @@ public final class BridgeClient {
         case domain(reason: BridgeWire.ErrorCode?, message: String, originalText: String?)
         /// A malformed/unexpected response.
         case protocolError(String)
+        /// The app accepted the connection but didn't answer `method` within
+        /// `seconds` (or wouldn't take the request). It may be frozen or busy.
+        /// The request may or may not have run, so callers must NOT blindly
+        /// retry it — and the connection is no longer usable.
+        case timedOut(method: String, seconds: TimeInterval)
     }
 
+    /// Computes a call's response deadline from its method and (for `dictate`)
+    /// its own `timeoutSeconds`. Injectable so tests can use short deadlines.
+    public typealias ResponseDeadline = (_ method: String, _ dictateTimeoutSeconds: Int?) -> TimeInterval
+
     private let fd: Int32
+    private let responseDeadline: ResponseDeadline
     private var readBuffer = Data()
     private var nextRequestID = 0
 
@@ -35,10 +49,21 @@ public final class BridgeClient {
 
     // MARK: - Connect + handshake
 
-    public init() throws {
+    /// Connect to the running app's socket (discovered via the pointer file /
+    /// default App Support path).
+    public convenience init() throws {
         // Discovery contract (pointer file for the $TMPDIR fallback, default App
         // Support path) is defined once in BridgeWire.SocketLocation.
-        let path = BridgeWire.SocketLocation.discoverSocketPath()
+        try self.init(socketPath: BridgeWire.SocketLocation.discoverSocketPath())
+    }
+
+    /// Connect to the socket at `socketPath`.
+    public init(
+        socketPath path: String,
+        connectTimeout: TimeInterval = BridgeTimeouts.connectSeconds,
+        writeTimeout: TimeInterval = BridgeTimeouts.writeSeconds,
+        responseDeadline: @escaping ResponseDeadline = BridgeTimeouts.responseDeadline
+    ) throws {
         let sock = socket(AF_UNIX, SOCK_STREAM, 0)
         guard sock >= 0 else { throw ClientError.unreachable }
         // If the app dies mid-call, our write must fail with EPIPE, not raise a
@@ -56,17 +81,48 @@ public final class BridgeClient {
                 }
             }
         }
-        let len = socklen_t(MemoryLayout<sockaddr_un>.size)
-        let connected = withUnsafePointer(to: &addr) { ap -> Int32 in
-            ap.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
-                connect(sock, sa, len)
-            }
+        guard Self.connect(sock, to: &addr, timeout: connectTimeout) else {
+            close(sock); throw ClientError.unreachable
         }
-        guard connected == 0 else { close(sock); throw ClientError.unreachable }
+        Self.setSendTimeout(sock, seconds: writeTimeout)
         self.fd = sock
+        self.responseDeadline = responseDeadline
     }
 
     deinit { close(fd) }
+
+    /// Connect with a deadline: non-blocking connect, then poll for writability.
+    private static func connect(_ sock: Int32, to addr: inout sockaddr_un, timeout: TimeInterval) -> Bool {
+        let flags = fcntl(sock, F_GETFL)
+        guard flags >= 0, fcntl(sock, F_SETFL, flags | O_NONBLOCK) == 0 else { return false }
+        defer { _ = fcntl(sock, F_SETFL, flags) } // back to blocking for the calls
+
+        let len = socklen_t(MemoryLayout<sockaddr_un>.size)
+        let rc = withUnsafePointer(to: &addr) { ap -> Int32 in
+            ap.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
+                Darwin.connect(sock, sa, len)
+            }
+        }
+        if rc == 0 { return true }
+        guard errno == EINPROGRESS || errno == EAGAIN else { return false }
+
+        var pfd = pollfd(fd: sock, events: Int16(POLLOUT), revents: 0)
+        guard poll(&pfd, 1, Self.pollMillis(timeout)) == 1 else { return false }
+        var soError: Int32 = 0
+        var soLen = socklen_t(MemoryLayout<Int32>.size)
+        guard getsockopt(sock, SOL_SOCKET, SO_ERROR, &soError, &soLen) == 0 else { return false }
+        return soError == 0
+    }
+
+    private static func setSendTimeout(_ sock: Int32, seconds: TimeInterval) {
+        let whole = Int(seconds)
+        var tv = timeval(tv_sec: whole, tv_usec: Int32((seconds - Double(whole)) * 1_000_000))
+        _ = setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+    }
+
+    private static func pollMillis(_ seconds: TimeInterval) -> Int32 {
+        Int32(min(max(seconds * 1000, 0), Double(Int32.max)).rounded(.up))
+    }
 
     /// Perform the mandatory handshake. Returns the app version; stores
     /// capabilities. Throws `.unsupportedVersion` if the app is too old for us.
@@ -93,9 +149,13 @@ public final class BridgeClient {
         let request = BridgeWire.Request(id: .number(id), method: method, params: params)
         var data = try JSONEncoder().encode(request)
         data.append(0x0A)
-        try writeAll(data)
 
-        let line = try readResponseLine()
+        let dictateTimeout = (params as? BridgeWire.DictateParams)?.timeoutSeconds
+        let budget = responseDeadline(method, dictateTimeout)
+        let deadline = Date().addingTimeInterval(budget)
+
+        try writeAll(data, method: method, budget: budget)
+        let line = try readResponseLine(deadline: deadline, method: method, budget: budget)
         let resp: ResponseEnvelope<R>
         do {
             resp = try JSONDecoder().decode(ResponseEnvelope<R>.self, from: line)
@@ -112,20 +172,26 @@ public final class BridgeClient {
 
     // MARK: - Framing
 
-    private func writeAll(_ data: Data) throws {
+    private func writeAll(_ data: Data, method: String, budget: TimeInterval) throws {
         try data.withUnsafeBytes { raw in
             guard let base = raw.bindMemory(to: UInt8.self).baseAddress else { return }
             var offset = 0
             while offset < data.count {
                 let n = write(fd, base + offset, data.count - offset)
+                if n < 0 && errno == EINTR { continue }
+                if n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK) {
+                    // SO_SNDTIMEO expired: the app isn't draining its socket.
+                    throw ClientError.timedOut(method: method, seconds: budget)
+                }
                 if n <= 0 { throw ClientError.unreachable }
                 offset += n
             }
         }
     }
 
-    /// Read one newline-terminated JSON response, buffering any surplus.
-    private func readResponseLine() throws -> Data {
+    /// Read one newline-terminated JSON response, buffering any surplus. Gives
+    /// up with `.timedOut` once `deadline` passes without a complete line.
+    private func readResponseLine(deadline: Date, method: String, budget: TimeInterval) throws -> Data {
         var chunk = [UInt8](repeating: 0, count: 16384)
         while true {
             if let nl = readBuffer.firstIndex(of: 0x0A) {
@@ -134,7 +200,17 @@ public final class BridgeClient {
                 if line.isEmpty { continue }
                 return line
             }
+            let remaining = deadline.timeIntervalSinceNow
+            guard remaining > 0 else { throw ClientError.timedOut(method: method, seconds: budget) }
+            var pfd = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
+            let ready = poll(&pfd, 1, Self.pollMillis(remaining))
+            if ready < 0 {
+                if errno == EINTR { continue }
+                throw ClientError.unreachable
+            }
+            if ready == 0 { continue } // re-checks the deadline above
             let n = read(fd, &chunk, chunk.count)
+            if n < 0 && errno == EINTR { continue }
             if n <= 0 { throw ClientError.unreachable } // EOF before a full line
             readBuffer.append(contentsOf: chunk[0..<n])
             if readBuffer.count > BridgeWire.maxFrameBytes {
