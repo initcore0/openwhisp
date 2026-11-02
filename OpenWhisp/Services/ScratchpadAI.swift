@@ -130,7 +130,8 @@ public enum ScratchpadAI {
         case notAnAnswer
         /// A to-Markdown result dropped too much of the source's content.
         case lostContent(preservedShare: Double)
-        /// The model translated the note into a different writing system.
+        /// The model translated the note into a different language (a different
+        /// writing system, or a different language in the same one).
         case translated
 
         /// Short human reason for the status line.

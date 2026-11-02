@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(NaturalLanguage)
+import NaturalLanguage
+#endif
 
 /// Deterministic guard that catches the one failure mode the automatic AI
 /// cleanup can't be trusted to avoid on its own: silently TRANSLATING the
@@ -14,7 +17,15 @@ import Foundation
 /// The fix here is a script-mismatch detector: compute the dominant Unicode
 /// script of the INPUT's letters, and if the input is predominantly a non-Latin
 /// script but the output has almost none of that script, the "cleanup" translated
-/// → REJECT (keep the raw transcript). Latin→Latin and same-script always pass.
+/// → REJECT (keep the raw transcript).
+///
+/// Same-script translations (Ukrainian → Russian, German → English) keep the
+/// script, so a second, language-level check runs when the script survives: the
+/// on-device `NLLanguageRecognizer` must confidently name the input's language,
+/// and the output must confidently be a DIFFERENT one. Measured 2026-11 on the
+/// llm-bench corpus: Qwen3.5 rewrote Ukrainian dictations in Russian and
+/// Qwen2.5-1.5B rewrote German in English; both now reject, every legitimate
+/// cleanup in that corpus still passes.
 ///
 /// Design bias: this must be CONSERVATIVE. A false rejection merely yields the
 /// raw transcript (the same fail-open path used when the LLM errors), so the cost
@@ -65,6 +76,21 @@ public enum RefineOutputGuard {
     /// "translated" (~0.0) is what makes the guard safe.
     public static let minOutputScriptShareToPass = 0.10
 
+    /// Same-script LANGUAGE check. Language ID needs more text than script ID:
+    /// below ~4 words NLLanguageRecognizer is unreliable ("okay" scores en 0.39),
+    /// so both sides need at least this many letters before the check runs.
+    public static let minLettersForLanguageCheck = 20
+
+    /// The recognizer must be at least this sure of the input's language AND of
+    /// the output's (different) language. Legitimate cleanups in the bench corpus
+    /// keep their language at 0.96–1.00; real translations flip at 1.00.
+    public static let minLanguageConfidence = 0.80
+
+    /// …and the output must have all but lost the input's language: its
+    /// probability in the output at most this. A cleanup that is merely less
+    /// certain (mixed vocabulary) keeps a sizeable share and passes.
+    public static let maxInputLanguageShareInOutput = 0.10
+
     // MARK: - Decision
 
     /// `true` when the cleanup output must be REJECTED (kept-original) because it
@@ -77,10 +103,13 @@ public enum RefineOutputGuard {
     /// prompt to produce Russian). Either way the input has a clear dominant script
     /// and the output is predominantly a DIFFERENT tracked script → REJECT.
     ///
-    /// Passes (returns false) for: same-script cleanups (Latin→Latin, Cyrillic→
-    /// Cyrillic, …), short inputs, empty/whitespace, output whose dominant script
-    /// matches the input's, and — when `expectedOutputScript` is supplied by an
-    /// intended translate-to-X flow — output that lands in that expected script.
+    /// Also rejects a SAME-script translation (Ukrainian → Russian, German →
+    /// English) for plain cleanups, via `languageChanged(input:output:)`.
+    ///
+    /// Passes (returns false) for: same-language cleanups, short inputs,
+    /// empty/whitespace, and — when `expectedOutputScript` is supplied by an
+    /// intended translate-to-X flow — output that lands in that expected script
+    /// (intended translations skip the language-level check).
     ///
     /// - `expectedOutputScript`: the script an INTENDED translation targets (e.g. a
     ///   translate-to-Russian flow passes `.cyrillic`). When the output's dominant
@@ -119,10 +148,16 @@ public enum RefineOutputGuard {
         let outputCounts = scriptCounts(outputLetters)
         let outputTotal = Double(outputLetters.count)
 
-        // If enough of the INPUT's script survives in the output, this is a
-        // same-language cleanup → ACCEPT. (Covers Russian→Russian, Latin→Latin.)
+        // If enough of the INPUT's script survives in the output, the script check
+        // passes. A same-script translation (Ukrainian → Russian, German →
+        // English) still slips through that, so plain cleanups also get a
+        // language-level check. Intended translations (expectedOutputScript set)
+        // are judged by script only — their target language isn't known here.
         let keptShare = Double(outputCounts[inputScript, default: 0]) / outputTotal
-        guard keptShare < minOutputScriptShareToPass else { return false }
+        guard keptShare < minOutputScriptShareToPass else {
+            guard expectedOutputScript == nil else { return false }
+            return languageChanged(input: input, output: output)
+        }
 
         // The input's script all but vanished. Identify what the output became.
         guard let (outputScript, outputScriptCount) = dominantTrackedScript(outputCounts) else {
@@ -228,6 +263,74 @@ public enum RefineOutputGuard {
         if translateToEnglish { return .latin }
         return nil
     }
+
+    // MARK: - Language analysis (same-script translations)
+
+    /// `true` when the output is confidently a DIFFERENT language than the input,
+    /// using the on-device NLLanguageRecognizer. Returns false (pass) when either
+    /// side is too short, the recognizer isn't confident, or NaturalLanguage is
+    /// unavailable — the same conservative bias as the script check.
+    public static func languageChanged(input: String, output: String) -> Bool {
+        guard letters(of: input).count >= minLettersForLanguageCheck,
+              letters(of: output).count >= minLettersForLanguageCheck else { return false }
+        #if canImport(NaturalLanguage)
+        return languageChanged(
+            inputHypotheses: languageHypotheses(input),
+            outputHypotheses: languageHypotheses(output)
+        )
+        #else
+        return false
+        #endif
+    }
+
+    /// The pure decision behind `languageChanged(input:output:)`, over language
+    /// probability maps (BCP-47 codes → probability, as NLLanguageRecognizer's
+    /// `languageHypotheses` returns). Split out so the thresholds are unit-tested
+    /// without depending on the recognizer's model.
+    public static func languageChanged(
+        inputHypotheses: [String: Double],
+        outputHypotheses: [String: Double]
+    ) -> Bool {
+        let input = mergedByFamily(inputHypotheses)
+        let output = mergedByFamily(outputHypotheses)
+        guard let (inLang, inP) = input.max(by: { $0.value < $1.value }),
+              inP >= minLanguageConfidence,
+              let (outLang, outP) = output.max(by: { $0.value < $1.value }),
+              outP >= minLanguageConfidence,
+              outLang != inLang else { return false }
+        return output[inLang, default: 0] <= maxInputLanguageShareInOutput
+    }
+
+    /// Languages the recognizer routinely confuses with each other on short text.
+    /// A model is very unlikely to "translate" between these, so treating each
+    /// group as one language removes false rejects without hiding real drift.
+    /// Deliberately NOT grouped: uk/ru/be — that swap is exactly the bug.
+    private static let languageFamilies: [String: String] = [
+        "nb": "no", "nn": "no", "no": "no", "da": "no",
+        "hr": "sh", "bs": "sh", "sr": "sh",
+        "ms": "ms", "id": "ms",
+        "zh-Hans": "zh", "zh-Hant": "zh",
+    ]
+
+    private static func mergedByFamily(_ hypotheses: [String: Double]) -> [String: Double] {
+        var merged: [String: Double] = [:]
+        for (code, p) in hypotheses {
+            merged[languageFamilies[code] ?? code, default: 0] += p
+        }
+        return merged
+    }
+
+    #if canImport(NaturalLanguage)
+    private static func languageHypotheses(_ text: String) -> [String: Double] {
+        let recognizer = NLLanguageRecognizer()
+        recognizer.processString(text)
+        var result: [String: Double] = [:]
+        for (language, p) in recognizer.languageHypotheses(withMaximum: 5) {
+            result[language.rawValue] = p
+        }
+        return result
+    }
+    #endif
 
     // MARK: - Script analysis
 
