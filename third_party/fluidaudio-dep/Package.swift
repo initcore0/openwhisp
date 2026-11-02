@@ -14,9 +14,9 @@ let package = Package(
     ],
     dependencies: [
         // Pinned exact: FluidAudio is pre-1.0 and its streaming API surface has
-        // churned across minors (0.14 → 0.15). Bump deliberately, re-testing the
+        // churned across minors (0.14 → 0.15 → 0.18). Bump deliberately, re-testing the
         // StreamingAsrManager surface each time.
-        .package(url: "https://github.com/FluidInference/FluidAudio.git", exact: "0.15.5")
+        .package(url: "https://github.com/FluidInference/FluidAudio.git", exact: "0.18.2")
     ],
     targets: [
         .target(

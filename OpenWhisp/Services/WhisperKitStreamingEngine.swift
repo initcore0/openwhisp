@@ -31,8 +31,8 @@ final class WhisperKitStreamingEngine: NSObject, StreamingTranscriptionEngine {
 
     /// Pinned input-device UID for the next session ("" = system default). Resolved
     /// to a CoreAudio device in `runStart` and passed straight into WhisperKit's
-    /// `AudioStreamTranscriber(inputDeviceID:)` (our fork backports upstream #503's
-    /// passthrough), so capture targets the device directly — no system-default swap.
+    /// `AudioStreamTranscriber(inputDeviceID:)` (upstream #503's
+    /// passthrough, WhisperKit v1.1.1+), so capture targets the device directly — no system-default swap.
     private var selectedDeviceID = ""
 
     func selectDevice(_ deviceID: String) {
@@ -160,8 +160,8 @@ final class WhisperKitStreamingEngine: NSObject, StreamingTranscriptionEngine {
     private func runStart(task: WhisperKitTaskMapper.Resolved, prompt: String, callbacks: SessionCallbacks) async {
         do {
             // Resolve the selected input device. It's passed straight into
-            // AudioStreamTranscriber(inputDeviceID:) (our WhisperKit fork backports
-            // upstream #503), which forwards it to startRecordingLive — WhisperKit
+            // AudioStreamTranscriber(inputDeviceID:) (upstream #503, WhisperKit
+            // v1.1.1+), which forwards it to startRecordingLive — WhisperKit
             // captures the chosen device directly, no system-default swap needed.
             let inputDeviceID: AudioDeviceID?
             do {

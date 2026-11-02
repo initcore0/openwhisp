@@ -15,21 +15,17 @@ let package = Package(
         .library(name: "WhisperKitDep", type: .static, targets: ["WhisperKitDep"])
     ],
     dependencies: [
-        // Pinned to OUR fork of WhisperKit (argmaxinc renamed the repo to
-        // `argmax-oss-swift`), at the v1.0.0 release + a single-file backport of
-        // upstream PR #503 (inputDeviceID passthrough on AudioStreamTranscriber) so
-        // streaming/live capture can target a selected input device. We fork rather
-        // than pin the contributor's branch because that branch also carries ~60
-        // files of divergent macOS-26 CoreML/ANE churn; our branch is v1.0.0 + ONLY
-        // that patch. Pinned by exact commit (immutable) — bump to an upstream
-        // release once #503 lands there, then drop the fork. macOS 26 model loading
-        // is still handled app-side via `modelFolder` + a GPU audio encoder (see
+        // Upstream WhisperKit (argmaxinc renamed the repo to `argmax-oss-swift`).
+        // v1.1.1 ships upstream PR #503 (inputDeviceID passthrough on
+        // AudioStreamTranscriber), which is what our former fork
+        // (initcore0/argmax-oss-swift, v1.0.0 + that one patch) backported — so the
+        // fork is retired. Pinned exact: bump deliberately and re-run
+        // scripts/e2e-whisperkit.sh. macOS 26 model loading is still handled
+        // app-side via `modelFolder` + a GPU audio encoder (see
         // docs/WHISPERKIT_PILOT.md).
-        //
-        // Fork branch: openwhisp/v1.0.0-input-device (initcore0/argmax-oss-swift).
         .package(
-            url: "https://github.com/initcore0/argmax-oss-swift.git",
-            revision: "7e5f648249fde3eeabab02250529f63f16476e91"
+            url: "https://github.com/argmaxinc/argmax-oss-swift.git",
+            exact: "1.1.1"
         )
     ],
     targets: [

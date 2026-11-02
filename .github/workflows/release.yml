@@ -22,23 +22,31 @@ concurrency:
 
 jobs:
   release:
-    runs-on: macos-14
+    runs-on: macos-26
     steps:
       - name: Checkout (with whisper.cpp submodule)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           submodules: recursive
           fetch-depth: 0
 
-      # The default runner Xcode (15.4 / Swift 5.10) rejects the app's modern
-      # concurrency; select the newest stable Xcode (Swift 6).
+      # Select the newest stable Xcode on the image. The SpeechAnalyzer engine is
+      # gated on `#if compiler(>=6.2)`, so an older toolchain silently compiles
+      # it OUT of the shipped app (that's how 1.1.2 shipped without it, built on
+      # macos-14 / Swift 6.0.3). The guard below makes that a hard failure.
       - name: Select Xcode
-        uses: maxim-lobanov/setup-xcode@60606e260d2fc5762a71e64e74b2174e8ea3c8bd # v1.6.0
+        uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1.7.0
         with:
           xcode-version: latest-stable
 
-      - name: Show toolchain
-        run: swift --version
+      - name: Show toolchain (require Swift >= 6.2)
+        run: |
+          swift --version
+          ver=$(swift --version 2>&1 | sed -nE 's/.*Swift version ([0-9]+\.[0-9]+).*/\1/p' | head -1)
+          if [ -z "$ver" ] || [ "$(printf '%s\n6.2\n' "$ver" | sort -V | head -1)" != "6.2" ]; then
+            echo "::error::Swift $ver < 6.2 — SpeechAnalyzer would be compiled out of the release. Use a newer runner/Xcode."
+            exit 1
+          fi
 
       - name: Run unit tests
         run: swift test
@@ -91,7 +99,7 @@ jobs:
       # the cache. Saving explicitly right after the build guarantees it.
       - name: Restore llama.cpp build cache
         id: llama-cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v5
         with:
           path: third_party/llama.cpp/build
           key: llama-build-${{ runner.os }}-${{ steps.llama-key.outputs.sha }}-${{ hashFiles('scripts/build-llama.sh') }}
@@ -106,7 +114,7 @@ jobs:
       - name: Install ccache
         run: brew install ccache 2>/dev/null || true
       - name: Restore ccache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v5
         with:
           path: ~/Library/Caches/ccache
           key: ccache-${{ runner.os }}-${{ steps.llama-key.outputs.sha }}
@@ -118,7 +126,7 @@ jobs:
 
       - name: Save llama.cpp build cache
         if: steps.llama-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v5
         with:
           path: third_party/llama.cpp/build
           key: llama-build-${{ runner.os }}-${{ steps.llama-key.outputs.sha }}-${{ hashFiles('scripts/build-llama.sh') }}
@@ -126,7 +134,7 @@ jobs:
       - name: Save ccache
         # Save even on later-step failure would need if: always() on a job level;
         # here the step runs right after the build, so a signing flake can't lose it.
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v5
         with:
           path: ~/Library/Caches/ccache
           key: ccache-${{ runner.os }}-${{ steps.llama-key.outputs.sha }}-${{ github.run_id }}

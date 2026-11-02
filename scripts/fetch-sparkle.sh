@@ -19,8 +19,8 @@ set -euo pipefail
 # --- Pinned version + checksum ------------------------------------------------
 # Bump both together; get the new checksum from
 #   shasum -a 256 Sparkle-<version>.tar.xz
-SPARKLE_VERSION="2.9.4"
-SPARKLE_SHA256="ce89daf967db1e1893ed3ebd67575ed82d3902563e3191ca92aaec9164fbdef9"
+SPARKLE_VERSION="2.10.1"
+SPARKLE_SHA256="1a856d2a9edb8e628de88121d7be04cf0e2167f8641650b78fca00b14244cf27"
 
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 CACHE_DIR="$PROJECT_DIR/build/sparkle/$SPARKLE_VERSION"

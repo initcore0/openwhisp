@@ -19,7 +19,13 @@ swift build -c release >&2
 
 BIN="$(swift build -c release --show-bin-path)"
 LIB="$BIN/libFluidAudioDep.a"
-MODULES="$BIN/Modules"
+# Legacy SwiftPM build system puts .swiftmodules under $BIN/Modules; the Swift
+# Build backend (default from Xcode 27 / Swift 6.4) puts them directly in $BIN.
+if [ -d "$BIN/Modules" ]; then
+    MODULES="$BIN/Modules"
+else
+    MODULES="$BIN"
+fi
 
 if [ ! -f "$LIB" ]; then
     echo "ERROR: $LIB not found — FluidAudio build failed." >&2

@@ -134,6 +134,9 @@ run_parakeet() {
         "$HARNESS_DIR/parakeet-bench.swift" \
         "$PROJECT_DIR/OpenWhisp/Services/ParakeetBridge.swift" \
         "$PROJECT_DIR/OpenWhisp/Services/ParakeetCatalog.swift" \
+        "$PROJECT_DIR/OpenWhisp/Services/ParakeetModelIntegrity.swift" \
+        "$PROJECT_DIR/OpenWhisp/Models/FluidAudioModelsLocator.swift" \
+        "$PROJECT_DIR/OpenWhisp/Services/ParakeetDownloadState.swift" \
         -o "$out" 2>"$BUILD_DIR/parakeet-build.log"
     then
         warn "Parakeet harness compile failed (see $BUILD_DIR/parakeet-build.log)"

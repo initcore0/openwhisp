@@ -54,7 +54,7 @@ To rotate or re-provision on a new machine (the pinned tools live under
 
 ```bash
 # Generate a fresh keypair (prints the SUPublicEDKey to put in Info.plist):
-BIN=build/sparkle/2.9.4/extracted/bin
+BIN=build/sparkle/2.10.1/extracted/bin
 "$BIN/generate_keys" --account openwhisp
 
 # Export the private seed to set the GH secret + keep a local backup:
