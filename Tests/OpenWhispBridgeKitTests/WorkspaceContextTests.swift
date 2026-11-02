@@ -102,4 +102,27 @@ final class WorkspaceContextTests: XCTestCase {
         XCTAssertNil(MCPServer.dictateContext(from: nil))
         XCTAssertNil(MCPServer.dictateContext(from: .object([:])))
     }
+
+    // MARK: - git subprocess deadline
+
+    /// A git that stalls (hung network/FUSE mount) must not block the dictate
+    /// path — it runs before the MCP keep-alive progress starts.
+    func testStalledCommandIsAbandonedAtTheDeadline() {
+        let started = Date()
+        let out = WorkspaceContext.runCapturingStdout(
+            executable: "/bin/sleep", arguments: ["10"], timeout: 0.3)
+        XCTAssertNil(out)
+        XCTAssertLessThan(Date().timeIntervalSince(started), 3, "gave up at the deadline, not after 10s")
+    }
+
+    func testFastCommandOutputIsReturned() {
+        let out = WorkspaceContext.runCapturingStdout(
+            executable: "/bin/echo", arguments: ["main"], timeout: 5)
+        XCTAssertEqual(out.map { String(decoding: $0, as: UTF8.self) }, "main\n")
+    }
+
+    func testNonZeroExitIsNil() {
+        XCTAssertNil(WorkspaceContext.runCapturingStdout(
+            executable: "/usr/bin/false", arguments: [], timeout: 5))
+    }
 }

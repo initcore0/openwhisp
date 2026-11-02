@@ -84,6 +84,11 @@ Verified issues NOT fixed here, grouped by area. Each entry keeps the
 verifier-confirmed failure scenario and the suggested fix so it can be filed
 as its own ticket.
 
+**Status 2026-11-01:** the four agent-facing hangs under "Bridge / MCP / CLI"
+marked **[FIXED]** below are resolved (bridge client deadlines, MCP
+`notifications/cancelled`, server connection cap + read timeouts, git
+deadline), each with a `swift test` regression test that fails without the fix.
+
 ### AppState / session lifecycle
 
 #### Session not pinned to its engine: mid-session engine switch stops the wrong engine and can leave the Apple Speech mic hot forever
@@ -160,12 +165,14 @@ hide()'s fade-out completion fully tears the overlay down (orderOut, detach the 
 
 ### Bridge / MCP / CLI
 
-#### UNIX bridge server: unbounded thread-per-connection with no read/write timeouts, and stop() never severs accepted connections
+#### [FIXED] UNIX bridge server: unbounded thread-per-connection with no read/write timeouts, and stop() never severs accepted connections
 `OpenWhisp/Services/AgentBridgeServer.swift:186` — medium/leak, fix risk moderate
 
 `acceptLoop` spawns a dedicated Thread per accepted connection with no cap (the LAN twin caps at 8), the connection loop's `read(fd,...)` has no SO_RCVTIMEO/idle timeout, and `writeJSON`'s blocking `write` loop has no SO_SNDTIMEO. A client that connects and then hangs (an MCP host stopped in a debugger, a wedged agent harness holding the socket open) pins a full OS thread + fd indefinitely; N such connections pin N threads with no bound. `stop()` closes only `listenFD` — accepted connections aren't tracked or closed — so a connection thread parked in `read()` survives the user disabling the bridge in Settings (the `while isRunning` check is only re-evaluated after the blocking read returns). Bounded by the same-user + code-signature gate (any same-user binary once 'Allow unsigned clients' is on), so this is robustness rather than remote attack surface, but it is exactly the …
 
 *Suggested fix:* Set SO_RCVTIMEO/SO_SNDTIMEO on accepted fds (e.g. a few minutes idle, a few seconds write) and re-check `isRunning` on EAGAIN; track accepted fds under stateLock so stop() can close them; optionally cap concurrent connections like the LAN server does.
+
+*Fixed (2026-11-01):* accepted sockets get SO_RCVTIMEO (5 s tick) + SO_SNDTIMEO (10 s) via `BridgeConnectionReader` (core, `BridgeConnectionPolicy.swift`); a connection with no traffic between requests for 5 min is closed (time spent running a request doesn't count), and a thread waiting in read() notices `stop()` within one tick. Concurrent connections are capped at 32 (`BridgeConnectionLimiter`); over the cap the peer gets a `busy` error frame instead of an EOF. A torn write shuts the socket down. Accepted fds are still not tracked for an immediate close on `stop()` — the tick bounds it instead. Tests: `BridgeConnectionPolicyTests` (real socket pair).
 
 #### One LAN connection's consent prompt (or any main-thread hop) blocks the single transport queue — listener, all other connections, handshake timeouts, and stop() teardown stall for up to 60s
 `OpenWhisp/Services/LANBridgeServer.swift:531` — medium/perf, fix risk moderate
@@ -174,19 +181,23 @@ Every Network.framework callback — the listener's newConnectionHandler AND eve
 
 *Suggested fix:* Give each LANConnection its own serial queue (listener on its own), so one connection's blocking hop can't stall accepts, other peers, or teardown. Alternatively make execute async (dispatch the host call and write the response from its completion) instead of semaphore-parking the shared queue.
 
-#### BridgeClient has no read/connect timeout — 'openwhisp status' liveness probe and MCP tool calls hang forever on a wedged app
+#### [FIXED] BridgeClient has no read/connect timeout — 'openwhisp status' liveness probe and MCP tool calls hang forever on a wedged app
 `Sources/OpenWhispBridgeKit/BridgeClient.swift:137` — medium/bug, fix risk moderate
 
 BridgeClient sets F_SETNOSIGPIPE but never SO_RCVTIMEO/SO_SNDTIMEO, and readResponseLine loops on a fully blocking read(2) with no deadline. On the app side, EVERY verb — including `status` — synchronously hops to the main thread before answering (AgentBridgeServer.onMain / blockOnHost use DispatchQueue.main.async + semaphore, lines 377-391 and 487-496). If the app's main thread is busy (model load, modal dialog, beachball) the response never comes and the client blocks in read() indefinitely. Two execution contexts: the CLI/adapter thread parked in read(fd,...) forever, and the app's connection thread parked in sem.wait() for a main thread that never services the async block. Consequences: (1) `openwhisp status`, documented in usage as the liveness probe (main.swift:527), hangs precisely when the app is wedged — the one case a liveness probe must detect — breaking scripted probes like …
 
 *Suggested fix:* Set SO_RCVTIMEO on the socket per call: a short deadline (a few seconds) for status/hello/history, and for blocking verbs (dictate/refine/transcribe.file) a deadline derived from the request's own timeout plus slack (e.g. resolvedTimeoutSeconds + 30s). Map the timeout to ClientError.unreachable (or a dedicated .timedOut) so the CLI exits with code 2/6 instead of hanging. Optionally stop the ProgressEmitter once elapsed exceeds total + slack.
 
-#### MCP server is single-threaded: notifications/cancelled is never handled and cannot even be read during a blocking dictate — mic stays open up to 300s after the agent cancels
+*Fixed (2026-11-01):* `BridgeClient` now bounds connect (non-blocking + poll, 3 s), each write (SO_SNDTIMEO, 10 s) and each response read (poll against a per-call deadline from `BridgeTimeouts`: 15 s for hello/status/dictate.stop/cancel; consent window 60 s + the verb's budget + 30 s slack for guarded verbs, with dictate derived from its own clamped `timeoutSeconds`). Expiry throws the new `ClientError.timedOut(method:seconds:)`; the CLI exits 2 with "didn't answer … within Ns", MCP returns a tool error. `PersistentBridge` drops the desynced connection on a timeout but does NOT retry (the request may still be running). Tests: `BridgeClientTimeoutTests`, `PersistentBridgeTests.testTimeoutIsNotRetriedButDropsTheConnection`.
+
+#### [FIXED] MCP server is single-threaded: notifications/cancelled is never handled and cannot even be read during a blocking dictate — mic stays open up to 300s after the agent cancels
 `Sources/OpenWhispBridgeKit/MCPServer.swift:57` — medium/bug, fix risk moderate
 
 run() reads one stdin line at a time and handle()/dispatch()/callTool() execute synchronously on that same thread, so while a `tools/call` for openwhisp_dictate blocks in bridge.call (up to BridgeWire.DictateParams.maxTimeoutSeconds = 300s, BridgeWire.swift:562), no further stdin frame is read. MCP clients cancel an in-flight tool call by sending `notifications/cancelled`; this server (a) cannot read it while blocked, and (b) has no handler for it anyway — it falls through controlResponse's `default:` and, being a notification (id == nil), is silently dropped (MCPServer.swift:137). Concrete failure: the user presses Esc in Claude Code while the OpenWhisp voice overlay is up → the client sends notifications/cancelled and abandons the request → the overlay keeps listening with the mic open until the dictate timeout (up to 5 minutes), and the eventual transcript is written against a …
 
 *Suggested fix:* Read stdin on a dedicated thread and dispatch tools/call handling off it (responses are already serialized by writeLock), or minimally: while a dictate is in flight, keep draining stdin and on `notifications/cancelled` for the in-flight request id open a second short-lived BridgeClient and issue `dictate.cancel`, then suppress the response frame for the cancelled id per the MCP cancellation contract.
+
+*Fixed (2026-11-01):* `tools/call` now runs on a serial worker queue so the stdin loop keeps reading (and answers `ping`) while a dictate blocks. `notifications/cancelled` goes through `MCPRequestTracker`: a running dictate is stopped with `dictate.cancel` over a separate short-lived bridge connection (retried every 1 s while the dictate is still in flight, covering the consent-prompt window where no session exists yet); a queued call is skipped; a cancelled request gets no response, per the MCP contract. Stdin EOF (client gone) cancels everything the same way. Edge left open: the app's `dictate.cancel` ends whichever agent session is active, so while this adapter's cancelled dictate is still waiting (e.g. on the consent prompt) a retry could end another client's agent session; and if the user grants consent after the cancel, the session opens briefly before the next retry closes it. Tests: `MCPServerCancellationTests`.
 
 #### openwhisp_refine has no keep-alive progress emitter — first-call consent prompt (up to 60s) or a slow local-LLM refine trips the client's ~60s tool timeout
 `Sources/OpenWhispBridgeKit/MCPServer.swift:200` — medium/bug, fix risk safe
@@ -216,12 +227,14 @@ PersistentBridge.call treats `.protocolError` as a transport failure and silentl
 
 *Suggested fix:* Restrict the automatic retry to methods that are idempotent (status, history.list, dictate.stop, dictate.cancel) or to failures that provably happened before the request was delivered (e.g. connect/handshake/write failures — the initial `session()` connect and `writeAll` — never a failure raised while reading the response). For dictate/refine/transcribe.file, surface the protocol error to the agent instead of re-executing; the tool-result error text already tells the agent what happened.
 
-#### git rev-parse subprocess runs per dictate call with no timeout, before the keep-alive emitter starts
+#### [FIXED] git rev-parse subprocess runs per dictate call with no timeout, before the keep-alive emitter starts
 `Sources/OpenWhispBridgeKit/WorkspaceContext.swift:94` — low/perf, fix risk safe
 
 Every openwhisp_dictate tools/call (and every CLI `openwhisp dictate`) calls WorkspaceContext.resolved, which spawns `/usr/bin/env git -C <cwd> rev-parse --abbrev-ref HEAD` and blocks on readDataToEndOfFile() + waitUntilExit() with no deadline. In MCPServer.callTool the context is resolved at line 165, BEFORE the ProgressEmitter is created/started at lines 178-186 — so if git stalls (cwd on a hung network/FUSE mount, or a repo with a slow alias/wrapper resolution), the tool call blocks with zero frames on stdout and the client's ~60s timeout fires without ever reaching the bridge. In the normal case this is one fork/exec of git per dictation — small but repeated cost in the dictation hot path that could be cached per (cwd, HEAD-mtime) for the lifetime of the adapter process.
 
 *Suggested fix:* Start the ProgressEmitter before resolving workspace context, and/or run the git probe with a short deadline (e.g. terminate the Process after ~1-2s and return nil) and cache the branch per cwd for the adapter's lifetime.
+
+*Fixed (2026-11-01):* `WorkspaceContext.gitBranch` waits at most 2 s (`gitTimeoutSeconds`) for git, then terminates it and sends no branch. Not cached per (cwd, HEAD) — still one fork/exec per dictate. Tests: `WorkspaceContextTests.testStalledCommandIsAbandonedAtTheDeadline`.
 
 ### Meetings & capture
 

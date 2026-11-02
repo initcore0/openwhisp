@@ -70,35 +70,62 @@ public enum WorkspaceContext {
         return resolved.isEmpty ? nil : resolved
     }
 
+    /// How long `git rev-parse` may take before the branch is skipped. The MCP
+    /// dictate path resolves context BEFORE its keep-alive progress starts, so a
+    /// git that stalls (cwd on a hung network/FUSE mount, a slow wrapper) must not
+    /// eat the agent's ~60s tool-call budget.
+    public static let gitTimeoutSeconds: TimeInterval = 2
+
     /// Best-effort current git branch for `directory` via `git rev-parse
     /// --abbrev-ref HEAD`. Returns nil on any failure (not a repo, git missing,
-    /// detached HEAD → "HEAD"). Never throws; a missing branch just means no
-    /// branch-derived bias terms.
-    public static func gitBranch(inDirectory directory: String) -> String? {
+    /// detached HEAD → "HEAD", or git not finishing within `timeout`). Never
+    /// throws; a missing branch just means no branch-derived bias terms.
+    public static func gitBranch(
+        inDirectory directory: String, timeout: TimeInterval = gitTimeoutSeconds
+    ) -> String? {
+        guard let out = runCapturingStdout(
+            executable: "/usr/bin/env",
+            arguments: ["git", "-C", directory, "rev-parse", "--abbrev-ref", "HEAD"],
+            timeout: timeout
+        ) else { return nil }
+        let branch = String(decoding: out, as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        // A detached HEAD reports the literal "HEAD" — no branch name to bias with.
+        guard !branch.isEmpty, branch != "HEAD" else { return nil }
+        return branch
+    }
+
+    /// Run a short-lived command and return its stdout, or nil when it can't
+    /// start, exits non-zero, or doesn't finish within `timeout` (it is then
+    /// terminated and NOT waited on further).
+    static func runCapturingStdout(executable: String, arguments: [String], timeout: TimeInterval) -> Data? {
         // `Process` doesn't exist on iOS — and neither does the MCP stdio server
         // this derivation serves. BridgeKit ships to the iOS companion as a
         // library (CLAUDE.md contract), so the subprocess path is macOS-only;
         // iOS callers just get "no branch".
         #if os(macOS)
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        process.arguments = ["git", "-C", directory, "rev-parse", "--abbrev-ref", "HEAD"]
+        process.executableURL = URL(fileURLWithPath: executable)
+        process.arguments = arguments
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = FileHandle.nullDevice
+        let exited = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in exited.signal() }
         do {
             try process.run()
         } catch {
             return nil
         }
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
+        guard exited.wait(timeout: .now() + timeout) == .success else {
+            process.terminate()
+            return nil
+        }
         guard process.terminationStatus == 0 else { return nil }
-        let branch = String(decoding: data, as: UTF8.self)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        // A detached HEAD reports the literal "HEAD" — no branch name to bias with.
-        guard !branch.isEmpty, branch != "HEAD" else { return nil }
-        return branch
+        // The process has exited, so its end of the pipe is closed and this read
+        // can't block (the output is a single short line, well under the pipe
+        // buffer, so waiting for exit before reading can't deadlock either).
+        return pipe.fileHandleForReading.readDataToEndOfFile()
         #else
         return nil
         #endif

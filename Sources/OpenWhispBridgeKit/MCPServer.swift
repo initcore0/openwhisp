@@ -20,7 +20,13 @@ public final class MCPServer {
     private let mcpProtocolVersionFallback = "2025-06-18"
     /// The MCP client's name, captured at `initialize` and forwarded to the bridge
     /// handshake so consent records show the real agent (e.g. "claude-code").
-    private var clientName = "mcp-client"
+    /// Written on the stdin thread, read on the worker and cancel threads.
+    private var clientName: String {
+        get { stateLock.lock(); defer { stateLock.unlock() }; return _clientName }
+        set { stateLock.lock(); defer { stateLock.unlock() }; _clientName = newValue }
+    }
+    private var _clientName = "mcp-client"
+    private let stateLock = NSLock()
 
     /// One cached bridge connection for this adapter process, built lazily on the
     /// first `tools/call` (after `initialize` has set ``clientName``). Reconnects
@@ -46,10 +52,40 @@ public final class MCPServer {
         return 10
     }()
 
-    /// - Parameter bridgeFactory: builds the per-process bridge once `clientName`
-    ///   is known. Defaults to a real ``PersistentBridge``; tests inject a fake.
-    public init(bridgeFactory: @escaping (String) -> PersistentBridge = { PersistentBridge(clientName: $0) }) {
+    /// Tool calls run here, one at a time, so the stdin loop stays free to read
+    /// `notifications/cancelled` (and answer `ping`) while a dictate blocks.
+    /// Serial, which also keeps the single cached ``bridge`` single-threaded.
+    private let workQueue = DispatchQueue(label: "com.openwhisp.mcp.tools")
+    /// Runs `dictate.cancel` (and its retries) off the stdin thread.
+    private let cancelQueue = DispatchQueue(label: "com.openwhisp.mcp.cancel")
+    let requests = MCPRequestTracker()
+
+    /// Stops an in-flight agent dictation over a SEPARATE short-lived bridge
+    /// connection (the cached one is blocked waiting on the dictate). Returns
+    /// whether a session was actually cancelled.
+    public typealias DictationCanceller = (_ clientName: String) throws -> Bool
+    private let cancelDictation: DictationCanceller
+    /// How long to wait between `dictate.cancel` attempts while the cancelled
+    /// dictate is still in flight (e.g. still in the consent prompt, where there
+    /// is no session to cancel yet).
+    private let cancelRetryInterval: TimeInterval
+    private let output: (Data) -> Void
+
+    /// - Parameters:
+    ///   - bridgeFactory: builds the per-process bridge once `clientName` is
+    ///     known. Defaults to a real ``PersistentBridge``; tests inject a fake.
+    ///   - cancelDictation: issues `dictate.cancel`; tests inject a fake.
+    ///   - output: where protocol frames go (stdout by default).
+    public init(
+        bridgeFactory: @escaping (String) -> PersistentBridge = { PersistentBridge(clientName: $0) },
+        cancelDictation: @escaping DictationCanceller = MCPServer.cancelDictationOverBridge,
+        cancelRetryInterval: TimeInterval = 1.0,
+        output: @escaping (Data) -> Void = { FileHandle.standardOutput.write($0) }
+    ) {
         self.bridgeFactory = bridgeFactory
+        self.cancelDictation = cancelDictation
+        self.cancelRetryInterval = cancelRetryInterval
+        self.output = output
     }
 
     public func run() {
@@ -59,13 +95,42 @@ public final class MCPServer {
             handle(line)
         }
         logStderr("openwhisp mcp: stdin closed, exiting")
+        stdinClosed()
+    }
+
+    /// The client is gone: treat everything in flight as cancelled (so a running
+    /// dictate doesn't keep the mic open until its timeout), then let the worker
+    /// drain before the process exits.
+    func stdinClosed() {
+        if requests.cancelAll(), let id = requests.runningDictation() {
+            cancelQueue.async { self.cancelRunningDictation(id) }
+        }
+        waitForIdle()
+    }
+
+    /// Block until every queued tool call has finished (tests + shutdown).
+    func waitForIdle() {
+        workQueue.sync {}
+        cancelQueue.sync {}
+    }
+
+    /// The default ``DictationCanceller``: connect, handshake as `clientName`,
+    /// call `dictate.cancel`. Unguarded on the app side, and it only ever ends an
+    /// AGENT session — never the user's own dictation.
+    public static func cancelDictationOverBridge(clientName: String) throws -> Bool {
+        let client = try BridgeClient()
+        try client.handshake(clientName: clientName)
+        let r = try client.call(method: BridgeWire.Method.dictateCancel.rawValue,
+                                params: BridgeWire.NoParams(),
+                                resultType: BridgeWire.DictateCancelResult.self)
+        return r.cancelled
     }
 
     // MARK: - Dispatch
 
     /// Decode one stdio line into a typed ``MCPWire.IncomingMessage`` and route it.
     /// Kept separate from `run()` so it's unit-testable without stdio.
-    private func handle(_ line: String) {
+    func handle(_ line: String) {
         guard let data = line.data(using: .utf8),
               let message = try? JSONDecoder().decode(MCPWire.IncomingMessage.self, from: data) else {
             // Unparseable frame — MCP clients shouldn't send these; ignore.
@@ -76,7 +141,8 @@ public final class MCPServer {
     }
 
     /// Route a decoded message. Writes the response frame (if any) via `write`.
-    /// A notification (`id == nil`) never produces a response.
+    /// A notification (`id == nil`) never produces a response. Never blocks on
+    /// the bridge: `tools/call` is queued onto ``workQueue``.
     func dispatch(_ message: MCPWire.IncomingMessage) {
         // `initialize` carries a side effect (capture the client name for the
         // bridge handshake) — apply it before building the reply.
@@ -94,8 +160,28 @@ public final class MCPServer {
             // MCP progress: the client MAY pass params._meta.progressToken; if so,
             // we stream notifications/progress against it while the call runs.
             let progressToken = message.params?["_meta"]?["progressToken"]
-            let result = callTool(name: name, arguments: arguments, progressToken: progressToken)
-            respond(id: message.id, result: result.asJSON)
+            let id = message.id
+            requests.enqueue(id, isDictate: name == "openwhisp_dictate")
+            workQueue.async {
+                // Cancelled while still queued: never run it, never answer it.
+                guard self.requests.start(id) else { self.requests.finish(id); return }
+                let result = self.callTool(name: name, arguments: arguments, progressToken: progressToken)
+                // A cancelled request gets no response (MCP cancellation contract).
+                if self.requests.finish(id) { self.respond(id: id, result: result.asJSON) }
+            }
+            return
+        }
+
+        // The client abandoned an earlier request (e.g. the user pressed Esc in
+        // the agent). For a running dictate, close the mic now instead of letting
+        // the overlay listen until the dictate timeout (up to 300s).
+        if message.method == "notifications/cancelled" {
+            guard let requestID = Self.rpcID(from: message.params?["requestId"]) else { return }
+            switch requests.cancel(requestID) {
+            case .ignore, .suppressOnly: break
+            case .cancelDictation:
+                cancelQueue.async { self.cancelRunningDictation(requestID) }
+            }
             return
         }
 
@@ -127,7 +213,7 @@ public final class MCPServer {
                 "capabilities": .object(["tools": .object([:])]),
                 "instructions": .string(Self.serverInstructions),
             ]))
-        case "notifications/initialized", "initialized":
+        case "notifications/initialized", "initialized", "notifications/cancelled":
             return .none // no response to a notification
         case "ping":
             return .result(id: id, value: .object([:]))
@@ -138,6 +224,36 @@ public final class MCPServer {
             return .error(id: id, code: BridgeWire.ErrorObject.methodNotFound,
                           message: "method not found: \(message.method)")
         }
+    }
+
+    // MARK: - Cancellation
+
+    /// Issue `dictate.cancel` until it lands or the dictate returns. One attempt
+    /// is usually enough; the retry covers a dictate that has no session yet
+    /// (still waiting on the consent prompt, or not yet received by the app) —
+    /// otherwise the session would open AFTER the cancel and listen until its
+    /// timeout for an agent that's gone.
+    func cancelRunningDictation(_ id: BridgeWire.RPCID) {
+        let name = clientName
+        while requests.isRunningAndCancelled(id) {
+            do {
+                if try cancelDictation(name) { return }
+            } catch {
+                // The app is unreachable/wedged: the dictate call will fail on
+                // its own (it has a response deadline). Nothing more to do here.
+                logStderr("dictate.cancel failed: \(error)")
+                return
+            }
+            Thread.sleep(forTimeInterval: cancelRetryInterval)
+        }
+    }
+
+    /// A `notifications/cancelled` `requestId` (string or integer) as an RPC id.
+    static func rpcID(from value: MCPWire.JSONValue?) -> BridgeWire.RPCID? {
+        guard let value else { return nil }
+        if let s = value.stringValue { return .string(s) }
+        if let i = value.intValue { return .number(i) }
+        return nil
     }
 
     // MARK: - Tool execution (forward to the bridge)
@@ -254,10 +370,11 @@ public final class MCPServer {
     private func write<T: Encodable>(_ frame: T) {
         guard var data = try? JSONEncoder().encode(frame) else { return }
         data.append(0x0A)
-        // Serialize: a background progress thread and the main loop both write here.
+        // Serialize: the progress thread, the tool worker and the stdin loop all
+        // write here.
         writeLock.lock()
         defer { writeLock.unlock() }
-        FileHandle.standardOutput.write(data) // unbuffered — the client sees it immediately
+        output(data) // unbuffered — the client sees it immediately
     }
 
     /// Emit one `notifications/progress` frame for `token`. `progress` is a
@@ -289,6 +406,8 @@ public final class MCPServer {
             return message
         case .protocolError(let m):
             return "bridge protocol error: \(m)"
+        case .timedOut(let method, let seconds):
+            return "OpenWhisp didn't answer '\(method)' within \(Int(seconds))s — the app may be frozen or busy. Ask the user to check that OpenWhisp is responsive (or restart it)."
         }
     }
 

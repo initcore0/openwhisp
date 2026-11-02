@@ -74,6 +74,28 @@ final class PersistentBridgeTests: XCTestCase {
         XCTAssertEqual(s.calls.count, 2)
     }
 
+    /// A timeout means the app may still be running the request (a re-sent
+    /// dictate would reopen the mic), so it must NOT be retried — but the socket
+    /// is desynced, so the next call must use a fresh connection.
+    func testTimeoutIsNotRetriedButDropsTheConnection() throws {
+        let wedged = FakeBridgeSession(id: 1, outcomes: [.fail(.timedOut(method: "dictate", seconds: 90))])
+        let fresh = FakeBridgeSession(id: 2, outcomes: [.ok]) { _ in self.statusResult() }
+        let (bridge, opened) = makeBridge([wedged, fresh])
+
+        XCTAssertThrowsError(try bridge.call(method: "dictate", params: BridgeWire.NoParams(),
+                                             resultType: BridgeWire.StatusResult.self)) { error in
+            guard case .timedOut? = error as? BridgeClient.ClientError else {
+                return XCTFail("expected .timedOut, got \(error)")
+            }
+        }
+        XCTAssertEqual(wedged.calls, ["dictate"], "no automatic re-send")
+        XCTAssertEqual(opened(), 1)
+
+        _ = try bridge.call(method: "status", params: BridgeWire.NoParams(), resultType: BridgeWire.StatusResult.self)
+        XCTAssertEqual(opened(), 2, "the timed-out connection was dropped")
+        XCTAssertEqual(fresh.calls, ["status"])
+    }
+
     func testRetriesOnceOnUnreachableWithFreshConnection() throws {
         let dead = FakeBridgeSession(id: 1, outcomes: [.fail(.unreachable)])
         let fresh = FakeBridgeSession(id: 2, outcomes: [.ok]) { _ in self.statusResult() }
