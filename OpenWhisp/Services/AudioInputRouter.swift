@@ -15,8 +15,8 @@ import CoreAudio
 ///   only, so it swaps + restores the system default.
 /// - `AppleSpeechEngine`: sets the device on its own AVAudioEngine input node.
 /// - `WhisperKitStreamingEngine`: resolves the UID here and passes the concrete
-///   `AudioDeviceID` into `AudioStreamTranscriber(inputDeviceID:)` (our fork
-///   backports upstream #503) — no system-default mutation.
+///   `AudioDeviceID` into `AudioStreamTranscriber(inputDeviceID:)` (upstream
+///   #503, shipped in WhisperKit v1.1.1) — no system-default mutation.
 ///
 /// `AudioInputRoutingPolicy` (in OpenWhispCore) holds the pure decision logic;
 /// this holds the platform calls it can't.

@@ -139,6 +139,6 @@ Wispr Flow and Aqua are polished but cloud-based. Superwhisper and MacWhisper ar
 
 Mirror for regions where the main site is blocked: [initcore0.github.io/openwhisp-mirror](https://initcore0.github.io/openwhisp-mirror/)
 
-Built on [FluidAudio/Parakeet](https://github.com/FluidInference/FluidAudio), [WhisperKit](https://github.com/argmaxinc/WhisperKit), [whisper.cpp](https://github.com/ggerganov/whisper.cpp), and [llama.cpp](https://github.com/ggerganov/llama.cpp).
+Built on [FluidAudio/Parakeet](https://github.com/FluidInference/FluidAudio), [WhisperKit](https://github.com/argmaxinc/argmax-oss-swift), [whisper.cpp](https://github.com/ggml-org/whisper.cpp), and [llama.cpp](https://github.com/ggml-org/llama.cpp).
 
 **MIT** — see [LICENSE](LICENSE).

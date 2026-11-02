@@ -311,8 +311,8 @@ enum WhisperKitBridge {
     /// unconfirmed tail doesn't cause visible flapping.
     /// `inputDeviceID` (a CoreAudio `AudioDeviceID`) pins the input device the stream
     /// captures from; nil = system default input. Threaded straight into
-    /// `AudioStreamTranscriber` (our WhisperKit fork backports upstream #503's
-    /// `inputDeviceID` passthrough), which forwards it to `startRecordingLive` — so
+    /// `AudioStreamTranscriber` (upstream #503's
+    /// `inputDeviceID` passthrough, WhisperKit v1.1.1+), which forwards it to `startRecordingLive` — so
     /// device routing needs NO system-default swap.
     static func makeStreamHandle(
         kit: WhisperKit,
@@ -382,7 +382,7 @@ enum WhisperKitBridge {
             requiredSegmentsForConfirmation:
                 WhisperKitStreamingDecodePolicy.requiredSegmentsForConfirmation(translate: task.translate),
             useVAD: true,                 // skip silence — don't transcribe dead air
-            inputDeviceID: inputDeviceID, // nil = system default (fork backport of #503)
+            inputDeviceID: inputDeviceID, // nil = system default (upstream #503)
             stateChangeCallback: { _, new in
                 // Absolute-scale level for the silence VAD. `bufferEnergy` is
                 // RELATIVE to WhisperKit's rolling 2s silence floor — right for a
