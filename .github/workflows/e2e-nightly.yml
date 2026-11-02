@@ -19,16 +19,16 @@ permissions:
 jobs:
   whisperkit-fixtures:
     name: real WhisperKit over fixtures
-    runs-on: macos-14
+    runs-on: macos-26
     # Don't fail the workflow run if this flaky, network-dependent job fails.
     continue-on-error: true
     timeout-minutes: 40
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           submodules: recursive   # WhisperKit dep lives in a submodule
       - name: Select Xcode
-        uses: maxim-lobanov/setup-xcode@60606e260d2fc5762a71e64e74b2174e8ea3c8bd # v1.6.0
+        uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1.7.0
         with:
           xcode-version: latest-stable
       - name: Show Swift version
@@ -50,15 +50,15 @@ jobs:
     # (package.sh does ad-hoc --deep codesign only — build-dmg.sh handles
     # notarized release signing).
     name: full-fat app build + package
-    runs-on: macos-14
+    runs-on: macos-26
     continue-on-error: true
     timeout-minutes: 40
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           submodules: recursive   # whisper.cpp / llama.cpp + WhisperKit dep
       - name: Select Xcode
-        uses: maxim-lobanov/setup-xcode@60606e260d2fc5762a71e64e74b2174e8ea3c8bd # v1.6.0
+        uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1.7.0
         with:
           xcode-version: latest-stable
       - name: Show Swift version

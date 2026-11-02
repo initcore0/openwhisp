@@ -13,16 +13,16 @@ jobs:
     # heavier real-engine Tier-2 job lives in e2e-nightly.yml. See
     # docs/E2E_AUDIO_TESTING.md.
     name: swift test (core logic)
-    runs-on: macos-14
+    runs-on: macos-26
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Select Xcode
         # Third-party action pinned by commit SHA (v1.6.0) so a moved tag can't
         # run unreviewed code in CI. latest-stable (not a hard version) on
         # purpose: runner images rotate Xcode versions, and the manifest's
         # swift-tools-version 6.0 already enforces the real floor (Xcode >= 16)
         # by failing loudly if the image's stable Xcode is somehow too old.
-        uses: maxim-lobanov/setup-xcode@60606e260d2fc5762a71e64e74b2174e8ea3c8bd # v1.6.0
+        uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1.7.0
         with:
           xcode-version: latest-stable
       - name: Show Swift version
@@ -36,9 +36,9 @@ jobs:
     # signature that verifies. No secrets, no real signing. See
     # scripts/test-gen-appcast.sh.
     name: appcast generator self-test
-    runs-on: macos-14
+    runs-on: macos-26
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Run appcast generator self-test
         run: ./scripts/test-gen-appcast.sh
 
@@ -65,16 +65,16 @@ jobs:
     # The lean job also proves the pure plugin core still compiles with every
     # plugin surface absent, which is the property PLUGINS=0 actually promises.
     name: build mac app (lean, no plugins)
-    runs-on: macos-14
+    runs-on: macos-26
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Select Xcode
         # Third-party action pinned by commit SHA (v1.6.0) so a moved tag can't
         # run unreviewed code in CI. latest-stable (not a hard version) on
         # purpose: runner images rotate Xcode versions, and the manifest's
         # swift-tools-version 6.0 already enforces the real floor (Xcode >= 16).
-        uses: maxim-lobanov/setup-xcode@60606e260d2fc5762a71e64e74b2174e8ea3c8bd # v1.6.0
+        uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1.7.0
         with:
           xcode-version: latest-stable
       - name: Show Swift version
@@ -85,7 +85,7 @@ jobs:
         # version bump (which edits fetch-sparkle.sh -> not the key) still
         # re-verifies via the script's own checksum gate, and the cache is reused
         # across runs to avoid the network round-trip.
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: build/sparkle
           key: sparkle-${{ runner.os }}-${{ hashFiles('scripts/fetch-sparkle.sh') }}
@@ -108,18 +108,18 @@ jobs:
     # build-app does: the engines are irrelevant to whether the plugin layer
     # type-checks, and skipping them keeps the job to minutes instead of an hour.
     name: build mac app (with plugins)
-    runs-on: macos-14
+    runs-on: macos-26
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Select Xcode
         # Third-party action pinned by commit SHA (v1.6.0) so a moved tag can't
         # run unreviewed code in CI.
-        uses: maxim-lobanov/setup-xcode@60606e260d2fc5762a71e64e74b2174e8ea3c8bd # v1.6.0
+        uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1.7.0
         with:
           xcode-version: latest-stable
       - name: Cache Sparkle framework
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: build/sparkle
           key: sparkle-${{ runner.os }}-${{ hashFiles('scripts/fetch-sparkle.sh') }}
@@ -142,14 +142,14 @@ jobs:
     name: build OpenWhispCore + BridgeKit (iOS)
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Select Xcode
         # Third-party action pinned by commit SHA (v1.6.0) so a moved tag can't
         # run unreviewed code in CI. latest-stable (not a hard version) on
         # purpose: runner images rotate Xcode versions, and the manifest's
         # swift-tools-version 6.0 already enforces the real floor (Xcode >= 16)
         # by failing loudly if the image's stable Xcode is somehow too old.
-        uses: maxim-lobanov/setup-xcode@60606e260d2fc5762a71e64e74b2174e8ea3c8bd # v1.6.0
+        uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1.7.0
         with:
           xcode-version: latest-stable
       - name: Build OpenWhispCore for iOS
@@ -166,7 +166,7 @@ jobs:
     name: AppState LOC ratchet
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Check AppState LOC ratchet
         run: ./scripts/check-appstate-ratchet.sh
 
@@ -179,7 +179,7 @@ jobs:
     name: third_party pin hygiene
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           # Need submodules + their tags so `git describe --tags` can prove each
           # pin is tag-reachable, entirely offline (no clones at check time).

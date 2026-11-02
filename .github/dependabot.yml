@@ -1,0 +1,18 @@
+# Keeps the workflow actions current (they silently fell two majors behind and
+# onto the deprecated Node 20 runtime before this existed).
+#
+# Deliberately NOT covered:
+#   - gitsubmodule: Dependabot bumps submodules to the tip of master, but
+#     scripts/check-third-party-pins.sh requires a release TAG. Bump whisper.cpp /
+#     llama.cpp by hand (see .gitmodules).
+#   - swift (third_party/*-dep): FluidAudio is pre-1.0 with API churn and both
+#     deps are exact-pinned on purpose; bump deliberately and re-run the E2E tiers.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      actions:
+        patterns: ["*"]
