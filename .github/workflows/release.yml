@@ -25,7 +25,7 @@ jobs:
     runs-on: macos-26
     steps:
       - name: Checkout (with whisper.cpp submodule)
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           submodules: recursive
           fetch-depth: 0
@@ -99,7 +99,7 @@ jobs:
       # the cache. Saving explicitly right after the build guarantees it.
       - name: Restore llama.cpp build cache
         id: llama-cache
-        uses: actions/cache/restore@v5
+        uses: actions/cache/restore@v6
         with:
           path: third_party/llama.cpp/build
           key: llama-build-${{ runner.os }}-${{ steps.llama-key.outputs.sha }}-${{ hashFiles('scripts/build-llama.sh') }}
@@ -114,7 +114,7 @@ jobs:
       - name: Install ccache
         run: brew install ccache 2>/dev/null || true
       - name: Restore ccache
-        uses: actions/cache/restore@v5
+        uses: actions/cache/restore@v6
         with:
           path: ~/Library/Caches/ccache
           key: ccache-${{ runner.os }}-${{ steps.llama-key.outputs.sha }}
@@ -126,7 +126,7 @@ jobs:
 
       - name: Save llama.cpp build cache
         if: steps.llama-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v5
+        uses: actions/cache/save@v6
         with:
           path: third_party/llama.cpp/build
           key: llama-build-${{ runner.os }}-${{ steps.llama-key.outputs.sha }}-${{ hashFiles('scripts/build-llama.sh') }}
@@ -134,7 +134,7 @@ jobs:
       - name: Save ccache
         # Save even on later-step failure would need if: always() on a job level;
         # here the step runs right after the build, so a signing flake can't lose it.
-        uses: actions/cache/save@v5
+        uses: actions/cache/save@v6
         with:
           path: ~/Library/Caches/ccache
           key: ccache-${{ runner.os }}-${{ steps.llama-key.outputs.sha }}-${{ github.run_id }}
