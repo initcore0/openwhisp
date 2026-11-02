@@ -4,8 +4,8 @@
 # enforces this. To bump: check out a newer tag, re-run the matching build script,
 # then commit the moved submodule SHA.
 #
-#   whisper.cpp -> tag v1.9.1  (build-whisper.sh)
-#   llama.cpp   -> tag b9851   (build-llama.sh; upstream tags EVERY merge as bNNNN,
+#   whisper.cpp -> tag v1.9.5  (build-whisper.sh)
+#   llama.cpp   -> tag b12032  (build-llama.sh; upstream tags EVERY merge as bNNNN,
 #                               so this tag IS the pinned commit)
 [submodule "third_party/whisper.cpp"]
 	path = third_party/whisper.cpp
