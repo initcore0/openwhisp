@@ -24,7 +24,7 @@ jobs:
     continue-on-error: true
     timeout-minutes: 40
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           submodules: recursive   # WhisperKit dep lives in a submodule
       - name: Select Xcode
@@ -54,7 +54,7 @@ jobs:
     continue-on-error: true
     timeout-minutes: 40
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           submodules: recursive   # whisper.cpp / llama.cpp + WhisperKit dep
       - name: Select Xcode

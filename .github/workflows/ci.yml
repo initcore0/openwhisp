@@ -15,7 +15,7 @@ jobs:
     name: swift test (core logic)
     runs-on: macos-26
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Select Xcode
         # Third-party action pinned by commit SHA (v1.6.0) so a moved tag can't
         # run unreviewed code in CI. latest-stable (not a hard version) on
@@ -38,7 +38,7 @@ jobs:
     name: appcast generator self-test
     runs-on: macos-26
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Run appcast generator self-test
         run: ./scripts/test-gen-appcast.sh
 
@@ -68,7 +68,7 @@ jobs:
     runs-on: macos-26
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Select Xcode
         # Third-party action pinned by commit SHA (v1.6.0) so a moved tag can't
         # run unreviewed code in CI. latest-stable (not a hard version) on
@@ -85,7 +85,7 @@ jobs:
         # version bump (which edits fetch-sparkle.sh -> not the key) still
         # re-verifies via the script's own checksum gate, and the cache is reused
         # across runs to avoid the network round-trip.
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: build/sparkle
           key: sparkle-${{ runner.os }}-${{ hashFiles('scripts/fetch-sparkle.sh') }}
@@ -111,7 +111,7 @@ jobs:
     runs-on: macos-26
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Select Xcode
         # Third-party action pinned by commit SHA (v1.6.0) so a moved tag can't
         # run unreviewed code in CI.
@@ -119,7 +119,7 @@ jobs:
         with:
           xcode-version: latest-stable
       - name: Cache Sparkle framework
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: build/sparkle
           key: sparkle-${{ runner.os }}-${{ hashFiles('scripts/fetch-sparkle.sh') }}
@@ -142,7 +142,7 @@ jobs:
     name: build OpenWhispCore + BridgeKit (iOS)
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Select Xcode
         # Third-party action pinned by commit SHA (v1.6.0) so a moved tag can't
         # run unreviewed code in CI. latest-stable (not a hard version) on
@@ -166,7 +166,7 @@ jobs:
     name: AppState LOC ratchet
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Check AppState LOC ratchet
         run: ./scripts/check-appstate-ratchet.sh
 
@@ -179,7 +179,7 @@ jobs:
     name: third_party pin hygiene
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           # Need submodules + their tags so `git describe --tags` can prove each
           # pin is tag-reachable, entirely offline (no clones at check time).

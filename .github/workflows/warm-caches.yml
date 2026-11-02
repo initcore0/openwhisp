@@ -33,7 +33,7 @@ jobs:
     runs-on: macos-26
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           submodules: recursive
 
@@ -57,7 +57,7 @@ jobs:
         run: brew install ccache 2>/dev/null || true
 
       - name: Restore ccache
-        uses: actions/cache/restore@v5
+        uses: actions/cache/restore@v6
         with:
           path: ~/Library/Caches/ccache
           key: ccache-${{ runner.os }}-${{ steps.llama-key.outputs.sha }}
@@ -67,7 +67,7 @@ jobs:
       # Key MUST stay identical to release.yml's — that's the whole point.
       - name: Restore llama.cpp build cache
         id: llama-cache
-        uses: actions/cache/restore@v5
+        uses: actions/cache/restore@v6
         with:
           path: third_party/llama.cpp/build
           key: llama-build-${{ runner.os }}-${{ steps.llama-key.outputs.sha }}-${{ hashFiles('scripts/build-llama.sh') }}
@@ -77,13 +77,13 @@ jobs:
 
       - name: Save llama.cpp build cache
         if: steps.llama-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v5
+        uses: actions/cache/save@v6
         with:
           path: third_party/llama.cpp/build
           key: llama-build-${{ runner.os }}-${{ steps.llama-key.outputs.sha }}-${{ hashFiles('scripts/build-llama.sh') }}
 
       - name: Save ccache
-        uses: actions/cache/save@v5
+        uses: actions/cache/save@v6
         with:
           path: ~/Library/Caches/ccache
           key: ccache-${{ runner.os }}-${{ steps.llama-key.outputs.sha }}-${{ github.run_id }}
